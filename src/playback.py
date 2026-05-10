@@ -108,7 +108,7 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int, width: int | 
 
     # Draw previous line (DIM)
     if p_wrap:
-        sys.stdout.write(f"{ui_utils.Colors.DIM}   {p_wrap[0]}{ui_utils.Colors.RESET}\n")
+        sys.stdout.write(f"{ui_utils.Colours.DIM}   {p_wrap[0]}{ui_utils.Colours.RESET}\n")
     else:
         sys.stdout.write("\n")
 
@@ -116,13 +116,13 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int, width: int | 
     if c_wrap:
         for i, line in enumerate(c_wrap):
             prefix = ">> " if i == 0 else "   "
-            sys.stdout.write(f"{ui_utils.Colors.BOLD}{prefix}{line}{ui_utils.Colors.RESET}\n")
+            sys.stdout.write(f"{ui_utils.Colours.BOLD}{prefix}{line}{ui_utils.Colours.RESET}\n")
     else:
         sys.stdout.write("\n")
 
     # Draw next line (DIM)
     if n_wrap:
-        sys.stdout.write(f"{ui_utils.Colors.DIM}   {n_wrap[0]}{ui_utils.Colors.RESET}\n")
+        sys.stdout.write(f"{ui_utils.Colours.DIM}   {n_wrap[0]}{ui_utils.Colours.RESET}\n")
     else:
         sys.stdout.write("\n")
 
@@ -162,7 +162,7 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list, elapsed: float
 
 
 def _visible_len(text: str) -> int:
-    """Count string length without ANSI color codes."""
+    """Count string length without ANSI colour codes."""
     return len(re.sub(r'\033\[[0-9;]*m', '', text))
 
 
@@ -265,13 +265,13 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     """
     cols, rows = size
 
-    RESET   = ui_utils.Colors.RESET
-    MAGENTA = ui_utils.Colors.MAGENTA
+    RESET   = ui_utils.Colours.RESET
+    MAGENTA = ui_utils.Colours.MAGENTA
 
     ui_utils.clear_screen()
 
     breadcrumbs = ui_utils._get_breadcrumb_str(cols) if NAV_STACK else "Music Player"
-    print(f"{ui_utils.Colors.DIM}{breadcrumbs}{ui_utils.Colors.RESET}")
+    print(f"{ui_utils.Colours.DIM}{breadcrumbs}{ui_utils.Colours.RESET}")
     print("─" * cols)
 
     # ── Right column: Cast & Crew ─────────────────────────────────────────
@@ -282,12 +282,12 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
     right_raw = []
     if cast_people:
-        right_raw.append(f"{ui_utils.Colors.YELLOW}--- CAST ---{RESET}")
+        right_raw.append(f"{ui_utils.Colours.YELLOW}--- CAST ---{RESET}")
         right_raw.extend(_build_cast_lines(cast_people, 9999))
     if crew_people:
         if right_raw:
             right_raw.append("")
-        right_raw.append(f"{ui_utils.Colors.CYAN}--- PRODUCTION ---{RESET}")
+        right_raw.append(f"{ui_utils.Colours.CYAN}--- PRODUCTION ---{RESET}")
         top_cast_names = [name for _, name in cast_people[:4]]
         right_raw.extend(_build_crew_lines(crew_people, 9999, cast_names=top_cast_names))
 
@@ -324,12 +324,12 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     # Re-build right lines now we know the actual right_col_width
     right_lines = []
     if cast_people:
-        right_lines.append(f"{ui_utils.Colors.YELLOW}--- CAST ---{RESET}")
+        right_lines.append(f"{ui_utils.Colours.YELLOW}--- CAST ---{RESET}")
         right_lines.extend(_build_cast_lines(cast_people, right_col_width))
     if crew_people:
         if right_lines:
             right_lines.append("")
-        right_lines.append(f"{ui_utils.Colors.CYAN}--- PRODUCTION ---{RESET}")
+        right_lines.append(f"{ui_utils.Colours.CYAN}--- PRODUCTION ---{RESET}")
         right_lines.extend(_build_crew_lines(crew_people, right_col_width, cast_names=[name for _, name in cast_people[:4]]))
 
     num_rows = max(len(left_lines), len(right_lines))
@@ -620,7 +620,7 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
             else:
                 if last_lyric_idx == -1:
                     sys.stdout.write(f"\033[{lyric_row};0H" + " " * current_width + "\n")
-                    sys.stdout.write(f"{ui_utils.Colors.DIM}[ No Lyrics Found ]{ui_utils.Colors.RESET}")
+                    sys.stdout.write(f"{ui_utils.Colours.DIM}[ No Lyrics Found ]{ui_utils.Colours.RESET}")
                     sys.stdout.flush()
                     last_lyric_idx = -2
 

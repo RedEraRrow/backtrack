@@ -51,7 +51,7 @@ TAG_MAP = {
 
 
 def normalise_string(s: str) -> str:
-    """Standardizes strings for matching by removing non-alphanumeric chars."""
+    """Standardises strings for matching by removing non-alphanumeric chars."""
     if not s: return ""
     s = os.path.splitext(s)[0] 
     return re.sub(r'[^a-z0-9]', '', s.lower())
@@ -111,7 +111,7 @@ def load_xml_database(xml_path: str = "Library.xml") -> dict | None:
 
 def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
     """Extract metadata from audio file, ensuring all required keys exist."""
-    # INITIALIZE ALL KEYS to prevent KeyErrors
+    # INITIALISE ALL KEYS to prevent KeyErrors
     metadata = {
         "title": os.path.splitext(os.path.basename(file_path))[0],
         "artist": "Unknown Artist",
@@ -142,7 +142,7 @@ def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
     except Exception as e:
         pass
 
-    # 2. XML matching with normalization
+    # 2. XML matching with normalisation
     if xml_db:
         file_key = os.path.basename(file_path)
         xml_info = xml_db.get(file_key) or xml_db.get(f"norm_{normalise_string(file_key)}")

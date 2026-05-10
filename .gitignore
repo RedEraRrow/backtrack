@@ -3,3 +3,7 @@ data/library_cache.json
 config/config.json
 .vscode/settings.json
 _castcrew.py
+src/__pycache__/ascii_art.cpython-314.pyc
+src/__pycache__/music_library.cpython-314.pyc
+src/__pycache__/playback.cpython-314.pyc
+src/__pycache__/ui_utils.cpython-314.pyc

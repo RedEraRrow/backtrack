@@ -21,11 +21,11 @@ A feature-rich, terminal-based music player built in Python with support for lyr
 - XML library database support (iTunes export)
 - Volume and playback control
 - Metadata browser and inspector
-- Modular, well-organized codebase
+- Modular, well-organised codebase
 
-## Project Organization
+## Project Organisation
 
-The codebase is organized into logical folders for better maintainability:
+The codebase is organised into logical folders for better maintainability:
 
 - **`src/`** - All Python source code with modular components
 - **`config/`** - User configuration files
@@ -48,7 +48,7 @@ Music Browser/
 │   ├── history.py          # Listening history tracking
 │   ├── terminal_input.py   # Terminal input handling (raw mode, escape sequences)
 │   ├── ascii_art.py        # Image to ASCII art conversion
-│   ├── ui_utils.py         # General UI utilities (colors, formatting)
+│   ├── ui_utils.py         # General UI utilities (colours, formatting)
 │   ├── lyric_timer.py      # Lyric synchronization tool
 │   ├── metadata_browser.py # Metadata inspection interface
 │   ├── prompt.py           # User input utilities
@@ -75,8 +75,8 @@ Music Browser/
 - **src/menus.py** - All navigation menus (browse, search, history, settings)
 - **src/history.py** - Track and manage listening sessions
 - **src/terminal_input.py** - Raw mode terminal control, arrow keys, non-blocking input
-- **src/ascii_art.py** - Convert images/MP3 art to colored ASCII
-- **src/ui_utils.py** - ANSI colors, text formatting, progress bars
+- **src/ascii_art.py** - Convert images/MP3 art to coloured ASCII
+- **src/ui_utils.py** - ANSI colours, text formatting, progress bars
 - **src/lyric_timer.py** - Interactive tool to sync lyrics with timestamps
 - **src/metadata_browser.py** - Inspect and edit track metadata
 - **src/prompt.py** - User input and path selection utilities
@@ -162,7 +162,7 @@ View and replay recently played songs. Shows timestamp, duration, and metadata.
 - **Toggle Listening History** - Enable/disable history tracking
 - **Clear History Log** - Remove all history entries
 - **Adjust Lyric Lead-in** - Lyric sync timing offset
-- **Change UI Theme** - Color scheme customization
+- **Change UI Theme** - Colour scheme customization
 - **Update Music Directory** - Rescan library from new location
 
 ### Lyric Synchronization

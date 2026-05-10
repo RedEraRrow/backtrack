@@ -1,7 +1,7 @@
 """
 ASCII art and image conversion for terminal display.
 
-Converts images to colored ASCII art for terminal output.
+Converts images to coloured ASCII art for terminal output.
 """
 
 import os
@@ -24,11 +24,11 @@ def resize_image(image: np.ndarray, new_width: int) -> np.ndarray:
     return cv2.resize(image, (new_width, new_h))
 
 
-def get_color_char(pixel: tuple, chars: str) -> str:
+def get_colour_char(pixel: tuple, chars: str) -> str:
     """
-    Convert a pixel to a colored ASCII character.
+    Convert a pixel to a coloured ASCII character.
     
-    Uses brightness to select character, preserves original color.
+    Uses brightness to select character, preserves original colour.
     """
     b, g, r = pixel
     brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
@@ -37,9 +37,9 @@ def get_color_char(pixel: tuple, chars: str) -> str:
 
 
 def convert_to_ascii_art(img: np.ndarray) -> str:
-    """Convert image array to colored ASCII art string."""
+    """Convert image array to coloured ASCII art string."""
     return "\n".join(
-        "".join(get_color_char(px, ASCII_CHARS) for px in row)
+        "".join(get_colour_char(px, ASCII_CHARS) for px in row)
         for row in img
     )
 

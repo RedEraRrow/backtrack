@@ -106,8 +106,8 @@ def sync_lyrics(file_path):
             return
 
         raw_lyrics = uslt_tags[0].text
-        normalized = normalise_lyric_newlines(raw_lyrics)
-        lines = [l.strip() for l in normalized.split('\n') if l.strip()]
+        normalised = normalise_lyric_newlines(raw_lyrics)
+        lines = [l.strip() for l in normalised.split('\n') if l.strip()]
 
         while lines and not lines[0]: lines.pop(0)
         while lines and not lines[-1]: lines.pop()

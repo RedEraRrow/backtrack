@@ -166,7 +166,7 @@ elif choice == "Now Playing":
 ### Naming Conventions
 
 - **Modules**: lowercase with underscores (`ascii_art.py`)
-- **Classes**: PascalCase (`Colors`)
+- **Classes**: PascalCase (`Colours`)
 - **Functions**: snake_case (`format_time()`)
 - **Constants**: UPPERCASE (`CACHE_PATH`)
 - **Private functions**: Leading underscore (`_parse_sylt()`)
@@ -342,8 +342,8 @@ A: Add handling in `terminal_input.py` and process in `playback.py` key handler.
 **Q: How do I add new metadata field?**
 A: Update `TAG_MAP` in `playback.py` and `library.py`.
 
-**Q: How do I change the UI colors?**
-A: Modify `Colors` class in `ui_utils.py` or `config.json` theme settings.
+**Q: How do I change the UI colours?**
+A: Modify `Colours` class in `ui_utils.py` or `config.json` theme settings.
 
 **Q: How do I add a new browse category?**
 A: Add to `key_map` dictionary in `browse_menu()` in `menus.py`.

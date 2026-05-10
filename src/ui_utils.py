@@ -33,11 +33,11 @@ def consume_resize() -> bool:
     return False
 
 # ============================================================================
-# ANSI Color Codes
+# ANSI Colour Codes
 # ============================================================================
 
-class Colors:
-    """ANSI color codes for terminal output."""
+class Colours:
+    """ANSI colour codes for terminal output."""
     PRIMARY = "\033[1;37m"      # White
     ACCENT = "\033[1;31m"       # Red
     SUCCESS = "\033[1;32m"      # Green
@@ -230,8 +230,8 @@ def get_progress_bar(progress: float, width: int = 40) -> str:
     # Fill the rest with empty space
     padding = " " * (width - len(bar))
     
-    # Return with your UI colors
-    return f"{Colors.DIM}[{Colors.RESET}{Colors.SUCCESS}{bar}{padding}{Colors.RESET}{Colors.DIM}]{Colors.RESET}"
+    # Return with your UI colours
+    return f"{Colours.DIM}[{Colours.RESET}{Colours.SUCCESS}{bar}{padding}{Colours.RESET}{Colours.DIM}]{Colours.RESET}"
 
 
 # ============================================================================
@@ -259,7 +259,7 @@ def display_metadata_section(title, data, formatted_keys=None):
 
 
 def display_xml_metadata(metadata):
-    """Display comprehensive XML metadata with organized sections."""
+    """Display comprehensive XML metadata with organised sections."""
     xml_data = metadata.get('xml_data') or metadata
     if not xml_data:
         return
