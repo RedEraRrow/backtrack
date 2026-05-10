@@ -41,8 +41,9 @@ def perform_rename(audio_obj: ID3, old_frame: TextFrame, new_id: str) -> bool:
         elif base_id.startswith('USLT'):
             new_frame = USLT(encoding=3, lang=lang, desc='', text=old_frame.text)
         else:
-            new_frame = TextFrame(encoding=3, text=old_frame.text)
-            new_frame.FrameID = base_id
+            from mutagen.id3 import Frames
+            frame_cls = Frames.get(base_id, TextFrame)
+            new_frame = frame_cls(encoding=3, text=old_frame.text)
         
         audio_obj.add(new_frame)
         return True
@@ -229,7 +230,6 @@ def _is_people_frame(tag_name: str) -> bool:
 
 def _edit_list_data(tag_data, tag_name: str):
     """Edit list or 2D list data. TMCL/TIPL get a role/name pair editor."""
-    """Edit list or 2D list data. TMCL/TIPL get a role/name pair editor."""
 
     # ── TMCL / TIPL: [[role, name], ...] people frames ───────────────────
     if _is_people_frame(tag_name):
@@ -272,21 +272,22 @@ def _edit_list_data(tag_data, tag_name: str):
                     rows.append([role.strip(), name.strip()])
 
             elif action == "Edit entry" and rows:
-                choices = [prompt.Choice(f"{i:>2}. {r:<25}  {n}", value=i)
+                choices = [prompt.Choice(f"{i:>2}. {r:<25}  {n}", value=str(i))
                            for i, (r, n) in enumerate(rows)]
                 idx = prompt.select("Edit which entry?", choices=choices)
                 if idx is not None:
+                    idx = int(idx)
                     role = prompt.text("Role:", default=rows[idx][0])
                     name = prompt.text("Name:", default=rows[idx][1])
                     if role is not None and name is not None:
                         rows[idx] = [role.strip(), name.strip()]
 
             elif action == "Remove entry" and rows:
-                choices = [prompt.Choice(f"{i:>2}. {r:<25}  {n}", value=i)
+                choices = [prompt.Choice(f"{i:>2}. {r:<25}  {n}", value=str(i))
                            for i, (r, n) in enumerate(rows)]
                 idx = prompt.select("Remove which entry?", choices=choices)
                 if idx is not None:
-                    rows.pop(idx)
+                    rows.pop(int(idx))
 
             elif action == "Clear all":
                 if prompt.confirm("Clear all entries?"):
@@ -413,7 +414,7 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
     if not operation or operation == "Cancel":
         return
 
-    from music_library import TAG_MAP as _TAG_MAP
+    from src.music_library import TAG_MAP as _TAG_MAP
     import re as _re
     _cols = ui_utils.get_terminal_width()
 
@@ -636,7 +637,7 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
     time.sleep(1.5)
 
 
-def inspect_tag_loop(file_path: str, library_metadata: dict = None) -> None:
+def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> None:
     """Browse and edit ID3 tags for a single file."""
     from src.ui_utils import format_time
     
@@ -764,7 +765,9 @@ def inspect_tag_loop(file_path: str, library_metadata: dict = None) -> None:
                         with open(lrc_path, "w", encoding="utf-8") as f:
                             f.write(f"[ti:{audio.get('TIT2', 'Unknown')}]\n")
                             for txt, ts in raw_val.text:
-                                f.write(f"{format_time(ts/1000)} {txt}\n")
+                                mins, secs = divmod(ts // 1000, 60)
+                                cs = (ts % 1000) // 10
+                                f.write(f"[{mins:02d}:{secs:02d}.{cs:02d}] {txt}\n")
                         print(f"Exported: {os.path.basename(lrc_path)}")
                     except Exception as e:
                         print(f"Export failed: {e}")
@@ -951,7 +954,7 @@ def browse_metadata(library: list) -> None:
 
         tracks = sorted(
             [s for s in artist_songs if s.get('album') == album_choice],
-            key=lambda x: x.get('track', 0)
+            key=lambda x: int(x.get('track', 0) or 0)
         )
 
         while True:

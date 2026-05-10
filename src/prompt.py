@@ -40,8 +40,9 @@ def _col(n):           return f"\033[{n}G"
 class Choice:
     __slots__ = ('title', 'value', 'checked')
 
-    def __init__(self, title: str, value: str | None = None, checked: bool = False) -> None:
+    def __init__(self, title: str, value: object = None, checked: bool = False) -> None:
         """Initialize a Choice option."""
+        self.title   = title
         self.value   = value if value is not None else title
         self.checked = checked
 
@@ -182,6 +183,7 @@ class _Widget:
 
     def clear(self) -> None:
         """Clear the rendered content from the terminal."""
+        if self.row is None:
             sys.stdout.write(_SHOW)
             sys.stdout.flush()
             return
@@ -196,7 +198,7 @@ class _Widget:
 
 # ── select() ─────────────────────────────────────────────────────────────────
 
-def select(message: str, choices: list) -> object:
+def select(message: str, choices: list) -> str | None:
     """Arrow keys / jk navigate, Enter selects, q / Ctrl-C → None."""
     items = _norm(choices)
     if not items:

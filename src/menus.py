@@ -210,8 +210,6 @@ def play_queue(paths: list, mode: str = "linear") -> str | None:
             if status == "BACK" and mode == "repeat_one":
                 # User explicitly skipped — advance rather than repeat
                 idx += 1
-                if mode == "repeat_all" and idx >= len(playlist):
-                    idx = 0
                 continue
 
         if mode == "repeat_one":
@@ -329,7 +327,7 @@ def browse_menu(library_ref: list) -> str | None:
 
                     while True:  # LEVEL 4: Track Selection
                         ui_utils.clear_screen()
-                        final_tracks.sort(key=lambda x: x.get('track', 999))
+                        final_tracks.sort(key=lambda x: int(x.get('track', 0) or 0))
                         track_choices = [
                             prompt.Choice(
                                 title=f"{str(t.get('track', '0')).zfill(2)} — {t.get('title', 'Unknown')}",
@@ -358,7 +356,8 @@ def browse_menu(library_ref: list) -> str | None:
                             continue
 
                         # LEVEL 5: Action Menu
-                        NAV_STACK.append(path_choice_obj['title'])
+                        selected_track = next((t for t in final_tracks if t['path'] == path_choice_obj), None)
+                        NAV_STACK.append(selected_track['title'] if selected_track else path_choice_obj)
                         while True:
                             ui_utils.clear_screen()
                             action = prompt.select(
@@ -372,19 +371,19 @@ def browse_menu(library_ref: list) -> str | None:
                             
                             if action == "Play":
                                 ui_utils.clear_screen()
-                                res = musicplayer(path_choice_obj['path'])
+                                res = musicplayer(path_choice_obj)
                                 ui_utils.clear_screen()
                                 if res and res.get("status") == "QUIT_ALL":
                                     return "QUIT_ALL"
                             
                             elif action == "Sync Lyrics":
                                 ui_utils.clear_screen()
-                                sync_lyrics(path_choice_obj['path'])
+                                sync_lyrics(path_choice_obj)
                                 ui_utils.clear_screen()
 
                             elif action == "Edit Metadata":
                                 ui_utils.clear_screen()
-                                inspect_tag_loop(path_choice_obj['path'], library_metadata=path_choice_obj)
+                                inspect_tag_loop(path_choice_obj, library_metadata=selected_track)
                                 ui_utils.clear_screen()
                         
                         NAV_STACK.pop()

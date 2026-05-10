@@ -119,13 +119,13 @@ def sync_lyrics(file_path: str) -> None:
         time.sleep(2)
         return
 
-    from music_library import get_song_duration
+    from src.music_library import get_song_duration
     total = get_song_duration(file_path) or 999
 
     # VLC playback — stderr suppressed to kill codec noise
+    old_stderr = os.dup(2)
     try:
         devnull = os.open(os.devnull, os.O_WRONLY)
-        old_stderr = os.dup(2)
         os.dup2(devnull, 2)
         os.close(devnull)
         instance = vlc.Instance('--no-video', '--quiet')

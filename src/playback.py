@@ -98,7 +98,7 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int, width: int | 
     # Get raw text for surrounding lines, handling start/end boundaries gracefully
     p_raw = sylt_data[current_idx - 1][0] if current_idx > 0 else ""
     c_raw = sylt_data[current_idx][0] if 0 <= current_idx < len(sylt_data) else ""
-    n_raw = sylt_data[current_idx + 1][0] if -1 <= current_idx < len(sylt_data) - 1 else ""
+    n_raw = sylt_data[current_idx + 1][0] if 0 <= current_idx < len(sylt_data) - 1 else ""
 
     p_wrap = textwrap.wrap(normalise_lyric_newlines(p_raw).replace('\n', ' '), width=wrap_w)[:1]
     c_wrap = textwrap.wrap(normalise_lyric_newlines(c_raw).replace('\n', ' '), width=wrap_w)
@@ -372,7 +372,6 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
 
 def _make_player(file_path: str) -> vlc.MediaPlayer:
-    """Create a VLC media player instance."""
     """Create a VLC MediaPlayer. Caller is responsible for stderr suppression."""
     instance = vlc.Instance('--no-video', '--quiet')
     media = instance.media_new(file_path)
