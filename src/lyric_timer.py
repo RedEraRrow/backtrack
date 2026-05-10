@@ -1,5 +1,5 @@
 """
-Lyric synchronization tool for matching lyrics to timestamps.
+Lyric synchronisation tool for matching lyrics to timestamps.
 """
 
 import sys
@@ -29,7 +29,8 @@ BOLD    = "\033[1m"
 PROGRESS_ROW = 4
 
 
-def _draw_progress(elapsed, total, cols):
+def _draw_progress(elapsed: float, total: float, cols: int) -> None:
+    """Draw progress bar for lyric sync."""
     progress    = min(elapsed / total, 1.0) if total else 0
     bar         = ui_utils.get_progress_bar(progress, cols - 16)
     elapsed_str = ui_utils.format_time(elapsed)
@@ -41,7 +42,8 @@ def _draw_progress(elapsed, total, cols):
     sys.stdout.flush()
 
 
-def _draw(file_path, lines, i, start_time, total, marked_count, just_marked_at=None, offset_ms=0):
+def _draw(file_path: str, lines: list, i: int, start_time: float, total: float, marked_count: int, just_marked_at: float | None = None, offset_ms: int = 0) -> None:
+    """Draw lyric sync interface."""
     cols = ui_utils.get_terminal_width()
     ui_utils.clear_screen()
 
@@ -94,8 +96,8 @@ def _draw(file_path, lines, i, start_time, total, marked_count, just_marked_at=N
     sys.stdout.flush()
 
 
-def sync_lyrics(file_path):
-    """Interactive lyric synchronization: match lyrics to timestamps."""
+def sync_lyrics(file_path: str) -> None:
+    """Interactive lyric synchronisation: match lyrics to timestamps."""
     try:
         audio = ID3(file_path)
         uslt_tags = audio.getall('USLT')

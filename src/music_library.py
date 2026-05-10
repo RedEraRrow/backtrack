@@ -9,6 +9,7 @@ import json
 import urllib.parse
 import re
 import xml.etree.ElementTree as ET
+from typing import Any
 from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
@@ -56,7 +57,7 @@ def normalise_string(s: str) -> str:
     s = os.path.splitext(s)[0] 
     return re.sub(r'[^a-z0-9]', '', s.lower())
 
-def _parse_plist_value(element) -> any:
+def _parse_plist_value(element: Any) -> Any:
     """Extract the value from a plist element based on its tag type."""
     tag_handlers = {
         'string': lambda e: e.text or '',

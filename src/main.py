@@ -14,7 +14,7 @@ from src.music_library import build_library, load_library_cache, save_library_ca
 from src.menus import main_menu
 
 
-def main():
+def main() -> None:
     """Main application entry point."""
     
     # Load or create config

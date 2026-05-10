@@ -8,6 +8,7 @@ import sys
 import shutil
 import signal
 import textwrap
+from typing import Any
 
 from src.state import NAV_STACK
 
@@ -17,7 +18,8 @@ from src.state import NAV_STACK
 
 _resize_flag = False
 
-def _sigwinch_handler(signum, frame):
+def _sigwinch_handler(signum: int, frame: Any) -> None:
+    """Handle terminal resize signal."""
     global _resize_flag
     _resize_flag = True
 
@@ -53,12 +55,12 @@ class Colours:
 # Screen & Display
 # ============================================================================
 
-def clear_screen():
+def clear_screen() -> None:
     """Clear terminal screen."""
     os.system('clear')
 
 
-def get_terminal_size(default=(80, 24)):
+def get_terminal_size(default: tuple = (80, 24)) -> tuple:
     """Get terminal size (columns, rows), with fallback."""
     try:
         size = shutil.get_terminal_size()
@@ -67,19 +69,19 @@ def get_terminal_size(default=(80, 24)):
         return default
 
 
-def get_terminal_width(default=80):
+def get_terminal_width(default: int = 80) -> int:
     """Get terminal width, with fallback."""
     cols, _ = get_terminal_size((default, default))
     return cols
 
 
-def get_terminal_height(default=24):
+def get_terminal_height(default: int = 24) -> int:
     """Get terminal height, with fallback."""
     _, rows = get_terminal_size((default, default))
     return rows
 
 
-def truncate_text(text, max_width, placeholder="…", front=False):
+def truncate_text(text: str, max_width: int, placeholder: str = "…", front: bool = False) -> str:
     """Truncate text to fit within `max_width` characters.
     
     Args:
@@ -103,13 +105,13 @@ def truncate_text(text, max_width, placeholder="…", front=False):
         return text[:max_width - len(placeholder)] + placeholder
 
 
-def divider(width=None, char="─"):
+def divider(width: int | None = None, char: str = "─") -> str:
     """Return a divider line matching the given width or terminal width."""
     width = width or get_terminal_width()
     return char * width
 
 
-def wrap_text(text, max_width=80, margin=6):
+def wrap_text(text: str, max_width: int = 80, margin: int = 6) -> list:
     """Wrap text to fit terminal width."""
     wrap_width = max(20, max_width - margin)
     lines = []
@@ -125,7 +127,7 @@ def wrap_text(text, max_width=80, margin=6):
 # Formatting Utilities
 # ============================================================================
 
-def format_time(seconds):
+def format_time(seconds: int | float) -> str:
     """Convert seconds to mm:ss (or longer) format."""
     seconds = int(seconds)
     intervals = [31536000, 2592000, 86400, 3600, 60, 1]
@@ -146,7 +148,7 @@ def format_time(seconds):
     return ":".join(result)
 
 
-def format_duration_ms(milliseconds):
+def format_duration_ms(milliseconds: int | float) -> str | None:
     """Format milliseconds as mm:ss (minutes:seconds)."""
     try:
         ms = int(milliseconds)
@@ -157,7 +159,7 @@ def format_duration_ms(milliseconds):
         return None
 
 
-def format_file_size(size_bytes):
+def format_file_size(size_bytes: int | float) -> str | None:
     """Format bytes as human-readable size."""
     try:
         size_bytes = int(size_bytes)
@@ -167,12 +169,12 @@ def format_file_size(size_bytes):
         return None
 
 
-def format_bitrate(bitrate):
+def format_bitrate(bitrate: int | float | str | None) -> str | None:
     """Format bitrate with units."""
     return f"{bitrate} kbps" if bitrate else None
 
 
-def format_sample_rate(sample_rate):
+def format_sample_rate(sample_rate: int | float | str | None) -> str | None:
     """Format sample rate with units."""
     return f"{sample_rate} Hz" if sample_rate else None
 
@@ -238,7 +240,7 @@ def get_progress_bar(progress: float, width: int = 40) -> str:
 # Metadata Display
 # ============================================================================
 
-def display_metadata_section(title, data, formatted_keys=None):
+def display_metadata_section(title: str, data: dict, formatted_keys: dict | None = None) -> None:
     """Display a metadata section with formatted output."""
     formatted_keys = formatted_keys or {}
     
@@ -258,7 +260,7 @@ def display_metadata_section(title, data, formatted_keys=None):
             print(f"  {key:<20}: {value}")
 
 
-def display_xml_metadata(metadata):
+def display_xml_metadata(metadata: dict) -> None:
     """Display comprehensive XML metadata with organised sections."""
     xml_data = metadata.get('xml_data') or metadata
     if not xml_data:

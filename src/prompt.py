@@ -40,8 +40,8 @@ def _col(n):           return f"\033[{n}G"
 class Choice:
     __slots__ = ('title', 'value', 'checked')
 
-    def __init__(self, title, value=None, checked=False):
-        self.title   = title
+    def __init__(self, title: str, value: str | None = None, checked: bool = False) -> None:
+        """Initialize a Choice option."""
         self.value   = value if value is not None else title
         self.checked = checked
 
@@ -69,7 +69,8 @@ def _norm(choices: list) -> list:
 
 # ── Key reader ────────────────────────────────────────────────────────────────
 
-def _read_key(fd) -> str:
+def _read_key(fd: int) -> str:
+    """Read a single key press from file descriptor."""
     ch = os.read(fd, 1)
     if ch == b'\x1b':
         try:
@@ -99,7 +100,7 @@ def _read_key(fd) -> str:
 
 # ── Cursor row query ──────────────────────────────────────────────────────────
 
-def _query_cursor_row(fd) -> int:
+def _query_cursor_row(fd: int) -> int:
     """
     Query the terminal for the current cursor row via ANSI DSR (ESC[6n).
     Returns the row number (1-based), or 1 on failure.
@@ -128,11 +129,13 @@ def _query_cursor_row(fd) -> int:
 # ── Viewport helpers ──────────────────────────────────────────────────────────
 
 def _visible_rows() -> int:
+    """Get number of visible rows in terminal."""
     _, rows = ui_utils.get_terminal_size()
     return max(4, rows - 6)
 
 
 def _cols() -> int:
+    """Get number of columns in terminal."""
     return ui_utils.get_terminal_width()
 
 
@@ -152,15 +155,18 @@ class _Widget:
     (the terminal may have reflowed content).
     """
 
-    def __init__(self, fd):
+    def __init__(self, fd: int) -> None:
+        """Initialize the widget with a file descriptor."""
         self.fd     = fd
         self.row    = None   # anchor row, 1-based
         self.last_h = 0
 
-    def anchor_reset(self):
+    def anchor_reset(self) -> None:
+        """Reset the anchor row for re-querying."""
         self.row = None
 
-    def render(self, lines: list):
+    def render(self, lines: list) -> None:
+        """Render lines at the anchored row."""
         if self.row is None:
             self.row = _query_cursor_row(self.fd)
 
@@ -174,8 +180,8 @@ class _Widget:
         sys.stdout.write(out)
         sys.stdout.flush()
 
-    def clear(self):
-        if self.row is None:
+    def clear(self) -> None:
+        """Clear the rendered content from the terminal."""
             sys.stdout.write(_SHOW)
             sys.stdout.flush()
             return

@@ -25,7 +25,7 @@ def _sort_category(name: str) -> str:
     return first if first in string.ascii_uppercase else "#"
 
 
-def perform_rename(audio_obj, old_frame, new_id):
+def perform_rename(audio_obj: ID3, old_frame: TextFrame, new_id: str) -> bool:
     """Re-assign frame ID to a new value, handling special bracket syntax."""
     try:
         lang = 'eng'
@@ -51,7 +51,7 @@ def perform_rename(audio_obj, old_frame, new_id):
         return False
 
 
-def _get_image_from_apic(apic_frame) -> tuple:
+def _get_image_from_apic(apic_frame: APIC) -> tuple:
     """Extract image data and mime type from APIC frame. Returns (image_array, mime_type)."""
     try:
         img_data = apic_frame.data
@@ -63,7 +63,7 @@ def _get_image_from_apic(apic_frame) -> tuple:
         return None, None
 
 
-def _convert_ascii_from_apic(apic_frame, width: int = 80) -> str:
+def _convert_ascii_from_apic(apic_frame: APIC, width: int = 80) -> str:
     """Convert APIC tag data to ASCII art string."""
     image, _ = _get_image_from_apic(apic_frame)
     if image is None:
@@ -77,7 +77,7 @@ def _get_ascii_width() -> int:
     return max(20, min(cols - 8, 100))
 
 
-def _open_apic_preview(apic_frame) -> bool:
+def _open_apic_preview(apic_frame: APIC) -> bool:
     """Open APIC image in system preview. Returns True if successful."""
     image, mime_type = _get_image_from_apic(apic_frame)
     if image is None:
@@ -107,7 +107,7 @@ def _open_apic_preview(apic_frame) -> bool:
         return False
 
 
-def _edit_apic_tag(audio_obj, tag_name: str, apic_frame) -> bool:
+def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
     """Edit APIC (image) tag with options to replace image, view modes, etc."""
     view_mode = "ascii"  # ascii, raw, or image
     last_size = ui_utils.get_terminal_size()
@@ -227,7 +227,8 @@ def _is_people_frame(tag_name: str) -> bool:
     return tag_name.startswith(('TMCL', 'TIPL'))
 
 
-def _edit_list_data(tag_data, tag_name: str) -> any:
+def _edit_list_data(tag_data, tag_name: str):
+    """Edit list or 2D list data. TMCL/TIPL get a role/name pair editor."""
     """Edit list or 2D list data. TMCL/TIPL get a role/name pair editor."""
 
     # ── TMCL / TIPL: [[role, name], ...] people frames ───────────────────

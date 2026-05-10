@@ -371,7 +371,8 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 # ============================================================================
 
 
-def _make_player(file_path: str):
+def _make_player(file_path: str) -> vlc.MediaPlayer:
+    """Create a VLC media player instance."""
     """Create a VLC MediaPlayer. Caller is responsible for stderr suppression."""
     instance = vlc.Instance('--no-video', '--quiet')
     media = instance.media_new(file_path)
