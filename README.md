@@ -1,6 +1,6 @@
 # Terminal Music Player
 
-A feature-rich, terminal-based music player built in Python with support for lyrics synchronization, library browsing, and metadata management.
+A feature-rich, terminal-based music player built in Python with support for lyrics synchronisation, library browsing, and metadata management.
 
 ## Features
 
