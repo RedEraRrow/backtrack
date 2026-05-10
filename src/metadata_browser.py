@@ -37,13 +37,13 @@ def perform_rename(audio_obj: ID3, old_frame: TextFrame, new_id: str) -> bool:
             base_id = new_id
 
         if base_id.startswith('COMM'):
-            new_frame = COMM(encoding=3, lang=lang, desc='', text=old_frame.text)
+            new_frame = COMM(encoding=3, lang=lang, desc='', text=getattr(old_frame, 'text', [''])[0])
         elif base_id.startswith('USLT'):
-            new_frame = USLT(encoding=3, lang=lang, desc='', text=old_frame.text)
+            new_frame = USLT(encoding=3, lang=lang, desc='', text=getattr(old_frame, 'text', [''])[0])
         else:
             from mutagen.id3 import Frames
             frame_cls = Frames.get(base_id, TextFrame)
-            new_frame = frame_cls(encoding=3, text=old_frame.text)
+            new_frame = frame_cls(encoding=3, text=getattr(old_frame, 'text', [''])[0])
         
         audio_obj.add(new_frame)
         return True
@@ -55,10 +55,11 @@ def perform_rename(audio_obj: ID3, old_frame: TextFrame, new_id: str) -> bool:
 def _get_image_from_apic(apic_frame: APIC) -> tuple:
     """Extract image data and mime type from APIC frame. Returns (image_array, mime_type)."""
     try:
-        img_data = apic_frame.data
+        img_data = getattr(apic_frame, 'data', b"")
+        mime_type = getattr(apic_frame, 'mime', "image/jpeg")
         nparr = np.frombuffer(img_data, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        return image, apic_frame.mime
+        return image, mime_type
     except Exception as e:
         print(f"Error extracting image: {e}")
         return None, None
@@ -96,7 +97,7 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
         
         # Create temp file and save image
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-            img_data = apic_frame.data
+            img_data = getattr(apic_frame, 'data', b"")
             tmp.write(img_data)
             tmp_path = tmp.name
         
@@ -137,13 +138,13 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
                 h, w = image.shape[:2]
                 channels = image.shape[2] if len(image.shape) == 3 else 1
                 colour_mode = {1: "Greyscale", 3: "RGB", 4: "RGBA"}.get(channels, f"{channels}ch")
-                size_kb = len(apic_frame.data) / 1024
+                size_kb = len(getattr(apic_frame, 'data', b"")) / 1024
                 print(f"  MIME type   : {mime}")
-                print(f"  Description : {apic_frame.desc or '(none)'}")
+                print(f"  Description : {getattr(apic_frame, 'desc', '') or '(none)'}")
                 print(f"  Dimensions  : {w} × {h} px")
                 print(f"  Colour mode : {colour_mode}")
-                print(f"  File size   : {size_kb:.1f} KB ({len(apic_frame.data):,} bytes)")
-                print(f"  Encoding    : {apic_frame.encoding}")
+                print(f"  File size   : {size_kb:.1f} KB ({len(getattr(apic_frame, 'data', b'')):,} bytes)")
+                print(f"  Encoding    : {getattr(apic_frame, 'encoding', 3)}")
             else:
                 print("Could not read image information.")
         
@@ -196,7 +197,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
                         encoding=3,
                         mime=mime_type,
                         type=3,
-                        desc=apic_frame.desc,
+                        desc=getattr(apic_frame, 'desc', ''),
                         data=new_data
                     )
                     audio_obj.delall(tag_name)
@@ -211,7 +212,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
                 print("File not found.")
                 time.sleep(1)
         elif action == "Edit Description":
-            new_desc = prompt.text(f"Description (current: '{apic_frame.desc}'):", default=apic_frame.desc)
+            new_desc = prompt.text(f"Description (current: '{getattr(apic_frame, 'desc', '')}'):", default=getattr(apic_frame, 'desc', ''))
             if new_desc is not None:
                 apic_frame.desc = new_desc
                 print("Description updated.")
@@ -620,10 +621,10 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
                         changed = True
                     elif operation == "Rename Tags":
                         old_frame = audio.pop(tag)
-                        if perform_rename(audio, old_frame, target_val):
+                        if target_val and perform_rename(audio, old_frame, target_val):
                             changed = True
                     elif operation == "Set Common Value":
-                        audio[tag].text = [target_val]
+                        audio[tag].text = [target_val] 
                         changed = True
 
             if changed:
@@ -644,6 +645,8 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
     from src.music_library import TAG_MAP as _TAG_MAP
 
     show_xml = False  # default: hide XML when ID3 available
+
+    clean_data = ""
 
     while True:
         ui_utils.clear_screen()
@@ -803,8 +806,9 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
                         elif choice.startswith('COMM'):
                             new_frame = COMM(encoding=3, lang='eng', desc='', text=[clean_data])
                         else:
+                            frame_id = choice.split('[')[0] if '[' in choice else choice
                             new_frame = TextFrame(encoding=3, text=[clean_data])
-                            new_frame.FrameID = choice.split('[')[0] if '[' in choice else choice
+                            setattr(new_frame, 'FrameID', frame_id)
                         
                         audio.add(new_frame)
                         audio.save(v2_version=3)
@@ -816,6 +820,8 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
                     new_id = prompt.text("New tag ID (e.g. TPE2, COMM[eng]):")
                     if new_id and new_id != choice:
                         old_frame = audio.pop(choice)
+                        # Type narrowing for Pylance:
+                        assert isinstance(new_id, str) 
                         if perform_rename(audio, old_frame, new_id):
                             audio.save(v2_version=3)
                             print(f"Renamed {choice} to {new_id}")
@@ -867,8 +873,9 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
                                 elif choice.startswith('COMM'):
                                     new_frame = COMM(encoding=3, lang='eng', desc='', text=list(edited_data))
                                 else:
-                                    new_frame = TextFrame(encoding=3, text=list(edited_data))
-                                    new_frame.FrameID = choice.split('[')[0] if '[' in choice else choice
+                                    frame_id = choice.split('[')[0] if '[' in choice else choice
+                                    new_frame = TextFrame(encoding=3, text=[clean_data])
+                                    setattr(new_frame, 'FrameID', frame_id)
                                 audio.add(new_frame)
                                 audio.save(v2_version=3)
                                 print(f"{choice} updated.")
@@ -884,8 +891,9 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
                                 elif choice.startswith('COMM'):
                                     new_frame = COMM(encoding=3, lang='eng', desc='', text=[new_content])
                                 else:
-                                    new_frame = TextFrame(encoding=3, text=[new_content])
-                                    new_frame.FrameID = choice.split('[')[0] if '[' in choice else choice
+                                    frame_id = choice.split('[')[0] if '[' in choice else choice
+                                    new_frame = TextFrame(encoding=3, text=[clean_data])
+                                    setattr(new_frame, 'FrameID', frame_id)
                                 audio.add(new_frame)
                                 audio.save(v2_version=3)
                                 print(f"{choice} updated.")

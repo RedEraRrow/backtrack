@@ -156,6 +156,7 @@ def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
 
     # 2. XML matching with normalisation
     if xml_db:
+        norm_title = ""
         file_key = os.path.basename(file_path)
         xml_info = xml_db.get(file_key) or xml_db.get(f"norm_{normalise_string(file_key)}")
         

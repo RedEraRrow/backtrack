@@ -501,7 +501,7 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
                 volume = mp.audio_get_volume()
                 prog_row, lyric_row, current_width = draw_full_ui(
                     file_path, audio, pre_art, last_size,
-                    is_paused=(mp.get_state() == vlc.State.Paused),
+                    is_paused=(mp.get_state() == vlc.State(4)),
                     volume=volume
                 )
                 last_lyric_idx = -1
@@ -511,7 +511,7 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
             elapsed = elapsed_ms / 1000.0 if elapsed_ms >= 0 else 0.0
 
             state = mp.get_state()
-            if state in (vlc.State.Ended, vlc.State.Stopped, vlc.State.Error):
+            if state in (vlc.State(6), vlc.State(5), vlc.State(7)): # Ended, Stopped, Error 
                 break
             if duration and elapsed >= duration:
                 break
@@ -521,12 +521,12 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
             if key:
                 clear_escape_buffer()
                 arrow = is_arrow_key(key)
-                is_paused = (state == vlc.State.Paused)
+                is_paused = (state == vlc.State(4)) # Paused
 
                 if key in (' ', 'p', 'P'):
                     mp.pause()  # toggles
                     time.sleep(0.05)
-                    is_paused = (mp.get_state() == vlc.State.Paused)
+                    is_paused = (mp.get_state() == vlc.State(4)) # Paused
                     volume = mp.audio_get_volume()
                     prog_row, lyric_row, current_width = draw_full_ui(
                         file_path, audio, pre_art, last_size, is_paused, volume
