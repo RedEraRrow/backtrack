@@ -50,7 +50,7 @@ TAG_MAP = {
 # ============================================================================
 
 
-def normalize_string(s: str) -> str:
+def normalise_string(s: str) -> str:
     """Standardizes strings for matching by removing non-alphanumeric chars."""
     if not s: return ""
     s = os.path.splitext(s)[0] 
@@ -93,10 +93,10 @@ def load_xml_database(xml_path: str = "Library.xml") -> dict | None:
                 decoded_path = urllib.parse.unquote(location)
                 file_name = os.path.basename(decoded_path).replace(':', '_').replace('/', '_')
                 db[file_name] = track_data
-                db[f"norm_{normalize_string(file_name)}"] = track_data
+                db[f"norm_{normalise_string(file_name)}"] = track_data
                 
             if track_data.get('Artist') and track_data.get('Name'):
-                meta_key = normalize_string(f"{track_data['Artist']}{track_data['Name']}")
+                meta_key = normalise_string(f"{track_data['Artist']}{track_data['Name']}")
                 db[f"meta_{meta_key}"] = track_data
         
         return db
@@ -145,10 +145,10 @@ def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
     # 2. XML matching with normalization
     if xml_db:
         file_key = os.path.basename(file_path)
-        xml_info = xml_db.get(file_key) or xml_db.get(f"norm_{normalize_string(file_key)}")
+        xml_info = xml_db.get(file_key) or xml_db.get(f"norm_{normalise_string(file_key)}")
         
         if not xml_info and metadata["artist"] != "Unknown Artist":
-            meta_key = f"meta_{normalize_string(metadata['artist'] + metadata['title'])}"
+            meta_key = f"meta_{normalise_string(metadata['artist'] + metadata['title'])}"
             xml_info = xml_db.get(meta_key)
 
         if xml_info:
