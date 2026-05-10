@@ -18,3 +18,4 @@ src/__pycache__/prompt.cpython-314.pyc
 src/__pycache__/state.cpython-314.pyc
 src/__pycache__/terminal_input.cpython-314.pyc
 pyrightconfig.json
+data/history.log
