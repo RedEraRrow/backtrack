@@ -1,0 +1,5 @@
+data/Library.xml
+data/library_cache.json
+config/config.json
+.vscode/settings.json
+_castcrew.py
