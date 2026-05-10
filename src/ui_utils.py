@@ -1,6 +1,6 @@
 """
 Shared UI utilities and formatting functions.
-Centralizes all display logic to avoid circular imports and code duplication.
+Centralises all display logic to avoid circular imports and code duplication.
 """
 
 import os

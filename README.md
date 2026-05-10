@@ -12,11 +12,11 @@ A feature-rich, terminal-based music player built in Python with support for lyr
 - Lyrics display (both synced and unsynced)
 - Multiple playback modes (linear, shuffle, repeat)
 - Beautiful terminal UI with album art in ASCII
-- Customizable settings and themes
+- Customisable settings and themes
 
 ### Advanced Features
 
-- Lyric synchronization tool
+- Lyric synchronisation tool
 - Metadata extraction from ID3/MP4 tags
 - XML library database support (iTunes export)
 - Volume and playback control
@@ -49,7 +49,7 @@ Music Browser/
 │   ├── terminal_input.py   # Terminal input handling (raw mode, escape sequences)
 │   ├── ascii_art.py        # Image to ASCII art conversion
 │   ├── ui_utils.py         # General UI utilities (colours, formatting)
-│   ├── lyric_timer.py      # Lyric synchronization tool
+│   ├── lyric_timer.py      # Lyric synchronisation tool
 │   ├── metadata_browser.py # Metadata inspection interface
 │   ├── prompt.py           # User input utilities
 │   └── state.py            # Shared global state
@@ -162,10 +162,10 @@ View and replay recently played songs. Shows timestamp, duration, and metadata.
 - **Toggle Listening History** - Enable/disable history tracking
 - **Clear History Log** - Remove all history entries
 - **Adjust Lyric Lead-in** - Lyric sync timing offset
-- **Change UI Theme** - Colour scheme customization
+- **Change UI Theme** - Colour scheme customisation
 - **Update Music Directory** - Rescan library from new location
 
-### Lyric Synchronization
+### Lyric Synchronisation
 
 Use `Sync Lyrics` from search or history to:
 1. Play music while audio plays
@@ -241,7 +241,7 @@ The codebase features:
 
 Potential improvements:
 - Gapless playback
-- Equalizer support
+- Equaliser support
 - Playlist creation and management
 - Last.fm scrobbling integration
 - M3U/PLS playlist export

@@ -284,7 +284,7 @@ for song in lib[:5]:
 ### Memory Usage
 
 - Full library is loaded into memory (acceptable for most use cases)
-- ID3 tags are read per-file (could be optimized with caching)
+- ID3 tags are read per-file (could be optimised with caching)
 - Image conversion happens on-demand (not precomputed)
 
 ## Future Improvements
@@ -296,7 +296,7 @@ for song in lib[:5]:
 - [ ] Improve metadata editor UI
 
 ### Medium Term
-- [ ] Add equalizer support
+- [ ] Add equaliser support
 - [ ] Implement Last.fm scrobbling
 - [ ] Create playlist management
 - [ ] Add tag editing from UI
