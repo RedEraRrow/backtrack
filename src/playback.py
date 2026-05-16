@@ -63,6 +63,117 @@ def normalise_lyric_newlines(text: str) -> str:
     return text.replace('\r\n', '\n').replace('\r', '\n')
 
 
+# Abbreviations that should not be treated as sentence boundaries.
+_ABBREV_RE = re.compile(
+    r'\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|approx|govt|dept|'
+    r'Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec|'
+    r'Mon|Tue|Wed|Thu|Fri|Sat|Sun)\.',
+    re.IGNORECASE,
+)
+
+
+def _sentence_split(text: str, wrap_w: int, max_lines: int) -> list[str]:
+    """
+    Split text into chunks that each wrap to at most max_lines rows at wrap_w.
+    Prefers sentence boundaries; falls back to word-boundary bisection.
+    Returns a list of plain-text chunk strings (not yet wrapped).
+    """
+    flat   = text.replace('\n', ' ').strip()
+    masked = _ABBREV_RE.sub(lambda m: m.group().replace('.', '\x00'), flat)
+    boundaries = [m.end() for m in re.finditer(r'[.!?]\s+', masked)]
+
+    def _fits(chunk: str) -> bool:
+        return len(textwrap.wrap(chunk, width=wrap_w)) <= max_lines
+
+    if not boundaries:
+        # No sentence boundaries — bisect on words until every chunk fits.
+        chunks, result = [flat], []
+        while chunks:
+            chunk = chunks.pop(0)
+            if _fits(chunk):
+                result.append(chunk)
+            else:
+                words = chunk.split()
+                mid   = len(words) // 2
+                result.append(' '.join(words[:mid]))
+                remainder = ' '.join(words[mid:])
+                if remainder:
+                    chunks.insert(0, remainder)
+        return result
+
+    # Collect individual sentences then greedily merge into max-fitting chunks.
+    prev, sentences = 0, []
+    for b in boundaries:
+        sentences.append(flat[prev:b].strip())
+        prev = b
+    tail = flat[prev:].strip()
+    if tail:
+        sentences.append(tail)
+
+    chunks, current = [], ''
+    for sentence in sentences:
+        candidate = (current + ' ' + sentence).strip() if current else sentence
+        if _fits(candidate):
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            if _fits(sentence):
+                current = sentence
+            else:
+                sub = _sentence_split(sentence, wrap_w, max_lines)
+                chunks.extend(sub[:-1])
+                current = sub[-1]
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+# Cache keyed on (wrap_w, max_lines_per_chunk, id(original_lines_list)).
+# Cleared on terminal resize via expand_uslt_lines_for_width().
+_expand_cache: dict = {}
+
+
+def expand_uslt_lines(
+    lines: list[str],
+    line_times: list[tuple],
+    wrap_w: int,
+    max_lines_per_chunk: int = 6,
+) -> tuple[list[str], list[tuple]]:
+    """
+    Split any USLT line that wraps beyond max_lines_per_chunk into multiple
+    sub-lines, each with a proportional share of the original line's time window
+    (allocated by word count).  The result is a drop-in replacement for
+    (uslt_lines, line_times) and is cached per wrap_w so resize invalidates it.
+    """
+    cache_key = (wrap_w, max_lines_per_chunk, id(lines))
+    if cache_key in _expand_cache:
+        return _expand_cache[cache_key]
+
+    exp_lines: list[str]   = []
+    exp_times: list[tuple] = []
+
+    for text, (t_start, t_end) in zip(lines, line_times):
+        if len(textwrap.wrap(text, width=wrap_w)) <= max_lines_per_chunk:
+            exp_lines.append(text)
+            exp_times.append((t_start, t_end))
+            continue
+
+        chunks      = _sentence_split(text, wrap_w, max_lines_per_chunk)
+        word_counts = [max(1, len(c.split())) for c in chunks]
+        total_words = sum(word_counts)
+        duration    = t_end - t_start
+        t = t_start
+        for chunk, wc in zip(chunks, word_counts):
+            chunk_dur = duration * (wc / total_words)
+            exp_lines.append(chunk)
+            exp_times.append((t, t + chunk_dur))
+            t += chunk_dur
+
+    _expand_cache[cache_key] = (exp_lines, exp_times)
+    return exp_lines, exp_times
+
+
 def build_uslt_line_times(lines: list, words_per_second: float = 2.2) -> list:
     """Pre-calculate (start, end) times for each USLT line by word count."""
     times = []
@@ -90,39 +201,58 @@ def find_current_uslt_line(line_times: list, elapsed: float) -> int:
     return max(0, len(line_times) - 1)
 
 
-def draw_lyric_window(row: int, sylt_data: list, current_idx: int, width: int | None = None) -> None:
+def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
+                      width: int | None = None, max_row: int | None = None) -> None:
     """Display previous, current, and next lyrics for SYLT."""
     width = width or ui_utils.get_terminal_width()
-    wrap_w = max(20, width - 12)
+    _, term_rows = ui_utils.get_terminal_size()
+    max_row = max_row or term_rows
+    budget  = max(4, max_row - row - 1)   # rows available for the lyric block
+    wrap_w  = max(20, width - 12)
 
-    # Get raw text for surrounding lines, handling start/end boundaries gracefully
+    # Raw text for surrounding lines
     p_raw = sylt_data[current_idx - 1][0] if current_idx > 0 else ""
     c_raw = sylt_data[current_idx][0] if 0 <= current_idx < len(sylt_data) else ""
     n_raw = sylt_data[current_idx + 1][0] if 0 <= current_idx < len(sylt_data) - 1 else ""
 
-    p_wrap = textwrap.wrap(normalise_lyric_newlines(p_raw).replace('\n', ' '), width=wrap_w)[:1]
-    c_wrap = textwrap.wrap(normalise_lyric_newlines(c_raw).replace('\n', ' '), width=wrap_w)
-    n_wrap = textwrap.wrap(normalise_lyric_newlines(n_raw).replace('\n', ' '), width=wrap_w)[:1]
+    # Surrounding lines: single line, truncated with ellipsis if too long.
+    def _surround(raw: str) -> str:
+        flat = normalise_lyric_newlines(raw).replace('\n', ' ')
+        if len(flat) > wrap_w:
+            flat = flat[:wrap_w - 1] + '…'
+        return flat
 
+    p_line = _surround(p_raw)
+    n_line = _surround(n_raw)
+
+    # Current line: wrap freely, capped by available budget (1 prev + 1 next = 2 used).
+    c_flat       = normalise_lyric_newlines(c_raw).replace('\n', ' ')
+    max_c_lines  = max(1, budget - 2)
+    c_wrap       = textwrap.wrap(c_flat, width=wrap_w)[:max_c_lines]
+
+    # Erase from this row downward before writing (prevents leftover lines on resize).
     sys.stdout.write(f"\033[{row};1H\033[J")
 
-    # Draw previous line (DIM)
-    if p_wrap:
-        sys.stdout.write(f"{ui_utils.Colours.DIM}   {p_wrap[0]}{ui_utils.Colours.RESET}\n")
+    # Previous line (DIM)
+    if p_line:
+        sys.stdout.write(f"{ui_utils.Colours.DIM}   {p_line}{ui_utils.Colours.RESET}\n")
     else:
         sys.stdout.write("\n")
 
-    # Draw current line (BOLD)
+    # Current line (BOLD), capped and split
     if c_wrap:
         for i, line in enumerate(c_wrap):
+            if line == '':
+                sys.stdout.write("\n")
+                continue
             prefix = ">> " if i == 0 else "   "
             sys.stdout.write(f"{ui_utils.Colours.BOLD}{prefix}{line}{ui_utils.Colours.RESET}\n")
     else:
         sys.stdout.write("\n")
 
-    # Draw next line (DIM)
-    if n_wrap:
-        sys.stdout.write(f"{ui_utils.Colours.DIM}   {n_wrap[0]}{ui_utils.Colours.RESET}\n")
+    # Next line (DIM)
+    if n_line:
+        sys.stdout.write(f"{ui_utils.Colours.DIM}   {n_line}{ui_utils.Colours.RESET}\n")
     else:
         sys.stdout.write("\n")
 
@@ -130,31 +260,53 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int, width: int | 
 
 
 def draw_uslt_window(row: int, all_lines: list, line_times: list, elapsed: float,
-                     width: int | None = None, manual_idx: int | None = None) -> None:
-    """Display unsynced lyrics with manual navigation support."""
-    BOLD, RESET = "\033[1m", "\033[0m"
-    HIGHLIGHT, YELLOW, CYAN = "\033[1;31m", "\033[1;33m", "\033[1;36m"
+                     width: int | None = None, manual_idx: int | None = None,
+                     max_row: int | None = None) -> None:
+    """Render prev / current / next from an already-expanded USLT line list."""
+    RESET    = "\033[0m"
+    HIGHLIGHT, GREEN, CYAN, DIM = "\033[1;31m", "\033[1;32m", "\033[1;36m", "\033[2m"
 
-    auto_idx = find_current_uslt_line(line_times, elapsed)
+    width        = width or ui_utils.get_terminal_width()
+    wrap_w       = max(20, width - 8)
+    _, term_rows = ui_utils.get_terminal_size()
+    max_row      = max_row or term_rows
+
+    auto_idx    = find_current_uslt_line(line_times, elapsed)
     display_idx = manual_idx if manual_idx is not None else auto_idx
-    display_start = max(0, display_idx - 3)
+
+    prev_text = all_lines[display_idx - 1] if display_idx > 0                   else ""
+    curr_text = all_lines[display_idx]     if 0 <= display_idx < len(all_lines) else ""
+    next_text = all_lines[display_idx + 1] if display_idx < len(all_lines) - 1  else ""
+
+    # Current line: wrap and cap to available budget.
+    budget       = max(3, max_row - row - 1)
+    max_curr     = max(1, budget - 2)
+    curr_wrapped = textwrap.wrap(curr_text.replace('\n', ' '), width=wrap_w) or ['']
+    curr_wrapped = curr_wrapped[:max_curr]
+
+    # Context lines: first wrapped line only.
+    def _ctx(text: str) -> str:
+        lines = textwrap.wrap(text.replace('\n', ' '), width=wrap_w)
+        return lines[0] if lines else ""
 
     sys.stdout.write(f"\033[{row};1H\033[J")
 
-    status = f"{YELLOW}[MANUAL]{RESET}" if manual_idx is not None else f"{CYAN}[AUTO]{RESET}"
+    status = f"{GREEN}[MANUAL]{RESET}" if manual_idx is not None else f"{CYAN}[AUTO]{RESET}"
     sys.stdout.write(status + "\n")
 
-    for i in range(display_start, min(display_start + 8, len(all_lines))):
-        line = all_lines[i]
-        if manual_idx is not None and i == manual_idx:
-            sys.stdout.write(f"{YELLOW}[•] {line}{RESET}\n")
-        elif i == auto_idx:
-            sys.stdout.write(f"{HIGHLIGHT}>>> {line} <<<{RESET}\n")
-        else:
-            sys.stdout.write(f"{BOLD}{line}{RESET}\n")
+    prev_line = _ctx(prev_text)
+    sys.stdout.write(f"{DIM}    {prev_line}{RESET}\n" if prev_line else "\n")
+
+    hl  = GREEN if manual_idx is not None else HIGHLIGHT
+    pfx = "[\u2022]" if manual_idx is not None else ">>>"
+    for i, seg in enumerate(curr_wrapped):
+        prefix = f"{pfx} " if i == 0 else "    "
+        sys.stdout.write(f"{hl}{prefix}{seg}{RESET}\n")
+
+    next_line = _ctx(next_text)
+    sys.stdout.write(f"{DIM}    {next_line}{RESET}\n" if next_line else "\n")
 
     sys.stdout.flush()
-
 
 # ============================================================================
 # Full UI Drawing
@@ -303,6 +455,13 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     left_col_width   = max(20, cols - right_col_width - 3) if right_col_width else cols - 1
 
     # ── Left column: Metadata ─────────────────────────────────────────────
+    # Tags shown in the player view — only clean, human-readable ones.
+    PLAYER_TAG_ALLOWLIST = [
+        'TIT2', 'TIT3', 'TPE1', 'TPE2', 'TALB', 'TRCK', 'TPOS',
+        'TDRC', 'TYER', 'TCON', 'TCOM', 'TBPM', 'TLEN', 'TKEY',
+        'TSST', 'TIT1', 'TPUB', 'TCOP', 'TLAN', 'TMOO', 'TMED',
+    ]
+
     left_lines = []
 
     label_file   = "FILE:"
@@ -310,8 +469,8 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     display_path = ui_utils.truncate_text(file_path, max_val_file, placeholder="...", front=True)
     left_lines.append(f"{MAGENTA}{label_file:<2}{RESET} {display_path}")
 
-    for tag in sorted(audio.keys()):
-        if any(tag.startswith(x) for x in ('USLT', 'SYLT', 'COMM', 'APIC', 'TMCL', 'TIPL', 'PRIV', 'TXXX', 'TSOA', 'TSOP', 'TSO2', 'GRP1')):
+    for tag in PLAYER_TAG_ALLOWLIST:
+        if tag not in audio:
             continue
         label         = TAG_MAP.get(tag, tag)
         val           = str(audio[tag])
@@ -491,6 +650,14 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
             file_path, audio, pre_art, last_size, is_paused=False, volume=volume
         )
 
+        # Expand USLT lines for the current terminal width.
+        # Re-computed on resize; cache keyed on wrap_w so this is cheap.
+        if is_uslt:
+            _wrap_w = max(20, current_width - 8)
+            exp_lines, exp_times = expand_uslt_lines(uslt_lines, line_times, _wrap_w)
+        else:
+            exp_lines, exp_times = uslt_lines, line_times
+
         track_start = time.time()
 
         while True:
@@ -505,6 +672,9 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
                     volume=volume
                 )
                 last_lyric_idx = -1
+                if is_uslt:
+                    _wrap_w = max(20, current_width - 8)
+                    exp_lines, exp_times = expand_uslt_lines(uslt_lines, line_times, _wrap_w)
 
             # Elapsed from VLC directly
             elapsed_ms = mp.get_time()
@@ -540,9 +710,9 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
                     _handle_seek(mp, elapsed, duration, -5)
 
                 elif arrow in ('A', 'B') and is_uslt:
-                    current_idx = find_current_uslt_line(line_times, elapsed + uslt_time_offset)
-                    target_idx = max(0, current_idx - 1) if arrow == 'A' else min(len(line_times) - 1, current_idx + 1)
-                    uslt_time_offset = line_times[target_idx][0] - elapsed
+                    current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
+                    target_idx = max(0, current_idx - 1) if arrow == 'A' else min(len(exp_times) - 1, current_idx + 1)
+                    uslt_time_offset = exp_times[target_idx][0] - elapsed
                     manual_line_index = target_idx
                     arrow_key_time = time.time()
 
@@ -601,12 +771,13 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
                     if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > 0.5:
                         manual_line_index = None
 
-                    current_idx = find_current_uslt_line(line_times, elapsed + uslt_time_offset)
+                    current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
 
                     if current_idx != last_lyric_idx or manual_line_index is not None:
                         draw_uslt_window(
-                            lyric_row, uslt_lines, line_times, elapsed + uslt_time_offset,
-                            width=current_width, manual_idx=manual_line_index
+                            lyric_row, exp_lines, exp_times, elapsed + uslt_time_offset,
+                            width=current_width, manual_idx=manual_line_index,
+                            max_row=last_size[1],
                         )
                         last_lyric_idx = current_idx
                 else:
@@ -615,7 +786,8 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
                         default=-1
                     )
                     if current_idx >= 0 and current_idx != last_lyric_idx:
-                        draw_lyric_window(lyric_row, sylt_data, current_idx, width=current_width)
+                        draw_lyric_window(lyric_row, sylt_data, current_idx,
+                                          width=current_width, max_row=last_size[1])
                         last_lyric_idx = current_idx
             else:
                 if last_lyric_idx == -1:

@@ -112,26 +112,13 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
 def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
     """Edit APIC (image) tag with options to replace image, view modes, etc."""
     view_mode = "ascii"  # ascii, raw, or image
-    last_size = ui_utils.get_terminal_size()
-    
-    while True:
-        current_size = ui_utils.get_terminal_size()
-        if current_size != last_size:
-            last_size = current_size
-            continue  # Redraw on resize
-        
-        ui_utils.clear_screen()
-        cols = ui_utils.get_terminal_width()
-        print(f"EDITING: {tag_name} (APIC - Album Art)")
-        print()
-        
-        # Display based on current view mode
+    def _apic_header() -> list[str]:
+        lines = [f"EDITING: {tag_name} (APIC - Album Art)", ""]
         if view_mode == "ascii":
-            ascii_art = _convert_ascii_from_apic(apic_frame, width=_get_ascii_width())
-            print(ascii_art)
+            art = _convert_ascii_from_apic(apic_frame, width=_get_ascii_width())
+            lines.extend(art.splitlines())
         elif view_mode == "raw":
-            # Full raw representation — big block like repr() of the frame
-            print(repr(apic_frame))
+            lines.append(repr(apic_frame))
         elif view_mode == "info":
             image, mime = _get_image_from_apic(apic_frame)
             if image is not None:
@@ -139,17 +126,20 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
                 channels = image.shape[2] if len(image.shape) == 3 else 1
                 colour_mode = {1: "Greyscale", 3: "RGB", 4: "RGBA"}.get(channels, f"{channels}ch")
                 size_kb = len(getattr(apic_frame, 'data', b"")) / 1024
-                print(f"  MIME type   : {mime}")
-                print(f"  Description : {getattr(apic_frame, 'desc', '') or '(none)'}")
-                print(f"  Dimensions  : {w} × {h} px")
-                print(f"  Colour mode : {colour_mode}")
-                print(f"  File size   : {size_kb:.1f} KB ({len(getattr(apic_frame, 'data', b'')):,} bytes)")
-                print(f"  Encoding    : {getattr(apic_frame, 'encoding', 3)}")
+                lines += [
+                    f"  MIME type   : {mime}",
+                    f"  Description : {getattr(apic_frame, 'desc', '') or '(none)'}",
+                    f"  Dimensions  : {w} × {h} px",
+                    f"  Colour mode : {colour_mode}",
+                    f"  File size   : {size_kb:.1f} KB ({len(getattr(apic_frame, 'data', b'')):,} bytes)",
+                    f"  Encoding    : {getattr(apic_frame, 'encoding', 3)}",
+                ]
             else:
-                print("Could not read image information.")
-        
-        print()
-        
+                lines.append("Could not read image information.")
+        lines.append("")
+        return lines
+
+    while True:
         actions = []
         if view_mode != "ascii":
             actions.append("View as ASCII Art")
@@ -157,15 +147,9 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
             actions.append("View as Raw Data")
         if view_mode != "info":
             actions.append("View as Info")
-        
-        actions.extend([
-            "Open in Preview",
-            "Replace Image",
-            "Edit Description",
-            "Back"
-        ])
-        
-        action = prompt.select("Action:", choices=actions)
+        actions.extend(["Open in Preview", "Replace Image", "Edit Description", "Back"])
+
+        action = prompt.select("Action:", choices=actions, header=_apic_header)
         
         if action == "View as ASCII Art":
             view_mode = "ascii"
@@ -223,6 +207,25 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
     
     return True
 
+def _edit_text_in_editor(initial_text: str) -> str | None:
+    """Open system editor to edit long text strings."""
+    with tempfile.NamedTemporaryFile(suffix=".txt", mode='w+', encoding='utf-8', delete=False) as tf:
+        tf.write(initial_text)
+        temp_path = tf.name
+
+    try:
+        # Use environment variable for editor, fallback to nano or vi
+        editor = os.environ.get('EDITOR', 'vim')
+        subprocess.run([editor, temp_path], check=True)
+        
+        with open(temp_path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except Exception as e:
+        print(f"Error launching editor: {e}")
+        return None
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 def _is_people_frame(tag_name: str) -> bool:
     """True for TMCL/TIPL which store [[role, name], ...] pairs."""
@@ -237,30 +240,26 @@ def _edit_list_data(tag_data, tag_name: str):
         # tag_data here is frame.people which is a list of [role, name]
         rows = [list(r) for r in tag_data]
 
-        last_size = ui_utils.get_terminal_size()
         while True:
-            current_size = ui_utils.get_terminal_size()
-            if current_size != last_size:
-                last_size = current_size
-                continue  # Redraw on resize
-            
-            ui_utils.clear_screen()
-            cols = ui_utils.get_terminal_width()
-            print(f"EDITING: {tag_name}  ({len(rows)} entries)")
-            print("─" * cols)
-
-            col_w = max(20, (cols - 8) // 2)
-            header = f"  {'ROLE':<{col_w}}  NAME"
-            print(header)
-            print("  " + "─" * (cols - 4))
-            for i, (role, name) in enumerate(rows):
-                r_disp = role[:col_w - 2] if len(role) > col_w else role
-                print(f"  {i:>2}. {r_disp:<{col_w}}  {name}")
-            print()
+            def _tmcl_header() -> list[str]:
+                c = ui_utils.get_terminal_width()
+                cw = max(20, (c - 8) // 2)
+                lines = [
+                    f"EDITING: {tag_name}  ({len(rows)} entries)",
+                    "─" * c,
+                    f"  {'ROLE':<{cw}}  NAME",
+                    "  " + "─" * (c - 4),
+                ]
+                for i, (role, name) in enumerate(rows):
+                    r_disp = role[:cw - 2] if len(role) > cw else role
+                    lines.append(f"  {i:>2}. {r_disp:<{cw}}  {name}")
+                lines.append("")
+                return lines
 
             action = prompt.select(
                 "Action:",
-                choices=["Add entry", "Edit entry", "Remove entry", "Clear all", "Done"]
+                choices=["Add entry", "Edit entry", "Remove entry", "Clear all", "Done"],
+                header=_tmcl_header,
             )
 
             if action == "Done" or action is None:
@@ -299,15 +298,16 @@ def _edit_list_data(tag_data, tag_name: str):
              and isinstance(tag_data[0], (list, tuple)))
 
     if not is_2d:
-        ui_utils.clear_screen()
-        print(f"EDITING: {tag_name} (List)")
-        print()
-        for i, item in enumerate(tag_data):
-            print(f"  [{i}] {repr(item)}")
-        print()
+        def _list_header() -> list[str]:
+            lines = [f"EDITING: {tag_name} (List)", ""]
+            for i, item in enumerate(tag_data):
+                lines.append(f"  [{i}] {repr(item)}")
+            lines.append("")
+            return lines
 
         action = prompt.select(
-            "Action:", choices=["Add item", "Remove item", "Edit item", "Clear all", "Back"]
+            "Action:", choices=["Add item", "Remove item", "Edit item", "Clear all", "Back"],
+            header=_list_header,
         )
 
         if action == "Add item":
@@ -338,15 +338,16 @@ def _edit_list_data(tag_data, tag_name: str):
         return tag_data
 
     # ── Generic 2D list ───────────────────────────────────────────────────
-    ui_utils.clear_screen()
-    print(f"EDITING: {tag_name} (2D List)")
-    print()
-    for i, row in enumerate(tag_data):
-        print(f"  Row {i}: {row}")
-    print()
+    def _2d_header() -> list[str]:
+        lines = [f"EDITING: {tag_name} (2D List)", ""]
+        for i, row in enumerate(tag_data):
+            lines.append(f"  Row {i}: {row}")
+        lines.append("")
+        return lines
 
     action = prompt.select(
-        "Action:", choices=["Add row", "Remove row", "Edit row", "Edit cell", "Clear all", "Back"]
+        "Action:", choices=["Add row", "Remove row", "Edit row", "Edit cell", "Clear all", "Back"],
+        header=_2d_header,
     )
 
     if action == "Add row":
@@ -713,14 +714,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
             if not choice or choice == "Back to track list":
                 break
 
-            last_size = ui_utils.get_terminal_size()
             while True:
-                current_size = ui_utils.get_terminal_size()
-                if current_size != last_size:
-                    last_size = current_size
-                    continue  # Redraw on resize
-                
-                ui_utils.clear_screen()
                 raw_val = audio[choice]
                 
                 if choice.startswith('SYLT'):
@@ -734,24 +728,27 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
                 else:
                     full_text = "".join(raw_val.text) if hasattr(raw_val, 'text') else str(raw_val)
                 
-                _cols = ui_utils.get_terminal_width()
-                _inner = max(10, _cols - 2)
-                alias = _TAG_MAP.get(choice.split(':')[0].split('[')[0], '')
-                alias_str = f" ({alias})" if alias else ""
-                print(f"TAG: {choice}{alias_str}")
-                print("┌" + "─" * _inner + "┐")
-                if choice.startswith('APIC'):
-                    print(full_text)
-                elif choice.startswith('TMCL') or choice.startswith('TIPL'):
-                    for role, name in raw_val.people:
-                        line = f"  {role:<25}  {name}"
-                        print(line[:_inner])
-                else:
-                    content = full_text if choice.startswith('SYLT') else repr(full_text)
-                    # Wrap to inner width
-                    for chunk in [content[i:i+_inner] for i in range(0, max(1,len(content)), _inner)]:
-                        print(chunk)
-                print("└" + "─" * _inner + "┘")
+                def _tag_header() -> list[str]:
+                    c = ui_utils.get_terminal_width()
+                    inner = max(10, c - 2)
+                    alias = _TAG_MAP.get(choice.split(':')[0].split('[')[0], '')
+                    alias_str = f" ({alias})" if alias else ""
+                    lines = [f"TAG: {choice}{alias_str}", "┌" + "─" * inner + "┐"]
+
+                    if choice.startswith('APIC'):
+                        # Re-render ASCII art at current width so it stays sharp after resize.
+                        art = _convert_ascii_from_apic(raw_val, width=_get_ascii_width())
+                        lines.extend(art.splitlines())
+                    elif choice.startswith('TMCL') or choice.startswith('TIPL'):
+                        for role, name in raw_val.people:
+                            lines.append(f"  {role:<25}  {name}"[:inner])
+                    else:
+                        body = full_text if choice.startswith('SYLT') else repr(full_text)
+                        for chunk in [body[i:i+inner] for i in range(0, max(1, len(body)), inner)]:
+                            lines.append(chunk)
+
+                    lines.append("└" + "─" * inner + "┘")
+                    return lines
 
                 actions = ["Copy to clipboard", "Paste from clipboard", "Edit content", "Rename tag", "Delete tag"]
                 if choice.startswith('SYLT'):
@@ -760,7 +757,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
                     actions.insert(0, "Edit Image")
                 actions.append("Back")
 
-                action = prompt.select("Action:", choices=actions)
+                action = prompt.select("Action:", choices=actions, header=_tag_header)
 
                 if action == "Export to LRC file":
                     lrc_path = os.path.splitext(file_path)[0] + ".lrc"
@@ -883,7 +880,8 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
                             break
                         else:
                             # Simple text edit
-                            new_content = prompt.text("New content:", default=full_text)
+                            new_content = _edit_text_in_editor(full_text)
+
                             if new_content is not None:
                                 audio.delall(choice)
                                 if choice.startswith('USLT'):
@@ -892,13 +890,15 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None) -> No
                                     new_frame = COMM(encoding=3, lang='eng', desc='', text=[new_content])
                                 else:
                                     frame_id = choice.split('[')[0] if '[' in choice else choice
-                                    new_frame = TextFrame(encoding=3, text=[clean_data])
+                                    # This fixes the 'clean_data' reference error in your original code
+                                    new_frame = TextFrame(encoding=3, text=[new_content])
                                     setattr(new_frame, 'FrameID', frame_id)
+                                
                                 audio.add(new_frame)
                                 audio.save(v2_version=3)
-                                print(f"{choice} updated.")
+                                print(f"{choice} updated successfully.")
                                 time.sleep(1)
-                            break
+                                break
 
                 elif action == "Delete tag":
                     if prompt.confirm(f"Delete {choice}?"):

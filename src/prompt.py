@@ -147,34 +147,37 @@ class _Widget:
     Renders a list of lines anchored to an absolute terminal row.
 
     On first draw it queries the current cursor row and uses that as the
-    anchor. Every subsequent draw (including after resize) goes back to
-    that exact row and rewrites from there, erasing any extra lines left
-    from a taller previous render.  This eliminates the duplication that
-    happens when resize changes the line count and _up(n) is used instead.
-
-    After a resize, call anchor_reset() so the widget re-queries its row
-    (the terminal may have reflowed content).
+    anchor. On resize it clears the entire screen and redraws from scratch —
+    this is the only reliable way to prevent ghost lines when the terminal
+    reflows content and changes the effective cursor position.
     """
 
     def __init__(self, fd: int) -> None:
         """Initialize the widget with a file descriptor."""
-        self.fd     = fd
-        self.row    = None   # anchor row, 1-based
-        self.last_h = 0
+        self.fd      = fd
+        self.row     = None   # anchor row, 1-based
+        self.last_h  = 0
+        self._full   = False  # whether we own the full screen
 
     def anchor_reset(self) -> None:
-        """Reset the anchor row for re-querying."""
-        self.row = None
+        """Called on resize — triggers a full-screen redraw next render."""
+        self.row   = None
+        self._full = True
 
     def render(self, lines: list) -> None:
-        """Render lines at the anchored row."""
-        if self.row is None:
-            self.row = _query_cursor_row(self.fd)
+        """Render lines at the anchored row, or full-screen clear + redraw on resize."""
+        if self._full or self.row is None:
+            # Full clear prevents any ghost lines from a previous render.
+            sys.stdout.write("\033[2J\033[H" + _HIDE)
+            self.row   = 1
+            self._full = False
+            out = ""
+        else:
+            out = _HIDE + _goto(self.row)
 
-        out = _HIDE + _goto(self.row)
         for line in lines:
             out += _clrline() + line + "\n"
-        # Erase any leftover lines from a previous taller render
+        # Erase leftover lines from a previous taller render.
         for _ in range(max(0, self.last_h - len(lines))):
             out += _clrline() + "\n"
         self.last_h = len(lines)
@@ -188,7 +191,7 @@ class _Widget:
             sys.stdout.flush()
             return
         out = _goto(self.row)
-        for _ in range(self.last_h):
+        for _ in range(self.last_h + 1):
             out += _clrline() + "\n"
         out += _goto(self.row) + _SHOW
         sys.stdout.write(out)
@@ -198,8 +201,18 @@ class _Widget:
 
 # ── select() ─────────────────────────────────────────────────────────────────
 
-def select(message: str, choices: list) -> str | None:
-    """Arrow keys / jk navigate, Enter selects, q / Ctrl-C → None."""
+def select(message: str, choices: list,
+           header: list | None = None) -> str | None:
+    """Arrow keys / jk navigate, Enter selects, q / Ctrl-C → None.
+
+    Args:
+        message: Prompt label shown above the list.
+        choices: Items to choose from (str, dict, or Choice).
+        header:  Optional list of plain strings rendered above the prompt on
+                 every draw, including after resize.  Pass a callable
+                 ``() -> list[str]`` to recompute on each draw (e.g. to
+                 reflect terminal width).
+    """
     items = _norm(choices)
     if not items:
         return None
@@ -210,17 +223,24 @@ def select(message: str, choices: list) -> str | None:
     old      = termios.tcgetattr(fd)
     w        = _Widget(fd)
 
+    def _header_lines() -> list[str]:
+        if header is None:
+            return []
+        return header() if callable(header) else list(header)
+
     def _lines():
         nonlocal viewport
-        cols = _cols()
-        vis  = _visible_rows()
-        n    = len(items)
+        cols    = _cols()
+        h_lines = _header_lines()
+        vis     = max(2, _visible_rows() - len(h_lines))
+        n       = len(items)
         if cursor < viewport:
             viewport = cursor
         elif cursor >= viewport + vis:
             viewport = cursor - vis + 1
 
-        out = [f"{_CYA}{_BOLD}{message}{_RESET}"]
+        out = h_lines[:]
+        out.append(f"{_CYA}{_BOLD}{message}{_RESET}")
         out.append(f"  {_DIM}↑ {viewport} more{_RESET}" if viewport > 0 else "")
 
         for i in range(viewport, min(viewport + vis, n)):
@@ -241,6 +261,9 @@ def select(message: str, choices: list) -> str | None:
     result = None
     try:
         tty.setraw(fd)
+        # Clear screen on entry so previous menu content never bleeds through.
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
         w.render(_lines())
 
         import select as _sel
@@ -274,8 +297,17 @@ def select(message: str, choices: list) -> str | None:
 
 # ── checkbox() ────────────────────────────────────────────────────────────────
 
-def checkbox(message: str, choices: list) -> list | None:
-    """Space toggles, a all, Enter confirms, q / Ctrl-C → None."""
+def checkbox(message: str, choices: list,
+             header: list | None = None) -> list | None:
+    """Space toggles, a all, Enter confirms, q / Ctrl-C → None.
+
+    Args:
+        message: Prompt label shown above the list.
+        choices: Items to choose from (str, dict, or Choice).
+        header:  Optional list of plain strings rendered above the prompt on
+                 every draw, including after resize.  Pass a callable
+                 ``() -> list[str]`` to recompute on each draw.
+    """
     items    = _norm(choices)
     checked  = [c.checked for c in items]
     cursor   = 0
@@ -284,17 +316,24 @@ def checkbox(message: str, choices: list) -> list | None:
     old      = termios.tcgetattr(fd)
     w        = _Widget(fd)
 
+    def _header_lines() -> list[str]:
+        if header is None:
+            return []
+        return header() if callable(header) else list(header)
+
     def _lines():
         nonlocal viewport
-        cols = _cols()
-        vis  = _visible_rows()
-        n    = len(items)
+        cols    = _cols()
+        h_lines = _header_lines()
+        vis     = max(2, _visible_rows() - len(h_lines))
+        n       = len(items)
         if cursor < viewport:
             viewport = cursor
         elif cursor >= viewport + vis:
             viewport = cursor - vis + 1
 
-        out = [f"{_CYA}{_BOLD}{message}{_RESET}"]
+        out = h_lines[:]
+        out.append(f"{_CYA}{_BOLD}{message}{_RESET}")
         out.append(f"  {_DIM}↑ {viewport} more{_RESET}" if viewport > 0 else "")
 
         for i in range(viewport, min(viewport + vis, n)):
@@ -316,6 +355,9 @@ def checkbox(message: str, choices: list) -> list | None:
     result = None
     try:
         tty.setraw(fd)
+        # Clear screen on entry so previous menu content never bleeds through.
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
         w.render(_lines())
 
         import select as _sel
@@ -380,23 +422,77 @@ def text(message: str, default: str = "") -> str | None:
     fd     = sys.stdin.fileno()
     old    = termios.tcgetattr(fd)
     result = None
+    
+    # Track how many physical lines were drawn to clear them later
+    prev_lines = 0
 
     def _render():
-        cols    = _cols()
-        prompt  = f"{_CYA}{_BOLD}{message}{_RESET} "
-        content = "".join(buf)
-        max_w   = max(1, cols - len(message) - 4)
-        if pos > max_w:
-            display  = content[pos - max_w: pos]
-            disp_pos = max_w
+        nonlocal prev_lines
+        cols = _cols() # Uses the existing helper in prompt.py
+        
+        # 1. Layout Simulation: Map buffer characters to physical rows
+        # This correctly handles \n and automatic wrapping
+        physical_lines = []
+        curr_line = ""
+        cursor_row = 0
+        cursor_col = 0
+        
+        for i, char in enumerate(buf):
+            if i == pos:
+                cursor_row = len(physical_lines)
+                cursor_col = len(curr_line)
+            
+            if char == '\n':
+                physical_lines.append(curr_line)
+                curr_line = ""
+            else:
+                curr_line += char
+                if len(curr_line) == cols:
+                    physical_lines.append(curr_line)
+                    curr_line = ""
+        
+        # Position cursor if it's at the very end of the buffer
+        if pos == len(buf):
+            cursor_row = len(physical_lines)
+            cursor_col = len(curr_line)
+        
+        physical_lines.append(curr_line)
+        total_rows = len(physical_lines)
+
+        # 2. Draw
+        # Move up to the start of the previous render (prompt line + text lines)
+        if prev_lines > 0:
+            sys.stdout.write(f"\r\033[{prev_lines}A")
+        
+        # Clear everything from current position to bottom
+        sys.stdout.write(f"\r\033[J{_HIDE}")
+        
+        # Print prompt (using \r\n for raw mode)
+        sys.stdout.write(f"\r{_CYA}{_BOLD}{message}{_RESET}\r\n")
+        
+        # Print text lines
+        for i, line in enumerate(physical_lines):
+            sys.stdout.write(f"\r{line}")
+            if i < total_rows - 1:
+                sys.stdout.write("\r\n")
+        
+        # 3. Precision Cursor Positioning
+        # Move back up to the specific cursor row
+        rows_to_move_up = (total_rows - 1) - cursor_row
+        if rows_to_move_up > 0:
+            sys.stdout.write(f"\033[{rows_to_move_up}A")
+        
+        # Move to the correct column
+        if cursor_col > 0:
+            sys.stdout.write(f"\r\033[{cursor_col}C")
         else:
-            display  = content[:max_w]
-            disp_pos = pos
-        sys.stdout.write(
-            _HIDE + _clrline() + prompt + display +
-            _col(len(message) + 2 + disp_pos + 1) + _SHOW
-        )
+            sys.stdout.write("\r")
+            
+        sys.stdout.write(_SHOW)
         sys.stdout.flush()
+        
+        # Total height = 1 (prompt) + number of text lines
+        prev_lines = 1 + total_rows
 
     try:
         tty.setraw(fd)
@@ -407,18 +503,32 @@ def text(message: str, default: str = "") -> str | None:
             r, _, _ = _sel.select([sys.stdin], [], [], 0.05)
             if not r: continue
             key = _read_key(fd)
-            if   key == 'CTRL_C':                                  result = None;         break
-            elif key == 'ENTER':                                   result = "".join(buf); break
-            elif key == 'BACKSPACE' and pos > 0:                   buf.pop(pos - 1); pos -= 1; _render()
-            elif key == 'LEFT'      and pos > 0:                   pos -= 1; _render()
-            elif key == 'RIGHT'     and pos < len(buf):            pos += 1; _render()
-            elif key == 'HOME':                                    pos = 0; _render()
-            elif key == 'END':                                     pos = len(buf); _render()
-            elif len(key) == 1 and key.isprintable():              buf.insert(pos, key); pos += 1; _render()
+            
+            if   key == 'CTRL_C':             result = None;         break
+            elif key == 'ENTER':              result = "".join(buf); break
+            elif key == 'BACKSPACE' and pos > 0:
+                buf.pop(pos - 1); pos -= 1; _render()
+            elif key == 'LEFT' and pos > 0:
+                pos -= 1; _render()
+            elif key == 'RIGHT' and pos < len(buf):
+                pos += 1; _render()
+            elif key == 'UP':
+                pos = max(0, pos - _cols()); _render()
+            elif key == 'DOWN':
+                pos = min(len(buf), pos + _cols()); _render()
+            elif key == 'HOME':
+                pos = 0; _render()
+            elif key == 'END':
+                pos = len(buf); _render()
+            # Allow printable characters AND literal newlines (if you want to type them)
+            elif len(key) == 1 and key.isprintable():
+                buf.insert(pos, key); pos += 1; _render()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        sys.stdout.write("\n")
+        # Clean exit: ensure the terminal prompt starts below your text
+        sys.stdout.write("\r\n" * 2) 
         sys.stdout.flush()
+        
     return result
 
 

@@ -56,8 +56,9 @@ class Colours:
 # ============================================================================
 
 def clear_screen() -> None:
-    """Clear terminal screen."""
-    os.system('clear')
+    """Clear terminal screen synchronously using ANSI escape."""
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 
 def get_terminal_size(default: tuple = (80, 24)) -> tuple:
