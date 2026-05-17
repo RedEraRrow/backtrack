@@ -771,7 +771,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
                 continue
 
             if choice == "Add New Tag":
-                target_id = prompt.text("Enter Tag ID to add (e.g. TPE2, COMM[eng]):")
+                target_id = prompt.text("Enter Tag ID to add (e.g. TPE2, COMM::eng, TXXX:MyCustomTag:):")
                 if target_id:
                     target_val = prompt.text(f"Enter value for {target_id}:")
                     if target_val is not None:
