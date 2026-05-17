@@ -510,17 +510,25 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
 
     bulk_tag_col   = min(TAG_MAX, max((len(t) for t in all_tag_counts), default=6))
     bulk_alias_col = min(ALIAS_MAX, max((len(_balias(t)) + 3 for t in all_tag_counts), default=0))
-    _fixed = bulk_tag_col + bulk_alias_col + 18
+    _fixed = bulk_tag_col + bulk_alias_col + 20
     bulk_val_col = min(VAL_MAX, max(_cols - _fixed, 10))
 
     def _tag_option_title(tag, count):
         alias = _balias(tag)
         tag_disp = tag if len(tag) <= bulk_tag_col else tag[:bulk_tag_col - 1] + "…"
-        alias_str = f" ({alias})" if alias else ""
+        
+        if alias:
+            a = f"({alias})"
+            if len(a) > bulk_alias_col - 1:
+                a = a[:bulk_alias_col - 3] + "…)"
+            alias_str = f" {a}"
+        else:
+            alias_str = ""
+
         val_disp = _value_summary(tag)
         val_disp = val_disp if len(val_disp) <= bulk_val_col else val_disp[:bulk_val_col - 1] + "…"
         count_str = f"{count}/{len(album_tracks)}"
-        return f"{tag_disp:<{bulk_tag_col}}{alias_str:<{bulk_alias_col + 1}}  {val_disp:<{bulk_val_col}}  {count_str}"
+        return f"{tag_disp:<{bulk_tag_col}} {alias_str:<{bulk_alias_col + 1}} | {val_disp:<{bulk_val_col}}  {count_str}"
 
     selected_tags = []
     target_tag_id = None

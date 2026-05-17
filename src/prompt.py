@@ -34,6 +34,16 @@ def _clrline():        return "\033[2K\r"
 def _goto(row, col=1): return f"\033[{row};{col}H"
 def _col(n):           return f"\033[{n}G"
 
+def _render_status_bar():
+    """Renders the status bar at the absolute bottom of the terminal."""
+    cols = ui_utils.get_terminal_width()
+    rows = ui_utils.get_terminal_height()
+    status = ui_utils.get_status_line()
+    
+    if status:
+        sys.stdout.write(f"\033[{rows};1H\033[2K{status}")
+        sys.stdout.flush()
+
 
 # ── Choice ────────────────────────────────────────────────────────────────────
 
@@ -493,6 +503,7 @@ def text(message: str, default: str = "") -> str | None:
         
         # Total height = 1 (prompt) + number of text lines
         prev_lines = 1 + total_rows
+        _render_status_bar()
 
     try:
         tty.setraw(fd)
@@ -573,6 +584,7 @@ def path(message: str, default: str = "") -> str | None:
             _col(len(message) + 2 + disp_pos + 1) + _SHOW
         )
         sys.stdout.flush()
+        _render_status_bar()
 
     try:
         tty.setraw(fd)

@@ -4,12 +4,15 @@ Music library management and metadata extraction.
 Handles building library, searching, grouping, and loading metadata from files and XML.
 """
 
+from importlib import metadata
 import os
 import json
 import urllib.parse
 import re
 import xml.etree.ElementTree as ET
 import unicodedata
+import threading
+from datetime import datetime
 from typing import Any
 from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
@@ -18,6 +21,7 @@ from mutagen.mp4 import MP4
 from src.history import get_recent_paths
 
 CACHE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/library_cache.json"))
+XML_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/Library.xml"))
 VALID_AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac')
 
 # ID3 tag to metadata field mapping — single source of truth for all modules
@@ -114,6 +118,44 @@ def load_xml_database(xml_path: str = "Library.xml") -> tuple:
     except Exception as e:
         return None, set()
     
+def _get_xml_mtime():
+    try:
+        return os.path.getmtime(XML_PATH)
+    except OSError:
+        return 0
+
+def start_background_sync(library: list, xml_db: dict, xml_title_keys: set):
+    """Kicks off the background synchronization thread."""
+    threading.Thread(
+        target=sync_worker, 
+        args=(library, xml_db, xml_title_keys), 
+        daemon=True
+    ).start()
+
+def sync_worker(library: list, xml_db: dict, xml_title_keys: set):
+    from src import ui_utils
+    ui_utils.set_status("sync", "Checking library for updates...")
+    
+    changed = False
+    path_map = {track['path']: track for track in library}
+
+    for i, (path, track) in enumerate(path_map.items()):
+        if i % 20 == 0:
+            ui_utils.set_status("sync", f"Syncing library ({i}/{len(library)})")
+        
+        try:
+            current_mtime = os.path.getmtime(path)
+            if current_mtime > track.get('cached_mtime', 0):
+                fresh = get_metadata(path, xml_db, xml_title_keys)
+                track.update(fresh)
+                changed = True
+        except OSError:
+            continue
+
+    if changed:
+        save_library_cache(library, _async=False)
+    
+    ui_utils.set_status("sync", None)
 
 # ============================================================================
 # Metadata Extraction
@@ -262,7 +304,8 @@ def get_metadata(file_path: str, xml_db: dict | None = None, xml_title_keys: set
             if metadata["genre"]  == "Unknown Genre":  metadata["genre"]  = xml_info.get("Genre",   "Unknown Genre")
             if metadata["year"]   == "Unknown Year":   metadata["year"]   = str(xml_info.get("Year", "Unknown Year"))
 
-    return metadata # ALWAYS return the dictionary
+    metadata['cached_mtime'] = os.path.getmtime(file_path)
+    return metadata
 
 
 def get_song_duration(file_path: str) -> float:

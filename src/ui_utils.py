@@ -60,6 +60,22 @@ def clear_screen() -> None:
     sys.stdout.write("\033[2J\033[H")
     sys.stdout.flush()
 
+BACKGROUND_TASKS = {}
+
+def set_status(task_id: str, message: str | None):
+    """Update or remove a background task status."""
+    if message is None:
+        BACKGROUND_TASKS.pop(task_id, None)
+    else:
+        BACKGROUND_TASKS[task_id] = message
+
+def get_status_line() -> str:
+    """Formats all active tasks into a single line for the bottom of the screen."""
+    if not BACKGROUND_TASKS:
+        return ""
+    
+    tasks = [f"{Colours.CYAN}●{Colours.RESET} {msg}" for msg in BACKGROUND_TASKS.values()]
+    return f"{Colours.DIM} │ {' | '.join(tasks)}{Colours.RESET}"
 
 def get_terminal_size(default: tuple = (80, 24)) -> tuple:
     """Get terminal size (columns, rows), with fallback."""

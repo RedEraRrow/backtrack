@@ -11,7 +11,7 @@ import threading
 from src import prompt
 
 from src.config import load_config, save_config
-from src.music_library import build_library, load_library_cache, save_library_cache, load_xml_database
+from src.music_library import build_library, load_library_cache, save_library_cache, load_xml_database, start_background_sync
 from src.menus import main_menu
 
 
@@ -31,6 +31,12 @@ def main() -> None:
 
     # Load or build library
     library = load_library_cache()
+    if library:
+        print(f"✓ Library loaded: {len(library)} tracks")
+        start_background_sync(library, xml_db, xml_title_keys)
+        
+        library_ref = [library]
+        main_menu(library_ref)
 
     if not library:
         # First run: ask user for music directory
