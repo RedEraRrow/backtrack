@@ -20,18 +20,31 @@ from src.ascii_art import get_ascii
 from src.music_library import get_song_duration, TAG_MAP
 from src.state import NAV_STACK
 
+import bisect
+
+# ── ASCII art cache ────────────────────────────────────────────────────────────
+_art_cache: dict = {}   # (file_path, width) -> art_str
+
+
+def _get_ascii_cached(file_path: str, width: int) -> str:
+    key = (file_path, width)
+    if key not in _art_cache:
+        _art_cache[key] = get_ascii(file_path, width=width)
+    return _art_cache[key]
+
+
 PLAYER_CREDITS_ROLES = [
-    'performer', 
-    'various', 
-    'cast', 
-    'main cast', 
-    'guest', 
-    'starring', 
-    'featuring', 
-    'ensemble', 
+    'performer',
+    'various',
+    'cast',
+    'main cast',
+    'guest',
+    'starring',
+    'featuring',
+    'ensemble',
     'ensemble cast',
     'ensemble actor',
-    ]
+]
 
 # ============================================================================
 # Progress Bar & Display
@@ -194,11 +207,11 @@ def build_uslt_line_times(lines: list, words_per_second: float = 2.2) -> list:
 
 
 def find_current_uslt_line(line_times: list, elapsed: float) -> int:
-    """Find which USLT line should currently be displayed."""
-    for i, (start, end) in enumerate(line_times):
-        if elapsed < end:
-            return i
-    return max(0, len(line_times) - 1)
+    """Find which USLT line should currently be displayed using binary search."""
+    # line_times is sorted by t_start; find the last entry where t_start <= elapsed
+    ends = [t[1] for t in line_times]
+    idx = bisect.bisect_right(ends, elapsed)
+    return min(idx, max(0, len(line_times) - 1))
 
 
 def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
@@ -427,35 +440,36 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     print("─" * cols)
 
     # ── Right column: Cast & Crew ─────────────────────────────────────────
-    # Build with unlimited width first so we can measure the natural content
-    # width, then clamp it to fit within half the terminal.
     cast_people = _get_people(audio, 'TMCL')
     crew_people = _get_people(audio, 'TIPL')
 
-    right_raw = []
-    if cast_people:
-        right_raw.append(f"{ui_utils.Colours.YELLOW}--- CAST ---{RESET}")
-        right_raw.extend(_build_cast_lines(cast_people, 9999))
-    if crew_people:
-        if right_raw:
-            right_raw.append("")
-        right_raw.append(f"{ui_utils.Colours.CYAN}--- PRODUCTION ---{RESET}")
-        top_cast_names = [name for _, name in cast_people[:4]]
-        right_raw.extend(_build_crew_lines(crew_people, 9999, cast_names=top_cast_names))
+    # Natural visible width — measure with unlimited width then clamp
+    if cast_people or crew_people:
+        _probe_lines = []
+        if cast_people:
+            _probe_lines.extend(_build_cast_lines(cast_people, 9999))
+        if crew_people:
+            top_cast_names = [name for _, name in cast_people[:4]]
+            _probe_lines.extend(_build_crew_lines(crew_people, 9999, cast_names=top_cast_names))
+        right_natural_w = max((_visible_len(l) for l in _probe_lines), default=0)
+    else:
+        right_natural_w = 0
 
-    # Natural visible width of the right column (ignoring ANSI codes)
-    right_natural_w = max((_visible_len(l) for l in right_raw), default=0)
-
-    # Divider position: give the right column exactly what it needs
-    # (plus a 2-char gutter), but never more than 45 % of the terminal.
-    MAX_RIGHT_FRAC = 0.45
+    MAX_RIGHT_FRAC   = 0.45
     right_col_width  = min(right_natural_w, int(cols * MAX_RIGHT_FRAC))
-    right_col_width  = max(right_col_width, 0)
-    # left gets everything else minus the divider (3 chars: space │ space)
     left_col_width   = max(20, cols - right_col_width - 3) if right_col_width else cols - 1
 
-    # ── Left column: Metadata ─────────────────────────────────────────────
-    # Tags shown in the player view — only clean, human-readable ones.
+    # Build right column once at final width
+    right_lines = []
+    if cast_people:
+        right_lines.append(f"{ui_utils.Colours.YELLOW}--- CAST ---{RESET}")
+        right_lines.extend(_build_cast_lines(cast_people, right_col_width))
+    if crew_people:
+        if right_lines:
+            right_lines.append("")
+        right_lines.append(f"{ui_utils.Colours.CYAN}--- PRODUCTION ---{RESET}")
+        top_cast_names = [name for _, name in cast_people[:4]]
+        right_lines.extend(_build_crew_lines(crew_people, right_col_width, cast_names=top_cast_names))
     PLAYER_TAG_ALLOWLIST = [
         'TIT2', 'TIT3', 'TPE1', 'TPE2', 'TALB', 'TRCK', 'TPOS',
         'TDRC', 'TYER', 'TCON', 'TCOM', 'TBPM', 'TLEN', 'TKEY',
@@ -480,17 +494,6 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         left_lines.append(f"{MAGENTA}{display_label:<12}:{RESET} {val}")
 
     # ── Draw grid ─────────────────────────────────────────────────────────
-    # Re-build right lines now we know the actual right_col_width
-    right_lines = []
-    if cast_people:
-        right_lines.append(f"{ui_utils.Colours.YELLOW}--- CAST ---{RESET}")
-        right_lines.extend(_build_cast_lines(cast_people, right_col_width))
-    if crew_people:
-        if right_lines:
-            right_lines.append("")
-        right_lines.append(f"{ui_utils.Colours.CYAN}--- PRODUCTION ---{RESET}")
-        right_lines.extend(_build_crew_lines(crew_people, right_col_width, cast_names=[name for _, name in cast_people[:4]]))
-
     num_rows = max(len(left_lines), len(right_lines))
     for i in range(num_rows):
         l_text = left_lines[i]  if i < len(left_lines)  else ""
@@ -505,9 +508,9 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     header_height = num_rows + 2
     print("─" * cols)
 
-    # Art
+    # Art — cached per (file_path, width) so resizes don't re-decode the image
     max_art_h = max(2, rows - header_height - 10)
-    art_str = pre_art if pre_art else get_ascii(file_path, width=cols)
+    art_str   = pre_art if pre_art else _get_ascii_cached(file_path, width=cols)
     art_lines = art_str.splitlines()[:max_art_h]
     print("\n".join(art_lines))
 

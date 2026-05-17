@@ -7,6 +7,7 @@ Main entry point. Orchestrates all modules.
 """
 
 import os
+import threading
 from src import prompt
 
 from src.config import load_config, save_config
@@ -22,10 +23,12 @@ def main() -> None:
     
     # Load XML metadata database (iTunes Library.xml)
     _src_dir = os.path.dirname(os.path.abspath(__file__))
-    xml_db = load_xml_database(os.path.join(_src_dir, "../data/Library.xml"))
+    xml_db, xml_title_keys = load_xml_database(os.path.join(_src_dir, "../data/Library.xml"))
     if xml_db:
         print(f"✓ Metadata database loaded: {len(xml_db)} tracks")
-    
+    else:
+        xml_db, xml_title_keys = None, set()
+
     # Load or build library
     library = load_library_cache()
 
@@ -40,23 +43,25 @@ def main() -> None:
             save_config(config)
             
             print("Building library...")
-            library = build_library(root, xml_db=xml_db)
-            save_library_cache(library)
+            library = build_library(root, xml_db=xml_db, xml_title_keys=xml_title_keys)
+            save_library_cache(library, _async=False)
             print(f"✓ Library built: {len(library)} tracks")
         else:
             print("No valid directory selected.")
             return
     elif xml_db:
-        # Re-enrich cached library — fills fields that were unknown at build time
-        from src.music_library import get_metadata
-        needs_save = False
-        for song in library:
-            if song.get("artist") == "Unknown Artist" or song.get("album") == "Unknown Album":
-                fresh = get_metadata(song["path"], xml_db=xml_db)
-                song.update(fresh)
-                needs_save = True
-        if needs_save:
-            save_library_cache(library)
+        # Re-enrich cached tracks still at defaults — runs in background so startup is instant
+        def _reenrich():
+            from src.music_library import get_metadata as _gm
+            changed = False
+            for song in library:
+                if song.get("artist") == "Unknown Artist" or song.get("album") == "Unknown Album":
+                    fresh = _gm(song["path"], xml_db=xml_db, xml_title_keys=xml_title_keys)
+                    song.update(fresh)
+                    changed = True
+            if changed:
+                save_library_cache(library, _async=False)
+        threading.Thread(target=_reenrich, daemon=True).start()
 
     if library:
         print(f"✓ Library loaded: {len(library)} tracks\n")

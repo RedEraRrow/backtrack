@@ -75,17 +75,17 @@ def _parse_plist_value(element: Any) -> Any:
     }
     return tag_handlers.get(element.tag, lambda e: e.text or '')(element)
 
-def load_xml_database(xml_path: str = "Library.xml") -> dict | None:
-    """Parse Apple-style Music Library XML and build a multi-indexed lookup dictionary."""
+def load_xml_database(xml_path: str = "Library.xml") -> tuple:
+    """Parse Apple-style Music Library XML. Returns (db, title_keys_set) or (None, set())."""
     db = {}
     if not os.path.exists(xml_path):
-        return None
+        return None, set()
     
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
         tracks_dict = root.find("./dict/dict")
-        if tracks_dict is None: return None
+        if tracks_dict is None: return None, set()
 
         for i in range(0, len(tracks_dict), 2):
             track_entry = tracks_dict[i + 1]
@@ -110,9 +110,9 @@ def load_xml_database(xml_path: str = "Library.xml") -> dict | None:
                     meta_key = normalise_string(f"{track_data['Artist']}{track_data['Name']}")
                     db[f"meta_{meta_key}"] = track_data
         
-        return db
+        return db, {k for k in db if k.startswith("title_")}
     except Exception as e:
-        return None
+        return None, set()
     
 
 # ============================================================================
@@ -120,7 +120,7 @@ def load_xml_database(xml_path: str = "Library.xml") -> dict | None:
 # ============================================================================
 
 
-def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
+def get_metadata(file_path: str, xml_db: dict | None = None, xml_title_keys: set | None = None) -> dict:
     """Extract metadata from audio file, ensuring all required keys exist."""
     # INITIALISE ALL KEYS to prevent KeyErrors
     metadata = {
@@ -183,101 +183,70 @@ def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
             
             # Strip macOS duplicate suffixes (e.g., "Apple Juice 1" -> "Apple Juice")
             clean_title = normalise_string(re.sub(r'\s+\d+$', '', metadata['title']))
-            clean_file = normalise_string(re.sub(r'\s+\d+$', '', os.path.splitext(file_key)[0]))
-            
+            clean_file  = normalise_string(re.sub(r'\s+\d+$', '', os.path.splitext(file_key)[0]))
+
             # Strip prefixed track numbers (e.g., "01 Apple Juice" -> "Apple Juice")
             no_track_title = normalise_string(re.sub(r'^\d+[\s\-_]+', '', metadata['title']))
-            
-            for key, val in xml_db.items():
-                # A) Match suffix-stripped duplicates
-                if clean_title and key == f"title_{clean_title}":
-                    xml_info = val; break
-                if clean_file and key == f"norm_{clean_file}":
-                    xml_info = val; break
-                
-                # B) Match stripped track numbers
-                if no_track_title and key == f"title_{no_track_title}":
-                    xml_info = val; break
-                    
-                # C) Match Truncated Titles (e.g., "Fantasia... […")
-                # Enforce > 15 chars to prevent false positives on short words
-                if len(norm_title) > 15 and key.startswith("title_") and key[6:].startswith(norm_title):
-                    xml_info = val; break
-                if len(norm_file) > 15 and key.startswith("norm_") and key[5:].startswith(norm_file):
-                    xml_info = val; break
-            
-            if not xml_info:
-                # 1. Handle the "Dot" issue: replace dots with spaces before normalizing
-                title_with_spaces = metadata['title'].replace('.', ' ')
-                norm_title_clean = normalise_string(title_with_spaces)
-                xml_info = xml_db.get(f"title_{norm_title_clean}")
 
-                if not xml_info:
-                    # 2. Sub-string match: See if the file title exists INSIDE an XML title
-                    # This catches "Che soave zeffiretto" failing against "Duettino: Che soave..."
-                    if len(norm_title_clean) > 10:
-                        for key, val in xml_db.items():
-                            if key.startswith("title_") and norm_title_clean in key:
-                                xml_info = val
-                                break
+            # Helper: scan title_keys set for substring match (avoids full dict iteration)
+            title_keys = xml_title_keys or {k for k in xml_db if k.startswith("title_")}
 
-                if not xml_info:
-                    # 3. Last resort: Extract the "Aria name" between the underscores
-                    # Your file: ...Act 3_ _Che soave zeffiretto_ - ...
-                    parts = metadata['title'].split('_')
-                    if len(parts) >= 3:
-                        # Usually the aria name is the second or third part
-                        core_aria = normalise_string(parts[-2].strip())
-                        if len(core_aria) > 8:
-                            for key, val in xml_db.items():
-                                if key.startswith("title_") and core_aria in key:
-                                    xml_info = val
-                                    break
+            def _title_contains(fragment: str) -> Any | None:
+                if not fragment:
+                    return None
+                for k in title_keys:
+                    if fragment in k[6:]:   # k[6:] strips "title_" prefix
+                        return xml_db.get(k)
+                return None
+
+            def _title_startswith(fragment: str) -> Any | None:
+                if not fragment:
+                    return None
+                for k in title_keys:
+                    if k[6:].startswith(fragment):
+                        return xml_db.get(k)
+                return None
+
+            # A) Direct key lookups (O(1))
+            xml_info = (
+                xml_db.get(f"title_{clean_title}")
+                or xml_db.get(f"norm_{clean_file}")
+                or xml_db.get(f"title_{no_track_title}")
+            )
+
+            # B) Prefix match for truncated titles (e.g. "Fantasia… […")
+            if not xml_info and len(norm_title) > 15:
+                xml_info = _title_startswith(norm_title)
+            if not xml_info and len(norm_file) > 15:
+                for k in title_keys:
+                    if k[6:].startswith(norm_file):
+                        xml_info = xml_db.get(k); break
+
+            # C) Dot-substitution variants
             if not xml_info:
-                # 1. Replace dots with spaces to fix "L'ho perduta.me meschina"
                 title_spaced = metadata['title'].replace('.', ' ')
-                norm_title_spaced = normalise_string(title_spaced)
-                xml_info = xml_db.get(f"title_{norm_title_spaced}")
+                norm_spaced  = normalise_string(title_spaced)
+                xml_info = xml_db.get(f"title_{norm_spaced}")
 
-                if not xml_info:
-                    # 2. Split by underscore to isolate the Aria name
-                    # "Act 3_ _Che soave zeffiretto_ -" -> becomes "Che soave zeffiretto"
-                    parts = metadata['title'].split('_')
-                    if len(parts) >= 3:
-                        # Clean the part between the underscores
-                        aria_part = normalise_string(parts[-2].strip())
-                        
-                        if len(aria_part) > 10: # Only try if it's a substantial string
-                            for key, val in xml_db.items():
-                                # Check if the aria name is INSIDE any XML title
-                                # This catches "Duettino: Che soave zeffiretto"
-                                if key.startswith("title_") and aria_part in key:
-                                    xml_info = val
-                                    break
+                # D) Substring: file title inside XML title ("Che soave…" in "Duettino: Che soave…")
+                if not xml_info and len(norm_spaced) > 10:
+                    xml_info = _title_contains(norm_spaced)
 
+                # E) Clean leading numbers then dot-substitute
                 if not xml_info:
-                    # 3. Handle "Cinque.dieci.venti." specifically
-                    # Strip leading numbers and replace dots
                     clean_classic = re.sub(r'^\d+[\s\-_]+', '', title_spaced)
                     xml_info = xml_db.get(f"title_{normalise_string(clean_classic)}")
-        
-        if not xml_info:
-            # 1. Isolate the Aria name from your filename
-            # "Act 1_ _Cinque.dieci.venti._" -> extract "Cinque.dieci.venti"
-            parts = metadata['title'].split('_')
-            if len(parts) >= 3:
-                # Get the part between the underscores and replace dots with spaces
-                raw_aria = parts[-2].strip().replace('.', ' ')
-                norm_aria = normalise_string(raw_aria)
-                
-                if len(norm_aria) > 8:
-                    for key, val in xml_db.items():
-                        # Check if this Italian aria name is hidden INSIDE any XML title
-                        # This works even if the XML title is in English (Marriage of Figaro)
-                        # because the Aria names (Cinque dieci venti) usually stay in Italian.
-                        if key.startswith("title_") and norm_aria in key:
-                            xml_info = val
-                            break
+
+            # F) Aria name between underscores ("Act 3_ _Che soave_ -" -> "Che soave")
+            if not xml_info:
+                parts = metadata['title'].split('_')
+                if len(parts) >= 3:
+                    for raw in (parts[-2].strip(), parts[-2].strip().replace('.', ' ')):
+                        norm_aria = normalise_string(raw)
+                        if len(norm_aria) > 8:
+                            xml_info = _title_contains(norm_aria)
+                            if xml_info:
+                                break
 
         if xml_info:
             metadata["play_count"] = int(xml_info.get("Play Count", 0))
@@ -309,24 +278,28 @@ def get_song_duration(file_path: str) -> float:
 # ============================================================================
 
 
-def build_library(directory: str, xml_db: dict | None = None) -> list:
-    """
-    Scan directory and build library of audio files.
-    
-    Returns list of dicts with metadata for each file found.
-    """
+def build_library(directory: str, xml_db: dict | None = None, xml_title_keys: set | None = None) -> list:
+    """Scan directory and build library of audio files."""
     library = []
     for root, _, files in os.walk(directory):
         for file in files:
             if file.lower().endswith(VALID_AUDIO_EXTENSIONS):
-                library.append(get_metadata(os.path.join(root, file), xml_db))
+                library.append(get_metadata(os.path.join(root, file), xml_db, xml_title_keys))
     return library
 
 
-def save_library_cache(library: list) -> None:
-    """Save library to cache file."""
-    with open(CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(library, f, indent=4)
+def save_library_cache(library: list, _async: bool = True) -> None:
+    """Save library to cache file. Runs in a background thread by default."""
+    import threading
+
+    def _write():
+        with open(CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(library, f)  # no indent — faster write, same correctness
+
+    if _async:
+        threading.Thread(target=_write, daemon=True).start()
+    else:
+        _write()
 
 
 def refresh_library_entry(library: list, file_path: str, xml_db: dict | None = None) -> dict:

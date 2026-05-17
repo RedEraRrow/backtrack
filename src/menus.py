@@ -173,9 +173,9 @@ def handle_settings(library_ref: list) -> None:
             if new_root and os.path.isdir(new_root):
                 config["music_directory"] = new_root
                 print("Re-scanning library...")
-                xml_db = load_xml_database("../data/Library.xml")
-                new_lib = build_library(new_root, xml_db=xml_db)
-                save_library_cache(new_lib)
+                xml_db, xml_title_keys = load_xml_database("../data/Library.xml")
+                new_lib = build_library(new_root, xml_db=xml_db, xml_title_keys=xml_title_keys)
+                save_library_cache(new_lib, _async=False)
                 library_ref[0] = new_lib
                 print(f"Done — {len(new_lib)} tracks.")
                 time.sleep(1.5)

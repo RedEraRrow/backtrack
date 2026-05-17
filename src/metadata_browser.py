@@ -13,7 +13,7 @@ import cv2
 from collections import Counter
 
 from src import prompt
-from mutagen.id3 import ID3, USLT, COMM, SYLT, TextFrame, APIC
+from mutagen.id3 import ID3, USLT, COMM, SYLT, TextFrame, APIC, TXXX
 
 from src import ui_utils
 from src.ascii_art import convert_image_to_ascii
@@ -231,18 +231,19 @@ def _edit_text_in_editor(initial_text: str) -> str | None:
 def _create_frame(frame_id: str, value: str):
     """Create a new ID3 frame for the given ID and value."""
     from mutagen.id3 import COMM, USLT, TextFrame, Frames
-    lang = 'eng'
-    if '[' in frame_id and ']' in frame_id:
-        parts = frame_id.split('[')
-        base_id = parts[0]
-        lang = parts[1].split(']')[0]
-    else:
-        base_id = frame_id
 
-    if base_id.startswith('COMM'):
-        return COMM(encoding=3, lang=lang, desc='', text=[value])
-    elif base_id.startswith('USLT'):
-        return USLT(encoding=3, lang=lang, desc='', text=value)
+    parts = frame_id.split(':')
+    base_id = parts[0].upper()
+
+    desc = parts[1] if len(parts) > 1 else ''
+    lang = parts[2] if (len(parts) > 2 and parts[2]) else 'eng'
+
+    if base_id == 'COMM':
+        return COMM(encoding=3, lang=lang, desc=desc, text=[value])
+    elif base_id == 'USLT':
+        return USLT(encoding=3, lang=lang, desc=desc, text=value)
+    elif base_id == 'TXXX':
+        return TXXX(encoding=3, desc=desc, text=[value])
     else:
         frame_cls = Frames.get(base_id, TextFrame)
         frame = frame_cls(encoding=3, text=[value])
