@@ -17,7 +17,7 @@ from mutagen.mp4 import MP4
 
 from src.history import get_recent_paths
 
-CACHE_PATH = os.path.join(os.path.dirname(__file__), "../data/library_cache.json")
+CACHE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/library_cache.json"))
 VALID_AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac')
 
 # ID3 tag to metadata field mapping — single source of truth for all modules
@@ -44,6 +44,7 @@ TAG_MAP = {
     'TSOP': 'Performer Sort Order',
     'USLT': 'Unsynchronised Lyrics',
     'SYLT': 'Synchronised Lyrics',
+    'TSST': 'Set Subtitle',
 }
 
 
@@ -127,6 +128,8 @@ def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
         "artist": "Unknown Artist",
         "album": "Unknown Album",
         "track": "0",
+        "disc": "1",
+        "disc_subtitle": "",
         "path": file_path,
         "genre": "Unknown Genre",
         "year": "Unknown Year",
@@ -144,6 +147,8 @@ def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
             if 'TRCK' in tags: metadata["track"]  = str(tags['TRCK']).split('/')[0]
             if 'TCON' in tags: metadata["genre"]  = str(tags['TCON'])
             if 'TDRC' in tags: metadata["year"]   = str(tags['TDRC'])
+            if 'TPOS' in tags: metadata["disc"]   = str(tags['TPOS']).split('/')[0]
+            if 'TSST' in tags: metadata["disc_subtitle"] = str(tags['TSST'])
         elif file_path.endswith(('.m4a', '.m4p', '.mp4')):
             tags = MP4(file_path)
             metadata["title"] = str(tags.get('\xa9nam', [metadata["title"]])[0])
@@ -151,6 +156,8 @@ def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
             metadata["album"] = str(tags.get('\xa9alb', [metadata["album"]])[0])
             trkn = tags.get('trkn', [(0, 0)])[0]
             metadata["track"] = str(trkn[0]) if isinstance(trkn, tuple) else str(trkn)
+            disk = tags.get('disk', [(1, 0)])[0]
+            metadata["disc"] = str(disk[0]) if isinstance(disk, tuple) else str(disk)
     except Exception as e:
         pass
 
@@ -278,6 +285,7 @@ def get_metadata(file_path: str, xml_db: dict | None = None) -> dict:
             metadata["xml_data"]   = xml_info
             # Fill any fields still at their defaults from the XML
             if metadata["track"]  == "0":             metadata["track"]  = str(xml_info.get("Track Number", "0"))
+            if metadata["disc"]   == "1":              metadata["disc"]   = str(xml_info.get("Disc Number", "1"))
             if metadata["artist"] == "Unknown Artist": metadata["artist"] = xml_info.get("Artist",  "Unknown Artist")
             if metadata["album"]  == "Unknown Album":  metadata["album"]  = xml_info.get("Album",   "Unknown Album")
             if metadata["title"]  == os.path.splitext(os.path.basename(file_path))[0]:
@@ -321,6 +329,22 @@ def save_library_cache(library: list) -> None:
         json.dump(library, f, indent=4)
 
 
+def refresh_library_entry(library: list, file_path: str, xml_db: dict | None = None) -> dict:
+    """
+    Re-read metadata for a single file, update its entry in library in-place,
+    and persist the cache. Returns the updated track dict.
+    """
+    fresh = get_metadata(file_path, xml_db)
+    for i, track in enumerate(library):
+        if track['path'] == file_path:
+            library[i] = fresh
+            break
+    else:
+        library.append(fresh)
+    save_library_cache(library)
+    return fresh
+
+
 def load_library_cache() -> list | None:
     """Load library from cache file."""
     if os.path.exists(CACHE_PATH):
@@ -356,30 +380,51 @@ def get_grouped_data(library: list, category: str) -> dict:
 def search_library(library: list, query: str, active_tags: list | None = None) -> list:
     """
     Search library for songs matching query.
-    
-    Uses weighted scoring to rank results.
-    Boosts recently played songs.
+
+    Scoring rules:
+    - Each active tag is checked independently
+    - Exact full-field match scores highest
+    - Start-of-field match scores higher than mid-field
+    - All query words must match somewhere across the active tags (AND logic)
+    - Recently played tracks get a small boost, but only if they matched
+    - Non-matching tracks are never returned regardless of recent history
     """
     recent = get_recent_paths()
     active_tags = active_tags or ['title', 'artist', 'album', 'genre']
     weights = {'title': 10, 'artist': 8, 'album': 5, 'genre': 3, 'path': 1}
-    q = query.lower()
+
+    words = query.lower().split()
     results = []
-    
+
     for song in library:
         score = 0
-        for tag in active_tags:
-            val = str(song.get(tag, "")).lower()
-            if q in val:
-                # Boost score if query matches start of field
-                score += weights.get(tag, 1) * (2 if val.startswith(q) else 1)
-        
-        # Boost recently played
+        field_vals = {tag: str(song.get(tag, "")).lower() for tag in active_tags}
+
+        # Every word must match at least one active field (AND logic)
+        for word in words:
+            word_matched = False
+            for tag, val in field_vals.items():
+                if word in val:
+                    w = weights.get(tag, 1)
+                    if val == word:
+                        score += w * 4        # exact full match
+                    elif val.startswith(word):
+                        score += w * 2        # prefix match
+                    else:
+                        score += w            # substring match
+                    word_matched = True
+            if not word_matched:
+                score = 0
+                break
+
+        if score <= 0:
+            continue
+
+        # Small recency boost — only applied to tracks that already matched
         if song['path'] in recent:
-            score += 5
-        
-        if score > 0:
-            results.append((score, song))
-    
+            score += 2
+
+        results.append((score, song))
+
     results.sort(key=lambda x: x[0], reverse=True)
     return [s for _, s in results]

@@ -261,15 +261,14 @@ def display_metadata_section(title: str, data: dict, formatted_keys: dict | None
             print(f"  {key:<20}: {value}")
 
 
-def display_xml_metadata(metadata: dict) -> None:
-    """Display comprehensive XML metadata with organised sections."""
+def get_xml_metadata_lines(metadata: dict) -> list[str]:
+    """Return comprehensive XML metadata as a list of strings for UI headers."""
     xml_data = metadata.get('xml_data') or metadata
     if not xml_data:
-        return
+        return []
+    
     cols = get_terminal_width()
-    print("\n" + divider(cols, "═"))
-    print("  LIBRARY METADATA (from Library.xml)")
-    print(divider(cols, "═"))
+    lines = ["", divider(cols, "═"), "  LIBRARY METADATA (from Library.xml)", divider(cols, "═")]
     
     sections = {
         "Track Info": ["Name", "Artist", "Album Artist", "Composer", "Album"],
@@ -290,7 +289,16 @@ def display_xml_metadata(metadata: dict) -> None:
     for section_name, fields in sections.items():
         section_data = {k: xml_data.get(k) for k in fields if xml_data.get(k)}
         if section_data:
-            formatted = {k: formatters.get(k, lambda v: v)(v) for k, v in section_data.items()}
-            display_metadata_section(section_name, formatted)
+            lines.append(f"\n{section_name}:")
+            for key, value in section_data.items():
+                val = formatters.get(key, lambda v: v)(value)
+                if val:
+                    lines.append(f"  {key:<20}: {val}")
     
-    print("\n" + divider(cols, "═"))
+    lines.append("\n" + divider(cols, "═"))
+    return lines
+
+def display_xml_metadata(metadata: dict) -> None:
+    """Display comprehensive XML metadata (legacy print version)."""
+    for line in get_xml_metadata_lines(metadata):
+        print(line)

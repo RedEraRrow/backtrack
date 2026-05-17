@@ -74,7 +74,7 @@ def handle_search(library: list) -> str | None:
     elif action == "Edit Metadata":
         song_meta = next((s for s in library if s['path'] == selected), None)
         ui_utils.clear_screen()
-        inspect_tag_loop(selected, library_metadata=song_meta)
+        inspect_tag_loop(selected, library_metadata=song_meta, library=library)
         ui_utils.clear_screen()
     
     return None
@@ -321,26 +321,49 @@ def browse_menu(library_ref: list) -> str | None:
                             continue
                         
                         NAV_STACK.append(alb)
-                        final_tracks = albums[alb]
+                        track_paths = [s['path'] for s in albums[alb]]
                     else:
-                        final_tracks = selected_songs
+                        track_paths = [s['path'] for s in selected_songs]
 
                     while True:  # LEVEL 4: Track Selection
                         ui_utils.clear_screen()
-                        final_tracks.sort(key=lambda x: int(x.get('track', 0) or 0))
-                        track_choices = [
-                            prompt.Choice(
-                                title=f"{str(t.get('track', '0')).zfill(2)} — {t.get('title', 'Unknown')}",
-                                value=t['path']
-                            )
-                            for t in final_tracks
-                        ]
+
+                        # Re-derive from library each iteration so tag edits show immediately
+                        path_set = set(track_paths)
+                        final_tracks = [t for t in library if t['path'] in path_set]
+
+                        # Sort by disc first, then track number
+                        final_tracks.sort(key=lambda x: (int(x.get('disc', 1) or 1), int(x.get('track', 0) or 0)))
                         
+                        discs = set(str(t.get('disc', '1')) for t in final_tracks)
+                        has_multiple_discs = len(discs) > 1
+                        
+                        track_choices = []
+                        current_disc = None
+                        disc_track_map = {}  # disc_val -> [track paths]
+
+                        for t in final_tracks:
+                            disc_val = str(t.get('disc', '1'))
+                            disc_track_map.setdefault(disc_val, []).append(t['path'])
+                            if has_multiple_discs and disc_val != current_disc:
+                                subtitle = t.get('disc_subtitle', '')
+                                disc_title = f"Disc {disc_val} - {subtitle}" if subtitle else f"Disc {disc_val}"
+                                track_choices.append(prompt.Choice(title=f"--- {disc_title} ---", value=f"__disc_{disc_val}"))
+                                current_disc = disc_val
+
+                            indent = "  " if has_multiple_discs else ""
+                            track_choices.append(
+                                prompt.Choice(
+                                    title=f"{indent}{str(t.get('track', '0')).zfill(2)} — {t.get('title', 'Unknown')}",
+                                    value=t['path']
+                                )
+                            )
+
                         path_choice_obj = prompt.select(
                             "Track:",
                             choices=["[Play All]", "[Bulk Edit Tags]"] + track_choices + [".. Back"]
                         )
-                        
+
                         if not path_choice_obj or path_choice_obj == ".. Back":
                             ui_utils.clear_screen()
                             break
@@ -355,7 +378,28 @@ def browse_menu(library_ref: list) -> str | None:
                             bulk_tag_manager(library, paths=[t['path'] for t in final_tracks])
                             continue
 
-                        # LEVEL 5: Action Menu
+                        # Disc header selected — offer play or bulk edit for that disc
+                        if isinstance(path_choice_obj, str) and path_choice_obj.startswith("__disc_"):
+                            disc_val = path_choice_obj[len("__disc_"):]
+                            disc_paths = disc_track_map.get(disc_val, [])
+                            subtitle = next(
+                                (t.get('disc_subtitle', '') for t in final_tracks if str(t.get('disc', '1')) == disc_val),
+                                ''
+                            )
+                            disc_label = f"Disc {disc_val}" + (f" - {subtitle}" if subtitle else "")
+                            disc_action = prompt.select(
+                                f"{disc_label}:",
+                                choices=["Play Disc", "Bulk Edit Disc Tags", ".. Back"]
+                            )
+                            if disc_action == "Play Disc":
+                                res = play_queue(disc_paths)
+                                if res == "QUIT_ALL":
+                                    return "QUIT_ALL"
+                            elif disc_action == "Bulk Edit Disc Tags":
+                                bulk_tag_manager(library, paths=disc_paths)
+                            continue
+
+                        # LEVEL 5: Action Menu (unchanged below)
                         selected_track = next((t for t in final_tracks if t['path'] == path_choice_obj), None)
                         NAV_STACK.append(selected_track['title'] if selected_track else path_choice_obj)
                         while True:
@@ -383,7 +427,7 @@ def browse_menu(library_ref: list) -> str | None:
 
                             elif action == "Edit Metadata":
                                 ui_utils.clear_screen()
-                                inspect_tag_loop(path_choice_obj, library_metadata=selected_track)
+                                inspect_tag_loop(path_choice_obj, library_metadata=selected_track, library=library)
                                 ui_utils.clear_screen()
                         
                         NAV_STACK.pop()

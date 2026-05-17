@@ -520,7 +520,8 @@ def text(message: str, default: str = "") -> str | None:
                 pos = 0; _render()
             elif key == 'END':
                 pos = len(buf); _render()
-            # Allow printable characters AND literal newlines (if you want to type them)
+            elif key == 'SPACE':
+                buf.insert(pos, ' '); pos += 1; _render()
             elif len(key) == 1 and key.isprintable():
                 buf.insert(pos, key); pos += 1; _render()
     finally:
@@ -599,6 +600,8 @@ def path(message: str, default: str = "") -> str | None:
                 continue
             elif key == 'BACKSPACE' and pos > 0:
                 _tab_matches.clear(); buf.pop(pos - 1); pos -= 1; _render()
+            elif key == 'SPACE':
+                _tab_matches.clear(); buf.insert(pos, ' '); pos += 1; _render()
             elif key == 'LEFT'  and pos > 0:        pos -= 1; _render()
             elif key == 'RIGHT' and pos < len(buf): pos += 1; _render()
             elif key == 'HOME':                     pos = 0;          _render()
