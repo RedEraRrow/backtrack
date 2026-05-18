@@ -12,7 +12,7 @@ from src import prompt
 from src import ui_utils
 from src.music_library import (
     build_library, load_library_cache, save_library_cache,
-    load_xml_database, get_grouped_data, search_library
+    load_xml_database, get_grouped_data, get_group_sort_key, search_library, sort_library_logic
 )
 from src.history import get_history, clear_history
 from src.playback import musicplayer
@@ -225,6 +225,9 @@ def play_queue(paths: list, mode: str = "linear") -> str | None:
 def browse_menu(library_ref: list) -> str | None:
     """Handle library browsing menu."""
     library = library_ref[0]
+
+    sorted_lib = sort_library_logic(library)
+    
     NAV_STACK.append("Browse")
     
     try:
@@ -244,32 +247,33 @@ def browse_menu(library_ref: list) -> str | None:
             while True:  # LEVEL 2: Selection
                 ui_utils.clear_screen()
                 key_map = {"Artists": "artist", "Albums": "album", "Genres": "genre", "Groupings": "grouping"}
-                grouped = get_grouped_data(library, key_map[cat_choice])
-                group_names = sorted(grouped.keys())
+                grouped = get_grouped_data(sorted_lib, key_map[cat_choice])
+                _cat_key = {"Artists": "artist", "Albums": "album", "Genres": "genre", "Groupings": "grouping"}.get(cat_choice, cat_choice)
+                group_names = sorted(grouped.keys(), key=lambda n: get_group_sort_key(n, grouped[n], _cat_key))
 
-                if cat_choice == "Artists":
-                    letters_found = sorted({
-                        (n[0].upper() if n[0].upper() in string.ascii_uppercase else "#") 
-                        for n in group_names
-                    })
+                if cat_choice in ("Artists", "Albums"):
+                    _sort_keys = {n: get_group_sort_key(n, grouped[n], _cat_key) for n in group_names}
+
+                    def _letter(name: str) -> str:
+                        ch = _sort_keys[name][0].upper() if _sort_keys.get(name) else "#"
+                        return ch if ch in string.ascii_uppercase else "#"
+
+                    letters_found = sorted({_letter(n) for n in group_names})
                     if "#" in letters_found:
                         letters_found.remove("#")
                         letters_found.append("#")
-                    
+
                     letter_sel = prompt.select(
-                        "Select Category:",
-                        choices=letters_found + [".. Back"]
+                        "Select Letter:",
+                        choices=["[Full List]"] + letters_found + [".. Back"]
                     )
-                    
+
                     if not letter_sel or letter_sel == ".. Back":
                         ui_utils.clear_screen()
                         break
-                    
-                    group_names = [
-                        n for n in group_names 
-                        if (n[0].upper() == letter_sel if letter_sel != "#" 
-                            else n[0].upper() not in string.ascii_uppercase)
-                    ]
+
+                    if letter_sel != "[Full List]":
+                        group_names = [n for n in group_names if _letter(n) == letter_sel]
 
                 selection = prompt.select(
                     f"Select {cat_choice}:",
@@ -301,9 +305,15 @@ def browse_menu(library_ref: list) -> str | None:
                         for s in selected_songs:
                             albums.setdefault(s['album'], []).append(s)
                         
+                        album_list = sorted(
+                            albums.keys(), 
+                            key=lambda a: (albums[a][0].get('year') or 0, a), 
+                            reverse=True # Newest albums first
+                        )
+
                         alb = prompt.select(
                             "Album:",
-                            choices=["[Play All]", "[Bulk Edit Tags]"] + sorted(albums.keys()) + [".. Back"]
+                            choices=["[Play All]", "[Bulk Edit Tags]"] + album_list + [".. Back"]
                         )
                         
                         if not alb or alb == ".. Back":
@@ -332,8 +342,16 @@ def browse_menu(library_ref: list) -> str | None:
                         path_set = set(track_paths)
                         final_tracks = [t for t in library if t['path'] in path_set]
 
-                        # Sort by disc first, then track number
-                        final_tracks.sort(key=lambda x: (int(x.get('disc', 1) or 1), int(x.get('track', 0) or 0)))
+                        def get_num(val):
+                            try:
+                                return int(str(val).split('/')[0])
+                            except (ValueError, TypeError):
+                                return 0
+
+                        final_tracks.sort(key=lambda x: (
+                            get_num(x.get('disc', 1)), 
+                            get_num(x.get('track', 0))
+                        ))
                         
                         discs = set(str(t.get('disc', '1')) for t in final_tracks)
                         has_multiple_discs = len(discs) > 1

@@ -21,8 +21,18 @@ from src.music_library import refresh_library_entry
 
 
 def _sort_category(name: str) -> str:
-    """Return first-letter bucket for an artist name."""
-    first = (name.lstrip("The ")[0].upper()) if name else "#"
+    """Return first-letter bucket for an artist name, ignoring 'The '."""
+    if not name:
+        return "#"
+    
+    clean_name = name.lower()
+    # Check if we are dealing with a name like "The Technical Difficulties"
+    # or an already-formatted sort string like "Technical Difficulties, The"
+    if clean_name.startswith("the "):
+        first = clean_name[4:5].upper()
+    else:
+        first = clean_name[0:1].upper()
+        
     return first if first in string.ascii_uppercase else "#"
 
 
