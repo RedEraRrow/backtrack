@@ -24,13 +24,13 @@ def resize_image(image: np.ndarray, new_width: int) -> np.ndarray:
     return cv2.resize(image, (new_width, new_h))
 
 
-d ef get_colour_char(pixel: tuple, chars: str) -> str:
+def get_colour_char(pixel: tuple, chars: str) -> str:
     """
     Convert a pixel to a coloured ASCII character.
     
     Uses brightness to select character, preserves original colour.
     """
-   b, g, r = pixel
+    b, g, r = pixel
     brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
     idx = (brightness * (len(chars) - 1)) // 255
     return f"\033[38;2;{r};{g};{b}m{chars[idx]}\033[0m"
