@@ -73,6 +73,7 @@ def main() -> None:
         print(f"✓ Library loaded: {len(library)} tracks\n")
         library_ref = [library]  # Mutable container for settings menu
         main_menu(library_ref)
+        return
     else:
         print("Library is empty.")
 

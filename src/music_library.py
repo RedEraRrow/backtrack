@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import unicodedata
 import threading
 from datetime import datetime
+from typing import Callable
 from typing import Any
 from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
@@ -192,6 +193,7 @@ def get_metadata(file_path: str, xml_db: dict | None = None, xml_title_keys: set
             if 'TRCK' in tags: metadata["track"]  = str(tags['TRCK']).split('/')[0]
             if 'TCON' in tags: metadata["genre"]  = str(tags['TCON'])
             if 'TDRC' in tags: metadata["year"]   = str(tags['TDRC'])
+            if 'GRP1' in tags: metadata["grouping"] = str(tags['GRP1'])
             if 'TPOS' in tags: metadata["disc"]   = str(tags['TPOS']).split('/')[0]
             if 'TSST' in tags: metadata["disc_subtitle"] = str(tags['TSST'])
         elif file_path.endswith(('.m4a', '.m4p', '.mp4')):
@@ -449,6 +451,86 @@ def get_group_sort_key(display_name: str, songs: list, category: str) -> str:
 
 
 def sort_library_logic(tracks):
+    def get_sortable_name(display_name, sort_order_name):
+        if sort_order_name and str(sort_order_name).strip():
+            return str(sort_order_name).lower()
+        if not display_name:
+            return ""
+        name = str(display_name).lower()
+        if name.startswith("the "):
+            return name[4:].strip()
+        return name
+
+    def sort_key(track_data):
+        artist      = track_data.get('album_artist') or track_data.get('artist', 'Unknown Artist')
+        artist_sort = track_data.get('Album Artist Sort Order') or track_data.get('Performer Sort Order')
+        album       = track_data.get('album', 'Unknown Album')
+        album_sort  = track_data.get('Album Sort Order')
+        year_val    = track_data.get('year')
+        try:
+            clean_year = int(str(year_val))
+        except (ValueError, TypeError):
+            clean_year = 0
+
+        def to_num(v):
+            try:
+                return float(str(v).split('/')[0])
+            except:
+                return 0.0
+        
+        return (
+            get_sortable_name(artist, artist_sort),
+            -clean_year,
+            get_sortable_name(album, album_sort),
+            to_num(track_data.get('disc', 1)),   # Changed from raw string
+            to_num(track_data.get('track', 0)),  # Changed from raw string
+        )
+
+    return sorted(tracks, key=sort_key)
+
+
+def select_from_alpha_list(
+    items: list[str],
+    sort_key_fn: Callable[[str], str],
+    message: str,
+    *,
+    extra_top: list[str] | None = None,
+) -> list[str] | None:
+    """
+    Universal alphabet-browse helper.
+
+    Shows a letter picker (built from sort_key_fn) with a [Full List] toggle.
+    Returns the filtered, sorted list of items to display — or None if the
+    user chose Back at the letter screen.
+
+    Args:
+        items:        Pre-sorted list of display strings.
+        sort_key_fn:  fn(name) -> str  —  sort key for that name.
+        message:      Prompt label shown on the letter picker.
+        extra_top:    Optional extra choices prepended (e.g. ["[Play All]"]).
+    """
+    import string as _string
+    from src import prompt as _prompt
+
+    def _letter(name: str) -> str:
+        key = sort_key_fn(name)
+        ch = key[0].upper() if key else "#"
+        return ch if ch in _string.ascii_uppercase else "#"
+
+    letters = sorted({_letter(n) for n in items})
+    if "#" in letters:
+        letters.remove("#")
+        letters.append("#")
+
+    letter_sel = _prompt.select(message, choices=["[Full List]"] + letters + [".. Back"])
+
+    if not letter_sel or letter_sel == ".. Back":
+        return None
+
+    if letter_sel == "[Full List]":
+        return items
+
+    return [n for n in items if _letter(n) == letter_sel]
     def get_sortable_name(display_name, sort_order_name):
         # 1. Use explicit sort order if it exists
         if sort_order_name and str(sort_order_name).strip():

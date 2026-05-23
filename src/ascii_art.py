@@ -17,20 +17,20 @@ def resize_image(image: np.ndarray, new_width: int) -> np.ndarray:
     """
     Resize image for ASCII conversion.
     
-    Adjusts height to maintain aspect ratio (0.5x factor for terminal).
+    Adjusts height to maintain aspect ratio (0.5x factor for terminal) . 
     """
     h, w = image.shape[:2]
     new_h = max(1, int(new_width * (h / w) * 0.5))
     return cv2.resize(image, (new_width, new_h))
 
 
-def get_colour_char(pixel: tuple, chars: str) -> str:
+d ef get_colour_char(pixel: tuple, chars: str) -> str:
     """
     Convert a pixel to a coloured ASCII character.
     
     Uses brightness to select character, preserves original colour.
     """
-    b, g, r = pixel
+   b, g, r = pixel
     brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
     idx = (brightness * (len(chars) - 1)) // 255
     return f"\033[38;2;{r};{g};{b}m{chars[idx]}\033[0m"

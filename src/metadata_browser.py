@@ -17,23 +17,7 @@ from mutagen.id3 import ID3, USLT, COMM, SYLT, TextFrame, APIC, TXXX
 
 from src import ui_utils
 from src.ascii_art import convert_image_to_ascii
-from src.music_library import refresh_library_entry
-
-
-def _sort_category(name: str) -> str:
-    """Return first-letter bucket for an artist name, ignoring 'The '."""
-    if not name:
-        return "#"
-    
-    clean_name = name.lower()
-    # Check if we are dealing with a name like "The Technical Difficulties"
-    # or an already-formatted sort string like "Technical Difficulties, The"
-    if clean_name.startswith("the "):
-        first = clean_name[4:5].upper()
-    else:
-        first = clean_name[0:1].upper()
-        
-    return first if first in string.ascii_uppercase else "#"
+from src.music_library import refresh_library_entry, select_from_alpha_list, get_group_sort_key
 
 
 def perform_rename(audio_obj: ID3, old_frame: TextFrame, new_id: str) -> bool:
@@ -55,7 +39,7 @@ def perform_rename(audio_obj: ID3, old_frame: TextFrame, new_id: str) -> bool:
             from mutagen.id3 import Frames
             frame_cls = Frames.get(base_id, TextFrame)
             new_frame = frame_cls(encoding=3, text=getattr(old_frame, 'text', [''])[0])
-        
+
         audio_obj.add(new_frame)
         return True
     except Exception as e:
@@ -95,7 +79,7 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
     image, mime_type = _get_image_from_apic(apic_frame)
     if image is None:
         return False
-    
+
     try:
         # Determine file extension from mime type
         ext_map = {
@@ -105,13 +89,13 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
             'image/gif': '.gif'
         }
         ext = ext_map.get(mime_type, '.jpg')
-        
+
         # Create temp file and save image
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
             img_data = getattr(apic_frame, 'data', b"")
             tmp.write(img_data)
             tmp_path = tmp.name
-        
+
         # Open with system preview
         subprocess.run(['open', tmp_path], check=True)
         return True
@@ -161,7 +145,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
         actions.extend(["Open in Preview", "Replace Image", "Edit Description", "Back"])
 
         action = prompt.select("Action:", choices=actions, header=_apic_header)
-        
+
         if action == "View as ASCII Art":
             view_mode = "ascii"
         elif action == "View as Raw Data":
@@ -181,12 +165,12 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
                 try:
                     with open(image_path, 'rb') as f:
                         new_data = f.read()
-                    
+
                     # Determine MIME type
                     ext = os.path.splitext(image_path)[1].lower()
                     mime_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif'}
                     mime_type = mime_map.get(ext, 'image/jpeg')
-                    
+
                     # Create new APIC frame
                     new_frame = APIC(
                         encoding=3,
@@ -215,7 +199,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
         elif action == "Back":
             audio_obj.save(v2_version=3)
             return True
-    
+
     return True
 
 def _edit_text_in_editor(initial_text: str) -> str | None:
@@ -228,7 +212,7 @@ def _edit_text_in_editor(initial_text: str) -> str | None:
         # Use environment variable for editor, fallback to nano or vi
         editor = os.environ.get('EDITOR', 'vim')
         subprocess.run([editor, temp_path], check=True)
-        
+
         with open(temp_path, 'r', encoding='utf-8') as f:
             return f.read().strip()
     except Exception as e:
@@ -438,27 +422,20 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
         album_tracks = [s['path'] for s in library if s['album'] == album_name]
     else:
         return
-    
+
     if not album_tracks:
         print("No tracks found.")
-        return
-
-    operation = prompt.select(
-        "Select bulk operation:",
-        choices=["Delete Tags", "Rename Tags", "Set Common Value", "Add New Tag", "Cancel"]
-    )
-
-    if not operation or operation == "Cancel":
         return
 
     from src.music_library import TAG_MAP as _TAG_MAP
     import re as _re
     _cols = ui_utils.get_terminal_width()
+    C     = ui_utils.Colours
 
-    label = album_name or f'{len(album_tracks)} tracks'
-    print(f"Scanning {len(album_tracks)} tracks in '{label}'...")
-    all_tag_counts = Counter()
-    tag_values: dict = {}  # tag -> list of values across tracks
+    label = album_name or f"{len(album_tracks)} tracks"
+    print(f"Scanning {len(album_tracks)} tracks…")
+    all_tag_counts: Counter = Counter()
+    tag_values: dict = {}
 
     for path in album_tracks:
         try:
@@ -467,7 +444,7 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
             for k in audio.keys():
                 raw = audio[k]
                 if k.startswith(('APIC', 'SYLT')):
-                    val = k  # sentinels handled in _value_summary
+                    val = k
                 elif k.startswith(('TMCL', 'TIPL')):
                     val = f"{len(raw.people)} people"
                 elif hasattr(raw, 'text'):
@@ -478,14 +455,43 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
         except Exception:
             continue
 
-    if not all_tag_counts and operation != "Add New Tag":
+    def _bulk_header() -> list[str]:
+        inner = max(20, _cols - 4)
+        suffix = f"  {C.DIM}{label}  ·  {len(album_tracks)} tracks{C.RESET}"
+        return [
+            f"{C.DIM}╭{'─' * inner}╮{C.RESET}",
+            f"{C.DIM}│{C.RESET}  {C.BOLD}Bulk edit{C.RESET}{suffix}{C.DIM}│{C.RESET}",
+            f"{C.DIM}╰{'─' * inner}╯{C.RESET}",
+            "",
+        ]
+
+    operation = prompt.select(
+        "Operation:",
+        choices=["Set value", "Delete tags", "Rename tags", "Add new tag", "Replace artwork", ".. Back"],
+        header=_bulk_header,
+    )
+
+    if not operation or operation == ".. Back":
+        return
+
+    # Map friendly names back to internal operation ids used below
+    _op_map = {
+        "Set value":       "Set Common Value",
+        "Delete tags":     "Delete Tags",
+        "Rename tags":     "Rename Tags",
+        "Add new tag":     "Add New Tag",
+        "Replace artwork": "Replace Artwork",
+    }
+    operation = _op_map.get(operation, operation)
+
+    if not all_tag_counts and operation not in ("Add New Tag", "Replace Artwork"):
         print("No tags found.")
         return
 
     # Column formatting logic
     ALIAS_MAX = 22
     TAG_MAX   = 28
-    VAL_MAX   = 30 
+    VAL_MAX   = 30
 
     def _balias(tag):
         return _TAG_MAP.get(tag.split(':')[0].split('[')[0], '')
@@ -504,14 +510,14 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
         if len(unique) == 1:
             v = vals[0]
             return v if len(v) <= VAL_MAX else v[:VAL_MAX - 1] + "…"
-        
+
         # Find longest common prefix
         prefix = vals[0]
         for v in vals[1:]:
             while not v.startswith(prefix):
                 prefix = prefix[:-1]
                 if not prefix: break
-        
+
         n_vary = len(unique)
         if prefix:
             stub = prefix if len(prefix) <= VAL_MAX - 12 else prefix[:VAL_MAX - 13] + "…"
@@ -526,7 +532,7 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
     def _tag_option_title(tag, count):
         alias = _balias(tag)
         tag_disp = tag if len(tag) <= bulk_tag_col else tag[:bulk_tag_col - 1] + "…"
-        
+
         if alias:
             a = f"({alias})"
             if len(a) > bulk_alias_col - 1:
@@ -544,13 +550,52 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
     target_tag_id = None
     target_val = None
 
+    if operation == "Replace Artwork":
+        # Fast path: bulk replace all APIC tags across tracks
+        img_path = prompt.path("Path to new artwork image:")
+        if not img_path or not os.path.isfile(img_path):
+            print("File not found.")
+            time.sleep(1)
+            return
+        ext  = os.path.splitext(img_path)[1].lower()
+        mime = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp'}.get(ext, 'image/jpeg')
+        pic_type_choice = prompt.select(
+            "Picture type:",
+            choices=[
+                prompt.Choice("Cover (front)  [3]", value=3),
+                prompt.Choice("Cover (back)   [4]", value=4),
+                prompt.Choice("Artist         [8]", value=8),
+                prompt.Choice("Other          [0]", value=0),
+            ],
+        )
+        pic_type = pic_type_choice if isinstance(pic_type_choice, int) else 3
+        desc = prompt.text("Description (leave blank for none):") or ''
+        with open(img_path, 'rb') as f:
+            _new_apic = APIC(encoding=3, mime=mime, type=pic_type, desc=desc, data=f.read())
+        if not prompt.confirm(f"Replace artwork in all {len(album_tracks)} tracks?"):
+            return
+        count_modified = 0
+        for path in album_tracks:
+            try:
+                audio = ID3(path)
+                audio.delall('APIC')
+                audio.add(_new_apic)
+                audio.save(v2_version=3)
+                refresh_library_entry(library, path)
+                count_modified += 1
+            except Exception as e:
+                print(f"Error on {os.path.basename(path)}: {e}")
+        print(f"Artwork updated on {count_modified} tracks.")
+        time.sleep(1.5)
+        return
+
     if operation == "Add New Tag":
         target_tag_id = prompt.text("New Tag ID (e.g. TSO2, COMM[eng]):")
         if not target_tag_id: return
         target_val = prompt.text(f"Value for {target_tag_id}:")
         if target_val is None: return
     else:
-        tag_options = [prompt.Choice(title=_tag_option_title(t, c), value=t) 
+        tag_options = [prompt.Choice(title=_tag_option_title(t, c), value=t)
                        for t, c in sorted(all_tag_counts.items())]
         selected_tags = prompt.checkbox(f"Select tags to {operation.lower()}:", choices=tag_options)
         if not selected_tags: return
@@ -558,18 +603,42 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
         if operation == "Rename Tags":
             target_val = prompt.text("New tag ID (e.g. TPE2, COMM[eng]):")
         elif operation == "Set Common Value":
-            # Pattern detection for smart editing
-            for tag in selected_tags:
-                vals = tag_values.get(tag, [])
-                if len(vals) > 1:
-                    patterns = [_re.sub(r'\d', 'X', v) for v in vals]
-                    if len(set(patterns)) == 1:
-                        print(f"\nPattern detected in {tag}: {patterns[0]}")
-                        if prompt.confirm("Edit using pattern template?"):
-                            target_val = prompt.text("Edit template (X=digit placeholder):", default=vals[0])
-                            break
-            if target_val is None:
-                target_val = prompt.text("Enter common value for these tags:")
+            # ── Smart type-aware input ────────────────────────────────────────
+            # Infer type from tag ID
+            _YEAR_TAGS   = {'TDRC', 'TYER', 'TDRL', 'TDOR'}
+            _NUM_TAGS    = {'TBPM', 'TLEN', 'TRCK', 'TPOS', 'TSRC'}
+            _base_tag    = selected_tags[0].split('[')[0].split(':')[0] if selected_tags else ''
+
+            if _base_tag in _YEAR_TAGS:
+                # Year: show numeric prompt with current year as hint
+                import datetime as _dt
+                _cur_y = str(_dt.date.today().year)
+                target_val = prompt.text(f"Year (e.g. {_cur_y}):")
+                if target_val and not target_val.strip().isdigit():
+                    print("Invalid year — must be a number.")
+                    time.sleep(1)
+                    return
+
+            elif _base_tag in _NUM_TAGS:
+                target_val = prompt.text(f"Value for {_base_tag} (number):")
+                if target_val and not target_val.strip().replace('/', '').isdigit():
+                    print("Expected a numeric value (e.g. 7 or 7/12).")
+                    time.sleep(1)
+                    return
+
+            else:
+                # Pattern detection for strings
+                for tag in selected_tags:
+                    vals = tag_values.get(tag, [])
+                    if len(vals) > 1:
+                        patterns = [_re.sub(r'\d', 'X', v) for v in vals]
+                        if len(set(patterns)) == 1:
+                            print(f"\nPattern in {tag}: {patterns[0]}")
+                            if prompt.confirm("Edit using pattern template?"):
+                                target_val = prompt.text("Template (X = digit):", default=vals[0])
+                                break
+                if target_val is None:
+                    target_val = prompt.text("Common value for selected tags:")
 
     if not target_val and operation not in ["Delete Tags", "Add New Tag"]:
         return
@@ -687,7 +756,7 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
 
     print(f"Successfully processed {count_modified} files.")
     time.sleep(1.5)
-    
+
 
 def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, library: list | None = None) -> None:
     """Browse and edit ID3 tags for a single file.
@@ -695,7 +764,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
     library, if provided, is updated in-place and the cache saved after any tag change.
     """
     from src.ui_utils import format_time
-    
+
     from src.music_library import TAG_MAP as _TAG_MAP
 
     show_xml = False  # default: hide XML when ID3 available
@@ -713,12 +782,24 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
                 time.sleep(1)
 
     def _main_header() -> list[str]:
+        C    = ui_utils.Colours
         cols = ui_utils.get_terminal_width()
-        div = "═" * cols
-        lines = [div, f"  INSPECTING: {os.path.basename(file_path)}", div]
-        
+        name = os.path.basename(file_path)
+        ext  = os.path.splitext(file_path)[1].upper().lstrip('.')
+        size_str = ""
+        try:
+            size_str = f"  {os.path.getsize(file_path) / (1024*1024):.1f} MB"
+        except OSError:
+            pass
+        inner = max(20, cols - 4)
+        lines = [
+            f"{C.DIM}╭{'─' * inner}╮{C.RESET}",
+            f"{C.DIM}│{C.RESET}  {C.BOLD}{ui_utils.truncate_text(name, inner - 16)}{C.RESET}{C.DIM}  [{ext}]{size_str}{' ' * max(0, inner - len(name) - len(ext) - len(size_str) - 7)}│{C.RESET}",
+            f"{C.DIM}╰{'─' * inner}╯{C.RESET}",
+            "",
+        ]
         xml_data = library_metadata.get('xml_data') if library_metadata else None
-        has_id3 = os.path.splitext(file_path)[1].lower() == '.mp3'
+        has_id3  = os.path.splitext(file_path)[1].lower() == '.mp3'
         if xml_data and (show_xml or not has_id3):
             lines.extend(ui_utils.get_xml_metadata_lines(xml_data))
         return lines
@@ -777,7 +858,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
 
             xml_toggle = "Hide XML data" if show_xml else "Show XML data"
             extras = (["Add New Tag"] if has_id3 else []) + ([xml_toggle] if xml_data and has_id3 else []) + ["Back to track list"]
-            
+
             choice = prompt.select(
                 "Select a tag to manage:",
                 choices=tag_choices + extras,
@@ -802,7 +883,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
 
             while True:
                 raw_val = audio[choice]
-                
+
                 if choice.startswith('SYLT'):
                     display_lines = [f"[{format_time(ts/1000)}] {txt}" for txt, ts in raw_val.text]
                     full_text = "\n".join(display_lines)
@@ -813,28 +894,71 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
                     full_text = str(raw_val)
                 else:
                     full_text = "".join(raw_val.text) if hasattr(raw_val, 'text') else str(raw_val)
-                
+
                 def _tag_header() -> list[str]:
-                    c = ui_utils.get_terminal_width()
-                    inner = max(10, c - 2)
+                    C     = ui_utils.Colours
+                    c     = ui_utils.get_terminal_width()
+                    inner = max(10, c - 4)
                     alias = _TAG_MAP.get(choice.split(':')[0].split('[')[0], '')
-                    alias_str = f" ({alias})" if alias else ""
-                    lines = [f"TAG: {choice}{alias_str}", "┌" + "─" * inner + "┐"]
+                    alias_str = f"  {C.DIM}({alias}){C.RESET}" if alias else ""
 
+                    # ── APIC: re-render art at current width ──────────────────
                     if choice.startswith('APIC'):
-                        # Re-render ASCII art at current width so it stays sharp after resize.
-                        art = _convert_ascii_from_apic(raw_val, width=_get_ascii_width())
-                        lines.extend(art.splitlines())
-                    elif choice.startswith('TMCL') or choice.startswith('TIPL'):
-                        for role, name in raw_val.people:
-                            lines.append(f"  {role:<25}  {name}"[:inner])
-                    else:
-                        body = full_text if choice.startswith('SYLT') else repr(full_text)
-                        for chunk in [body[i:i+inner] for i in range(0, max(1, len(body)), inner)]:
-                            lines.append(chunk)
+                        art_w  = max(20, min(c - 6, 100))
+                        art    = _convert_ascii_from_apic(raw_val, width=art_w)
+                        image, mime = _get_image_from_apic(raw_val)
+                        h = w = 0
+                        if image is not None:
+                            h, w = image.shape[:2]
+                        kb = len(getattr(raw_val, 'data', b'')) / 1024
+                        info = f"{w}×{h}px  {mime}  {kb:.0f} KB"
+                        return [
+                            f"{C.BOLD}{choice}{C.RESET}{alias_str}",
+                            f"{C.DIM}{info}{C.RESET}",
+                            f"{C.DIM}{'─' * c}{C.RESET}",
+                            *art.splitlines(),
+                            f"{C.DIM}{'─' * c}{C.RESET}",
+                        ]
 
-                    lines.append("└" + "─" * inner + "┘")
-                    return lines
+                    # ── TMCL / TIPL: people table ─────────────────────────────
+                    if choice.startswith(('TMCL', 'TIPL')):
+                        cw = max(12, (inner - 6) // 2)
+                        lines = [
+                            f"{C.BOLD}{choice}{C.RESET}{alias_str}",
+                            f"{C.DIM}{'─' * c}{C.RESET}",
+                            f"  {C.DIM}{'ROLE':<{cw}}  NAME{C.RESET}",
+                            f"  {'─' * (cw)}  {'─' * (inner - cw - 4)}",
+                        ]
+                        for role, name in raw_val.people:
+                            r = ui_utils.truncate_text(role, cw)
+                            n = ui_utils.truncate_text(name, inner - cw - 4)
+                            lines.append(f"  {r:<{cw}}  {n}")
+                        lines.append(f"{C.DIM}{'─' * c}{C.RESET}")
+                        return lines
+
+                    # ── SYLT ──────────────────────────────────────────────────
+                    if choice.startswith('SYLT'):
+                        lines = [
+                            f"{C.BOLD}{choice}{C.RESET}{alias_str}  {C.DIM}({len(raw_val.text)} lines){C.RESET}",
+                            f"{C.DIM}{'─' * c}{C.RESET}",
+                        ]
+                        for txt, ts in raw_val.text[:6]:
+                            t_fmt = ui_utils.format_time(ts / 1000)
+                            lines.append(f"  {C.DIM}{t_fmt:>6}{C.RESET}  {ui_utils.truncate_text(txt, inner - 12)}")
+                        if len(raw_val.text) > 6:
+                            lines.append(f"  {C.DIM}… {len(raw_val.text) - 6} more{C.RESET}")
+                        lines.append(f"{C.DIM}{'─' * c}{C.RESET}")
+                        return lines
+
+                    # ── Generic text ──────────────────────────────────────────
+                    body    = repr(full_text) if not choice.startswith('USLT') else full_text
+                    wrapped = ui_utils.wrap_text(body, max_width=c, margin=4)
+                    return [
+                        f"{C.BOLD}{choice}{C.RESET}{alias_str}",
+                        f"{C.DIM}╭{'─' * inner}╮{C.RESET}",
+                        *[f"{C.DIM}│{C.RESET} {ln:<{inner - 1}}{C.DIM}│{C.RESET}" for ln in wrapped[:12]],
+                        f"{C.DIM}╰{'─' * inner}╯{C.RESET}",
+                    ]
 
                 actions = ["Copy to clipboard", "Paste from clipboard", "Edit content", "Rename tag", "Delete tag"]
                 if choice.startswith('SYLT'):
@@ -881,7 +1005,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
 
                     if prompt.confirm(f"Replace {choice} with clipboard content?"):
                         audio.delall(choice)
-                        
+
                         if choice.startswith('USLT'):
                             new_frame = USLT(encoding=3, lang='eng', desc='', text=clean_data)
                         elif choice.startswith('SYLT'):
@@ -894,24 +1018,24 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
                             frame_id = choice.split('[')[0] if '[' in choice else choice
                             new_frame = TextFrame(encoding=3, text=[clean_data])
                             setattr(new_frame, 'FrameID', frame_id)
-                        
+
                         audio.add(new_frame)
                         _save(audio)
                         print(f"{choice} updated.")
                         time.sleep(1)
-                        break 
+                        break
 
                 elif action == "Rename tag":
                     new_id = prompt.text("New tag ID (e.g. TPE2, COMM[eng]):")
                     if new_id and new_id != choice:
                         old_frame = audio.pop(choice)
                         # Type narrowing for Pylance:
-                        assert isinstance(new_id, str) 
+                        assert isinstance(new_id, str)
                         if perform_rename(audio, old_frame, new_id):
                             _save(audio)
                             print(f"Renamed {choice} to {new_id}")
                             time.sleep(1)
-                            break 
+                            break
 
                 elif action == "Edit content":
                     # Smart editing based on data type
@@ -981,7 +1105,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
                                     # This fixes the 'clean_data' reference error in your original code
                                     new_frame = TextFrame(encoding=3, text=[new_content])
                                     setattr(new_frame, 'FrameID', frame_id)
-                                
+
                                 audio.add(new_frame)
                                 _save(audio)
                                 print(f"{choice} updated successfully.")
@@ -992,7 +1116,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
                     if prompt.confirm(f"Delete {choice}?"):
                         audio.pop(choice)
                         _save(audio)
-                        break 
+                        break
 
                 elif action == "Back":
                     break
@@ -1001,7 +1125,7 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
             # Fallback for M4P files without ID3
             xml_data = library_metadata.get('xml_data') if library_metadata else None
             display_data = xml_data or library_metadata
-            
+
             if display_data:
                 ui_utils.clear_screen()
                 print(f"INSPECTING: {os.path.basename(file_path)}")
@@ -1018,39 +1142,65 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
 
 def browse_metadata(library: list) -> None:
     """Browse library by artist/album and inspect track metadata."""
+
+    # Build artist list — prefer album_artist, fall back to artist
+    def _display_artist(song: dict) -> str:
+        return song.get('album_artist') or song.get('artist') or 'Unknown Artist'
+
+    # Sort key for an artist name — uses sort tags from any song in their group
+    def _artist_sort_key(name: str, artist_songs: list) -> str:
+        return get_group_sort_key(name, artist_songs, 'artist')
+
     while True:
-        all_artists = sorted(set(s['artist'] for s in library))
-        categories  = sorted(set(_sort_category(a) for a in all_artists))
+        # Group songs by display artist
+        artist_groups: dict[str, list] = {}
+        for s in library:
+            artist_groups.setdefault(_display_artist(s), []).append(s)
 
-        if "#" in categories:
-            categories.append(categories.pop(categories.index("#")))
+        # Sort artists by sort key
+        all_artists = sorted(
+            artist_groups.keys(),
+            key=lambda a: _artist_sort_key(a, artist_groups[a])
+        )
 
-        cat_choice = prompt.select("Category:", choices=categories + ["Exit"])
-        if not cat_choice or cat_choice == "Exit":
+        filtered_artists = select_from_alpha_list(
+            all_artists,
+            sort_key_fn=lambda a: _artist_sort_key(a, artist_groups[a]),
+            message="Select Artist:",
+        )
+        if filtered_artists is None:
             break
 
-        filtered_artists = [a for a in all_artists if _sort_category(a) == cat_choice]
         artist_choice = prompt.select("Artist:", choices=filtered_artists + [".. Back"])
-
         if not artist_choice or artist_choice == ".. Back":
             continue
 
-        artist_songs = [s for s in library if s.get('artist') == artist_choice]
-        albums = sorted(set(s.get('album', 'Unknown') for s in artist_songs))
+        artist_songs = artist_groups[artist_choice]
+
+        # Group artist songs by album, sort by Album Sort Order then album name
+        album_groups: dict[str, list] = {}
+        for s in artist_songs:
+            album_groups.setdefault(s.get('album', 'Unknown'), []).append(s)
+
+        albums_sorted = sorted(
+            album_groups.keys(),
+            key=lambda a: get_group_sort_key(a, album_groups[a], 'album')
+        )
+
         album_choice = prompt.select(
-            "Album:", choices=["[Bulk Edit All Artist Tracks]"] + albums + [".. Back"]
+            "Album:", choices=["Edit all artist tracks"] + albums_sorted + [".. Back"]
         )
 
         if not album_choice or album_choice == ".. Back":
             continue
 
-        if album_choice == "[Bulk Edit All Artist Tracks]":
+        if album_choice == "Edit all artist tracks":
             bulk_tag_manager(library, paths=[s['path'] for s in artist_songs])
             continue
 
         tracks = sorted(
-            [s for s in artist_songs if s.get('album') == album_choice],
-            key=lambda x: int(x.get('track', 0) or 0)
+            album_groups[album_choice],
+            key=lambda x: (int(x.get('disc', 1) or 1), int(x.get('track', 0) or 0))
         )
 
         while True:
@@ -1059,13 +1209,13 @@ def browse_metadata(library: list) -> None:
                 for s in tracks
             ]
             path = prompt.select(
-                "Track:", choices=["[Bulk Edit This Album]"] + track_choices + [".. Back"]
+                "Track:", choices=["Edit all album tracks"] + track_choices + [".. Back"]
             )
 
             if not path or path == ".. Back":
                 break
 
-            if path == "[Bulk Edit This Album]":
+            if path == "Edit all album tracks":
                 bulk_tag_manager(library, paths=[s['path'] for s in tracks])
                 continue
 

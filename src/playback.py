@@ -208,7 +208,6 @@ def build_uslt_line_times(lines: list, words_per_second: float = 2.2) -> list:
 
 def find_current_uslt_line(line_times: list, elapsed: float) -> int:
     """Find which USLT line should currently be displayed using binary search."""
-    # line_times is sorted by t_start; find the last entry where t_start <= elapsed
     ends = [t[1] for t in line_times]
     idx = bisect.bisect_right(ends, elapsed)
     return min(idx, max(0, len(line_times) - 1))
@@ -217,58 +216,33 @@ def find_current_uslt_line(line_times: list, elapsed: float) -> int:
 def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
                       width: int | None = None, max_row: int | None = None) -> None:
     """Display previous, current, and next lyrics for SYLT."""
-    width = width or ui_utils.get_terminal_width()
+    C      = ui_utils.Colours
+    width  = width or ui_utils.get_terminal_width()
     _, term_rows = ui_utils.get_terminal_size()
     max_row = max_row or term_rows
-    budget  = max(4, max_row - row - 1)   # rows available for the lyric block
-    wrap_w  = max(20, width - 12)
+    budget  = max(4, max_row - row - 1)
+    wrap_w  = max(20, width - 8)
 
-    # Raw text for surrounding lines
     p_raw = sylt_data[current_idx - 1][0] if current_idx > 0 else ""
-    c_raw = sylt_data[current_idx][0] if 0 <= current_idx < len(sylt_data) else ""
+    c_raw = sylt_data[current_idx][0]     if 0 <= current_idx < len(sylt_data) else ""
     n_raw = sylt_data[current_idx + 1][0] if 0 <= current_idx < len(sylt_data) - 1 else ""
 
-    # Surrounding lines: single line, truncated with ellipsis if too long.
-    def _surround(raw: str) -> str:
+    def _ctx(raw: str) -> str:
         flat = normalise_lyric_newlines(raw).replace('\n', ' ')
-        if len(flat) > wrap_w:
-            flat = flat[:wrap_w - 1] + '…'
-        return flat
+        return flat[:wrap_w - 1] + '…' if len(flat) > wrap_w else flat
 
-    p_line = _surround(p_raw)
-    n_line = _surround(n_raw)
+    p_line = _ctx(p_raw)
+    n_line = _ctx(n_raw)
 
-    # Current line: wrap freely, capped by available budget (1 prev + 1 next = 2 used).
-    c_flat       = normalise_lyric_newlines(c_raw).replace('\n', ' ')
-    max_c_lines  = max(1, budget - 2)
-    c_wrap       = textwrap.wrap(c_flat, width=wrap_w)[:max_c_lines]
+    c_flat = normalise_lyric_newlines(c_raw).replace('\n', ' ')
+    c_wrap = textwrap.wrap(c_flat, width=wrap_w - 4)[:max(1, budget - 2)]
 
-    # Erase from this row downward before writing (prevents leftover lines on resize).
     sys.stdout.write(f"\033[{row};1H\033[J")
-
-    # Previous line (DIM)
-    if p_line:
-        sys.stdout.write(f"{ui_utils.Colours.DIM}   {p_line}{ui_utils.Colours.RESET}\n")
-    else:
-        sys.stdout.write("\n")
-
-    # Current line (BOLD), capped and split
-    if c_wrap:
-        for i, line in enumerate(c_wrap):
-            if line == '':
-                sys.stdout.write("\n")
-                continue
-            prefix = ">> " if i == 0 else "   "
-            sys.stdout.write(f"{ui_utils.Colours.BOLD}{prefix}{line}{ui_utils.Colours.RESET}\n")
-    else:
-        sys.stdout.write("\n")
-
-    # Next line (DIM)
-    if n_line:
-        sys.stdout.write(f"{ui_utils.Colours.DIM}   {n_line}{ui_utils.Colours.RESET}\n")
-    else:
-        sys.stdout.write("\n")
-
+    sys.stdout.write(f"{C.DIM}  {p_line}{C.RESET}\n" if p_line else "\n")
+    for i, seg in enumerate(c_wrap or [""]):
+        pfx = "▶ " if i == 0 else "  "
+        sys.stdout.write(f"  {C.BOLD}{pfx}{seg}{C.RESET}\n" if seg else "\n")
+    sys.stdout.write(f"{C.DIM}  {n_line}{C.RESET}\n" if n_line else "\n")
     sys.stdout.flush()
 
 
@@ -276,9 +250,7 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list, elapsed: float
                      width: int | None = None, manual_idx: int | None = None,
                      max_row: int | None = None) -> None:
     """Render prev / current / next from an already-expanded USLT line list."""
-    RESET    = "\033[0m"
-    HIGHLIGHT, GREEN, CYAN, DIM = "\033[1;31m", "\033[1;32m", "\033[1;36m", "\033[2m"
-
+    C    = ui_utils.Colours
     width        = width or ui_utils.get_terminal_width()
     wrap_w       = max(20, width - 8)
     _, term_rows = ui_utils.get_terminal_size()
@@ -291,33 +263,32 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list, elapsed: float
     curr_text = all_lines[display_idx]     if 0 <= display_idx < len(all_lines) else ""
     next_text = all_lines[display_idx + 1] if display_idx < len(all_lines) - 1  else ""
 
-    # Current line: wrap and cap to available budget.
     budget       = max(3, max_row - row - 1)
-    max_curr     = max(1, budget - 2)
-    curr_wrapped = textwrap.wrap(curr_text.replace('\n', ' '), width=wrap_w) or ['']
-    curr_wrapped = curr_wrapped[:max_curr]
+    curr_wrapped = textwrap.wrap(curr_text.replace('\n', ' '), width=wrap_w - 4) or ['']
+    curr_wrapped = curr_wrapped[:max(1, budget - 2)]
 
-    # Context lines: first wrapped line only.
     def _ctx(text: str) -> str:
         lines = textwrap.wrap(text.replace('\n', ' '), width=wrap_w)
         return lines[0] if lines else ""
 
+    # Subtle manual scroll indicator instead of [MANUAL]/[AUTO] label
+    scroll_hint = f" {C.DIM}↕ scroll{C.RESET}" if manual_idx is not None else ""
+    hl  = C.SUCCESS if manual_idx is not None else C.ACCENT
+    pfx = "● " if manual_idx is not None else "▶ "
+
     sys.stdout.write(f"\033[{row};1H\033[J")
 
-    status = f"{GREEN}[MANUAL]{RESET}" if manual_idx is not None else f"{CYAN}[AUTO]{RESET}"
-    sys.stdout.write(status + "\n")
-
     prev_line = _ctx(prev_text)
-    sys.stdout.write(f"{DIM}    {prev_line}{RESET}\n" if prev_line else "\n")
+    sys.stdout.write(f"{C.DIM}  {prev_line}{C.RESET}\n" if prev_line else "\n")
 
-    hl  = GREEN if manual_idx is not None else HIGHLIGHT
-    pfx = "[\u2022]" if manual_idx is not None else ">>>"
     for i, seg in enumerate(curr_wrapped):
-        prefix = f"{pfx} " if i == 0 else "    "
-        sys.stdout.write(f"{hl}{prefix}{seg}{RESET}\n")
+        if i == 0:
+            sys.stdout.write(f"  {hl}{pfx}{seg}{C.RESET}{scroll_hint}\n")
+        else:
+            sys.stdout.write(f"    {hl}{seg}{C.RESET}\n")
 
     next_line = _ctx(next_text)
-    sys.stdout.write(f"{DIM}    {next_line}{RESET}\n" if next_line else "\n")
+    sys.stdout.write(f"{C.DIM}  {next_line}{C.RESET}\n" if next_line else "\n")
 
     sys.stdout.flush()
 
@@ -364,35 +335,29 @@ def _build_cast_lines(people: list, max_w: int, limit: int = 4) -> list:
 
 
 def _build_crew_lines(people: list, max_w: int, cast_names: list | None = None, limit: int = 4) -> list:
-    """Priority order: cast matches (in billing order), then creator, producer, script editor, others. Ignores writers. Cap at limit."""
+    """Priority order: cast matches, then creator, producer, script editor, others."""
     DIM, RESET = "\033[2m", "\033[0m"
     cast_names = cast_names or []
     cast_name_lower = [n.lower() for n in cast_names]
     
-    # Separate crew into matching and non-matching
     cast_matches = []
     other_crew = []
-    seen_cast = set() # Track cast members we've already given priority
+    seen_cast = set()
     
     for role, name in people:
         name_l = name.lower()
         if name_l in cast_name_lower and name_l not in seen_cast:
-            # Find original cast position to maintain billing order
             cast_idx = cast_name_lower.index(name_l)
             cast_matches.append((cast_idx, role, name))
-            seen_cast.add(name_l) # Ensure they are only given priority once
+            seen_cast.add(name_l)
         else:
-            # Subsequent roles for the same cast member (or non-cast) go here
             other_crew.append((role, name))
     
-    # Sort cast matches by billing order (original cast index)
     cast_matches.sort(key=lambda x: x[0])
     cast_matches = [(role, name) for _, role, name in cast_matches]
     
-    # Priority order for non-matching crew - skip writers if we have billing members
     priority_roles = ['creator', 'producer', 'script editor']
     if not cast_matches:
-        # Only include writers if no billing production members
         priority_roles = ['creator', 'producer', 'writer', 'script editor']
     
     ordered, others = [], []
@@ -421,111 +386,330 @@ def _build_crew_lines(people: list, max_w: int, cast_names: list | None = None, 
 
 
 def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
-                 is_paused: bool = False, volume: int = 100) -> tuple:
-    """
-    Draw the full music player UI.
+                 is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple:
+    """Draw the player UI, selecting between config layout styles."""
+    from src.config import load_config
+    view = load_config().get("player_view", "default")
+    if view == "ipod":
+        return _draw_ipod_ui(file_path, audio, size, is_paused, volume, toast)
+    return _draw_default_ui(file_path, audio, pre_art, size, is_paused, volume, toast)
 
-    Returns (progress_row, lyric_row, columns)
-    volume: 0-100 (VLC scale)
-    """
+
+# ── iPod 2G view ──────────────────────────────────────────────────────────────
+
+def _draw_ipod_ui(file_path: str, audio, size: tuple,
+                  is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple:
     cols, rows = size
 
-    RESET   = ui_utils.Colours.RESET
-    MAGENTA = ui_utils.Colours.MAGENTA
+    RESET  = "\033[0m"
+    INV    = "\033[7m"
+    BOLD   = "\033[1m"
+    DIM    = "\033[2m"
+    FRAME  = "\033[2;37m"
+
+    fw = min(max(36, cols - 4), 64)
+    pad = " " * ((cols - fw) // 2)
+
+    def _row(content: str, width: int = fw) -> str:
+        vis = _visible_len(content)
+        if vis > width:
+            content = content[:width - 1] + "…"
+            vis = width
+        return content + " " * (width - vis)
+
+    def _centre(text: str, width: int = fw) -> str:
+        text = text[:width]
+        total_pad = width - len(text)
+        l = total_pad // 2
+        return " " * l + text + " " * (total_pad - l)
 
     ui_utils.clear_screen()
 
-    breadcrumbs = ui_utils._get_breadcrumb_str(cols) if NAV_STACK else "Music Player"
-    print(f"{ui_utils.Colours.DIM}{breadcrumbs}{ui_utils.Colours.RESET}")
-    print("─" * cols)
+    play_sym = "▶" if not is_paused else "⏸"
+    battery  = f"▓▓▓"
+    # Show running toast inside the top banner if available
+    header_text = f" [{toast.upper()}]" if toast else " Now Playing"
+    header_inner = _row(f" {play_sym} {header_text} {battery.rjust(fw - 4 - len(header_text))}", fw)
+    print(f"{pad}{INV}{BOLD}{header_inner}{RESET}")
+    print(f"{pad}{FRAME}{'─' * fw}{RESET}")
 
-    # ── Right column: Cast & Crew ─────────────────────────────────────────
-    cast_people = _get_people(audio, 'TMCL')
-    crew_people = _get_people(audio, 'TIPL')
+    try:
+        track_num = str(audio['TRCK']).split('/')[0].strip() if 'TRCK' in audio else "?"
+        track_tot = str(audio['TRCK']).split('/')[1].strip() if 'TRCK' in audio and '/' in str(audio['TRCK']) else "?"
+        counter   = f"{track_num} of {track_tot}"
+    except Exception:
+        counter = ""
+    print(f"{pad}{DIM}{_row(f'  {counter}', fw)}{RESET}")
 
-    # Natural visible width — measure with unlimited width then clamp
-    if cast_people or crew_people:
-        _probe_lines = []
-        if cast_people:
-            _probe_lines.extend(_build_cast_lines(cast_people, 9999))
-        if crew_people:
-            top_cast_names = [name for _, name in cast_people[:4]]
-            _probe_lines.extend(_build_crew_lines(crew_people, 9999, cast_names=top_cast_names))
-        right_natural_w = max((_visible_len(l) for l in _probe_lines), default=0)
-    else:
-        right_natural_w = 0
+    print()
 
-    MAX_RIGHT_FRAC   = 0.45
-    right_col_width  = min(right_natural_w, int(cols * MAX_RIGHT_FRAC))
-    left_col_width   = max(20, cols - right_col_width - 3) if right_col_width else cols - 1
+    title  = str(audio['TIT2']) if 'TIT2' in audio else os.path.splitext(os.path.basename(file_path))[0]
+    artist = str(audio.get('TPE2') or audio.get('TPE1') or '')
+    album  = str(audio['TALB']) if 'TALB' in audio else ''
 
-    # Build right column once at final width
-    right_lines = []
-    if cast_people:
-        right_lines.append(f"{ui_utils.Colours.YELLOW}--- CAST ---{RESET}")
-        right_lines.extend(_build_cast_lines(cast_people, right_col_width))
-    if crew_people:
-        if right_lines:
-            right_lines.append("")
-        right_lines.append(f"{ui_utils.Colours.CYAN}--- PRODUCTION ---{RESET}")
-        top_cast_names = [name for _, name in cast_people[:4]]
-        right_lines.extend(_build_crew_lines(crew_people, right_col_width, cast_names=top_cast_names))
-    PLAYER_TAG_ALLOWLIST = [
-        'TIT2', 'TIT3', 'TPE1', 'TPE2', 'TALB', 'TRCK', 'TPOS',
-        'TDRC', 'TYER', 'TCON', 'TCOM', 'TBPM', 'TLEN', 'TKEY',
-        'TSST', 'TIT1', 'TPUB', 'TCOP', 'TLAN', 'TMOO', 'TMED',
+    inner = fw - 4
+    def _fit(s: str) -> str:
+        return s if len(s) <= inner else s[:inner - 1] + '…'
+
+    print(f"{pad}{BOLD}{_centre(_fit(title))}{RESET}")
+    if artist:
+        print(f"{pad}{_centre(_fit(artist))}")
+    if album:
+        print(f"{pad}{DIM}{_centre(_fit(album))}{RESET}")
+
+    print()
+    print(f"{pad}{FRAME}{'─' * fw}{RESET}")
+
+    v_blocks = ["", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    v_idx    = min(int((volume / 100) * 8), 8)
+    vol_str  = f"VOL {''.join(v_blocks[1:v_idx+1]):<8} {volume:3d}%"
+    print(f"{pad}{DIM}{_row(f'  {vol_str}', fw)}{RESET}")
+
+    hints = "  ◀◀  ▶▶   |  MENU"
+    print(f"{pad}{DIM}{_row(hints, fw)}{RESET}")
+    print(f"{pad}{FRAME}{'─' * fw}{RESET}")
+
+    header_height = 12
+    prog_row      = header_height + 1
+    ctrl_row      = prog_row + 1
+    lyric_row     = ctrl_row + 3
+
+    return prog_row, ctrl_row, lyric_row, cols
+
+
+# ── Progress bar override for iPod view ──────────────────────────────────────
+
+def update_progress_ipod(row: int, elapsed: float, duration: float,
+                         width: int, cols: int) -> None:
+    """iPod-style progress: elapsed  [████░░░░░]  total — centred."""
+    fw      = min(max(36, cols - 4), 64)
+    pad     = " " * ((cols - fw) // 2)
+    RESET   = "\033[0m"
+    DIM     = "\033[2m"
+
+    e_str   = ui_utils.format_time(elapsed)
+    d_str   = ui_utils.format_time(duration)
+    bar_w   = fw - len(e_str) - len(d_str) - 4
+    bar_w   = max(4, bar_w)
+    pct     = max(0.0, min(elapsed / duration, 1.0)) if duration else 0
+    filled  = int(pct * bar_w)
+    bar     = "█" * filled + "░" * (bar_w - filled)
+
+    line = f"{e_str}  {DIM}{bar}{RESET}  {d_str}"
+    sys.stdout.write(f"\033[{row};1H\033[K{pad}{line}")
+    sys.stdout.flush()
+
+
+# ── Default view — responsive layout ─────────────────────────────────────────
+
+_LAYOUT_WIDE     = 100  # art-left | meta+cast-right
+_LAYOUT_STANDARD = 60   # art-above, meta | cast below
+# < 60: minimal — no art, stacked meta only
+
+
+def _layout_mode(cols: int) -> str:
+    if cols >= _LAYOUT_WIDE:
+        return "wide"
+    if cols >= _LAYOUT_STANDARD:
+        return "standard"
+    return "minimal"
+
+
+def _controls_line(has_lyrics: bool, is_paused: bool, volume: int, toast: str) -> tuple[str, str]:
+    """Return (status_line, shortcuts_line) strings."""
+    C = ui_utils.Colours
+    pp_icon = f"{C.BOLD}⏸  PAUSED{C.RESET}" if is_paused else f"{C.BOLD}⏵  PLAYING{C.RESET}"
+
+    v_blocks = [" ", "▂", "▃", "▅", "▆", "▇"]
+    v_idx    = min(int((volume / 100) * 5), len(v_blocks) - 1)
+    vol_bar  = ''.join(v_blocks[:v_idx + 1])
+    vol_str  = f"{C.DIM}VOL{C.RESET} {vol_bar} {volume}%"
+    toast_str = f"   \033[1;33m{toast}\033[0m" if toast else ""
+
+    status = f"  {pp_icon}   {vol_str}{toast_str}"
+
+    scroll_hint = "  [↑/↓] Scroll" if has_lyrics else ""
+    shortcuts   = (
+        f"{C.DIM}  [Space] Pause  [←/→] ±5s  [,/.] ±30s"
+        f"  [+/-] Vol{scroll_hint}  [N] Next  [Q] Quit{C.RESET}"
+    )
+    return status, shortcuts
+
+
+def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
+    """Build metadata display lines. max_val_w is the value column width."""
+    C = ui_utils.Colours
+    TAG_DISPLAY = [
+        ('TIT2', None),
+        ('TIT3', None),
+        ('TPE2', 'Album Artist'),
+        ('TPE1', 'Artist'),
+        ('TALB', 'Album'),
+        ('TSST', 'Disc'),
+        ('TRCK', 'Track'),
+        ('TPOS', 'Disc No.'),
+        ('TDRC', 'Year'),
+        ('TYER', 'Year'),
+        ('TCON', 'Genre'),
+        ('TCOM', 'Composer'),
+        ('TBPM', 'BPM'),
     ]
-
-    left_lines = []
-
-    label_file   = "FILE:"
-    max_val_file = left_col_width - len(label_file) - 1
-    display_path = ui_utils.truncate_text(file_path, max_val_file, placeholder="...", front=True)
-    left_lines.append(f"{MAGENTA}{label_file:<2}{RESET} {display_path}")
-
-    for tag in PLAYER_TAG_ALLOWLIST:
+    LABEL_W = 13
+    lines = []
+    for tag, label in TAG_DISPLAY:
         if tag not in audio:
             continue
-        label         = TAG_MAP.get(tag, tag)
-        val           = str(audio[tag])
-        display_label = label[:12]
-        max_val_w     = left_col_width - 15
-        val           = ui_utils.truncate_text(val, max_val_w, placeholder="..")
-        left_lines.append(f"{MAGENTA}{display_label:<12}:{RESET} {val}")
-
-    # ── Draw grid ─────────────────────────────────────────────────────────
-    num_rows = max(len(left_lines), len(right_lines))
-    for i in range(num_rows):
-        l_text = left_lines[i]  if i < len(left_lines)  else ""
-        r_text = right_lines[i] if i < len(right_lines) else ""
-        l_vis  = _visible_len(l_text)
-        pad    = " " * max(0, left_col_width - l_vis)
-        if right_lines:
-            print(f"{l_text}{pad} │ {r_text}")
+        val = str(audio[tag]).strip()
+        if not val:
+            continue
+        val = ui_utils.truncate_text(val, max(1, max_val_w), placeholder="…")
+        if label is None:
+            lines.append(f"{C.BOLD}{val}{C.RESET}")
         else:
-            print(l_text)
+            lines.append(f"{C.DIM}{label:<{LABEL_W}}{C.RESET} {val}")
+    if not lines:
+        fp = ui_utils.truncate_text(file_path, max(1, max_val_w + LABEL_W), placeholder="…", front=True)
+        lines.append(f"{C.DIM}{fp}{C.RESET}")
+    return lines
 
-    header_height = num_rows + 2
-    print("─" * cols)
 
-    # Art — cached per (file_path, width) so resizes don't re-decode the image
-    max_art_h = max(2, rows - header_height - 10)
-    art_str   = pre_art if pre_art else _get_ascii_cached(file_path, width=cols)
-    art_lines = art_str.splitlines()[:max_art_h]
-    print("\n".join(art_lines))
+def _right_col_lines(cast_people: list, crew_people: list,
+                     col_w: int, cast_limit: int, crew_limit: int) -> list[str]:
+    """Build cast/crew right-column lines, truncated to col_w."""
+    C = ui_utils.Colours
+    lines: list[str] = []
+    if cast_people:
+        lines.append(f"{ui_utils.Colours.YELLOW}CAST{C.RESET}")
+        lines.extend(_build_cast_lines(cast_people, col_w, limit=cast_limit))
+    if crew_people:
+        if lines:
+            lines.append("")
+        lines.append(f"{C.CYAN}PRODUCTION{C.RESET}")
+        top_names = [n for _, n in cast_people[:cast_limit]]
+        lines.extend(_build_crew_lines(crew_people, col_w, cast_names=top_names, limit=crew_limit))
+    return lines
 
-    prog_row = header_height + len(art_lines) + 2
-    ctrl_row = prog_row + 1
+
+def _print_two_col(left: list[str], left_w: int,
+                   right: list[str], sep: str = " │ ") -> int:
+    """
+    Print left and right columns with a fixed left_w gutter.
+    Every left cell is padded to exactly left_w visible chars.
+    Returns number of rows printed.
+    """
+    n = max(len(left), len(right))
+    for i in range(n):
+        l = left[i]  if i < len(left)  else ""
+        r = right[i] if i < len(right) else ""
+        vis = _visible_len(l)
+        pad = " " * max(0, left_w - vis)
+        sys.stdout.write(f"{l}{pad}{sep}{r}\n")
+    return n
+
+
+def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
+                     is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple:
+    cols, rows = size
+    C    = ui_utils.Colours
+    mode = _layout_mode(cols)
+
+    ui_utils.clear_screen()
+
+    cast_people = _get_people(audio, 'TMCL')
+    crew_people = _get_people(audio, 'TIPL')
+    has_cast    = bool(cast_people or crew_people)
+
+    # ── Header (breadcrumb + divider) — always 2 lines ───────────────────────
+    breadcrumb = ui_utils._get_breadcrumb_str(cols) if NAV_STACK else "Music Player"
+    sys.stdout.write(f"{C.DIM}{breadcrumb}{C.RESET}\n")
+    sys.stdout.write(f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}\n")
+    row_cursor = 2  # lines written so far
+
+    # ── WIDE (≥ 100): art left, metadata+cast right ───────────────────────────
+    if mode == "wide":
+        art_w   = min(cols // 2, 56)          # cap art column
+        right_w = cols - art_w - 3            # " │ " separator = 3 chars
+        meta_val_w = right_w - 15             # label col = 14 + space
+
+        art_str   = pre_art if pre_art else _get_ascii_cached(file_path, width=art_w)
+        art_lines = art_str.splitlines()
+
+        cast_limit = max(1, (rows - 10) // 3)
+        crew_limit = max(1, (rows - 10) // 3)
+
+        left_col  = _meta_left_lines(audio, file_path, meta_val_w)
+        right_col = _right_col_lines(cast_people, crew_people, right_w, cast_limit, crew_limit)
+
+        # Merge meta + cast into one right column: meta on top, cast below
+        meta_lines = left_col + ([""] if right_col else []) + right_col
+        num_body   = max(len(art_lines), len(meta_lines))
+        for i in range(num_body):
+            a   = art_lines[i]  if i < len(art_lines)  else ""
+            m   = meta_lines[i] if i < len(meta_lines) else ""
+            vis = _visible_len(a)
+            pad = " " * max(0, art_w - vis)
+            sys.stdout.write(f"{a}{pad} │ {m}\n")
+
+        row_cursor += num_body
+        sys.stdout.write(f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}\n")
+        row_cursor += 1
+
+    # ── STANDARD (60–99): art above full-width, meta|cast below ──────────────
+    elif mode == "standard":
+        # Reserve: 2 header + divider-after-art + meta rows + divider + prog + ctrl×2 + lyric×3
+        reserved  = 2 + 1 + 1 + 3 + 2 + 3
+        max_art_h = max(2, rows - reserved - 8)
+
+        art_str   = pre_art if pre_art else _get_ascii_cached(file_path, width=cols)
+        art_lines = art_str.splitlines()[:max_art_h]
+        sys.stdout.write("\n".join(art_lines) + "\n")
+        sys.stdout.write(f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}\n")
+        row_cursor += len(art_lines) + 1
+
+        # Meta left, cast right — only split if there's cast to show
+        if has_cast:
+            # Fixed split: metadata gets 60 % of cols, cast gets the rest
+            left_w     = max(20, int(cols * 0.58))
+            right_w    = cols - left_w - 3
+            meta_val_w = left_w - 15
+            cast_limit = max(1, (rows - row_cursor - 8) // 2)
+            crew_limit = max(1, cast_limit)
+
+            left_col  = _meta_left_lines(audio, file_path, meta_val_w)
+            right_col = _right_col_lines(cast_people, crew_people, right_w, cast_limit, crew_limit)
+            num_body  = _print_two_col(left_col, left_w, right_col)
+        else:
+            meta_val_w = cols - 16
+            left_col   = _meta_left_lines(audio, file_path, meta_val_w)
+            for line in left_col:
+                sys.stdout.write(f"{line}\n")
+            num_body = len(left_col)
+
+        row_cursor += num_body
+        sys.stdout.write(f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}\n")
+        row_cursor += 1
+
+    # ── MINIMAL (< 60): no art, stacked metadata only ────────────────────────
+    else:
+        meta_val_w = max(1, cols - 16)
+        left_col   = _meta_left_lines(audio, file_path, meta_val_w)
+        for line in left_col:
+            sys.stdout.write(f"{line}\n")
+        sys.stdout.write(f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}\n")
+        row_cursor += len(left_col) + 1
+
+    # ── Progress + controls (absolute positioning below body) ─────────────────
+    prog_row  = row_cursor + 1    # +1 blank gap after last divider
+    ctrl_row  = prog_row + 1
     lyric_row = ctrl_row + 3
 
-    # Play/Pause + Volume (VLC 0-100 scale → block display)
-    pp_icon = " ⏸  PAUSED" if is_paused else " ⏵  PLAYING"
-    v_blocks = [" ", "▂", "▃", "▅", "▆", "▇"]
-    v_idx = min(int((volume / 100) * 5), len(v_blocks) - 1)
-    vol_bar = ''.join(v_blocks[:v_idx + 1])
-    print(f"\033[{ctrl_row};1H{pp_icon}  |  VOL: {vol_bar} {volume}%")
+    has_lyrics = bool(audio.getall('SYLT') or audio.getall('USLT'))
+    status_ln, shortcuts_ln = _controls_line(has_lyrics, is_paused, volume, toast)
+    sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}\n")
+    sys.stdout.write(f"\033[{ctrl_row + 1};1H\033[K{shortcuts_ln}\n")
+    sys.stdout.flush()
 
-    return prog_row, lyric_row, cols
+    return prog_row, ctrl_row, lyric_row, cols
 
 
 # ============================================================================
@@ -583,24 +767,15 @@ def _parse_uslt(audio) -> list:
 
 
 def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
-    """
-    Main music player engine (VLC backend).
-
-    Controls:
-        ␣ / P         pause/resume
-        N             back to menu
-        Q             quit all
-        ← / →         seek ±5s
-        , / .         seek ±30s
-        J / L         seek ±1s
-        + / -         volume ±10
-        ↑ / ↓         navigate USLT lyrics (unsynced only)
-    """
+    """Main music player engine (VLC backend)."""
     manual_line_index = None
     arrow_key_time = None
     uslt_time_offset = 0.0
+    
+    toast_text = ""
+    toast_expiry = 0.0
 
-    # Data loading
+    # Graceful Error Handling Intercept
     if preloaded_data:
         audio = preloaded_data['audio']
         duration = preloaded_data['duration']
@@ -610,10 +785,21 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
             audio = ID3(file_path)
             duration = get_song_duration(file_path)
             pre_art = None
-        except Exception:
+        except Exception as e:
+            ui_utils.clear_screen()
+            sys.stdout.write(f"\033[1;31mPlayback Error:\033[0m Could not load structure for:\n")
+            sys.stdout.write(f" → {file_path}\n")
+            sys.stdout.write(f"\033[2mDetail: {str(e)}\033[0m\n\n")
+            sys.stdout.write("Press any key to return...")
+            sys.stdout.flush()
+            with raw_mode(sys.stdin):
+                get_key_non_blocking()
+                while True:
+                    if get_key_non_blocking():
+                        break
+                    time.sleep(0.05)
             return {"status": "ERROR"}
 
-    # Parse lyrics
     sylt_data = _parse_sylt(audio)
     is_uslt = False
     uslt_lines, line_times = [], []
@@ -626,35 +812,33 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
             uslt_lines = [t for t, _ in uslt_lines_raw]
             line_times = build_uslt_line_times(uslt_lines)
 
-    # VLC init — stderr suppressed inside _make_player for the init phase.
-    # We suppress again for the playback loop duration here.
     devnull = os.open(os.devnull, os.O_WRONLY)
     old_stderr = os.dup(2)
     os.dup2(devnull, 2)
     os.close(devnull)
-    mp = _make_player(file_path)  # _make_player does NOT touch stderr itself
+    mp = _make_player(file_path)
 
     last_size = ui_utils.get_terminal_size()
     last_lyric_idx = -1
+    
+    resize_pending = False
+    resize_timer = 0.0
+    pending_size = last_size
 
     with raw_mode(sys.stdin):
         mp.play()
-        # Give VLC a moment to start and populate get_length()
         time.sleep(0.3)
 
-        # If duration wasn't preloaded, pull from VLC
         if not duration or duration <= 0:
             vlc_len = mp.get_length()
             duration = vlc_len / 1000.0 if vlc_len > 0 else 999.0
 
-        volume = mp.audio_get_volume()  # sync with VLC's actual volume
+        volume = mp.audio_get_volume()
 
-        prog_row, lyric_row, current_width = draw_full_ui(
-            file_path, audio, pre_art, last_size, is_paused=False, volume=volume
+        prog_row, ctrl_row, lyric_row, current_width = draw_full_ui(
+            file_path, audio, pre_art, last_size, is_paused=False, volume=volume, toast=toast_text
         )
 
-        # Expand USLT lines for the current terminal width.
-        # Re-computed on resize; cache keyed on wrap_w so this is cheap.
         if is_uslt:
             _wrap_w = max(20, current_width - 8)
             exp_lines, exp_times = expand_uslt_lines(uslt_lines, line_times, _wrap_w)
@@ -663,54 +847,85 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
 
         track_start = time.time()
 
+        # Dynamic control row inline update utility
+        def update_ctrl_ui():
+            is_paused = (mp.get_state() == vlc.State(4))
+            vol = mp.audio_get_volume()
+            curr_toast = toast_text if time.time() < toast_expiry else ""
+            from src.config import load_config as _lc
+            if _lc().get("player_view") != "ipod":
+                status_ln, shortcuts_ln = _controls_line(bool(sylt_data), is_paused, vol, curr_toast)
+                sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}\n")
+                sys.stdout.write(f"\033[{ctrl_row + 1};1H\033[K{shortcuts_ln}\n")
+                sys.stdout.flush()
+            else:
+                draw_full_ui(file_path, audio, pre_art, last_size, is_paused, vol, curr_toast)
+
         while True:
             current_size = ui_utils.get_terminal_size()
 
+            # Window Resize Debounce Logic
             if current_size != last_size:
-                last_size = current_size
+                if not resize_pending:
+                    resize_pending = True
+                    pending_size = current_size
+                    resize_timer = time.time()
+                elif current_size != pending_size:
+                    pending_size = current_size
+                    resize_timer = time.time()
+
+            if resize_pending and (time.time() - resize_timer > 0.15):
+                last_size = pending_size
+                resize_pending = False
                 volume = mp.audio_get_volume()
-                prog_row, lyric_row, current_width = draw_full_ui(
+                prog_row, ctrl_row, lyric_row, current_width = draw_full_ui(
                     file_path, audio, pre_art, last_size,
                     is_paused=(mp.get_state() == vlc.State(4)),
-                    volume=volume
+                    volume=volume,
+                    toast=toast_text if time.time() < toast_expiry else ""
                 )
                 last_lyric_idx = -1
                 if is_uslt:
                     _wrap_w = max(20, current_width - 8)
                     exp_lines, exp_times = expand_uslt_lines(uslt_lines, line_times, _wrap_w)
 
-            # Elapsed from VLC directly
+            # Clear transient toast feedback messages
+            if toast_text and time.time() >= toast_expiry:
+                toast_text = ""
+                update_ctrl_ui()
+
             elapsed_ms = mp.get_time()
             elapsed = elapsed_ms / 1000.0 if elapsed_ms >= 0 else 0.0
 
             state = mp.get_state()
-            if state in (vlc.State(6), vlc.State(5), vlc.State(7)): # Ended, Stopped, Error 
+            if state in (vlc.State(6), vlc.State(5), vlc.State(7)):
                 break
             if duration and elapsed >= duration:
                 break
 
-            # Input handling
             key = get_key_non_blocking()
             if key:
                 clear_escape_buffer()
                 arrow = is_arrow_key(key)
-                is_paused = (state == vlc.State(4)) # Paused
+                is_paused = (state == vlc.State(4))
 
                 if key in (' ', 'p', 'P'):
-                    mp.pause()  # toggles
+                    mp.pause()
                     time.sleep(0.05)
-                    is_paused = (mp.get_state() == vlc.State(4)) # Paused
-                    volume = mp.audio_get_volume()
-                    prog_row, lyric_row, current_width = draw_full_ui(
-                        file_path, audio, pre_art, last_size, is_paused, volume
-                    )
+                    update_ctrl_ui()
                     last_lyric_idx = -1
 
-                elif arrow == 'C':  # Right → seek forward 5s
+                elif arrow == 'C':
                     _handle_seek(mp, elapsed, duration, 5)
+                    toast_text = "Seek Forward +5s"
+                    toast_expiry = time.time() + 1.0
+                    update_ctrl_ui()
 
-                elif arrow == 'D':  # Left → seek backward 5s
+                elif arrow == 'D':
                     _handle_seek(mp, elapsed, duration, -5)
+                    toast_text = "Seek Backward -5s"
+                    toast_expiry = time.time() + 1.0
+                    update_ctrl_ui()
 
                 elif arrow in ('A', 'B') and is_uslt:
                     current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
@@ -721,15 +936,27 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
 
                 elif key == ',':
                     _handle_seek(mp, elapsed, duration, -30)
+                    toast_text = "Seek Backward -30s"
+                    toast_expiry = time.time() + 1.0
+                    update_ctrl_ui()
 
                 elif key == '.':
                     _handle_seek(mp, elapsed, duration, 30)
+                    toast_text = "Seek Forward +30s"
+                    toast_expiry = time.time() + 1.0
+                    update_ctrl_ui()
 
                 elif key.lower() == 'j':
                     _handle_seek(mp, elapsed, duration, -1)
+                    toast_text = "Seek Backward -1s"
+                    toast_expiry = time.time() + 1.0
+                    update_ctrl_ui()
 
                 elif key.lower() == 'l':
                     _handle_seek(mp, elapsed, duration, 1)
+                    toast_text = "Seek Forward +1s"
+                    toast_expiry = time.time() + 1.0
+                    update_ctrl_ui()
 
                 elif key.lower() == 'n':
                     mp.stop()
@@ -747,31 +974,27 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
                 elif key in ('=', '+'):
                     new_vol = min(100, mp.audio_get_volume() + 10)
                     mp.audio_set_volume(new_vol)
-                    volume = new_vol
-                    # Update just the ctrl row
-                    v_blocks = [" ", "▂", "▃", "▅", "▆", "▇"]
-                    v_idx = min(int((volume / 100) * 5), len(v_blocks) - 1)
-                    pp_icon = " ⏸  PAUSED" if is_paused else " ⏵  PLAYING"
-                    sys.stdout.write(f"\033[{prog_row + 1};1H\033[K{pp_icon}  |  VOL: {''.join(v_blocks[:v_idx+1])} {volume}%")
-                    sys.stdout.flush()
+                    toast_text = f"Volume: {new_vol}%"
+                    toast_expiry = time.time() + 1.0
+                    update_ctrl_ui()
 
                 elif key in ('-', '_'):
                     new_vol = max(0, mp.audio_get_volume() - 10)
                     mp.audio_set_volume(new_vol)
-                    volume = new_vol
-                    v_blocks = [" ", "▂", "▃", "▅", "▆", "▇"]
-                    v_idx = min(int((volume / 100) * 5), len(v_blocks) - 1)
-                    pp_icon = " ⏸  PAUSED" if is_paused else " ⏵  PLAYING"
-                    sys.stdout.write(f"\033[{prog_row + 1};1H\033[K{pp_icon}  |  VOL: {''.join(v_blocks[:v_idx+1])} {volume}%")
-                    sys.stdout.flush()
+                    toast_text = f"Volume: {new_vol}%"
+                    toast_expiry = time.time() + 1.0
+                    update_ctrl_ui()
 
-            # Progress UI
-            update_progress_ui(prog_row, elapsed, duration, current_width)
+            from src.config import load_config as _lc
+            if _lc().get("player_view") == "ipod":
+                update_progress_ipod(prog_row, elapsed, duration, current_width, current_width)
+            else:
+                update_progress_ui(prog_row, elapsed, duration, current_width)
 
-            # Lyric rendering
             if sylt_data:
                 if is_uslt:
-                    if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > 0.5:
+                    # Extended to 4.0 seconds for clean reading visibility
+                    if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > 4.0:
                         manual_line_index = None
 
                     current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
@@ -792,12 +1015,6 @@ def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
                         draw_lyric_window(lyric_row, sylt_data, current_idx,
                                           width=current_width, max_row=last_size[1])
                         last_lyric_idx = current_idx
-            else:
-                if last_lyric_idx == -1:
-                    sys.stdout.write(f"\033[{lyric_row};0H" + " " * current_width + "\n")
-                    sys.stdout.write(f"{ui_utils.Colours.DIM}[ No Lyrics Found ]{ui_utils.Colours.RESET}")
-                    sys.stdout.flush()
-                    last_lyric_idx = -2
 
             time.sleep(0.05)
 

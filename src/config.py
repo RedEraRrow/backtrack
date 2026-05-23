@@ -20,6 +20,8 @@ DEFAULT_CONFIG = {
     "lyric_lead_in": 2.0,
     "ascii_width": 80,
     "music_directory": "",
+    "player_view": "default",
+    "show_metadata_editor": True,
 }
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "../config/config.json")
