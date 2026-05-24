@@ -4,7 +4,7 @@ Music playback engine with UI rendering.
 Handles audio playback, lyric display, and interactive player controls.
 Backend: python-vlc (replaces miniaudio for seeking, volume, and codec support).
 """
-
+from __future__ import annotations
 import sys
 import os
 import time
@@ -16,7 +16,7 @@ from mutagen.id3 import ID3
 from src import ui_utils
 from src.history import log_listening_history
 from src.terminal_input import raw_mode, get_key_non_blocking, is_arrow_key, clear_escape_buffer
-from src.ascii_art import get_ascii
+from src.album_art import get_ascii
 from src.music_library import get_song_duration, TAG_MAP
 from src.state import NAV_STACK
 
@@ -634,7 +634,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         art_str   = pre_art if pre_art else _get_ascii_cached(file_path, width=art_w)
         art_lines = art_str.splitlines()
 
-        cast_limit = max(1, (rows - 10) // 3)
+        cast_limit = min(4, (rows - 10) // 3)
         crew_limit = max(1, (rows - 10) // 3)
 
         left_col  = _meta_left_lines(audio, file_path, meta_val_w)

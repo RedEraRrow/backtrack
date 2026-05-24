@@ -2,7 +2,7 @@
 Shared UI utilities and formatting functions.
 Centralises all display logic to avoid circular imports and code duplication.
 """
-
+from __future__ import annotations
 import os
 import sys
 import shutil

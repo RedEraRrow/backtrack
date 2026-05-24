@@ -3,7 +3,7 @@ Music library management and metadata extraction.
 
 Handles building library, searching, grouping, and loading metadata from files and XML.
 """
-
+from __future__ import annotations
 from importlib import metadata
 import os
 import json

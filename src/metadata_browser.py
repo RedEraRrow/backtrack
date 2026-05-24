@@ -1,7 +1,7 @@
 """
 Metadata browser for inspecting and managing track metadata.
 """
-
+from __future__ import annotations
 import os
 import time
 import string
@@ -16,7 +16,7 @@ from src import prompt
 from mutagen.id3 import ID3, USLT, COMM, SYLT, TextFrame, APIC, TXXX
 
 from src import ui_utils
-from src.ascii_art import convert_image_to_ascii
+from src.album_art import get_ascii
 from src.music_library import refresh_library_entry, select_from_alpha_list, get_group_sort_key
 
 
@@ -65,7 +65,7 @@ def _convert_ascii_from_apic(apic_frame: APIC, width: int = 80) -> str:
     image, _ = _get_image_from_apic(apic_frame)
     if image is None:
         return "Error: Could not decode image data."
-    return convert_image_to_ascii(image, width)
+    return get_ascii(image, width)
 
 
 def _get_ascii_width() -> int:

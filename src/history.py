@@ -3,7 +3,7 @@ Listening history management.
 
 Tracks and manages user's listening history.
 """
-
+from __future__ import annotations
 import os
 import datetime
 

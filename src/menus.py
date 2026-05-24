@@ -3,7 +3,7 @@ Navigation menus and user interaction handlers.
 
 All top-level menu functions for browsing, searching, and settings.
 """
-
+from __future__ import annotations
 import os
 import time
 import string
@@ -26,22 +26,22 @@ from src.metadata_browser import inspect_tag_loop, bulk_tag_manager, browse_meta
 
 def _menu_header(title: str, subtitle: str | None = None):
     """
-    Returns a resize-aware callable for prompt.select's header= parameter.
+    Resize-aware header callable for prompt.select's header= parameter.
 
-    Renders a divider + bold title line, plus an optional dimmed subtitle.
-    Re-evaluated on every draw so it always fills the current terminal width.
+    Single bold title, optional dim subtitle on the same line, clean divider.
+    Intentionally quiet — the choices are the content, not the header.
     """
     C = ui_utils.Colours
 
     def _build() -> list[str]:
         cols = ui_utils.get_terminal_width()
+        # Title + optional subtitle on one line, then a thin divider
+        title_str    = f"{C.BOLD}{title}{C.RESET}"
+        subtitle_str = f"  {C.DIM}{subtitle}{C.RESET}" if subtitle else ""
         lines = [
-            f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}",
-            f"  {C.PRIMARY}{C.BOLD}{title}{C.RESET}",
+            f"  {title_str}{subtitle_str}",
+            f"{C.DIM}{ui_utils.divider(cols, '─')}{C.RESET}",
         ]
-        if subtitle:
-            lines.append(f"  {C.DIM}{subtitle}{C.RESET}")
-        lines.append(f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}")
         return lines
 
     return _build

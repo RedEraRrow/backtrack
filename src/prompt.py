@@ -11,7 +11,7 @@ API:
 choices can be plain strings, dicts with 'name'/'value'/'checked',
 or objects with .title / .value attributes.
 """
-
+from __future__ import annotations
 import sys
 import os
 import tty
@@ -29,10 +29,20 @@ _BOLD  = "\033[1m"
 _DIM   = "\033[2m"
 _CYA   = "\033[1;36m"
 _GRN   = "\033[1;32m"
+_WHT   = "\033[1;37m"
+_ACC   = "\033[1;31m"
 
 def _clrline():        return "\033[2K\r"
 def _goto(row, col=1): return f"\033[{row};{col}H"
 def _col(n):           return f"\033[{n}G"
+
+
+def _hint(*pairs, extra="") -> str:
+    """Render compact [key] action hint pairs."""
+    parts = [f"{_DIM}[{_RESET}{_BOLD}{k}{_RESET}{_DIM}]{_RESET} {_DIM}{a}{_RESET}"
+             for k, a in pairs]
+    tail  = f"  {_DIM}{extra}{_RESET}" if extra else ""
+    return "  " + "  ".join(parts) + tail
 
 def _render_status_bar():
     """Renders the status bar at the absolute bottom of the terminal."""
@@ -242,7 +252,7 @@ def select(message: str, choices: list,
         nonlocal viewport
         cols    = _cols()
         h_lines = _header_lines()
-        vis     = max(2, _visible_rows() - len(h_lines))
+        vis     = max(2, _visible_rows() - len(h_lines) - 3)  # -3: label + hints + scroll
         n       = len(items)
         if cursor < viewport:
             viewport = cursor
@@ -250,22 +260,30 @@ def select(message: str, choices: list,
             viewport = cursor - vis + 1
 
         out = h_lines[:]
-        out.append(f"{_CYA}{_BOLD}{message}{_RESET}")
-        out.append(f"  {_DIM}↑ {viewport} more{_RESET}" if viewport > 0 else "")
 
+        # ── Prompt label — quiet, not shouted ────────────────────────────────
+        out.append(f"  {_DIM}{message}{_RESET}")
+
+        # ── Scroll hint top ───────────────────────────────────────────────────
+        out.append(f"  {_DIM}╵ {viewport} above{_RESET}" if viewport > 0 else "")
+
+        # ── Items ─────────────────────────────────────────────────────────────
         for i in range(viewport, min(viewport + vis, n)):
             label = str(items[i].title)
             max_w = cols - 6
             if len(label) > max_w:
                 label = label[:max_w - 1] + "…"
             if i == cursor:
-                out.append(f"  {_CYA}▶{_RESET} {_BOLD}{label}{_RESET}")
+                out.append(f"  {_ACC}›{_RESET} {_WHT}{_BOLD}{label}{_RESET}")
             else:
-                out.append(f"    {label}")
+                out.append(f"    {_DIM}{label}{_RESET}")
 
+        # ── Scroll hint bottom ────────────────────────────────────────────────
         remaining = n - viewport - vis
-        out.append(f"  {_DIM}↓ {remaining} more{_RESET}" if remaining > 0 else "")
-        out.append(f"{_DIM}  ↑↓ jk navigate   Enter select   q cancel{_RESET}")
+        out.append(f"  {_DIM}╷ {remaining} below{_RESET}" if remaining > 0 else "")
+
+        # ── Hint bar ──────────────────────────────────────────────────────────
+        out.append(_hint(("↑↓", "move"), ("↵", "select"), ("q", "back")))
         return out
 
     result = None
@@ -335,31 +353,33 @@ def checkbox(message: str, choices: list,
         nonlocal viewport
         cols    = _cols()
         h_lines = _header_lines()
-        vis     = max(2, _visible_rows() - len(h_lines))
+        vis     = max(2, _visible_rows() - len(h_lines) - 3)
         n       = len(items)
         if cursor < viewport:
             viewport = cursor
         elif cursor >= viewport + vis:
             viewport = cursor - vis + 1
 
+        n_checked = sum(checked)
         out = h_lines[:]
-        out.append(f"{_CYA}{_BOLD}{message}{_RESET}")
-        out.append(f"  {_DIM}↑ {viewport} more{_RESET}" if viewport > 0 else "")
+
+        checked_str = f"  {_DIM}({n_checked} selected){_RESET}" if n_checked else ""
+        out.append(f"  {_DIM}{message}{_RESET}{checked_str}")
+        out.append(f"  {_DIM}╵ {viewport} above{_RESET}" if viewport > 0 else "")
 
         for i in range(viewport, min(viewport + vis, n)):
             label = str(items[i].title)
-            max_w = cols - 8
+            max_w = cols - 10
             if len(label) > max_w:
                 label = label[:max_w - 1] + "…"
-            tick = f"{_GRN}✓{_RESET}" if checked[i] else " "
-            if i == cursor:
-                out.append(f"  {_CYA}▶{_RESET} [{tick}] {_BOLD}{label}{_RESET}")
-            else:
-                out.append(f"    [{tick}] {label}")
+            tick         = f"{_GRN}✓{_RESET}" if checked[i] else f"{_DIM}·{_RESET}"
+            cursor_glyph = f"{_ACC}›{_RESET}" if i == cursor else " "
+            label_fmt    = f"{_WHT}{_BOLD}{label}{_RESET}" if i == cursor else (label if checked[i] else f"{_DIM}{label}{_RESET}")
+            out.append(f"  {cursor_glyph} {tick}  {label_fmt}")
 
         remaining = n - viewport - vis
-        out.append(f"  {_DIM}↓ {remaining} more{_RESET}" if remaining > 0 else "")
-        out.append(f"{_DIM}  ↑↓ navigate   Space toggle   a all   Enter confirm  ({sum(checked)} selected){_RESET}")
+        out.append(f"  {_DIM}╷ {remaining} below{_RESET}" if remaining > 0 else "")
+        out.append(_hint(("↑↓", "move"), ("space", "toggle"), ("a", "all"), ("↵", "confirm")))
         return out
 
     result = None
@@ -403,20 +423,22 @@ def checkbox(message: str, choices: list,
 # ── confirm() ─────────────────────────────────────────────────────────────────
 
 def confirm(message: str, default: bool = False) -> bool:
-    hint   = "(Y/n)" if default else "(y/N)"
+    y = "Y" if default else "y"
+    n = "N" if not default else "n"
+    hint = f"{_DIM}[{_RESET}{_BOLD}{y}{_RESET}{_DIM}/{_RESET}{_BOLD}{n}{_RESET}{_DIM}]{_RESET}"
     fd     = sys.stdin.fileno()
     old    = termios.tcgetattr(fd)
     result = default
     try:
         tty.setraw(fd)
-        sys.stdout.write(_HIDE + f"{_CYA}{_BOLD}{message}{_RESET} {_DIM}{hint}{_RESET} ")
+        sys.stdout.write(_HIDE + f"  {_DIM}{message}{_RESET}  {hint} ")
         sys.stdout.flush()
         while True:
             key = _read_key(fd)
-            if   key == 'CTRL_C':        result = False;   break
-            elif key == 'ENTER':         result = default; break
-            elif key.lower() == 'y':     result = True;    break
-            elif key.lower() == 'n':     result = False;   break
+            if   key == 'CTRL_C':    result = False; break
+            elif key == 'ENTER':     result = default; break
+            elif key.lower() == 'y': result = True;  break
+            elif key.lower() == 'n': result = False; break
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write(_SHOW + "\n")
@@ -470,38 +492,32 @@ def text(message: str, default: str = "") -> str | None:
         total_rows = len(physical_lines)
 
         # 2. Draw
-        # Move up to the start of the previous render (prompt line + text lines)
         if prev_lines > 0:
             sys.stdout.write(f"\r\033[{prev_lines}A")
-        
-        # Clear everything from current position to bottom
         sys.stdout.write(f"\r\033[J{_HIDE}")
-        
-        # Print prompt (using \r\n for raw mode)
-        sys.stdout.write(f"\r{_CYA}{_BOLD}{message}{_RESET}\r\n")
-        
-        # Print text lines
+
+        # Label — dim, consistent with select/confirm
+        sys.stdout.write(f"\r  {_DIM}{message}{_RESET}\r\n")
+
+        # Input field — subtle left border glyph to signal editable area
         for i, line in enumerate(physical_lines):
-            sys.stdout.write(f"\r{line}")
+            sys.stdout.write(f"\r  {_DIM}│{_RESET} {line}")
             if i < total_rows - 1:
                 sys.stdout.write("\r\n")
-        
-        # 3. Precision Cursor Positioning
-        # Move back up to the specific cursor row
+
+        # Cursor positioning
         rows_to_move_up = (total_rows - 1) - cursor_row
         if rows_to_move_up > 0:
             sys.stdout.write(f"\033[{rows_to_move_up}A")
-        
-        # Move to the correct column
-        if cursor_col > 0:
-            sys.stdout.write(f"\r\033[{cursor_col}C")
+        col_offset = cursor_col + 4  # 2 spaces + "│ "
+        if col_offset > 0:
+            sys.stdout.write(f"\r\033[{col_offset}C")
         else:
             sys.stdout.write("\r")
-            
+
         sys.stdout.write(_SHOW)
         sys.stdout.flush()
-        
-        # Total height = 1 (prompt) + number of text lines
+
         prev_lines = 1 + total_rows
         _render_status_bar()
 
@@ -570,18 +586,21 @@ def path(message: str, default: str = "") -> str | None:
 
     def _render():
         cols    = _cols()
-        prompt  = f"{_CYA}{_BOLD}{message}{_RESET} "
         content = "".join(buf)
-        max_w   = max(1, cols - len(message) - 4)
+        # Reserve: 2 indent + "│ " (2) + label space
+        prefix  = "  │ "
+        max_w   = max(1, cols - len(prefix) - 1)
         if pos > max_w:
             display  = content[pos - max_w: pos]
             disp_pos = max_w
         else:
             display  = content[:max_w]
             disp_pos = pos
+        # Dim the path to distinguish from the label
         sys.stdout.write(
-            _HIDE + _clrline() + prompt + display +
-            _col(len(message) + 2 + disp_pos + 1) + _SHOW
+            _HIDE + _clrline() +
+            f"  {_DIM}{message}{_RESET}\r\n  {_DIM}│{_RESET} {display}" +
+            _col(len(prefix) + disp_pos + 1) + _SHOW
         )
         sys.stdout.flush()
         _render_status_bar()

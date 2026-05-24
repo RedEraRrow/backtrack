@@ -1,7 +1,7 @@
 """
 Lyric synchronisation tool for matching lyrics to timestamps.
 """
-
+from __future__ import annotations
 import sys
 import time
 import os
@@ -109,7 +109,10 @@ def sync_lyrics(file_path: str) -> None:
 
         raw_lyrics = uslt_tags[0].text
         normalised = normalise_lyric_newlines(raw_lyrics)
-        lines = [l.strip() for l in normalised.split('\n') if l.strip()]
+        lines = ["START"]
+
+        for l in normalised.split('\n'):
+            if l.strip(): lines.append(l.strip())
 
         while lines and not lines[0]: lines.pop(0)
         while lines and not lines[-1]: lines.pop()
@@ -187,7 +190,7 @@ def sync_lyrics(file_path: str) -> None:
     ui_utils.clear_screen()
     if synced_data:
         print(f"{GREEN}{BOLD}✓ Synced {len(synced_data)} of {len(lines)} lines{RESET}")
-        _save_sylt(file_path, lines, synced_data, offset_ms)
+        _save_sylt(file_path, lines[1:], synced_data, offset_ms)
     else:
         print(f"{DIM}No timestamps recorded.{RESET}")
     time.sleep(1.5)

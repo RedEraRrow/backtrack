@@ -3,7 +3,7 @@ Terminal input handling for raw mode keyboard input.
 
 Provides non-blocking keyboard input, raw mode management, and escape sequence handling.
 """
-
+from __future__ import annotations
 import os
 import sys
 import select
