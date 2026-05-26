@@ -12,7 +12,8 @@ from src import prompt
 from src import ui_utils
 from src.music_library import (
     build_library, load_library_cache, save_library_cache,
-    load_xml_database, get_grouped_data, get_group_sort_key, search_library, sort_library_logic
+    load_xml_database, start_background_sync,
+    get_grouped_data, get_group_sort_key, search_library, sort_library_logic
 )
 from src.history import get_history, clear_history
 from src.playback import musicplayer
@@ -262,7 +263,10 @@ def handle_settings(library_ref: list) -> None:
                 xml_db, xml_title_keys = load_xml_database("../data/Library.xml")
                 new_lib = build_library(new_root, xml_db=xml_db, xml_title_keys=xml_title_keys)
                 save_library_cache(new_lib, _async=False)
-                library_ref[0] = new_lib
+                existing_lib = library_ref[0]
+                existing_lib.clear()
+                existing_lib.extend(new_lib)
+                start_background_sync(existing_lib, xml_db, xml_title_keys)
                 print(f"Done — {len(new_lib)} tracks.")
                 time.sleep(1.5)
 
@@ -271,12 +275,13 @@ def handle_settings(library_ref: list) -> None:
 
 # ── Queue playback ────────────────────────────────────────────────────────────
 
-def play_queue(paths: list, mode: str = "linear") -> str | None:
+def play_queue(paths: list, is_grouping: bool = False, mode: str = "linear") -> str | None:
     """
     Play a queue of songs.
 
     Args:
         paths: List of file paths to play
+        is_grouping: Whether to group songs
         mode: "linear", "shuffle", "repeat_one", or "repeat_all"
     """
     import random
@@ -287,7 +292,7 @@ def play_queue(paths: list, mode: str = "linear") -> str | None:
 
     idx = 0
     while idx < len(playlist):
-        result = musicplayer(playlist[idx])
+        result = musicplayer(playlist[idx], is_grouping=is_grouping)
         if isinstance(result, dict):
             status = result.get("status", "")
             if status == "QUIT_ALL":
@@ -322,7 +327,7 @@ def browse_menu(library_ref: list) -> str | None:
         while True:  # LEVEL 1: Browse By
             cat_choice = prompt.select(
                 "Browse by:",
-                choices=["Artists", "Albums", "Genres", "Groupings", ".. Back"],
+                choices=["Artists", "Albums", "Genres", "Compilations", ".. Back"],
                 header=_menu_header("Library"),
             )
 
@@ -332,12 +337,12 @@ def browse_menu(library_ref: list) -> str | None:
             NAV_STACK.append(cat_choice)
 
             while True:  # LEVEL 2: Group Selection
-                key_map = {"Artists": "artist", "Albums": "album", "Genres": "genre", "Groupings": "grouping"}
+                key_map = {"Artists": "artist", "Albums": "album", "Genres": "genre", "Compilations": "grouping"}
                 grouped  = get_grouped_data(sorted_lib, key_map[cat_choice])
                 _cat_key = key_map.get(cat_choice, cat_choice)
                 group_names = sorted(grouped.keys(), key=lambda n: get_group_sort_key(n, grouped[n], _cat_key))
 
-                if cat_choice in ("Artists", "Albums"):
+                if cat_choice in ("Artists", "Albums") and len(group_names) > 20:
                     _sort_keys = {n: get_group_sort_key(n, grouped[n], _cat_key) for n in group_names}
 
                     def _letter(name: str) -> str:
@@ -381,7 +386,7 @@ def browse_menu(library_ref: list) -> str | None:
 
                 if selection == "__play_all__":
                     paths = [s['path'] for name in group_names for s in grouped[name]]
-                    res = play_queue(paths)
+                    res = play_queue(paths, is_grouping=(True if cat_choice == "Compilations" else False))
                     if res == "QUIT_ALL":
                         NAV_STACK.clear()
                         NAV_STACK.append("Home")
@@ -500,7 +505,10 @@ def browse_menu(library_ref: list) -> str | None:
                             break
 
                         if path_choice_obj == "__play_all__":
-                            res = play_queue([t['path'] for t in final_tracks])
+                            res = play_queue(
+                                [t['path'] for t in final_tracks],
+                                is_grouping=(cat_choice == "Compilations"),
+                            )
                             if res == "QUIT_ALL":
                                 return "QUIT_ALL"
                             continue
@@ -517,7 +525,7 @@ def browse_menu(library_ref: list) -> str | None:
                                 (t.get('disc_subtitle', '') for t in final_tracks if str(t.get('disc', '1')) == disc_val),
                                 '',
                             )
-                            disc_label   = f"Disc {disc_val}" + (f" — {subtitle}" if subtitle else "")
+                            disc_label   = f"{subtitle}" if subtitle else f"Disc {disc_val}"
                             _show_editor = load_config().get("show_metadata_editor", True)
                             _disc_choices = [prompt.Choice(title=f"▶  Play all — {disc_label}", value="__play_all__")]
                             if _show_editor:
@@ -530,7 +538,10 @@ def browse_menu(library_ref: list) -> str | None:
                                 header=_menu_header(disc_label, _track_context),
                             )
                             if disc_action == "__play_all__":
-                                res = play_queue(disc_paths)
+                                res = play_queue(
+                                    disc_paths,
+                                    is_grouping=(cat_choice == "Compilations"),
+                                )
                                 if res == "QUIT_ALL":
                                     return "QUIT_ALL"
                             elif disc_action == "__bulk_edit__":
@@ -561,7 +572,7 @@ def browse_menu(library_ref: list) -> str | None:
 
                             if action == "Play":
                                 ui_utils.clear_screen()
-                                res = musicplayer(path_choice_obj)
+                                res = musicplayer(path_choice_obj, is_grouping=(cat_choice == "Compilations"))
                                 ui_utils.clear_screen()
                                 if res and res.get("status") == "QUIT_ALL":
                                     return "QUIT_ALL"

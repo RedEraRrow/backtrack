@@ -51,6 +51,7 @@ def main() -> None:
             print("Building library...")
             library = build_library(root, xml_db=xml_db, xml_title_keys=xml_title_keys)
             save_library_cache(library, _async=False)
+            start_background_sync(library, xml_db, xml_title_keys)
             print(f"✓ Library built: {len(library)} tracks")
         else:
             print("No valid directory selected.")

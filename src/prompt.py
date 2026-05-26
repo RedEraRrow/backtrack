@@ -12,10 +12,14 @@ choices can be plain strings, dicts with 'name'/'value'/'checked',
 or objects with .title / .value attributes.
 """
 from __future__ import annotations
+import re
 import sys
 import os
 import tty
 import termios
+import shutil
+import math
+import textwrap
 
 from src import ui_utils
 
@@ -36,13 +40,161 @@ def _clrline():        return "\033[2K\r"
 def _goto(row, col=1): return f"\033[{row};{col}H"
 def _col(n):           return f"\033[{n}G"
 
+import shutil
+import math
+import re
 
 def _hint(*pairs, extra="") -> str:
-    """Render compact [key] action hint pairs."""
-    parts = [f"{_DIM}[{_RESET}{_BOLD}{k}{_RESET}{_DIM}]{_RESET} {_DIM}{a}{_RESET}"
-             for k, a in pairs]
-    tail  = f"  {_DIM}{extra}{_RESET}" if extra else ""
-    return "  " + "  ".join(parts) + tail
+    """
+    Highly adaptive layout engine for bottom hints.
+    Cascades: Centred Long Line -> Pyramid -> Grid -> Aligned Vertical Stack -> Split Vertical Stack.
+    """
+    if not pairs and not extra:
+        return ""
+
+    cols = ui_utils.get_terminal_width()
+    
+    # Parse items into structured tuples: (key, value, raw_string_for_math)
+    parsed_items = []
+    for k, v in pairs:
+        parsed_items.append((k, v, f"[{k}] {v}"))
+        
+    if extra:
+        plain_extra = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', extra).strip()
+        if plain_extra:
+            m = re.match(r'\[(.*?)\]\s*(.*)', plain_extra)
+            if m:
+                parsed_items.append((m.group(1), m.group(2), f"[{m.group(1)}] {m.group(2)}"))
+            else:
+                parsed_items.append(("", plain_extra, plain_extra))
+
+    total_items = len(parsed_items)
+
+    def render_inline(k, v):
+        if not k: return f"{_DIM}{v}{_RESET}"
+        return f"{_RESET}{_DIM}[{_RESET}{_BOLD}{k}{_RESET}{_DIM}] {v}{_RESET}"
+
+    sep = f"{_DIM} ⋅ {_RESET}"
+    raw_sep_len = 3 
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # LAYOUT 1: Centred Long Line
+    # ──────────────────────────────────────────────────────────────────────────
+    raw_len = sum(len(raw) for _, _, raw in parsed_items) + raw_sep_len * (total_items - 1)
+    if raw_len <= cols:
+        line = sep.join(render_inline(k, v) for k, v, _ in parsed_items)
+        pad = max(0, cols - raw_len) // 2
+        return (" " * pad) + line
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # LAYOUT 2: Upside-Down Pyramid
+    # ──────────────────────────────────────────────────────────────────────────
+    def get_pyramid_distribution(n):
+        rows = []
+        current_row_size = math.ceil(math.sqrt(2 * n))
+        while n > 0:
+            take = min(current_row_size, n)
+            rows.append(take)
+            n -= take
+            current_row_size = max(1, current_row_size - 1)
+        return rows
+
+    import math
+    pyr_dist = get_pyramid_distribution(total_items)
+    if len(pyr_dist) > 1 and pyr_dist[0] > pyr_dist[-1]:
+        fits = True
+        pyr_lines = []
+        idx = 0
+        for r in pyr_dist:
+            row_items = parsed_items[idx:idx+r]
+            r_raw_len = sum(len(raw) for _, _, raw in row_items) + raw_sep_len * (len(row_items) - 1)
+            
+            if r_raw_len > cols:
+                fits = False
+                break
+                
+            line = sep.join(render_inline(k, v) for k, v, _ in row_items)
+            pad = max(0, cols - r_raw_len) // 2
+            pyr_lines.append((" " * pad) + line)
+            idx += r
+            
+        if fits:
+            return "\n".join(pyr_lines)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # LAYOUT 3: Grid (Side-by-side uniform columns)
+    # ──────────────────────────────────────────────────────────────────────────
+    max_item_len = max((len(raw) for _, _, raw in parsed_items), default=0)
+    gutter = 4
+    col_width = max_item_len + gutter
+    possible_cols = max(1, cols // col_width)
+
+    if possible_cols >= 2:
+        grid_lines = []
+        for i in range(0, total_items, possible_cols):
+            row = parsed_items[i:i+possible_cols]
+            raw_row_len = sum(col_width for _ in row) - gutter
+            formatted_parts = []
+            for k, v, raw in row:
+                space_padding = " " * (col_width - len(raw))
+                formatted_parts.append(render_inline(k, v) + space_padding)
+            
+            row_str = "".join(formatted_parts).rstrip()
+            pad = max(0, cols - raw_row_len) // 2
+            grid_lines.append((" " * pad) + row_str)
+        return "\n".join(grid_lines)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # LAYOUT 4: Aligned Vertical Stack
+    # Center aligned: Keys right-aligned to spine, values left-aligned from spine
+    # ──────────────────────────────────────────────────────────────────────────
+    max_k_len = max((len(f"[{k}]") for k, _, _ in parsed_items if k), default=0)
+    max_v_len = max((len(v) for _, v, _ in parsed_items), default=0)
+    total_stack_w = max_k_len + 1 + max_v_len # key + space + value
+
+    if total_stack_w <= cols:
+        stack_lines = []
+        global_pad = max(0, cols - total_stack_w) // 2
+        
+        for k, v, _ in parsed_items:
+            if k:
+                k_raw = f"[{k}]"
+                k_space_pad = " " * (max_k_len - len(k_raw))
+                left_side = f"{k_space_pad}{_RESET}{_DIM}[{_RESET}{_BOLD}{k}{_RESET}{_DIM}]{_RESET}"
+            else:
+                left_side = " " * max_k_len
+                
+            right_side = f"{_DIM}{v}{_RESET}"
+            stack_lines.append(f"{' ' * global_pad}{left_side} {right_side}")
+        return "\n".join(stack_lines)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # LAYOUT 5: Split Vertical Stack (Ultimate Narrow Fallback)
+    # Key on row 1, value on row 2, dot separator between pairs.
+    # ──────────────────────────────────────────────────────────────────────────
+    split_lines = []
+    for i, (k, v, _) in enumerate(parsed_items):
+        if k:
+            k_raw = f"[{k}]"
+            k_pad = max(0, cols - len(k_raw)) // 2
+            split_lines.append(f"{' ' * k_pad}{_RESET}{_DIM}[{_RESET}{_BOLD}{k}{_RESET}{_DIM}]{_RESET}")
+            
+        v_pad = max(0, cols - len(v)) // 2
+        split_lines.append(f"{' ' * v_pad}{_DIM}{v}{_RESET}")
+        
+        # Add centered separator dot between discrete blocks
+        if i < total_items - 1:
+            dot_pad = max(0, cols - 1) // 2
+            split_lines.append(f"{' ' * dot_pad}{_DIM}⋅{_RESET}")
+            
+    return "\n".join(split_lines)
+    
+def key_style_override(key_string: str) -> str:
+    """
+    Stylizes hotkeys gently without bold punchiness to decrease prominence.
+    """
+    # Keeps arrows/enters readable but thin and dim
+    return f"\033[2m{key_string}\033[22m"
 
 def _render_status_bar():
     """Renders the status bar at the absolute bottom of the terminal."""
@@ -160,6 +312,18 @@ def _cols() -> int:
     return ui_utils.get_terminal_width()
 
 
+def _wrap_bordered_input_lines(text: str, content_width: int) -> list[str]:
+    """Wrap input text for a bordered prompt field."""
+    lines: list[str] = []
+    for raw_line in text.split("\n"):
+        if raw_line == "":
+            lines.append("")
+        else:
+            wrapped = textwrap.wrap(raw_line, width=content_width, drop_whitespace=False) or [""]
+            lines.extend(wrapped)
+    return lines
+
+
 # ── Widget: anchored block renderer ──────────────────────────────────────────
 
 class _Widget:
@@ -222,16 +386,16 @@ class _Widget:
 # ── select() ─────────────────────────────────────────────────────────────────
 
 def select(message: str, choices: list,
-           header: list | None = None) -> str | None:
+           header: list | None = None,
+           extra_hints: dict[str, str] | None = None) -> str | None:
     """Arrow keys / jk navigate, Enter selects, q / Ctrl-C → None.
 
     Args:
         message: Prompt label shown above the list.
         choices: Items to choose from (str, dict, or Choice).
-        header:  Optional list of plain strings rendered above the prompt on
-                 every draw, including after resize.  Pass a callable
-                 ``() -> list[str]`` to recompute on each draw (e.g. to
-                 reflect terminal width).
+        header:  Optional list of plain strings rendered above the prompt.
+        extra_hints: Optional dict of custom key-action bindings to merge
+                     (e.g., {'space': 'toggle', 'a': 'all'}).
     """
     items = _norm(choices)
     if not items:
@@ -243,16 +407,81 @@ def select(message: str, choices: list,
     old      = termios.tcgetattr(fd)
     w        = _Widget(fd)
 
+    # Base keyboard mapping from your navigation options loop
+    base_hints = {
+        "↑↓": "move",
+        "q": "quit",
+        "↵": "confirm"
+    }
+    
+    # Merge context-specific hints if provided by another menu layout
+    if extra_hints:
+        combined_hints = {**extra_hints, **base_hints}
+    else:
+        combined_hints = base_hints
+
+    # Converts our flat dict maps into sequential pairs based on the active view
+    def get_hints_for_tier(tier: int) -> list[tuple[str, str]]:
+        # Wide screens (Tiers 1, 2, 3): Full labels
+        if tier <= 3:
+            return list(combined_hints.items())
+        
+        # Aligned Stack (Tier 4): Truncate compound keys to conserve width bounds
+        elif tier == 4:
+            tier4_hints = {}
+            for k, v in combined_hints.items():
+                k_short = k.split("/")[0]  # "↑↓/jk" -> "↑↓"
+                tier4_hints[k_short] = v
+            return list(tier4_hints.items())
+            
+        # Split Stack (Tier 5): Ultra narrow essential fallback
+        else:
+            return [("↑↓", "move"), ("q", "quit"), ("↵", "confirm")]
+
+    last_tier = 1
+
     def _header_lines() -> list[str]:
         if header is None:
             return []
         return header() if callable(header) else list(header)
 
     def _lines():
-        nonlocal viewport
+        nonlocal viewport, last_tier
         cols    = _cols()
         h_lines = _header_lines()
-        vis     = max(2, _visible_rows() - len(h_lines) - 3)  # -3: label + hints + scroll
+        
+        import re
+        max_header_w = 0
+        for hl in h_lines:
+            plain_hl = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', hl)
+            plain_hl = re.sub(r'[╭─│╰╮╯┌┐└┘├┤┬┴┼═║╔╗╚╝]', '', plain_hl).strip()
+            if len(plain_hl) > max_header_w:
+                max_header_w = len(plain_hl)
+
+        layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
+
+        # Fetch pairs configured exactly for the current tier expectation
+        active_pairs = get_hints_for_tier(last_tier)
+        hint_res = _hint(*active_pairs, extra=layout_constraint)
+        
+        # Safe unpack handler to protect against internal layout engine API changes
+        if isinstance(hint_res, tuple):
+            hint_raw, tier = hint_res
+        else:
+            hint_raw, tier = hint_res, 1
+        
+        # If a tier boundary switch is encountered, shift text lists instantly
+        if tier != last_tier:
+            last_tier = tier
+            active_pairs = get_hints_for_tier(tier)
+            hint_res = _hint(*active_pairs, extra=layout_constraint)
+            hint_raw = hint_res[0] if isinstance(hint_res, tuple) else hint_res
+
+        hint_lines = hint_raw.split("\n") if hint_raw else []
+        
+        fixed_overhead = len(h_lines) + len(hint_lines) + 2
+        vis     = max(2, _visible_rows() - fixed_overhead)
+        
         n       = len(items)
         if cursor < viewport:
             viewport = cursor
@@ -260,14 +489,9 @@ def select(message: str, choices: list,
             viewport = cursor - vis + 1
 
         out = h_lines[:]
-
-        # ── Prompt label — quiet, not shouted ────────────────────────────────
         out.append(f"  {_DIM}{message}{_RESET}")
-
-        # ── Scroll hint top ───────────────────────────────────────────────────
         out.append(f"  {_DIM}╵ {viewport} above{_RESET}" if viewport > 0 else "")
 
-        # ── Items ─────────────────────────────────────────────────────────────
         for i in range(viewport, min(viewport + vis, n)):
             label = str(items[i].title)
             max_w = cols - 6
@@ -278,18 +502,14 @@ def select(message: str, choices: list,
             else:
                 out.append(f"    {_DIM}{label}{_RESET}")
 
-        # ── Scroll hint bottom ────────────────────────────────────────────────
         remaining = n - viewport - vis
         out.append(f"  {_DIM}╷ {remaining} below{_RESET}" if remaining > 0 else "")
-
-        # ── Hint bar ──────────────────────────────────────────────────────────
-        out.append(_hint(("↑↓", "move"), ("↵", "select"), ("q", "back")))
+        out.extend(hint_lines)
         return out
 
     result = None
     try:
         tty.setraw(fd)
-        # Clear screen on entry so previous menu content never bleeds through.
         sys.stdout.write("\033[2J\033[H")
         sys.stdout.flush()
         w.render(_lines())
@@ -297,6 +517,8 @@ def select(message: str, choices: list,
         import select as _sel
         while True:
             if ui_utils.consume_resize():
+                sys.stdout.write("\033[J")
+                sys.stdout.flush()
                 w.anchor_reset()
                 w.render(_lines())
                 continue
@@ -322,7 +544,6 @@ def select(message: str, choices: list,
 
     return result
 
-
 # ── checkbox() ────────────────────────────────────────────────────────────────
 
 def checkbox(message: str, choices: list,
@@ -332,11 +553,12 @@ def checkbox(message: str, choices: list,
     Args:
         message: Prompt label shown above the list.
         choices: Items to choose from (str, dict, or Choice).
-        header:  Optional list of plain strings rendered above the prompt on
-                 every draw, including after resize.  Pass a callable
-                 ``() -> list[str]`` to recompute on each draw.
+        header:  Optional list of plain strings rendered above the prompt.
     """
     items    = _norm(choices)
+    if not items:
+        return None
+
     checked  = [c.checked for c in items]
     cursor   = 0
     viewport = 0
@@ -344,16 +566,78 @@ def checkbox(message: str, choices: list,
     old      = termios.tcgetattr(fd)
     w        = _Widget(fd)
 
+    # Base keyboard mapping specific to checkbox navigation
+    base_hints = {
+        "↑↓": "move",
+        "space": "toggle",
+        "a": "all",
+        "q": "quit",
+        "↵": "confirm"
+    }
+
+    # Converts flat dict maps into sequential pairs based on the active view
+    def get_hints_for_tier(tier: int) -> list[tuple[str, str]]:
+        # Wide screens (Tiers 1, 2, 3): Full labels
+        if tier <= 3:
+            return list(base_hints.items())
+        
+        # Aligned Stack (Tier 4): Truncate compound keys to conserve width bounds
+        elif tier == 4:
+            tier4_hints = {}
+            for k, v in base_hints.items():
+                k_short = k.split("/")[0]  # "↑↓/jk" -> "↑↓"
+                tier4_hints[k_short] = v
+            return list(tier4_hints.items())
+            
+        # Split Stack (Tier 5): Ultra narrow essential fallback
+        else:
+            return [("↑↓", "move"), ("space", "toggle"), ("↵", "confirm")]
+
+    last_tier = 1
+
     def _header_lines() -> list[str]:
         if header is None:
             return []
         return header() if callable(header) else list(header)
 
     def _lines():
-        nonlocal viewport
+        nonlocal viewport, last_tier
         cols    = _cols()
         h_lines = _header_lines()
-        vis     = max(2, _visible_rows() - len(h_lines) - 3)
+        
+        import re
+        max_header_w = 0
+        for hl in h_lines:
+            plain_hl = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', hl)
+            plain_hl = re.sub(r'[╭─│╰╮╯┌┐└┘├┤┬┴┼═║╔╗╚╝]', '', plain_hl).strip()
+            if len(plain_hl) > max_header_w:
+                max_header_w = len(plain_hl)
+
+        layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
+
+        # Fetch pairs configured exactly for the current tier expectation
+        active_pairs = get_hints_for_tier(last_tier)
+        hint_res = _hint(*active_pairs, extra=layout_constraint)
+        
+        # Safe unpack handler to protect against engine variations
+        if isinstance(hint_res, tuple):
+            hint_raw, tier = hint_res
+        else:
+            hint_raw, tier = hint_res, 1
+        
+        # If a tier boundary switch is encountered, shift text lists instantly
+        if tier != last_tier:
+            last_tier = tier
+            active_pairs = get_hints_for_tier(tier)
+            hint_res = _hint(*active_pairs, extra=layout_constraint)
+            hint_raw = hint_res[0] if isinstance(hint_res, tuple) else hint_res
+
+        hint_lines = hint_raw.split("\n") if hint_raw else []
+        
+        # Calculate accurate viewport space factoring in multi-line dynamic hints
+        fixed_overhead = len(h_lines) + len(hint_lines) + 2
+        vis     = max(2, _visible_rows() - fixed_overhead)
+        
         n       = len(items)
         if cursor < viewport:
             viewport = cursor
@@ -379,13 +663,14 @@ def checkbox(message: str, choices: list,
 
         remaining = n - viewport - vis
         out.append(f"  {_DIM}╷ {remaining} below{_RESET}" if remaining > 0 else "")
-        out.append(_hint(("↑↓", "move"), ("space", "toggle"), ("a", "all"), ("↵", "confirm")))
+        
+        # Extend the dynamically calculated layout hints safely
+        out.extend(hint_lines)
         return out
 
     result = None
     try:
         tty.setraw(fd)
-        # Clear screen on entry so previous menu content never bleeds through.
         sys.stdout.write("\033[2J\033[H")
         sys.stdout.flush()
         w.render(_lines())
@@ -393,6 +678,9 @@ def checkbox(message: str, choices: list,
         import select as _sel
         while True:
             if ui_utils.consume_resize():
+                # Clear terminal window real estate cleanly during tier adjustments
+                sys.stdout.write("\033[J")
+                sys.stdout.flush()
                 w.anchor_reset()
                 w.render(_lines())
                 continue
@@ -418,7 +706,6 @@ def checkbox(message: str, choices: list,
         w.clear()
 
     return result
-
 
 # ── confirm() ─────────────────────────────────────────────────────────────────
 
@@ -461,35 +748,14 @@ def text(message: str, default: str = "") -> str | None:
     def _render():
         nonlocal prev_lines
         cols = _cols() # Uses the existing helper in prompt.py
-        
-        # 1. Layout Simulation: Map buffer characters to physical rows
-        # This correctly handles \n and automatic wrapping
-        physical_lines = []
-        curr_line = ""
-        cursor_row = 0
-        cursor_col = 0
-        
-        for i, char in enumerate(buf):
-            if i == pos:
-                cursor_row = len(physical_lines)
-                cursor_col = len(curr_line)
-            
-            if char == '\n':
-                physical_lines.append(curr_line)
-                curr_line = ""
-            else:
-                curr_line += char
-                if len(curr_line) == cols:
-                    physical_lines.append(curr_line)
-                    curr_line = ""
-        
-        # Position cursor if it's at the very end of the buffer
-        if pos == len(buf):
-            cursor_row = len(physical_lines)
-            cursor_col = len(curr_line)
-        
-        physical_lines.append(curr_line)
-        total_rows = len(physical_lines)
+        content = "".join(buf)
+        content_width = max(1, cols - 6)
+
+        wrapped_lines = _wrap_bordered_input_lines(content, content_width)
+        pre_lines = _wrap_bordered_input_lines(content[:pos], content_width)
+        cursor_row = max(0, len(pre_lines) - 1)
+        cursor_col = len(pre_lines[-1]) if pre_lines else 0
+        total_rows = len(wrapped_lines)
 
         # 2. Draw
         if prev_lines > 0:
@@ -499,9 +765,9 @@ def text(message: str, default: str = "") -> str | None:
         # Label — dim, consistent with select/confirm
         sys.stdout.write(f"\r  {_DIM}{message}{_RESET}\r\n")
 
-        # Input field — subtle left border glyph to signal editable area
-        for i, line in enumerate(physical_lines):
-            sys.stdout.write(f"\r  {_DIM}│{_RESET} {line}")
+        # Input field — subtle left/right border glyphs to signal editable area
+        for i, line in enumerate(wrapped_lines):
+            sys.stdout.write(f"\r  {_DIM}│{_RESET} {line:<{content_width}} {_DIM}│{_RESET}")
             if i < total_rows - 1:
                 sys.stdout.write("\r\n")
 
@@ -587,9 +853,9 @@ def path(message: str, default: str = "") -> str | None:
     def _render():
         cols    = _cols()
         content = "".join(buf)
-        # Reserve: 2 indent + "│ " (2) + label space
+        # Reserve: 2 indent + "│ " (2) + right border and padding (2)
         prefix  = "  │ "
-        max_w   = max(1, cols - len(prefix) - 1)
+        max_w   = max(1, cols - 6)
         if pos > max_w:
             display  = content[pos - max_w: pos]
             disp_pos = max_w
@@ -599,7 +865,7 @@ def path(message: str, default: str = "") -> str | None:
         # Dim the path to distinguish from the label
         sys.stdout.write(
             _HIDE + _clrline() +
-            f"  {_DIM}{message}{_RESET}\r\n  {_DIM}│{_RESET} {display}" +
+            f"  {_DIM}{message}{_RESET}\r\n  {_DIM}│{_RESET} {display:<{max_w}} {_DIM}│{_RESET}" +
             _col(len(prefix) + disp_pos + 1) + _SHOW
         )
         sys.stdout.flush()

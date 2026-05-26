@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 import string
+import textwrap
 import pyperclip
 import tempfile
 import subprocess
@@ -16,7 +17,7 @@ from src import prompt
 from mutagen.id3 import ID3, USLT, COMM, SYLT, TextFrame, APIC, TXXX
 
 from src import ui_utils
-from src.album_art import get_ascii
+from src.album_art import get_ascii, render_with_viu
 from src.music_library import refresh_library_entry, select_from_alpha_list, get_group_sort_key
 
 
@@ -37,8 +38,11 @@ def perform_rename(audio_obj: ID3, old_frame: TextFrame, new_id: str) -> bool:
             new_frame = USLT(encoding=3, lang=lang, desc='', text=getattr(old_frame, 'text', [''])[0])
         else:
             from mutagen.id3 import Frames
-            frame_cls = Frames.get(base_id, TextFrame)
-            new_frame = frame_cls(encoding=3, text=getattr(old_frame, 'text', [''])[0])
+            frame_cls = Frames.get(base_id)
+            if frame_cls is None:
+                print(f"Rename failed: unknown frame ID {base_id!r}")
+                return False
+            new_frame = frame_cls(encoding=3, text=getattr(old_frame, 'text', ['']))
 
         audio_obj.add(new_frame)
         return True
@@ -48,24 +52,25 @@ def perform_rename(audio_obj: ID3, old_frame: TextFrame, new_id: str) -> bool:
 
 
 def _get_image_from_apic(apic_frame: APIC) -> tuple:
-    """Extract image data and mime type from APIC frame. Returns (image_array, mime_type)."""
+    """Decode APIC frame to a numpy image array. Returns (ndarray | None, mime_str)."""
     try:
-        img_data = getattr(apic_frame, 'data', b"")
+        img_data  = getattr(apic_frame, 'data', b"")
         mime_type = getattr(apic_frame, 'mime', "image/jpeg")
+        if not img_data:
+            return None, mime_type
         nparr = np.frombuffer(img_data, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         return image, mime_type
-    except Exception as e:
-        print(f"Error extracting image: {e}")
-        return None, None
+    except Exception:
+        return None, "unknown"
 
 
 def _convert_ascii_from_apic(apic_frame: APIC, width: int = 80) -> str:
-    """Convert APIC tag data to ASCII art string."""
-    image, _ = _get_image_from_apic(apic_frame)
-    if image is None:
-        return "Error: Could not decode image data."
-    return get_ascii(image, width)
+    """Convert APIC tag data to block art string via viu."""
+    img_bytes = getattr(apic_frame, 'data', None)
+    if not img_bytes:
+        return "Error: No image data in tag."
+    return render_with_viu(img_bytes, width=width, is_bytes=True)
 
 
 def _get_ascii_width() -> int:
@@ -76,28 +81,19 @@ def _get_ascii_width() -> int:
 
 def _open_apic_preview(apic_frame: APIC) -> bool:
     """Open APIC image in system preview. Returns True if successful."""
-    image, mime_type = _get_image_from_apic(apic_frame)
-    if image is None:
+    import tempfile, subprocess as _sp
+    img_bytes, mime_type = _get_image_from_apic(apic_frame)
+    if not img_bytes:
         return False
-
     try:
-        # Determine file extension from mime type
-        ext_map = {
-            'image/jpeg': '.jpg',
-            'image/jpg': '.jpg',
-            'image/png': '.png',
-            'image/gif': '.gif'
-        }
-        ext = ext_map.get(mime_type, '.jpg')
-
-        # Create temp file and save image
+        ext = {
+            'image/jpeg': '.jpg', 'image/jpg': '.jpg',
+            'image/png': '.png',  'image/gif': '.gif',
+        }.get(mime_type, '.jpg')
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-            img_data = getattr(apic_frame, 'data', b"")
-            tmp.write(img_data)
+            tmp.write(img_bytes)
             tmp_path = tmp.name
-
-        # Open with system preview
-        subprocess.run(['open', tmp_path], check=True)
+        _sp.run(['open', tmp_path], check=True)
         return True
     except Exception as e:
         print(f"Error opening preview: {e}")
@@ -203,18 +199,18 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
     return True
 
 def _edit_text_in_editor(initial_text: str) -> str | None:
-    """Open system editor to edit long text strings."""
+    """Open system editor for long text (USLT lyrics etc)."""
+    import tempfile
     with tempfile.NamedTemporaryFile(suffix=".txt", mode='w+', encoding='utf-8', delete=False) as tf:
         tf.write(initial_text)
         temp_path = tf.name
-
     try:
-        # Use environment variable for editor, fallback to nano or vi
-        editor = os.environ.get('EDITOR', 'vim')
+        editor = os.environ.get('EDITOR', 'nano')
         subprocess.run([editor, temp_path], check=True)
-
         with open(temp_path, 'r', encoding='utf-8') as f:
-            return f.read().strip()
+            result = f.read().strip()
+        # An empty result after editing USLT is almost certainly a mistake
+        return result if result else None
     except Exception as e:
         print(f"Error launching editor: {e}")
         return None
@@ -222,28 +218,34 @@ def _edit_text_in_editor(initial_text: str) -> str | None:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+
+def _edit_inline(label: str, initial: str) -> str | None:
+    """Simple inline prompt for short single-line tag values."""
+    from src import prompt as _prompt
+    result = _prompt.text(f"{label}:", default=initial)
+    # Distinguish explicit clear (user deleted all) from cancel (Ctrl-C → None)
+    return result
+
 def _create_frame(frame_id: str, value: str):
     """Create a new ID3 frame for the given ID and value."""
-    from mutagen.id3 import COMM, USLT, TextFrame, Frames
+    from mutagen.id3 import COMM, USLT, Frames
 
-    parts = frame_id.split(':')
+    parts   = frame_id.split(':')
     base_id = parts[0].upper()
-
-    desc = parts[1] if len(parts) > 1 else ''
-    lang = parts[2] if (len(parts) > 2 and parts[2]) else 'eng'
+    desc    = parts[1] if len(parts) > 1 else ''
+    lang    = parts[2] if (len(parts) > 2 and parts[2]) else 'eng'
 
     if base_id == 'COMM':
         return COMM(encoding=3, lang=lang, desc=desc, text=[value])
-    elif base_id == 'USLT':
+    if base_id == 'USLT':
         return USLT(encoding=3, lang=lang, desc=desc, text=value)
-    elif base_id == 'TXXX':
+    if base_id == 'TXXX':
         return TXXX(encoding=3, desc=desc, text=[value])
-    else:
-        frame_cls = Frames.get(base_id, TextFrame)
-        frame = frame_cls(encoding=3, text=[value])
-        if frame_cls is TextFrame:
-            setattr(frame, 'FrameID', base_id)
-        return frame
+
+    frame_cls = Frames.get(base_id)
+    if frame_cls is None:
+        raise ValueError(f"Unknown ID3 frame ID: {base_id!r}")
+    return frame_cls(encoding=3, text=[value])
 
 def _is_people_frame(tag_name: str) -> bool:
     """True for TMCL/TIPL which store [[role, name], ...] pairs."""
@@ -455,24 +457,52 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
         except Exception:
             continue
 
-    def _bulk_header() -> list[str]:
-        inner = max(20, _cols - 4)
-        suffix = f"  {C.DIM}{label}  ·  {len(album_tracks)} tracks{C.RESET}"
-        return [
-            f"{C.DIM}╭{'─' * inner}╮{C.RESET}",
-            f"{C.DIM}│{C.RESET}  {C.BOLD}Bulk edit{C.RESET}{suffix}{C.DIM}│{C.RESET}",
-            f"{C.DIM}╰{'─' * inner}╯{C.RESET}",
-            "",
-        ]
+    def _bulk_header(title: str, subtitle: str | None = None):
+        """
+        Returns a clean, resize-aware boxed header closure for bulk editing.
+        Ensures absolute alignment of leading and trailing vertical bars.
+        """
+        def _build() -> list[str]:
+            cols = ui_utils.get_terminal_width()
+            # Allocate 6 characters for safety margins and outer frames
+            available_width = max(10, cols - 6)
+            
+            # Format the content string cleanly
+            content = f"Bulk edit  {title}"
+            if subtitle:
+                content += f"  ·  {subtitle}"
+
+            # Wrap the content into lines that fit the current terminal width
+            wrapped_content = []
+            for raw_line in content.split("\n"):
+                if raw_line == "":
+                    wrapped_content.append("")
+                else:
+                    wrapped_content.extend(textwrap.wrap(raw_line, width=available_width, drop_whitespace=False) or [""])
+            if not wrapped_content:
+                wrapped_content = [""]
+
+            return [
+                f"╭{'─' * (available_width + 2)}╮",
+                *[f"│ {line:<{available_width}} │" for line in wrapped_content],
+                f"╰{'─' * (available_width + 2)}╯"
+            ]
+        return _build  # Return the zero-argument function for the prompt loop
+
+    track_count = len(album_tracks)
+    title_context = f"{track_count} tracks"
+    subtitle_context = f"{track_count} tracks" # or whatever variation you prefer
 
     operation = prompt.select(
         "Operation:",
-        choices=["Set value", "Delete tags", "Rename tags", "Add new tag", "Replace artwork", ".. Back"],
-        header=_bulk_header,
+        choices=["Set value", "Delete tags", "Rename tags", "Add new tag", ".. Back"],
+        header=_bulk_header(title=title_context, subtitle=subtitle_context),  # <--- Evaluated here!
     )
 
     if not operation or operation == ".. Back":
         return
+
+    op_display_name = operation.lower()
 
     # Map friendly names back to internal operation ids used below
     _op_map = {
@@ -480,11 +510,10 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
         "Delete tags":     "Delete Tags",
         "Rename tags":     "Rename Tags",
         "Add new tag":     "Add New Tag",
-        "Replace artwork": "Replace Artwork",
     }
     operation = _op_map.get(operation, operation)
 
-    if not all_tag_counts and operation not in ("Add New Tag", "Replace Artwork"):
+    if not all_tag_counts and operation not in ("Add New Tag"):
         print("No tags found.")
         return
 
@@ -549,45 +578,6 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
     selected_tags = []
     target_tag_id = None
     target_val = None
-
-    if operation == "Replace Artwork":
-        # Fast path: bulk replace all APIC tags across tracks
-        img_path = prompt.path("Path to new artwork image:")
-        if not img_path or not os.path.isfile(img_path):
-            print("File not found.")
-            time.sleep(1)
-            return
-        ext  = os.path.splitext(img_path)[1].lower()
-        mime = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp'}.get(ext, 'image/jpeg')
-        pic_type_choice = prompt.select(
-            "Picture type:",
-            choices=[
-                prompt.Choice("Cover (front)  [3]", value=3),
-                prompt.Choice("Cover (back)   [4]", value=4),
-                prompt.Choice("Artist         [8]", value=8),
-                prompt.Choice("Other          [0]", value=0),
-            ],
-        )
-        pic_type = pic_type_choice if isinstance(pic_type_choice, int) else 3
-        desc = prompt.text("Description (leave blank for none):") or ''
-        with open(img_path, 'rb') as f:
-            _new_apic = APIC(encoding=3, mime=mime, type=pic_type, desc=desc, data=f.read())
-        if not prompt.confirm(f"Replace artwork in all {len(album_tracks)} tracks?"):
-            return
-        count_modified = 0
-        for path in album_tracks:
-            try:
-                audio = ID3(path)
-                audio.delall('APIC')
-                audio.add(_new_apic)
-                audio.save(v2_version=3)
-                refresh_library_entry(library, path)
-                count_modified += 1
-            except Exception as e:
-                print(f"Error on {os.path.basename(path)}: {e}")
-        print(f"Artwork updated on {count_modified} tracks.")
-        time.sleep(1.5)
-        return
 
     if operation == "Add New Tag":
         target_tag_id = prompt.text("New Tag ID (e.g. TSO2, COMM[eng]):")
@@ -696,8 +686,9 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
                 apic_tags = []
         else:
             apic_tags = []
+    pass
 
-    if not prompt.confirm(f"Apply {operation} to {len(album_tracks)} tracks?"):
+    if not prompt.confirm(f"Apply {op_display_name} to {len(album_tracks)} tracks?"):
         return
 
     count_modified = 0
@@ -707,11 +698,13 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
             changed = False
 
             if operation == "Add New Tag":
-                from mutagen.id3 import Frames
-                frame_cls = Frames.get(target_tag_id.split('[')[0], TextFrame)
+                from mutagen.id3 import Frames as _Frames
+                base_id   = target_tag_id.split('[')[0].split(':')[0].upper()
+                frame_cls = _Frames.get(base_id)
+                if frame_cls is None:
+                    print(f"Unknown frame ID: {base_id}, skipping.")
+                    continue
                 new_frame = frame_cls(encoding=3, text=[target_val])
-                if frame_cls is TextFrame:
-                    setattr(new_frame, 'FrameID', target_tag_id.split('[')[0])
                 audio.add(new_frame)
                 changed = True
 
@@ -722,15 +715,12 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
                         audio.pop(tag)
                         changed = True
                     elif new_apic_desc is not None:
-                        # Description-only edit: update in place
                         audio[tag].desc = new_apic_desc
                         changed = True
                     elif isinstance(new_apic_frame, int):
-                        # Picture type-only edit
                         audio[tag].type = new_apic_frame
                         changed = True
                     elif isinstance(new_apic_frame, APIC):
-                        # Full image replacement
                         audio.delall(tag)
                         audio.add(new_apic_frame)
                         changed = True
@@ -740,12 +730,21 @@ def bulk_tag_manager(library: list, album_name: str = None, paths: list = None) 
                 if tag in audio:
                     if operation == "Delete Tags":
                         audio.pop(tag)
+                        changed = True
                     elif operation == "Rename Tags":
                         old_frame = audio.pop(tag)
-                        perform_rename(audio, old_frame, target_val)
+                        if perform_rename(audio, old_frame, target_val):
+                            changed = True
+                        else:
+                            audio.add(old_frame)
                     elif operation == "Set Common Value":
-                        audio[tag].text = [target_val]
-                    changed = True
+                        audio.delall(tag)
+                        try:
+                            new_frame = _create_frame(tag, target_val)
+                            audio.add(new_frame)
+                            changed = True
+                        except ValueError as e:
+                            print(f"Skipping update for {tag}: {e}")
 
             if changed:
                 audio.save(v2_version=3)
@@ -807,337 +806,328 @@ def inspect_tag_loop(file_path: str, library_metadata: dict | None = None, libra
     clean_data = ""
 
     while True:
-        ui_utils.clear_screen()
         cols = ui_utils.get_terminal_width()
-        div = "═" * cols
-        print(div)
-        print(f"  INSPECTING: {os.path.basename(file_path)}")
-        print(div)
 
         xml_data = library_metadata.get('xml_data') if library_metadata else None
         has_id3 = os.path.splitext(file_path)[1].lower() == '.mp3'
 
-        if xml_data and (show_xml or not has_id3):
-            ui_utils.display_xml_metadata({'xml_data': xml_data})
-
         try:
             audio = ID3(file_path)
-            tags = sorted(audio.keys())
-
-            # Compute column widths from actual tags present
-            ALIAS_MAX = 22
-            TAG_MAX   = 28
-            def _alias(tag):
-                return _TAG_MAP.get(tag.split(':')[0].split('[')[0], '')
-            tag_col   = min(TAG_MAX,   max((len(t) for t in tags), default=6))
-            alias_col = min(ALIAS_MAX, max((len(_alias(t)) + 3 for t in tags), default=0))
-
-            def _tag_title(tag):
-                alias = _alias(tag)
-                tag_disp = tag if len(tag) <= tag_col else tag[:tag_col - 1] + "…"
-                if alias:
-                    a = f"({alias})"
-                    if len(a) > alias_col:
-                        a = a[:alias_col - 2] + "…)"
-                    alias_str = f" {a}"
-                else:
-                    alias_str = ""
-                raw = audio[tag]
-                if tag.startswith('TMCL') or tag.startswith('TIPL'):
-                    preview = f"{len(raw.people)} people"
-                elif tag.startswith('APIC'):
-                    preview = f"image/{raw.mime}  {len(raw.data):,} bytes"
-                elif tag.startswith('SYLT'):
-                    preview = f"{len(raw.text)} lines"
-                else:
-                    val = str(raw)
-                    preview = repr(val)[:cols - tag_col - alias_col - 12]
-                return f"{tag_disp:<{tag_col}} {alias_str:<{alias_col + 1}} | {preview}"
-
-            tag_choices = [prompt.Choice(title=_tag_title(t), value=t) for t in tags]
-
-            xml_toggle = "Hide XML data" if show_xml else "Show XML data"
-            extras = (["Add New Tag"] if has_id3 else []) + ([xml_toggle] if xml_data and has_id3 else []) + ["Back to track list"]
-
-            choice = prompt.select(
-                "Select a tag to manage:",
-                choices=tag_choices + extras,
-                header=_main_header
-            )
-
-            if choice == xml_toggle:
-                show_xml = not show_xml
-                continue
-
-            if choice == "Add New Tag":
-                target_id = prompt.text("Enter Tag ID to add (e.g. TPE2, COMM::eng, TXXX:MyCustomTag:):")
-                if target_id:
-                    target_val = prompt.text(f"Enter value for {target_id}:")
-                    if target_val is not None:
-                        audio.add(_create_frame(target_id, target_val))
-                        _save(audio)
-                continue
-
-            if not choice or choice == "Back to track list":
-                break
-
-            while True:
-                raw_val = audio[choice]
-
-                if choice.startswith('SYLT'):
-                    display_lines = [f"[{format_time(ts/1000)}] {txt}" for txt, ts in raw_val.text]
-                    full_text = "\n".join(display_lines)
-                elif choice.startswith('APIC'):
-                    # For APIC, show ASCII art by default
-                    full_text = _convert_ascii_from_apic(raw_val, width=_get_ascii_width())
-                elif choice.startswith('TMCL') or choice.startswith('TIPL'):
-                    full_text = str(raw_val)
-                else:
-                    full_text = "".join(raw_val.text) if hasattr(raw_val, 'text') else str(raw_val)
-
-                def _tag_header() -> list[str]:
-                    C     = ui_utils.Colours
-                    c     = ui_utils.get_terminal_width()
-                    inner = max(10, c - 4)
-                    alias = _TAG_MAP.get(choice.split(':')[0].split('[')[0], '')
-                    alias_str = f"  {C.DIM}({alias}){C.RESET}" if alias else ""
-
-                    # ── APIC: re-render art at current width ──────────────────
-                    if choice.startswith('APIC'):
-                        art_w  = max(20, min(c - 6, 100))
-                        art    = _convert_ascii_from_apic(raw_val, width=art_w)
-                        image, mime = _get_image_from_apic(raw_val)
-                        h = w = 0
-                        if image is not None:
-                            h, w = image.shape[:2]
-                        kb = len(getattr(raw_val, 'data', b'')) / 1024
-                        info = f"{w}×{h}px  {mime}  {kb:.0f} KB"
-                        return [
-                            f"{C.BOLD}{choice}{C.RESET}{alias_str}",
-                            f"{C.DIM}{info}{C.RESET}",
-                            f"{C.DIM}{'─' * c}{C.RESET}",
-                            *art.splitlines(),
-                            f"{C.DIM}{'─' * c}{C.RESET}",
-                        ]
-
-                    # ── TMCL / TIPL: people table ─────────────────────────────
-                    if choice.startswith(('TMCL', 'TIPL')):
-                        cw = max(12, (inner - 6) // 2)
-                        lines = [
-                            f"{C.BOLD}{choice}{C.RESET}{alias_str}",
-                            f"{C.DIM}{'─' * c}{C.RESET}",
-                            f"  {C.DIM}{'ROLE':<{cw}}  NAME{C.RESET}",
-                            f"  {'─' * (cw)}  {'─' * (inner - cw - 4)}",
-                        ]
-                        for role, name in raw_val.people:
-                            r = ui_utils.truncate_text(role, cw)
-                            n = ui_utils.truncate_text(name, inner - cw - 4)
-                            lines.append(f"  {r:<{cw}}  {n}")
-                        lines.append(f"{C.DIM}{'─' * c}{C.RESET}")
-                        return lines
-
-                    # ── SYLT ──────────────────────────────────────────────────
-                    if choice.startswith('SYLT'):
-                        lines = [
-                            f"{C.BOLD}{choice}{C.RESET}{alias_str}  {C.DIM}({len(raw_val.text)} lines){C.RESET}",
-                            f"{C.DIM}{'─' * c}{C.RESET}",
-                        ]
-                        for txt, ts in raw_val.text[:6]:
-                            t_fmt = ui_utils.format_time(ts / 1000)
-                            lines.append(f"  {C.DIM}{t_fmt:>6}{C.RESET}  {ui_utils.truncate_text(txt, inner - 12)}")
-                        if len(raw_val.text) > 6:
-                            lines.append(f"  {C.DIM}… {len(raw_val.text) - 6} more{C.RESET}")
-                        lines.append(f"{C.DIM}{'─' * c}{C.RESET}")
-                        return lines
-
-                    # ── Generic text ──────────────────────────────────────────
-                    body    = repr(full_text) if not choice.startswith('USLT') else full_text
-                    wrapped = ui_utils.wrap_text(body, max_width=c, margin=4)
-                    return [
-                        f"{C.BOLD}{choice}{C.RESET}{alias_str}",
-                        f"{C.DIM}╭{'─' * inner}╮{C.RESET}",
-                        *[f"{C.DIM}│{C.RESET} {ln:<{inner - 1}}{C.DIM}│{C.RESET}" for ln in wrapped[:12]],
-                        f"{C.DIM}╰{'─' * inner}╯{C.RESET}",
-                    ]
-
-                actions = ["Copy to clipboard", "Paste from clipboard", "Edit content", "Rename tag", "Delete tag"]
-                if choice.startswith('SYLT'):
-                    actions.insert(0, "Export to LRC file")
-                if choice.startswith('APIC'):
-                    actions.insert(0, "Edit Image")
-                actions.append("Back")
-
-                action = prompt.select("Action:", choices=actions, header=_tag_header)
-
-                if action == "Export to LRC file":
-                    lrc_path = os.path.splitext(file_path)[0] + ".lrc"
-                    try:
-                        with open(lrc_path, "w", encoding="utf-8") as f:
-                            f.write(f"[ti:{audio.get('TIT2', 'Unknown')}]\n")
-                            for txt, ts in raw_val.text:
-                                mins, secs = divmod(ts // 1000, 60)
-                                cs = (ts % 1000) // 10
-                                f.write(f"[{mins:02d}:{secs:02d}.{cs:02d}] {txt}\n")
-                        print(f"Exported: {os.path.basename(lrc_path)}")
-                    except Exception as e:
-                        print(f"Export failed: {e}")
-                    time.sleep(1.5)
-
-                elif action == "Edit Image":
-                    _edit_apic_tag(audio, choice, raw_val)
-                    # Reload audio to get updated frames
-                    audio = ID3(file_path)
-                    if library is not None:
-                        refresh_library_entry(library, file_path)
-                    break
-
-                elif action == "Copy to clipboard":
-                    pyperclip.copy(full_text)
-                    print("Copied to clipboard!")
-                    time.sleep(1)
-
-                elif action == "Paste from clipboard":
-                    raw_clipboard = pyperclip.paste()
-                    if not raw_clipboard:
-                        continue
-
-                    clean_data = raw_clipboard.strip().replace('\r\n', '\n').replace('\r', '\n')
-
-                    if prompt.confirm(f"Replace {choice} with clipboard content?"):
-                        audio.delall(choice)
-
-                        if choice.startswith('USLT'):
-                            new_frame = USLT(encoding=3, lang='eng', desc='', text=clean_data)
-                        elif choice.startswith('SYLT'):
-                            lines = clean_data.split('\r')
-                            sylt_data = [(line.strip(), 0) for line in lines if line.strip()]
-                            new_frame = SYLT(encoding=3, lang='eng', format=2, type=1, text=sylt_data)
-                        elif choice.startswith('COMM'):
-                            new_frame = COMM(encoding=3, lang='eng', desc='', text=[clean_data])
-                        else:
-                            frame_id = choice.split('[')[0] if '[' in choice else choice
-                            new_frame = TextFrame(encoding=3, text=[clean_data])
-                            setattr(new_frame, 'FrameID', frame_id)
-
-                        audio.add(new_frame)
-                        _save(audio)
-                        print(f"{choice} updated.")
-                        time.sleep(1)
-                        break
-
-                elif action == "Rename tag":
-                    new_id = prompt.text("New tag ID (e.g. TPE2, COMM[eng]):")
-                    if new_id and new_id != choice:
-                        old_frame = audio.pop(choice)
-                        # Type narrowing for Pylance:
-                        assert isinstance(new_id, str)
-                        if perform_rename(audio, old_frame, new_id):
-                            _save(audio)
-                            print(f"Renamed {choice} to {new_id}")
-                            time.sleep(1)
-                            break
-
-                elif action == "Edit content":
-                    # Smart editing based on data type
-                    if choice.startswith('APIC'):
-                        # APIC is handled by "Edit Image" action
-                        continue
-                    elif choice.startswith('SYLT'):
-                        # SYLT is already edited via paste
-                        new_content = prompt.text("New content (time-stamped lyrics):", default=full_text)
-                        if new_content is not None:
-                            lines = new_content.split('\n')
-                            sylt_data = [(line.strip(), 0) for line in lines if line.strip()]
-                            audio.delall(choice)
-                            new_frame = SYLT(encoding=3, lang='eng', format=2, type=1, text=sylt_data)
-                            audio.add(new_frame)
-                            _save(audio)
-                            print(f"{choice} updated.")
-                            time.sleep(1)
-                            break
-                    else:
-                        # TMCL/TIPL: people frames
-                        if choice.startswith('TMCL') or choice.startswith('TIPL'):
-                            edited = _edit_list_data(raw_val.people, choice)
-                            if edited != raw_val.people:
-                                from mutagen.id3 import TMCL as _TMCL, TIPL as _TIPL
-                                audio.delall(choice)
-                                cls = _TMCL if choice.startswith('TMCL') else _TIPL
-                                audio.add(cls(encoding=3, people=edited))
-                                _save(audio)
-                                print(f"{choice} updated.")
-                                time.sleep(1)
-                            break
-
-                        # Check if it's a list/2D list
-                        is_list = isinstance(raw_val.text, (list, tuple)) if hasattr(raw_val, 'text') else False
-
-                        if is_list and len(raw_val.text) > 0:
-                            # Use list editor
-                            edited_data = _edit_list_data(raw_val.text, choice)
-                            if edited_data != raw_val.text:
-                                audio.delall(choice)
-                                if choice.startswith('USLT'):
-                                    new_frame = USLT(encoding=3, lang='eng', desc='', text=edited_data)
-                                elif choice.startswith('COMM'):
-                                    new_frame = COMM(encoding=3, lang='eng', desc='', text=list(edited_data))
-                                else:
-                                    frame_id = choice.split('[')[0] if '[' in choice else choice
-                                    new_frame = TextFrame(encoding=3, text=[clean_data])
-                                    setattr(new_frame, 'FrameID', frame_id)
-                                audio.add(new_frame)
-                                _save(audio)
-                                print(f"{choice} updated.")
-                                time.sleep(1)
-                            break
-                        else:
-                            # Simple text edit
-                            new_content = _edit_text_in_editor(full_text)
-
-                            if new_content is not None:
-                                audio.delall(choice)
-                                if choice.startswith('USLT'):
-                                    new_frame = USLT(encoding=3, lang='eng', desc='', text=new_content)
-                                elif choice.startswith('COMM'):
-                                    new_frame = COMM(encoding=3, lang='eng', desc='', text=[new_content])
-                                else:
-                                    frame_id = choice.split('[')[0] if '[' in choice else choice
-                                    # This fixes the 'clean_data' reference error in your original code
-                                    new_frame = TextFrame(encoding=3, text=[new_content])
-                                    setattr(new_frame, 'FrameID', frame_id)
-
-                                audio.add(new_frame)
-                                _save(audio)
-                                print(f"{choice} updated successfully.")
-                                time.sleep(1)
-                                break
-
-                elif action == "Delete tag":
-                    if prompt.confirm(f"Delete {choice}?"):
-                        audio.pop(choice)
-                        _save(audio)
-                        break
-
-                elif action == "Back":
-                    break
-
+            tags  = sorted(audio.keys())
         except Exception as e:
-            # Fallback for M4P files without ID3
-            xml_data = library_metadata.get('xml_data') if library_metadata else None
+            xml_data    = library_metadata.get('xml_data') if library_metadata else None
             display_data = xml_data or library_metadata
-
             if display_data:
                 ui_utils.clear_screen()
                 print(f"INSPECTING: {os.path.basename(file_path)}")
-                print("\nNo ID3 tags found (M4P or MP4 file)")
-                print()
+                print("\nNo ID3 tags found (M4P or MP4 file)\n")
                 ui_utils.display_xml_metadata({'xml_data': display_data})
                 print("\nThis file uses Apple Music metadata from Library.xml")
                 input("\nPress Enter to continue...")
             else:
-                print(f"Error: {e}")
+                print(f"Error loading tags: {e}")
                 input("Press Enter to continue...")
             break
+
+        # Compute column widths from actual tags present
+        ALIAS_MAX = 22
+        TAG_MAX   = 28
+        def _alias(tag):
+            return _TAG_MAP.get(tag.split(':')[0].split('[')[0], '')
+        tag_col   = min(TAG_MAX,   max((len(t) for t in tags), default=6))
+        alias_col = min(ALIAS_MAX, max((len(_alias(t)) + 3 for t in tags), default=0))
+
+        def _tag_title(tag):
+            alias = _alias(tag)
+            tag_disp = tag if len(tag) <= tag_col else tag[:tag_col - 1] + "…"
+            if alias:
+                a = f"({alias})"
+                if len(a) > alias_col:
+                    a = a[:alias_col - 2] + "…)"
+                alias_str = f" {a}"
+            else:
+                alias_str = ""
+            raw = audio[tag]
+            if tag.startswith('TMCL') or tag.startswith('TIPL'):
+                preview = f"{len(raw.people)} people"
+            elif tag.startswith('APIC'):
+                preview = f"image/{raw.mime}  {len(raw.data):,} bytes"
+            elif tag.startswith('SYLT'):
+                preview = f"{len(raw.text)} lines"
+            else:
+                val = str(raw)
+                preview = repr(val)[:cols - tag_col - alias_col - 12]
+            return f"{tag_disp:<{tag_col}} {alias_str:<{alias_col + 1}} | {preview}"
+
+        tag_choices = [prompt.Choice(title=_tag_title(t), value=t) for t in tags]
+
+        xml_toggle = "Hide XML data" if show_xml else "Show XML data"
+        extras = (["Add New Tag"] if has_id3 else []) + ([xml_toggle] if xml_data and has_id3 else []) + ["Back to track list"]
+
+        choice = prompt.select(
+            "Select a tag to manage:",
+            choices=tag_choices + extras,
+            header=_main_header
+        )
+
+        if choice == xml_toggle:
+            show_xml = not show_xml
+            continue
+
+        if choice == "Add New Tag":
+            target_id = prompt.text("Enter Tag ID to add (e.g. TPE2, COMM::eng, TXXX:MyCustomTag:):")
+            if target_id:
+                target_val = prompt.text(f"Enter value for {target_id}:")
+                if target_val is not None:
+                    audio.add(_create_frame(target_id, target_val))
+                    _save(audio)
+            continue
+
+        if not choice or choice == "Back to track list":
+            break
+
+        while True:
+            # Re-read audio fresh each inner loop so edits show immediately
+            audio = ID3(file_path)
+            if choice not in audio:
+                # Tag was deleted — return to outer list
+                break
+            raw_val = audio[choice]
+
+            if choice.startswith('SYLT'):
+                display_lines = [f"[{format_time(ts/1000)}] {txt}" for txt, ts in raw_val.text]
+                full_text = "\n".join(display_lines)
+            elif choice.startswith('APIC'):
+                full_text = _convert_ascii_from_apic(raw_val, width=_get_ascii_width())
+            elif choice.startswith(('TMCL', 'TIPL')):
+                full_text = str(raw_val)
+            else:
+                # Always join as a plain string — don't expose the internal list
+                full_text = "\n".join(str(t) for t in raw_val.text) if hasattr(raw_val, 'text') else str(raw_val)
+
+            def _tag_header() -> list[str]:
+                C     = ui_utils.Colours
+                c     = ui_utils.get_terminal_width()
+                inner = max(10, c - 4)
+                alias = _TAG_MAP.get(choice.split(':')[0].split('[')[0], '')
+                alias_str = f"  {C.DIM}({alias}){C.RESET}" if alias else ""
+
+                if choice.startswith('APIC'):
+                    art_w  = max(20, min(c - 6, 100))
+                    art    = _convert_ascii_from_apic(raw_val, width=art_w)
+                    image, mime = _get_image_from_apic(raw_val)
+                    h = w = 0
+                    if image is not None:
+                        h, w = image.shape[:2]
+                    kb = len(getattr(raw_val, 'data', b'')) / 1024
+                    info = f"{w}×{h}px  {mime}  {kb:.0f} KB"
+                    return [
+                        f"{C.BOLD}{choice}{C.RESET}{alias_str}",
+                        f"{C.DIM}{info}{C.RESET}",
+                        f"{C.DIM}{'─' * c}{C.RESET}",
+                        *art.splitlines(),
+                        f"{C.DIM}{'─' * c}{C.RESET}",
+                    ]
+
+                if choice.startswith(('TMCL', 'TIPL')):
+                    cw = max(12, (inner - 6) // 2)
+                    lines = [
+                        f"{C.BOLD}{choice}{C.RESET}{alias_str}",
+                        f"{C.DIM}{'─' * c}{C.RESET}",
+                        f"  {C.DIM}{'ROLE':<{cw}}  NAME{C.RESET}",
+                        f"  {'─' * (cw)}  {'─' * (inner - cw - 4)}",
+                    ]
+                    for role, name in raw_val.people:
+                        r = ui_utils.truncate_text(role, cw)
+                        n = ui_utils.truncate_text(name, inner - cw - 4)
+                        lines.append(f"  {r:<{cw}}  {n}")
+                    lines.append(f"{C.DIM}{'─' * c}{C.RESET}")
+                    return lines
+
+                if choice.startswith('SYLT'):
+                    lines = [
+                        f"{C.BOLD}{choice}{C.RESET}{alias_str}  {C.DIM}({len(raw_val.text)} lines){C.RESET}",
+                        f"{C.DIM}{'─' * c}{C.RESET}",
+                    ]
+                    for txt, ts in raw_val.text[:6]:
+                        t_fmt = ui_utils.format_time(ts / 1000)
+                        lines.append(f"  {C.DIM}{t_fmt:>6}{C.RESET}  {ui_utils.truncate_text(txt, inner - 12)}")
+                    if len(raw_val.text) > 6:
+                        lines.append(f"  {C.DIM}… {len(raw_val.text) - 6} more{C.RESET}")
+                    lines.append(f"{C.DIM}{'─' * c}{C.RESET}")
+                    return lines
+
+                body    = full_text if choice.startswith('USLT') else repr(full_text)
+                wrapped = ui_utils.wrap_text(body, max_width=c, margin=4)
+                return [
+                    f"{C.BOLD}{choice}{C.RESET}{alias_str}",
+                    f"{C.DIM}╭{'─' * inner}╮{C.RESET}",
+                    *[f"{C.DIM}│{C.RESET} {ln:<{inner - 1}}{C.DIM}│{C.RESET}" for ln in wrapped[:12]],
+                    f"{C.DIM}╰{'─' * inner}╯{C.RESET}",
+                ]
+
+            actions = ["Copy to clipboard", "Paste from clipboard", "Edit content", "Rename tag", "Delete tag"]
+            if choice.startswith('SYLT'):
+                actions.insert(0, "Export to LRC file")
+            if choice.startswith('APIC'):
+                actions.insert(0, "Edit Image")
+            actions.append("Back")
+
+            action = prompt.select("Action:", choices=actions, header=_tag_header)
+
+            if action == "Export to LRC file":
+                lrc_path = os.path.splitext(file_path)[0] + ".lrc"
+                try:
+                    with open(lrc_path, "w", encoding="utf-8") as f:
+                        f.write(f"[ti:{audio.get('TIT2', 'Unknown')}]\n")
+                        for txt, ts in raw_val.text:
+                            mins, secs = divmod(ts // 1000, 60)
+                            cs = (ts % 1000) // 10
+                            f.write(f"[{mins:02d}:{secs:02d}.{cs:02d}] {txt}\n")
+                    print(f"Exported: {os.path.basename(lrc_path)}")
+                except Exception as e:
+                    print(f"Export failed: {e}")
+                time.sleep(1.5)
+
+            elif action == "Edit Image":
+                _edit_apic_tag(audio, choice, raw_val)
+                audio = ID3(file_path)
+                if library is not None:
+                    refresh_library_entry(library, file_path)
+                break
+
+            elif action == "Copy to clipboard":
+                pyperclip.copy(full_text)
+                print("Copied to clipboard!")
+                time.sleep(1)
+
+            elif action == "Paste from clipboard":
+                raw_clipboard = pyperclip.paste()
+                if not raw_clipboard:
+                    continue
+                clean_data = raw_clipboard.strip().replace('\r\n', '\n').replace('\r', '\n')
+                if prompt.confirm(f"Replace {choice} with clipboard content?"):
+                    audio.delall(choice)
+                    if choice.startswith('USLT'):
+                        new_frame = USLT(encoding=3, lang='eng', desc='', text=clean_data)
+                    elif choice.startswith('SYLT'):
+                        sylt_lines = clean_data.split('\r')
+                        sylt_data = [(line.strip(), 0) for line in sylt_lines if line.strip()]
+                        new_frame = SYLT(encoding=3, lang='eng', format=2, type=1, text=sylt_data)
+                    elif choice.startswith('COMM'):
+                        new_frame = COMM(encoding=3, lang='eng', desc='', text=[clean_data])
+                    else:
+                        from mutagen.id3 import Frames as _Frames
+                        base_id   = choice.split('[')[0].split(':')[0]
+                        frame_cls = _Frames.get(base_id)
+                        if frame_cls is None:
+                            print(f"Unknown frame ID: {base_id}")
+                            time.sleep(1)
+                            continue
+                        new_frame = frame_cls(encoding=3, text=[clean_data])
+                    audio.add(new_frame)
+                    _save(audio)
+                    print(f"{choice} updated.")
+                    time.sleep(1)
+                continue
+
+            elif action == "Rename tag":
+                new_id = prompt.text("New tag ID (e.g. TPE2, COMM[eng]):")
+                if not new_id:
+                    print("Rename cancelled.")
+                    time.sleep(1)
+                    continue
+                if new_id == choice:
+                    print("New tag ID must be different from the current tag ID.")
+                    time.sleep(1)
+                    continue
+                old_frame = audio.pop(choice)
+                assert isinstance(new_id, str)
+                if perform_rename(audio, old_frame, new_id):
+                    _save(audio)
+                    print(f"Renamed {choice} to {new_id}")
+                    time.sleep(1)
+                    break
+                else:
+                    audio.add(old_frame)
+                    print(f"Rename failed for {choice} -> {new_id}")
+                    time.sleep(1)
+                    continue
+
+            elif action == "Edit content":
+                if choice.startswith('APIC'):
+                    continue  # handled by Edit Image
+
+                elif choice.startswith('SYLT'):
+                    new_content = prompt.text("New content (time-stamped lyrics):", default=full_text)
+                    if new_content is not None:
+                        sylt_lines = new_content.split('\n')
+                        sylt_data = [(line.strip(), 0) for line in sylt_lines if line.strip()]
+                        audio.delall(choice)
+                        audio.add(SYLT(encoding=3, lang='eng', format=2, type=1, text=sylt_data))
+                        _save(audio)
+                        print(f"{choice} updated.")
+                        time.sleep(1)
+                    break
+
+                elif choice.startswith(('TMCL', 'TIPL')):
+                    edited = _edit_list_data(raw_val.people, choice)
+                    if edited != raw_val.people:
+                        from mutagen.id3 import TMCL as _TMCL, TIPL as _TIPL
+                        audio.delall(choice)
+                        cls = _TMCL if choice.startswith('TMCL') else _TIPL
+                        audio.add(cls(encoding=3, people=edited))
+                        _save(audio)
+                        print(f"{choice} updated.")
+                        time.sleep(1)
+                    break
+
+                else:
+                    # ── Plain text edit ───────────────────────────────────────
+                    if choice.startswith('USLT'):
+                        # Long-form lyrics — open full editor
+                        new_content = _edit_text_in_editor(full_text)
+                    else:
+                        # All other text tags — simple inline prompt
+                        tag_label = _TAG_MAP.get(choice.split(':')[0].split('[')[0], choice)
+                        new_content = _edit_inline(tag_label, full_text)
+
+                    if new_content is not None:
+                        audio.delall(choice)
+                        if choice.startswith('USLT'):
+                            new_frame = USLT(encoding=3, lang='eng', desc='', text=new_content)
+                        elif choice.startswith('COMM'):
+                            new_frame = COMM(encoding=3, lang='eng', desc='', text=[new_content])
+                        else:
+                            # Use the actual frame class from mutagen's registry —
+                            # never use bare TextFrame, it won't serialise correctly.
+                            from mutagen.id3 import Frames as _Frames
+                            base_id   = choice.split('[')[0].split(':')[0]
+                            frame_cls = _Frames.get(base_id)
+                            if frame_cls is None:
+                                print(f"Unknown frame ID: {base_id}")
+                                time.sleep(1)
+                                continue
+                            new_frame = frame_cls(encoding=3, text=[new_content])
+                        audio.add(new_frame)
+                        _save(audio)
+                        print(f"{choice} updated.")
+                        time.sleep(1)
+                    break
+
+            elif action == "Delete tag":
+                if prompt.confirm(f"Delete {choice}?"):
+                    try:
+                        audio.pop(choice)
+                        _save(audio)
+                        print(f"Deleted {choice}.")
+                    except KeyError:
+                        print(f"Could not delete {choice}: tag not found.")
+                    time.sleep(1)
+                    break
+
+            elif action == "Back":
+                break
 
 
 def browse_metadata(library: list) -> None:
@@ -1200,7 +1190,7 @@ def browse_metadata(library: list) -> None:
 
         tracks = sorted(
             album_groups[album_choice],
-            key=lambda x: (int(x.get('disc', 1) or 1), int(x.get('track', 0) or 0))
+            key=lambda x: (float(x.get('disc', 1) or 1), float(x.get('track', 0) or 0))
         )
 
         while True:

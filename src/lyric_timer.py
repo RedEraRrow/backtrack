@@ -13,7 +13,22 @@ from mutagen.id3 import ID3
 
 from src import ui_utils
 from src.terminal_input import raw_mode
-from src.playback import normalise_lyric_newlines
+
+def normalise_lyric_newlines(text: str) -> str:
+    """Normalize CRLF/CR newlines to LF and strip trailing spaces.
+
+    This mirrors the behaviour expected by the rest of this module: it
+    converts \r\n and \r to \n and leaves blank lines so the caller
+    can decide how to handle them.
+    """
+    if text is None:
+        return ""
+    # Normalize different newline styles to \n
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Strip trailing whitespace on each line but preserve blank lines
+    lines = [line.rstrip() for line in normalized.split("\n")]
+    return "\n".join(lines)
+
 from src.config import load_config
 
 

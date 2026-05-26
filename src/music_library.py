@@ -25,6 +25,17 @@ from src.history import get_recent_paths
 CACHE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/library_cache.json"))
 XML_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/Library.xml"))
 VALID_AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac')
+SYNC_INTERVAL_SECONDS = 30
+
+_sync_thread: threading.Thread | None = None
+_sync_trigger = threading.Event()
+_cache_mtime = 0
+_sync_lock = threading.Lock()
+_sync_state = {
+    "library": None,
+    "xml_db": None,
+    "xml_title_keys": set(),
+}
 
 # ID3 tag to metadata field mapping — single source of truth for all modules
 TAG_MAP = {
@@ -128,36 +139,84 @@ def _get_xml_mtime():
 
 def start_background_sync(library: list, xml_db: dict, xml_title_keys: set):
     """Kicks off the background synchronization thread."""
-    threading.Thread(
-        target=sync_worker, 
-        args=(library, xml_db, xml_title_keys), 
-        daemon=True
-    ).start()
+    global _sync_thread
+
+    with _sync_lock:
+        _sync_state["library"] = library
+        _sync_state["xml_db"] = xml_db
+        _sync_state["xml_title_keys"] = xml_title_keys
+
+        if _sync_thread and _sync_thread.is_alive():
+            _sync_trigger.set()
+            return
+
+        _sync_thread = threading.Thread(
+            target=sync_worker,
+            args=(library, xml_db, xml_title_keys),
+            daemon=True,
+        )
+        _sync_thread.start()
+
+
+def _signal_background_sync() -> None:
+    """Wake the background sync worker when the library or cache changes."""
+    _sync_trigger.set()
+
 
 def sync_worker(library: list, xml_db: dict, xml_title_keys: set):
+    global _cache_mtime
     from src import ui_utils
-    ui_utils.set_status("sync", "Checking library for updates...")
-    
-    changed = False
-    path_map = {track['path']: track for track in library}
 
-    for i, (path, track) in enumerate(path_map.items()):
-        if i % 20 == 0:
-            ui_utils.set_status("sync", f"Syncing library ({i}/{len(library)})")
-        
-        try:
-            current_mtime = os.path.getmtime(path)
-            if current_mtime > track.get('cached_mtime', 0):
+    last_xml_mtime = _get_xml_mtime()
+
+    while True:
+        library = _sync_state.get("library") or library
+        xml_db = _sync_state.get("xml_db") or xml_db
+        xml_title_keys = _sync_state.get("xml_title_keys") or xml_title_keys
+
+        ui_utils.set_status("sync", "Checking library for updates...")
+        changed = False
+
+        current_xml_mtime = _get_xml_mtime()
+        if current_xml_mtime and current_xml_mtime != last_xml_mtime:
+            refreshed_xml_db, refreshed_xml_title_keys = load_xml_database(XML_PATH)
+            if refreshed_xml_db is not None:
+                xml_db = refreshed_xml_db
+                xml_title_keys = refreshed_xml_title_keys
+            last_xml_mtime = current_xml_mtime
+
+        path_map = {track['path']: track for track in library}
+        for i, (path, track) in enumerate(path_map.items()):
+            if i % 20 == 0:
+                ui_utils.set_status("sync", f"Syncing library ({i}/{len(library)})")
+
+            try:
+                current_mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+
+            if current_mtime != track.get('cached_mtime', 0):
                 fresh = get_metadata(path, xml_db, xml_title_keys)
                 track.update(fresh)
                 changed = True
-        except OSError:
-            continue
 
-    if changed:
-        save_library_cache(library, _async=False)
-    
-    ui_utils.set_status("sync", None)
+        if changed:
+            save_library_cache(library, _async=False)
+
+        if os.path.exists(CACHE_PATH):
+            try:
+                current_cache_mtime = os.path.getmtime(CACHE_PATH)
+                if current_cache_mtime != _cache_mtime:
+                    _cache_mtime = current_cache_mtime
+                    external_library = load_library_cache()
+                    if external_library and external_library != library:
+                        library[:] = external_library
+            except OSError:
+                pass
+
+        ui_utils.set_status("sync", None)
+        _sync_trigger.wait(SYNC_INTERVAL_SECONDS)
+        _sync_trigger.clear()
 
 # ============================================================================
 # Metadata Extraction
@@ -351,6 +410,10 @@ def save_library_cache(library: list, _async: bool = False):
                 json.dump(library, f, indent=4)
             # Atomic rename replaces the old file with the new one instantly
             os.replace(temp_path, CACHE_PATH)
+            global _cache_mtime
+            _cache_mtime = os.path.getmtime(CACHE_PATH)
+            if threading.current_thread() is not _sync_thread:
+                _signal_background_sync()
         except Exception as e:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -380,12 +443,17 @@ def refresh_library_entry(library: list, file_path: str, xml_db: dict | None = N
 
 def load_library_cache() -> list:
     """Loads the library from disk, returning an empty list if corrupted."""
+    global _cache_mtime
     if not os.path.exists(CACHE_PATH):
+        _cache_mtime = 0
         return []
     try:
         with open(CACHE_PATH, 'r') as f:
-            return json.load(f)
+            library = json.load(f)
+        _cache_mtime = os.path.getmtime(CACHE_PATH)
+        return library
     except (json.JSONDecodeError, IOError):
+        _cache_mtime = 0
         return []
 
 
