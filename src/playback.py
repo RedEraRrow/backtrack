@@ -282,7 +282,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                         toast_expiry = time.time() + 1.0
                         update_ctrl_ui()
 
-                    elif arrow in ('A', 'B') and is_uslt:
+                    elif arrow in ('A', 'B') and (is_uslt or in_uslt_tail):
                         current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
                         target_idx = max(0, current_idx - 1) if arrow == 'A' else min(len(exp_times) - 1, current_idx + 1)
                         uslt_time_offset = exp_times[target_idx][0] - elapsed
@@ -383,14 +383,26 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                     right_col = playback_ui._last_right_left or 1
                     right_w = playback_ui._last_right_width or current_width
 
+                    # Switch back to SYLT if we seek backwards past the handoff point.
+                    # This check runs regardless of current rendering mode.
+                    if (
+                        in_uslt_tail
+                        and has_uslt
+                        and sylt_handoff_end_s is not None
+                        and elapsed < sylt_handoff_end_s
+                    ):
+                        in_uslt_tail = False
+                        uslt_time_offset = 0.0
+                        last_lyric_idx = -1
+
                     if is_uslt or in_uslt_tail:
                         # Pure USLT track, or SYLT has ended and we've handed off.
                         if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > 4.0:
                             manual_line_index = None
 
                         current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
-                        # Offset display index by handoff start when in tail mode.
-                        display_idx = (current_idx + uslt_handoff_idx) if in_uslt_tail else current_idx
+                        # display_idx already indexes into exp_lines (no offset needed when in_uslt_tail).
+                        display_idx = current_idx
                         display_idx = min(display_idx, len(exp_lines) - 1)
                         if display_idx != last_lyric_idx or manual_line_index is not None:
                             draw_uslt_window(
@@ -424,6 +436,11 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                             # Build times for the tail slice only.
                             tail_lines = uslt_lines[uslt_handoff_idx:]
                             tail_raw_times = build_uslt_line_times(tail_lines)
+                            # Offset all times by the handoff point so they align with actual elapsed time.
+                            tail_raw_times = [
+                                (t_start + sylt_handoff_end_s, t_end + sylt_handoff_end_s)
+                                for t_start, t_end in tail_raw_times
+                            ]
                             exp_lines, exp_times = expand_uslt_lines(
                                 tail_lines, tail_raw_times, _wrap_w
                             )
