@@ -1,82 +1,52 @@
 # Backtrack
 
-Backtrack is a terminal music player written in Python with VLC playback, lyrics synchronization, metadata inspection, and album art rendering.
+Backtrack is a terminal music player for macOS/Linux that plays audio with VLC, shows embedded lyrics, and lets you browse your music library in the terminal.
 
-## Features
+## Quick Start
 
-- Browse a cached music library by Artist, Album, and Genre
-- Search with weighted scoring across title, artist, album, genre, and path
-- Playback using VLC backend with rich terminal UI
-- Embedded lyrics support for `USLT` and `SYLT`
-- Interactive lyric synchronization tool
-- Metadata inspection and editing for ID3/MP4 tags
-- Album art rendering via `viu` and MP3 APIC extraction
-- Listening history tracking
-- Settings for theme, lyric lead-in, player view, and metadata editor visibility
-- Background metadata sync using optional iTunes XML data
-
-## Project Structure
-
-The repository is organised to keep UI, app logic, and data separate.
-
+```bash
+python3 -m pip install -r requirements.txt
+python3 main.py
 ```
-backtrack/
-├── main.py                 # Entry point launcher
-├── src/                    # Python application code
-│   ├── album_art.py        # Album art rendering and image conversion
-│   ├── config.py           # Load/save app configuration
-│   ├── history.py          # Listening history logging and retrieval
-│   ├── lyric_timer.py      # Interactive lyric synchronization tool
-│   ├── main.py             # Startup and application orchestration
-│   ├── metadata_browser.py # Inspect and edit track metadata
-│   ├── menus.py            # Main menu and navigation handlers
-│   ├── music_library.py    # Library scanning, metadata extraction, search, and sync
-│   ├── playback.py         # Playback engine, controls, and rendering
-│   ├── playback_lyrics.py  # Lyrics display and SYLT/USLT handling
-│   ├── prompt.py           # Terminal prompt widgets
-│   ├── state.py            # Shared application state
-│   ├── terminal_input.py   # Raw terminal input and escape handling
-│   └── ui_utils.py         # ANSI utilities and formatting helpers
-├── config/                 # Configuration directory
-│   └── config.json         # User configuration file
-├── data/                   # Cached and generated data
-│   ├── library_cache.json  # Cached library data
-│   ├── history.log         # Listening history log
-│   └── Library.xml         # Optional iTunes metadata export
-├── docs/                   # Project documentation
-│   └── DEVELOPER.md        # Developer guide
-├── requirements.txt        # Python dependencies
-└── README.md               # User guide
-```
+
+On first run, Backtrack asks for your music directory and builds a library cache for faster startup.
+
+## What Backtrack Does
+
+- Browse music by artist, album, or genre
+- Search your library by title, artist, album, genre, or file path
+- Play audio using VLC with playback controls
+- View synced lyrics from `SYLT`/`USLT` tags
+- Sync un-timed lyrics interactively
+- View and edit track metadata
+- Render album art in the terminal via `viu`
+- Track listening history
 
 ## Installation
 
 ### Requirements
 
 - Python 3.8 or newer
-- System VLC / libvlc installed for playback
+- VLC / libvlc installed on your system
 - `viu` CLI installed for album art rendering
-- Optional: `data/Library.xml` for iTunes metadata fallback
 
-### Install dependencies
+### Install Python dependencies
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-### Run the app
+### Launch Backtrack
 
 ```bash
 python3 main.py
 ```
 
-On first run, Backtrack prompts for your music directory and builds the library cache.
-
 ## Usage
 
 ### Main Menu
 
-The main menu includes:
+After startup, the main menu lets you:
 - Browse Library
 - Search
 - Listening History
@@ -85,11 +55,21 @@ The main menu includes:
 
 ### Browse Library
 
-Browse the library by artist, album, or genre. Groups are sorted for easier terminal navigation.
+Use Browse Library to explore your collection by:
+- Artist
+- Album
+- Genre
 
 ### Search
 
-Search supports matching the selected fields and returns top ranked results.
+Search your library across:
+- Title
+- Artist
+- Album
+- Genre
+- File path
+
+Pick a result to play the track, sync lyrics, or edit metadata.
 
 ### Playback Controls
 
@@ -106,95 +86,72 @@ Search supports matching the selected fields and returns top ranked results.
 | `J` | Seek backward 1 second |
 | `+` / `=` | Increase volume |
 | `-` / `_` | Decrease volume |
-| `↑` / `↓` | Move synchronized lyric focus for USLT/SYLT lyrics |
+| `↑` / `↓` | Move lyric selection when viewing unsynced lyrics |
 
-### Player Views
+### Player View Modes
 
-Backtrack supports two playback modes:
+Use Settings to choose the player view:
 - `default` — metadata plus album art
-- `ipod` — classic iPod-style now playing screen
+- `ipod` — classic iPod-style now playing view
 
-### Lyric Synchronisation
+### Listening History
 
-The Sync Lyrics tool plays a track and records timestamps as you mark each line. It writes synchronized timecodes back to the file.
+The Listening History menu shows recent tracks you played and lets you replay them.
 
-### Metadata Browser
+### Sync Lyrics
 
-Search results expose metadata actions that let you inspect and edit ID3 frames, lyrics tags, album art, and more.
+If a track contains unsynchronized lyrics (`USLT`), use Sync Lyrics to mark each line while the track plays. The recorded timestamps are saved back to the track.
+
+### Metadata Editing
+
+Search results may offer metadata editing options for title, artist, album art, lyrics, and other tags.
 
 ## Configuration
 
-User settings are saved in `config/config.json`.
+Backtrack stores settings in `config/config.json`.
 
-Key configuration options:
-
-- `theme` — ANSI colour theme values
-- `history_enabled` — enable or disable history tracking
-- `search_weights` — search scoring weights
-- `lyric_lead_in` — lyric sync offset in seconds
-- `ascii_width` — album art rendering width
-- `music_directory` — scanned music folder
+Common keys:
+- `music_directory` — path to your music folder
+- `theme` — terminal colour values
+- `history_enabled` — track listening history
+- `search_weights` — search relevance weights
+- `lyric_lead_in` — lyric sync timing offset
+- `ascii_width` — album art width
 - `player_view` — `default` or `ipod`
-- `show_metadata_editor` — show/hide metadata editor actions
-
-Example:
-
-```json
-{
-    "theme": {
-        "primary": "\u001b[1;37m",
-        "accent": "\u001b[1;31m",
-        "success": "\u001b[1;32m"
-    },
-    "history_enabled": true,
-    "search_weights": {"title": 10, "artist": 8, "album": 5},
-    "lyric_lead_in": 2.0,
-    "ascii_width": 80,
-    "music_directory": "/path/to/music",
-    "player_view": "default",
-    "show_metadata_editor": true
-}
-```
+- `show_metadata_editor` — toggle metadata editor availability
 
 ## Supported Formats
 
 - Audio: `MP3`, `M4A`, `MP4`, `M4P`, `AAC`
-- Metadata: ID3 tags, MP4 tags, `USLT`, `SYLT`
-- Optional iTunes XML metadata: `data/Library.xml`
+- Lyrics: `USLT`, `SYLT`
+- Metadata: ID3 tags and MP4 tags
+- Optional library metadata: `data/Library.xml`
 - Album art: embedded MP3 APIC frames and external images via `viu`
 
-## Data Files
+## Troubleshooting
 
-- `config/config.json` — application settings
-- `data/library_cache.json` — cached music library
-- `data/history.log` — listening history
-- `data/Library.xml` — optional iTunes metadata export
+### Playback fails
 
-## Development
+- Ensure VLC / libvlc is installed
+- Verify the file is a supported audio format
+- Confirm the terminal can access the music directory
 
-### Run the application
+### Album art does not render
 
-```bash
-python3 main.py
-```
+- Install the `viu` CLI
+- Try using a different file with embedded art
 
-### Verify syntax
+### Lyrics do not appear
 
-```bash
-python3 -m py_compile src/*.py
-```
+- Not all files have embedded lyrics
+- Use Sync Lyrics to generate timestamps manually
 
 ## Notes
 
-- `viu` is required for art rendering
-- `python-vlc` requires a system VLC installation
-- Library cache and history log are generated automatically
+- `data/library_cache.json` is generated automatically
+- Listening history is logged to `data/history.log`
+- `config/config.json` is created on first run
 
-## Contributing
+## License
 
-When contributing:
-- Keep modules focused on a single responsibility
-- Add docstrings and type hints for new functions
-- Preserve the terminal-first workflow
-- Test new features by running the app and compiling changed modules
-- Update documentation when behavior or settings change
+Backtrack is provided under the MIT License.
