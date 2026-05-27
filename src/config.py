@@ -6,6 +6,7 @@ Handles loading, saving, and accessing application configuration.
 
 import json
 import os
+from pathlib import Path
 
 
 # Default configuration constants
@@ -24,15 +25,32 @@ DEFAULT_CONFIG = {
     "show_metadata_editor": True,
 }
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "../config/config.json")
+
+def _default_config_dir() -> Path:
+    """Return the user config directory for Backtrack."""
+    if os.name == "nt":
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            return Path(appdata) / "Backtrack"
+        return Path.home() / "AppData" / "Roaming" / "Backtrack"
+
+    xdg = os.getenv("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "backtrack"
+    return Path.home() / ".config" / "backtrack"
+
+
+CONFIG_DIR = Path(os.getenv("BACKTRACK_CONFIG_DIR") or _default_config_dir())
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 def load_config() -> dict:
     """Load configuration from file or create defaults if missing."""
-    if not os.path.exists(CONFIG_FILE):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_FILE.exists():
         with open(CONFIG_FILE, "w") as f:
             json.dump(DEFAULT_CONFIG, f, indent=4)
-        return DEFAULT_CONFIG
+        return DEFAULT_CONFIG.copy()
     
     with open(CONFIG_FILE, "r") as f:
         cfg = json.load(f)
@@ -46,5 +64,6 @@ def load_config() -> dict:
 
 def save_config(config: dict) -> None:
     """Save configuration to file."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)
