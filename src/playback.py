@@ -26,10 +26,13 @@ from src.playback_lyrics import (
     _parse_sylt,
     _parse_uslt,
     build_uslt_line_times,
+    draw_lyric_initial,
     draw_lyric_window,
     draw_uslt_window,
+    estimate_sylt_last_line_end,
     expand_uslt_lines,
     find_current_uslt_line,
+    find_uslt_handoff_index,
 )
 from src.playback_ui import (
     _controls_line,
@@ -118,17 +121,28 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
             return {"status": "ERROR"}
 
     sylt_data = _parse_sylt(audio)
+    uslt_lines_raw = _parse_uslt(audio)
+    uslt_lines: list[str] = [line for line, _ in uslt_lines_raw]
+
     is_uslt = False
-    uslt_lines: list[str] = []
+    has_uslt = bool(uslt_lines)
+    # When SYLT covers only part of the track, USLT provides the fallback tail.
+    # sylt_handoff_end_s: elapsed seconds at which to switch from SYLT to USLT.
+    # uslt_handoff_idx: which USLT line to start from after the handoff.
+    sylt_handoff_end_s: float | None = None
+    uslt_handoff_idx: int = 0
     line_times: list[tuple[float, float]] = []
 
     if not sylt_data:
-        uslt_lines_raw = _parse_uslt(audio)
         if uslt_lines_raw:
             is_uslt = True
             sylt_data = uslt_lines_raw
-            uslt_lines = [line for line, _ in uslt_lines_raw]
             line_times = build_uslt_line_times(uslt_lines)
+    else:
+        # Check if USLT is also present — SYLT may only cover part of the track.
+        if has_uslt:
+            # We'll compute handoff timing after we know duration (post-play start).
+            pass
 
     old_stderr, _ = _set_stderr_to_null()
     mp = _make_player(file_path)
@@ -152,16 +166,39 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                 duration = vlc_len / 1000.0 if vlc_len > 0 else 999.0
 
             volume = mp.audio_get_volume()
-            prog_row, ctrl_row, lyric_row, current_width = draw_full_ui(
+            prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
                 file_path, audio, pre_art, last_size,
                 is_paused=False, volume=volume, toast=toast_text,
             )
+
+            # Compute SYLT→USLT handoff timing now that duration is known.
+            if sylt_data and not is_uslt and has_uslt:
+                sylt_handoff_end_s = estimate_sylt_last_line_end(
+                    sylt_data, duration * 1000
+                )
+                uslt_handoff_idx = find_uslt_handoff_index(
+                    uslt_lines, sylt_data[-1][0]
+                )
 
             if is_uslt:
                 _wrap_w = max(20, current_width - 8)
                 exp_lines, exp_times = expand_uslt_lines(uslt_lines, line_times, _wrap_w)
             else:
-                exp_lines, exp_times = uslt_lines, line_times
+                exp_lines, exp_times = [], []
+
+            # Draw initial lyric state: divider + first line greyed out.
+            if sylt_data or has_uslt:
+                right_col = playback_ui._last_right_left or 1
+                right_w = playback_ui._last_right_width or current_width
+                first_line = sylt_data[0][0] if sylt_data else (uslt_lines[0] if uslt_lines else "")
+                draw_lyric_initial(
+                    lyric_row, first_line,
+                    width=right_w, max_row=last_size[1], col=right_col,
+                    bottom_row=art_bottom_row,
+                )
+
+            # Whether we are currently in the USLT tail phase (after SYLT ends).
+            in_uslt_tail = False
 
             track_start = time.time()
 
@@ -172,7 +209,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                 active_toast = toast_text if time.time() < toast_expiry else ""
                 if state != vlc.State(7):
                     status_ln, shortcuts_ln = _controls_line(
-                        bool(sylt_data), is_paused, vol, active_toast
+                        is_uslt or in_uslt_tail, is_paused, vol, active_toast
                     )
                     shortcut_lines = shortcuts_ln.splitlines() or [""]
                     sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}\n")
@@ -198,14 +235,14 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                     if is_grouping:
                         pre_art = _render_grouping_cover(file_path, last_size[0])
                     volume = mp.audio_get_volume()
-                    prog_row, ctrl_row, lyric_row, current_width = draw_full_ui(
+                    prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
                         file_path, audio, pre_art, last_size,
                         is_paused=(mp.get_state() == vlc.State(4)),
                         volume=volume,
                         toast=toast_text if time.time() < toast_expiry else "",
                     )
                     last_lyric_idx = -1
-                    if is_uslt:
+                    if is_uslt or in_uslt_tail:
                         _wrap_w = max(20, current_width - 8)
                         exp_lines, exp_times = expand_uslt_lines(uslt_lines, line_times, _wrap_w)
 
@@ -305,7 +342,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                         from src.playback_ui import toggle_credits
                         toggle_credits()
                         volume = mp.audio_get_volume()
-                        prog_row, ctrl_row, lyric_row, current_width = draw_full_ui(
+                        prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
                             file_path, audio, pre_art, last_size,
                             is_paused=(mp.get_state() == _VLC_STATE_PAUSED),
                             volume=volume,
@@ -317,7 +354,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                         from src.playback_ui import toggle_help
                         toggle_help()
                         volume = mp.audio_get_volume()
-                        prog_row, ctrl_row, lyric_row, current_width = draw_full_ui(
+                        prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
                             file_path, audio, pre_art, last_size,
                             is_paused=(mp.get_state() == _VLC_STATE_PAUSED),
                             volume=volume,
@@ -329,7 +366,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                         from src.playback_ui import toggle_metadata
                         toggle_metadata()
                         volume = mp.audio_get_volume()
-                        prog_row, ctrl_row, lyric_row, current_width = draw_full_ui(
+                        prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
                             file_path, audio, pre_art, last_size,
                             is_paused=(mp.get_state() == _VLC_STATE_PAUSED),
                             volume=volume,
@@ -342,33 +379,65 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                 else:
                     update_progress_ui(prog_row, elapsed, duration, current_width)
 
-                if sylt_data:
-                    if is_uslt:
+                if sylt_data or has_uslt:
+                    right_col = playback_ui._last_right_left or 1
+                    right_w = playback_ui._last_right_width or current_width
+
+                    if is_uslt or in_uslt_tail:
+                        # Pure USLT track, or SYLT has ended and we've handed off.
                         if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > 4.0:
                             manual_line_index = None
 
                         current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
-                        if current_idx != last_lyric_idx or manual_line_index is not None:
-                            # If UI provided a right-pane, draw lyrics inside it.
-                            right_col = playback_ui._last_right_left or 1
-                            right_w = playback_ui._last_right_width or current_width
+                        # Offset display index by handoff start when in tail mode.
+                        display_idx = (current_idx + uslt_handoff_idx) if in_uslt_tail else current_idx
+                        display_idx = min(display_idx, len(exp_lines) - 1)
+                        if display_idx != last_lyric_idx or manual_line_index is not None:
                             draw_uslt_window(
-                                lyric_row, exp_lines, exp_times, elapsed + uslt_time_offset,
+                                lyric_row, exp_lines, exp_times,
+                                elapsed + uslt_time_offset,
                                 width=right_w, manual_idx=manual_line_index,
                                 max_row=last_size[1], col=right_col,
+                                bottom_row=art_bottom_row,
                             )
-                            last_lyric_idx = current_idx
+                            last_lyric_idx = display_idx
+
                     else:
+                        # SYLT track (with optional USLT tail).
                         current_idx = max(
                             (i for i, (_, ts) in enumerate(sylt_data) if ts <= elapsed_ms),
                             default=-1,
                         )
-                        if current_idx >= 0 and current_idx != last_lyric_idx:
-                            right_col = playback_ui._last_right_left or 1
-                            right_w = playback_ui._last_right_width or current_width
+
+                        # Check for handoff: SYLT is on its last line and elapsed
+                        # has passed the estimated end of that line.
+                        if (
+                            not in_uslt_tail
+                            and has_uslt
+                            and sylt_handoff_end_s is not None
+                            and current_idx == len(sylt_data) - 1
+                            and elapsed >= sylt_handoff_end_s
+                        ):
+                            in_uslt_tail = True
+                            uslt_time_offset = 0.0
+                            _wrap_w = max(20, current_width - 8)
+                            # Build times for the tail slice only.
+                            tail_lines = uslt_lines[uslt_handoff_idx:]
+                            tail_raw_times = build_uslt_line_times(tail_lines)
+                            exp_lines, exp_times = expand_uslt_lines(
+                                tail_lines, tail_raw_times, _wrap_w
+                            )
+                            last_lyric_idx = -1
+
+                        elif current_idx < 0:
+                            # Before first SYLT timestamp — show initial greyed state.
+                            pass  # initial draw already rendered; nothing to update
+
+                        elif current_idx != last_lyric_idx:
                             draw_lyric_window(
                                 lyric_row, sylt_data, current_idx,
                                 width=right_w, max_row=last_size[1], col=right_col,
+                                bottom_row=art_bottom_row,
                             )
                             last_lyric_idx = current_idx
 

@@ -1,363 +1,189 @@
 # Developer Guide
 
-This document explains the architecture and development practices for the Terminal Music Player.
+This document explains the architecture and development practices for Backtrack.
 
 ## Architecture
 
-## Architecture
+Backtrack is designed as a terminal-first music player with clear separation between configuration, library management, playback, and UI.
 
-### Project Structure
+### Project Layout
 
 ```
-Music Browser/
-├── main.py                 # Entry point launcher (7 lines)
-├── src/                    # Source code directory
-│   ├── main.py             # Main application logic (58 lines)
-│   ├── config.py           # Configuration management (48 lines)
-│   ├── state.py            # Shared global state (8 lines)
-│   ├── music_library.py    # Library operations (289 lines)
-│   ├── playback.py         # Music player engine (494 lines)
-│   ├── menus.py            # Navigation menus (414 lines)
-│   ├── history.py          # History tracking (86 lines)
-│   ├── terminal_input.py   # Terminal I/O (99 lines)
-│   ├── ascii_art.py        # Image processing (95 lines)
-│   ├── ui_utils.py         # UI utilities (196 lines)
-│   ├── lyric_timer.py      # Lyric sync tool (91 lines)
-│   ├── metadata_browser.py # Metadata UI (323 lines)
-│   └── prompt.py           # User input utilities (89 lines)
+backtrack/
+├── main.py                 # Entry point launcher
+├── src/                    # Python application code
+│   ├── album_art.py        # Album art rendering and image conversion
+│   ├── config.py           # Load/save application configuration
+│   ├── history.py          # Listening history logging and retrieval
+│   ├── lyric_timer.py      # Interactive lyric synchronization tool
+│   ├── main.py             # Startup and orchestration
+│   ├── metadata_browser.py # Inspect and edit track metadata
+│   ├── menus.py            # Navigation and menu handlers
+│   ├── music_library.py    # Library scanning, metadata extraction, search, and sync
+│   ├── playback.py         # Playback engine and rendering
+│   ├── playback_lyrics.py  # Lyrics display and SYLT/USLT handling
+│   ├── prompt.py           # Terminal prompt widgets
+│   ├── state.py            # Shared application state
+│   ├── terminal_input.py   # Raw terminal input handling
+│   └── ui_utils.py         # ANSI utilities and formatting helpers
 ├── config/                 # Configuration directory
-│   └── config.json         # User configuration (generated)
-├── data/                   # Data directory
-│   ├── library_cache.json  # Cached library (generated)
-│   └── Library.xml         # iTunes export (optional)
+│   └── config.json         # User settings file
+├── data/                   # Cached and runtime data
+│   ├── library_cache.json  # Cached music library data
+│   ├── history.log         # Listening history log
+│   └── Library.xml         # Optional iTunes metadata export
 ├── docs/                   # Documentation directory
 │   └── DEVELOPER.md        # This file
-├── requirements.txt        # Python dependencies
-├── README.md               # User guide
-└── history.log             # Listening history (generated)
+└── requirements.txt        # Python dependencies
 ```
 
-## Module Dependencies
+## Module Responsibilities
 
-```
-main.py (launcher)
-  └─ src.main
+- `main.py` - Application launcher
+- `src/main.py` - Startup flow, loading config/library, launching menu
+- `src/config.py` - Manage persistent settings
+- `src/music_library.py` - Scan audio files, extract metadata, search, and background sync
+- `src/playback.py` - Playback engine, UI render, controls, transitions
+- `src/playback_lyrics.py` - Lyrics rendering for SYLT/USLT content
+- `src/menus.py` - Primary menus: browse, search, history, settings
+- `src/history.py` - History log persistence and retrieval
+- `src/terminal_input.py` - Raw terminal input and escape handling
+- `src/album_art.py` - Album art capture and ASCII/ANSI rendering using `viu`
+- `src/ui_utils.py` - Terminal utilities, progress bars, and formatting
+- `src/lyric_timer.py` - Interactive lyric sync session
+- `src/metadata_browser.py` - Metadata inspection and editing UI
+- `src/prompt.py` - Terminal prompt abstractions
+- `src/state.py` - Shared navigation state
 
-src/main.py
-  ├─ src.config
-  ├─ src.music_library
-  │   ├─ src.history
-  │   └─ (mutagen, xml)
-  └─ src.menus
-      ├─ src.music_library
-      ├─ src.history
-      ├─ src.playback
-      │   ├─ src.ui_utils
-      │   ├─ src.terminal_input
-      │   ├─ src.ascii_art
-      │   ├─ src.history
-      │   ├─ src.state
-      │   └─ (miniaudio, mutagen)
-      ├─ src.lyric_timer
-      ├─ src.config
-      ├─ src.state
-      └─ src.metadata_browser
-          ├─ src.ui_utils
-          ├─ src.ascii_art
-          └─ (mutagen, cv2, numpy)
-```
+## Dependency Overview
+
+- `python-vlc` for audio playback
+- `mutagen` for ID3 and MP4 tag parsing
+- `opencv-python` and `numpy` for metadata image handling
+- `pyperclip` for clipboard support in metadata editing
+- `viu` CLI for album art rendering
 
 ## Design Principles
 
-### 1. Single Responsibility
-Each module has one clear purpose:
-- `src/config.py` - Configuration only
-- `src/music_library.py` - Library operations only
-- `src/playback.py` - Audio playback only
-- `src/menus.py` - Menu navigation only
+### Single Responsibility
+Modules are arranged so each file owns one primary domain.
 
-### 2. Type Hints
-All functions include Python 3.8+ type hints:
+### Type Hints and Docstrings
+All public functions should use Python 3.8+ type hints and include descriptive docstrings.
 
-```python
-def search_library(library: list, query: str, active_tags: list | None = None) -> list:
-    """Search library implementation..."""
-    pass
-```
+### Robust Error Handling
+Recover gracefully from missing files, invalid tags, and playback errors.
 
-### 3. Docstrings
-Functions include comprehensive docstrings:
+### Terminal-first UX
+Keep interactions keyboard-driven and compatible with narrow terminal widths.
 
-```python
-def musicplayer(file_path: str, preloaded_data: dict | None = None) -> dict:
-    """
-    Main music player engine.
-    
-    Handles playback, lyric display, and user controls.
-    """
-    pass
-```
+## Key Systems
 
-### 4. Error Handling
-Graceful error handling with informative messages:
+### Library & Metadata
 
-```python
-try:
-    audio = ID3(file_path)
-except Exception as e:
-    print(f"Error loading metadata: {e}")
-    return {"status": "ERROR"}
-```
+`src/music_library.py` builds the library from the configured music folder, extracts metadata from audio tags, and can enrich tracks from an optional iTunes XML export (`data/Library.xml`).
 
-### 5. Constants
-Constants are defined at module level in UPPERCASE:
+It also maintains a background sync thread to refresh metadata and reload the cache when files change.
 
-```python
-VALID_AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac')
-CACHE_PATH = os.path.join(os.path.dirname(__file__), "../data/library_cache.json")
-```
+### Playback
 
-## Adding New Features
+`src/playback.py` uses VLC to play audio and render the terminal UI. It supports seek, volume changes, two player view modes, and lyric rendering.
 
-### Example: Add Album Art Display
+`src/playback_lyrics.py` handles SYLT/USLT lyrics display and mapping to current playback time.
 
-1. **Identify the module** - Image handling goes in `src/ascii_art.py`
+### Lyric Sync
 
-2. **Write the function**:
-```python
-def display_album_art_large(file_path: str, width: int = 200) -> None:
-    """Display large album art for current track."""
-    art = get_ascii(file_path, width)
-    print(art)
-```
+`src/lyric_timer.py` launches an interactive sync session for tracks with `USLT` lyrics and saves timestamps as `SYLT`.
 
-3. **Update playback UI** - Call from `src/playback.py`:
-```python
-# In draw_full_ui()
-display_album_art_large(file_path, width=max_art_h)
-```
+### Metadata Browser
 
-4. **Test** - Import and run:
-```bash
-python3 -c "from src.ascii_art import display_album_art_large; display_album_art_large('song.mp3')"
-```
+`src/metadata_browser.py` provides a terminal editor for ID3 tags, lyrics frames, and album art. It can preview artwork as ASCII, open images, and replace APIC frames.
 
-### Example: Add New Menu Option
+## Adding Features
 
-1. **Create the handler** in `src/menus.py`:
-```python
-def handle_now_playing(library: list) -> None:
-    """Show now playing information."""
-    # Implementation
-    pass
-```
+### Add a Menu Option
 
-2. **Add to main menu** in `main_menu()`:
-```python
-choices=["Browse Library", "Search", "Now Playing", "Settings", "Exit"]
-elif choice == "Now Playing":
-    handle_now_playing(library_ref[0])
-```
+1. Add a new handler in `src/menus.py`.
+2. Insert the command into the appropriate menu choice list.
+3. Ensure the handler returns cleanly to the menu or application loop.
+4. Test navigation and action flow.
 
-3. **Test the menu** - Run the app and check the new option
+### Add Playback Behavior
 
-## Code Style
+1. Update `src/playback.py` with the new key handling or UI rendering logic.
+2. Keep playback state separate from rendering code where possible.
+3. Use `src.config.py` for any new user-configurable value.
+4. Test with actual audio files.
 
-### Naming Conventions
+### Add Metadata Support
 
-- **Modules**: lowercase with underscores (`ascii_art.py`)
-- **Classes**: PascalCase (`Colours`)
-- **Functions**: snake_case (`format_time()`)
-- **Constants**: UPPERCASE (`CACHE_PATH`)
-- **Private functions**: Leading underscore (`_parse_sylt()`)
-- **Private modules**: Leading underscore (`_helpers.py`)
+1. Use `mutagen` patterns from existing metadata handling in `src/music_library.py`.
+2. Extend `src/metadata_browser.py` only when UI editing is required.
+3. Save changes back to the file and refresh the library cache if needed.
 
-### Formatting
+## Configuration Details
 
-- **Line length**: 100 characters max (for readability in terminals)
-- **Spacing**: 2 blank lines between module-level functions
-- **Imports**: Group by type (stdlib, third-party, local)
+Persistent settings live in `config/config.json`.
 
-```python
-import os
-import json
-
-import questionary
-
-from library import build_library
-from config import load_config
-```
-
-### Comments
-
-Use comments sparingly - code should be self-documenting:
-
-```python
-# Good: explains WHY
-if metadata["artist"] == "Unknown Artist":
-    # XML fallback only if we couldn't extract from ID3 tags
-    metadata.update(xml_info)
-
-# Avoid: restates the code
-# Set i to 0
-i = 0
-```
+Important keys:
+- `theme`
+- `history_enabled`
+- `search_weights`
+- `lyric_lead_in`
+- `ascii_width`
+- `music_directory`
+- `player_view`
+- `show_metadata_editor`
 
 ## Testing
 
-### Manual Testing
+### Syntax and Import Checks
 
-Test individual functions:
 ```bash
-python3 -c "
-from src.music_library import search_library, load_library_cache
-lib = load_library_cache()
-results = search_library(lib, 'Beatles')
-print(f'Found {len(results)} matches')
-"
+python3 -m py_compile src/*.py
 ```
 
-Test module imports:
-```bash
-python3 -m py_compile src/playback.py src/menus.py
-```
+### Runtime Testing
 
-### Integration Testing
-
-Run the full application:
 ```bash
 python3 main.py
 ```
 
-Test specific features:
-- Browse a category
-- Search for a song
-- Play a track
-- Sync lyrics
-- Check history
+Verify:
+- library scanning
+- search results
+- playback start/stop
+- lyric sync
+- history and settings menus
 
 ## Debugging
 
-### Enable Verbose Output
+### Configuration Inspection
 
-Add debug prints to trace execution:
-```python
-def musicplayer(file_path: str, preloaded_data=None):
-    print(f"DEBUG: Loading {file_path}")
-    # ... rest of function
-```
-
-### Check Configuration
-
-Inspect current configuration:
 ```python
 from src.config import load_config
-config = load_config()
-print(config)
+print(load_config())
 ```
 
-### Inspect Library State
+### Library Inspection
 
-Check cached library:
-```python
-from src.music_library import load_library_cache
-lib = load_library_cache()
-print(f"Library has {len(lib)} tracks")
-for song in lib[:5]:
-    print(f"  {song['artist']} - {song['title']}")
-```
+Open `data/library_cache.json` to verify cached entries and metadata.
 
-## Performance Considerations
+### Playback Debugging
 
-### Library Caching
+Add targeted logging in `src/playback.py` and `src/playback_lyrics.py` to trace state, elapsed time, and UI refresh cycles.
 
-- Library is cached in `data/library_cache.json` for fast startup
-- Cache is invalidated when music directory changes
-- Large libraries (10000+ songs) may take time on first scan
+## Developer Notes
 
-### UI Rendering
-
-- Progress UI updates occur every 50ms (line 557 in playback.py)
-- Lyric display only updates when index changes (not every frame)
-- Album art is cached during playback
-
-### Memory Usage
-
-- Full library is loaded into memory (acceptable for most use cases)
-- ID3 tags are read per-file (could be optimised with caching)
-- Image conversion happens on-demand (not precomputed)
-
-## Future Improvements
-
-### Short Term
-- [ ] Add unit tests for library functions
-- [ ] Implement gapless playback
-- [ ] Add repeat/shuffle mode persistence
-- [ ] Improve metadata editor UI
-
-### Medium Term
-- [ ] Add equaliser support
-- [ ] Implement Last.fm scrobbling
-- [ ] Create playlist management
-- [ ] Add tag editing from UI
-
-### Long Term
-- [ ] Streaming service integration
-- [ ] Advanced search/filtering (regex, date ranges)
-- [ ] Plugin system for extensions
-- [ ] Web interface for remote control
-
-## Release Checklist
-
-Before releasing a new version:
-
-- [ ] All modules in `src/` compile without syntax errors
-- [ ] All imports work correctly with `src.` prefix
-- [ ] Manual testing of key features passes
-- [ ] Configuration files are created in correct `config/` directory
-- [ ] Data files are stored in `data/` directory
-- [ ] README updated with new features
-- [ ] No debug print statements left in code
-- [ ] No broken commented-out code
-- [ ] Performance tested with large library
-- [ ] Version number updated
-- [ ] CHANGELOG.md updated
-
-## Support & Resources
-
-### Code Navigation
-
-- **Music playback** → `playback.py`
-- **Menu navigation** → `menus.py`
-- **Library operations** → `library.py`
-- **Configuration** → `config.py`
-- **UI elements** → `ui_utils.py` and `ascii_art.py`
-- **Terminal I/O** → `terminal_input.py`
-
-### Common Issues & FAQs
-
-**Q: How do I add a keyboard shortcut?**
-A: Add handling in `terminal_input.py` and process in `playback.py` key handler.
-
-**Q: How do I add new metadata field?**
-A: Update `TAG_MAP` in `playback.py` and `library.py`.
-
-**Q: How do I change the UI colours?**
-A: Modify `Colours` class in `ui_utils.py` or `config.json` theme settings.
-
-**Q: How do I add a new browse category?**
-A: Add to `key_map` dictionary in `browse_menu()` in `menus.py`.
+- `src/state.py` stores navigation breadcrumbs
+- `src/prompt.py` provides terminal prompt controls without external dependencies
+- `src/album_art.py` depends on `viu` and gracefully returns an error message if it is not installed
+- `src/history.py` writes `data/history.log` as `timestamp | duration | path`
 
 ## Contributing
 
-To contribute to this project:
-
-1. Review the existing code and comments first
-2. Follow the style guidelines above
-3. Add tests for new features
-4. Update documentation
-5. Submit a pull request
-
-For questions, please open an issue on the project repository.
-
----
+When contributing:
+- Keep code modular and readable
+- Add docstrings and type hints
+- Preserve existing terminal UX and menu flow
+- Update documentation when behavior changes

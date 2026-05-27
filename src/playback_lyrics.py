@@ -144,7 +144,7 @@ def find_current_uslt_line(line_times: list[tuple[float, float]], elapsed: float
 
 def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
                       width: int | None = None, max_row: int | None = None,
-                      col: int = 1) -> None:
+                      col: int = 1, bottom_row: int | None = None) -> None:
     """Display previous, current, and next lyrics for SYLT."""
     C = ui_utils.Colours
     width = width or ui_utils.get_terminal_width()
@@ -169,10 +169,11 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
     c_flat = normalise_lyric_newlines(c_raw).replace('\n', ' ')
     c_wrap = textwrap.wrap(c_flat, width=wrap_w - 4)[:max(1, budget - 4)]
 
-    # Clear only the right-pane rows, keeping the left-side UI intact.
-    # Increased to clear lingering USLT scroll hints from previous tracks
-    clear_rows = max(12, 2 + len(c_wrap) + 3)
-    for i in range(clear_rows):
+    # Full clear of the entire lyric region from `row` to `bottom_row` (or
+    # a generous fixed estimate). This prevents stale remnants from prior
+    # states (different credit heights, song changes, layout toggles).
+    clear_end = bottom_row if bottom_row is not None else max_row
+    for i in range(max(0, clear_end - row + 1)):
         sys.stdout.write(f"\033[{row + i};{col}H\033[K")
 
     out_row = row
@@ -214,7 +215,7 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
                      elapsed: float, width: int | None = None,
                      manual_idx: int | None = None,
                      max_row: int | None = None,
-                     col: int = 1) -> None:
+                     col: int = 1, bottom_row: int | None = None) -> None:
     """Render prev/current/next USLT lines from an expanded line list."""
     C = ui_utils.Colours
     width = width or ui_utils.get_terminal_width()
@@ -244,9 +245,11 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
     hl = C.SUCCESS if manual_idx is not None else C.ACCENT
     pfx = "● " if manual_idx is not None else "▶ "
 
-    # Clear only the right-pane rows, keeping the left-side UI intact.
-    clear_rows = max(8, 2 + len(curr_wrapped) + 2)
-    for i in range(clear_rows):
+    # Full clear of the entire lyric region from `row` to `bottom_row` (or
+    # max_row). This prevents stale remnants when lyric_row shifts after a
+    # toggle (credits/metadata) or track change.
+    clear_end = bottom_row if bottom_row is not None else max_row
+    for i in range(max(0, clear_end - row + 1)):
         sys.stdout.write(f"\033[{row + i};{col}H\033[K")
 
     out_row = row
@@ -283,6 +286,41 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
     sys.stdout.flush()
 
 
+def draw_lyric_initial(row: int, first_line: str, width: int | None = None,
+                       max_row: int | None = None, col: int = 1,
+                       bottom_row: int | None = None) -> None:
+    """Draw the lyric region before sync starts: divider + first line greyed out."""
+    C = ui_utils.Colours
+    width = width or ui_utils.get_terminal_width()
+    _, term_rows = ui_utils.get_terminal_size()
+    max_row = max_row or term_rows
+    wrap_w = max(20, width - 8)
+
+    clear_end = bottom_row if bottom_row is not None else max_row
+    for i in range(max(0, clear_end - row + 1)):
+        sys.stdout.write(f"\033[{row + i};{col}H\033[K")
+
+    out_row = row
+    rule = "─" * (width + 1)
+    sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
+    out_row += 1
+    sys.stdout.write(f"\033[{out_row};{col}H\033[K")
+    out_row += 1
+    # Empty current-line slot
+    sys.stdout.write(f"\033[{out_row};{col}H\033[K")
+    out_row += 1
+    sys.stdout.write(f"\033[{out_row};{col}H\033[K")
+    out_row += 1
+    # First line greyed as preview
+    if first_line:
+        flat = normalise_lyric_newlines(first_line).replace('\n', ' ')
+        preview = textwrap.wrap(flat, width=wrap_w - 4)
+        preview_line = preview[0] if preview else flat
+        sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}  {preview_line}{C.RESET}")
+    sys.stdout.flush()
+
+
+
 def _parse_sylt(audio) -> list[tuple[str, int]]:
     """Parse SYLT (synced lyrics) from ID3 tags."""
     sylt_data = []
@@ -304,3 +342,37 @@ def _parse_uslt(audio) -> list[tuple[str, int]]:
 
     text = normalise_lyric_newlines(text)
     return [(line.strip(), 0) for line in text.split('\n') if line.strip()]
+
+
+def estimate_sylt_last_line_end(sylt_data: list[tuple[str, int]],
+                                duration_ms: float,
+                                words_per_second: float = 2.2) -> float:
+    """Estimate the end time (seconds) of the last SYLT line via word count."""
+    if not sylt_data:
+        return 0.0
+    last_text, last_ts_ms = sylt_data[-1]
+    last_ts = last_ts_ms / 1000.0
+    word_count = max(1, len(last_text.split()))
+    estimated_end = last_ts + word_count / words_per_second
+    return min(estimated_end, duration_ms / 1000.0)
+
+
+def find_uslt_handoff_index(uslt_lines: list[str], last_sylt_text: str) -> int:
+    """Find the USLT line index that follows the last SYLT line.
+
+    Tries exact match then normalised substring match. Returns the index
+    after the matched line so USLT continues from where SYLT left off.
+    Falls back to 0 if nothing matches.
+    """
+    def _norm(s: str) -> str:
+        return re.sub(r'\s+', ' ', s.strip().lower())
+
+    target = _norm(last_sylt_text)
+    for i, line in enumerate(uslt_lines):
+        if _norm(line) == target:
+            return i + 1
+    for i, line in enumerate(uslt_lines):
+        n = _norm(line)
+        if target in n or n in target:
+            return i + 1
+    return 0
