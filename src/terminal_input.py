@@ -6,10 +6,15 @@ Provides non-blocking keyboard input, raw mode management, and escape sequence h
 from __future__ import annotations
 import os
 import sys
-import select
 import time
-import termios
 from contextlib import contextmanager
+
+_IS_WINDOWS = os.name == 'nt'
+if _IS_WINDOWS:
+    import msvcrt
+else:
+    import select
+    import termios
 
 
 # Global state for escape sequence buffering
@@ -25,6 +30,10 @@ def raw_mode(file):
     Allows capturing keypresses without requiring Enter.
     Automatically restores terminal settings on exit.
     """
+    if _IS_WINDOWS:
+        yield
+        return
+
     old_attrs = termios.tcgetattr(file.fileno())
     new_attrs = termios.tcgetattr(file.fileno())
     new_attrs[3] &= ~(termios.ECHO | termios.ICANON)
@@ -37,6 +46,8 @@ def raw_mode(file):
 
 def is_data_available() -> bool:
     """Check if there is keyboard data waiting to be read."""
+    if _IS_WINDOWS:
+        return msvcrt.kbhit()
     return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
 
 
@@ -61,6 +72,22 @@ def get_key_non_blocking() -> str | None:
         result = _pending_escape
         _pending_escape = None
         return result
+
+    if _IS_WINDOWS:
+        if not msvcrt.kbhit():
+            return None
+        c = msvcrt.getwch()
+        if c in ('\x00', '\xe0'):
+            ext = msvcrt.getwch()
+            return {
+                'H': '\x1b[A', 'P': '\x1b[B', 'K': '\x1b[D', 'M': '\x1b[C',
+                'G': '\x1b[H', 'O': '\x1b[F', 'I': '\x1b[5~', 'Q': '\x1b[6~', 'S': '\x1b[3~'
+            }.get(ext, None)
+        if c == '\r':
+            return '\n'
+        if c == '\x08':
+            return '\x7f'
+        return c
 
     # Check if input is available
     if not select.select([sys.stdin], [], [], 0)[0]:

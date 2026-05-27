@@ -15,13 +15,51 @@ from __future__ import annotations
 import re
 import sys
 import os
-import tty
-import termios
 import shutil
 import math
 import textwrap
+import time
+import select as _sel
+from typing import Any
 
 from src import ui_utils
+
+_IS_WINDOWS = os.name == "nt"
+
+tty: Any
+termios: Any
+msvcrt: Any
+
+if _IS_WINDOWS:
+    import msvcrt
+else:
+    import tty
+    import termios
+
+
+def _get_term_attrs(fd: int):
+    return None if _IS_WINDOWS else termios.tcgetattr(fd)
+
+
+def _set_raw(fd: int) -> None:
+    if not _IS_WINDOWS:
+        tty.setraw(fd)
+
+
+def _restore_term_attrs(fd: int, old):
+    if not _IS_WINDOWS and old is not None:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _wait_for_keypress(timeout: float = 0.05) -> bool:
+    if _IS_WINDOWS:
+        end = time.time() + timeout
+        while time.time() < end:
+            if msvcrt.kbhit():
+                return True
+            time.sleep(0.01)
+        return False
+    return bool(_sel.select([sys.stdin], [], [], timeout)[0])
 
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
@@ -244,6 +282,22 @@ def _norm(choices: list) -> list:
 
 def _read_key(fd: int) -> str:
     """Read a single key press from file descriptor."""
+    if _IS_WINDOWS:
+        ch = msvcrt.getwch()
+        if ch in ('\x00', '\xe0'):
+            ext = msvcrt.getwch()
+            return {
+                'H': 'UP', 'P': 'DOWN', 'K': 'LEFT', 'M': 'RIGHT',
+                'G': 'HOME', 'O': 'END', 'I': 'PGUP', 'Q': 'PGDN', 'S': 'DELETE',
+                'R': 'INSERT',
+            }.get(ext, '')
+        if ch == '\r': return 'ENTER'
+        if ch == '\x08': return 'BACKSPACE'
+        if ch == '\x03': return 'CTRL_C'
+        if ch == '\t': return 'TAB'
+        if ch == ' ': return 'SPACE'
+        return ch
+
     ch = os.read(fd, 1)
     if ch == b'\x1b':
         try:
@@ -278,6 +332,9 @@ def _query_cursor_row(fd: int) -> int:
     Query the terminal for the current cursor row via ANSI DSR (ESC[6n).
     Returns the row number (1-based), or 1 on failure.
     """
+    if _IS_WINDOWS:
+        return 1
+
     import select as _sel
     sys.stdout.write("\033[6n")
     sys.stdout.flush()
@@ -404,7 +461,7 @@ def select(message: str, choices: list,
     cursor   = 0
     viewport = 0
     fd       = sys.stdin.fileno()
-    old      = termios.tcgetattr(fd)
+    old      = _get_term_attrs(fd)
     w        = _Widget(fd)
 
     # Base keyboard mapping from your navigation options loop
@@ -509,12 +566,11 @@ def select(message: str, choices: list,
 
     result = None
     try:
-        tty.setraw(fd)
+        _set_raw(fd)
         sys.stdout.write("\033[2J\033[H")
         sys.stdout.flush()
         w.render(_lines())
 
-        import select as _sel
         while True:
             if ui_utils.consume_resize():
                 sys.stdout.write("\033[J")
@@ -523,8 +579,7 @@ def select(message: str, choices: list,
                 w.render(_lines())
                 continue
 
-            r, _, _ = _sel.select([sys.stdin], [], [], 0.05)
-            if not r:
+            if not _wait_for_keypress(0.05):
                 continue
 
             key = _read_key(fd)
@@ -539,7 +594,7 @@ def select(message: str, choices: list,
             elif key.lower() == 'q':             break
 
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _restore_term_attrs(fd, old)
         w.clear()
 
     return result
@@ -563,7 +618,7 @@ def checkbox(message: str, choices: list,
     cursor   = 0
     viewport = 0
     fd       = sys.stdin.fileno()
-    old      = termios.tcgetattr(fd)
+    old      = _get_term_attrs(fd)
     w        = _Widget(fd)
 
     # Base keyboard mapping specific to checkbox navigation
@@ -670,12 +725,11 @@ def checkbox(message: str, choices: list,
 
     result = None
     try:
-        tty.setraw(fd)
+        _set_raw(fd)
         sys.stdout.write("\033[2J\033[H")
         sys.stdout.flush()
         w.render(_lines())
 
-        import select as _sel
         while True:
             if ui_utils.consume_resize():
                 # Clear terminal window real estate cleanly during tier adjustments
@@ -685,8 +739,7 @@ def checkbox(message: str, choices: list,
                 w.render(_lines())
                 continue
 
-            r, _, _ = _sel.select([sys.stdin], [], [], 0.05)
-            if not r:
+            if not _wait_for_keypress(0.05):
                 continue
 
             key = _read_key(fd)
@@ -702,7 +755,7 @@ def checkbox(message: str, choices: list,
             elif key.lower() == 'q':   break
 
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _restore_term_attrs(fd, old)
         w.clear()
 
     return result
@@ -714,10 +767,10 @@ def confirm(message: str, default: bool = False) -> bool:
     n = "N" if not default else "n"
     hint = f"{_DIM}[{_RESET}{_BOLD}{y}{_RESET}{_DIM}/{_RESET}{_BOLD}{n}{_RESET}{_DIM}]{_RESET}"
     fd     = sys.stdin.fileno()
-    old    = termios.tcgetattr(fd)
+    old    = _get_term_attrs(fd)
     result = default
     try:
-        tty.setraw(fd)
+        _set_raw(fd)
         sys.stdout.write(_HIDE + f"  {_DIM}{message}{_RESET}  {hint} ")
         sys.stdout.flush()
         while True:
@@ -727,7 +780,7 @@ def confirm(message: str, default: bool = False) -> bool:
             elif key.lower() == 'y': result = True;  break
             elif key.lower() == 'n': result = False; break
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _restore_term_attrs(fd, old)
         sys.stdout.write(_SHOW + "\n")
         sys.stdout.flush()
     return result
@@ -739,7 +792,7 @@ def text(message: str, default: str = "") -> str | None:
     buf    = list(default)
     pos    = len(buf)
     fd     = sys.stdin.fileno()
-    old    = termios.tcgetattr(fd)
+    old    = _get_term_attrs(fd)
     result = None
     
     # Track how many physical lines were drawn to clear them later
@@ -788,13 +841,11 @@ def text(message: str, default: str = "") -> str | None:
         _render_status_bar()
 
     try:
-        tty.setraw(fd)
+        _set_raw(fd)
         _render()
-        import select as _sel
         while True:
             if ui_utils.consume_resize(): _render()
-            r, _, _ = _sel.select([sys.stdin], [], [], 0.05)
-            if not r: continue
+            if not _wait_for_keypress(0.05): continue
             key = _read_key(fd)
             
             if   key == 'CTRL_C':             result = None;         break
@@ -818,7 +869,7 @@ def text(message: str, default: str = "") -> str | None:
             elif len(key) == 1 and key.isprintable():
                 buf.insert(pos, key); pos += 1; _render()
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _restore_term_attrs(fd, old)
         # Clean exit: ensure the terminal prompt starts below your text
         sys.stdout.write("\r\n" * 2) 
         sys.stdout.flush()
@@ -832,7 +883,7 @@ def path(message: str, default: str = "") -> str | None:
     buf          = list(default)
     pos          = len(buf)
     fd           = sys.stdin.fileno()
-    old          = termios.tcgetattr(fd)
+    old          = _get_term_attrs(fd)
     result       = None
     _tab_matches : list = []
     _tab_index   = 0
@@ -872,13 +923,11 @@ def path(message: str, default: str = "") -> str | None:
         _render_status_bar()
 
     try:
-        tty.setraw(fd)
+        _set_raw(fd)
         _render()
-        import select as _sel
         while True:
             if ui_utils.consume_resize(): _render()
-            r, _, _ = _sel.select([sys.stdin], [], [], 0.05)
-            if not r: continue
+            if not _wait_for_keypress(0.05): continue
             key = _read_key(fd)
             if key == 'CTRL_C':
                 result = None; break
@@ -906,7 +955,7 @@ def path(message: str, default: str = "") -> str | None:
             elif len(key) == 1 and key.isprintable():
                 _tab_matches.clear(); buf.insert(pos, key); pos += 1; _render()
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _restore_term_attrs(fd, old)
         sys.stdout.write("\n")
         sys.stdout.flush()
     return result

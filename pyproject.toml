@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backtrack"
+version = "0.1.0"
+description = "Terminal music player with VLC playback, lyrics sync, and metadata editing."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Backtrack" },
+]
+keywords = ["music", "terminal", "lyrics", "vlc", "metadata"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Terminals",
+]
+dependencies = [
+    "mutagen>=1.46.0",
+    "opencv-python>=4.5.0",
+    "numpy>=1.19.0",
+    "pyperclip>=1.8.2",
+    "python-vlc>=3.0.0",
+    "colorama>=0.4.0",
+]
+
+[project.scripts]
+backtrack = "main:main"
+
+[tool.setuptools]
+packages = ["src"]
+py-modules = ["main"]
+include-package-data = true

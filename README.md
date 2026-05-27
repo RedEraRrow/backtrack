@@ -4,12 +4,19 @@ Backtrack is a terminal music player for macOS/Linux that plays audio with VLC, 
 
 ## Quick Start
 
+### Supported platforms
+
+Backtrack is designed for macOS and Linux terminals. Windows can also work with the Python package and colorama-based ANSI support, but VLC/libvlc installation and terminal art rendering may need extra setup.
+
+### First run example
+
+On first run, Backtrack asks for your music directory and builds a cached library for faster startup.
+
 ```bash
-python3 -m pip install -r requirements.txt
 python3 main.py
 ```
 
-On first run, Backtrack asks for your music directory and builds a library cache for faster startup.
+Then follow the prompt to select your music folder and return to the main menu.
 
 ## What Backtrack Does
 
@@ -30,16 +37,52 @@ On first run, Backtrack asks for your music directory and builds a library cache
 - VLC / libvlc installed on your system
 - `viu` CLI installed for album art rendering
 
+### Install VLC / libvlc and viu
+
+macOS with Homebrew:
+
+```bash
+brew install vlc viu
+```
+
+Ubuntu / Debian:
+
+```bash
+sudo apt update
+sudo apt install vlc
+sudo snap install viu
+```
+
+If `viu` is not available via package manager, install it from its repository or release assets.
+
 ### Install Python dependencies
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
+### Install as a package
+
+```bash
+python3 -m pip install .
+```
+
+For editable installs during development:
+
+```bash
+python3 -m pip install -e .
+```
+
 ### Launch Backtrack
 
 ```bash
 python3 main.py
+```
+
+Or, if installed as a package:
+
+```bash
+backtrack
 ```
 
 ## Usage
