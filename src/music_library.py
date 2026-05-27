@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import unicodedata
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from typing import Any
 from mutagen.id3 import ID3
@@ -22,7 +23,23 @@ from mutagen.mp4 import MP4
 
 from src.history import get_recent_paths
 
-CACHE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/library_cache.json"))
+
+def _default_cache_dir() -> Path:
+    if os.name == "nt":
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            return Path(appdata) / "Backtrack"
+        return Path.home() / "AppData" / "Roaming" / "Backtrack"
+
+    xdg_cache = os.getenv("XDG_CACHE_HOME")
+    if xdg_cache:
+        return Path(xdg_cache) / "backtrack"
+    return Path.home() / ".cache" / "backtrack"
+
+
+CACHE_DIR = Path(os.getenv("BACKTRACK_CACHE_DIR") or _default_cache_dir())
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_PATH = CACHE_DIR / "library_cache.json"
 XML_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/Library.xml"))
 VALID_AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac')
 SYNC_INTERVAL_SECONDS = 30
@@ -403,7 +420,7 @@ def save_library_cache(library: list, _async: bool = False):
     """Saves the library to disk safely using a temporary file."""
     def _write():
         # Create a temporary file in the same directory as the cache
-        dir_name = os.path.dirname(CACHE_PATH)
+        dir_name = CACHE_PATH.parent
         fd, temp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
         try:
             with os.fdopen(fd, 'w') as f:
