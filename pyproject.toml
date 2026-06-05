@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "mutagen>=1.46.0",
-    "opencv-python>=4.5.0",
+    "opencv-python>=4.13.0.92",
     "numpy>=1.19.0",
     "pyperclip>=1.8.2",
     "python-vlc>=3.0.0",
