@@ -28,7 +28,7 @@ dependencies = [
     "mutagen>=1.46.0",
     "opencv-python>=4.5.0",
     "numpy>=1.19.0",
-    "pyperclip>=1.8.2",
+    "pyperclip>=1.11.0",
     "python-vlc>=3.0.0",
     "colorama>=0.4.0",
 ]
