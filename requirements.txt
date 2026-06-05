@@ -1,5 +1,5 @@
 # Audio Processing & Metadata
-mutagen>=1.46.0
+mutagen>=1.47.0
 
 # Video/Image Processing
 opencv-python>=4.5.0
