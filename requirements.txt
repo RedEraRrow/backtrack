@@ -2,6 +2,8 @@
 mutagen>=1.47.0
 
 # Video/Image Processing
+opencv-python>=4.13.0.92
+numpy>=1.19.0
 opencv-python>=4.5.0
 numpy>=2.0.2
 
