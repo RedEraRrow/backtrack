@@ -29,7 +29,7 @@ dependencies = [
     "opencv-python>=4.5.0",
     "numpy>=1.19.0",
     "pyperclip>=1.8.2",
-    "python-vlc>=3.0.0",
+    "python-vlc>=3.0.21203",
     "colorama>=0.4.0",
 ]
 
