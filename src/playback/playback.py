@@ -1,13 +1,15 @@
 """
 Music playback engine with UI rendering.
 
-Handles audio playback, lyric display, and interactive player controls.
+Handles audio playback, lyric/dialogue display, and interactive player controls.
 Backend: python-vlc (replaces miniaudio for seeking, volume, and codec support).
+Supports markdown dialogue files alongside audio.
 """
 from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 
 import vlc
 from mutagen.id3 import ID3
@@ -18,11 +20,11 @@ _VLC_STATE_ERROR = getattr(vlc.State, 'Error', None)
 _VLC_STATE_ENDED = getattr(vlc.State, 'Ended', None)
 _VLC_STATE_STOPPED = getattr(vlc.State, 'Stopped', None)
 
-from src import ui_utils
+from src.utils import ui_utils
 from src.history import log_listening_history
 from src.music_library import get_song_duration
-from src.album_art import get_ascii_from_mp3
-from src.playback_lyrics import (
+from src.art.album_art import get_viu_art_from_mp3
+from src.playback.lyrics.lyrics import (
     _parse_sylt,
     _parse_uslt,
     build_uslt_line_times,
@@ -33,18 +35,23 @@ from src.playback_lyrics import (
     expand_uslt_lines,
     find_current_uslt_line,
     find_uslt_handoff_index,
+    # Dialogue support
+    parse_markdown_file,
+    build_dialogue_line_times,
+    find_current_dialogue_line,
+    draw_dialogue_window,
+    draw_dialogue_initial,
 )
-from src.playback_ui import (
+from src.playback.playback_ui import (
     _controls_line,
     _layout_mode,
     ART_MAX_WIDTH,
     draw_full_ui,
-    update_progress_ipod,
     update_progress_ui,
 )
-from src import playback_ui
+from src.playback import playback_ui
 from src.config import load_config
-from src.terminal_input import (
+from src.utils.terminal_input import (
     clear_escape_buffer,
     get_key_non_blocking,
     is_arrow_key,
@@ -55,8 +62,11 @@ from src.terminal_input import (
 def _make_player(file_path: str) -> vlc.MediaPlayer:
     """Create a VLC MediaPlayer with quiet output."""
     instance = vlc.Instance('--no-video', '--quiet')
+    assert instance is not None
     media = instance.media_new(file_path)
+    assert media is not None
     mp = instance.media_player_new()
+    assert mp is not None
     mp.set_media(media)
     return mp
 
@@ -88,10 +98,71 @@ def _render_grouping_cover(file_path: str, cols: int) -> str:
         art_w = min(cols, ART_MAX_WIDTH)
     else:
         art_w = min(45, max(1, cols))
-    return get_ascii_from_mp3(file_path, art_w, preferred_desc='Booklet', preferred_type=6)
+    return get_viu_art_from_mp3(file_path, art_w, preferred_desc='Booklet', preferred_type=6)
 
 
-def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict | None = None) -> dict:
+def _find_markdown_for_audio(audio_path: str) -> str | None:
+    """Find .md file next to audio file.
+    
+    Tries (in order):
+      1. {basename}.md
+      2. {basename}.dialogue.md
+    """
+    base = Path(audio_path).stem
+    parent = Path(audio_path).parent
+    
+    for pattern in [f"{base}.md", f"{base}.dialogue.md"]:
+        candidate = parent / pattern
+        if candidate.exists():
+            return str(candidate)
+    
+    return None
+
+
+class DialoguePlaybackState:
+    """Hold and manage dialogue playback state."""
+    
+    def __init__(self, audio_path: str):
+        md_path = _find_markdown_for_audio(audio_path)
+        self.dialogue_lines = None
+        self.load_error = None
+        
+        if md_path:
+            try:
+                self.dialogue_lines = parse_markdown_file(md_path)
+                if self.dialogue_lines is None:
+                    self.load_error = f"Failed to parse: {md_path}"
+            except Exception as e:
+                self.load_error = f"Error loading dialogue: {str(e)}"
+        
+        self.line_times = None
+        self.current_idx = 0
+        
+        if self.dialogue_lines:
+            self.line_times = build_dialogue_line_times(self.dialogue_lines)
+    
+    def is_active(self) -> bool:
+        """True if dialogue was loaded successfully."""
+        return self.dialogue_lines is not None and len(self.dialogue_lines) > 0
+    
+    def update(self, elapsed: float) -> None:
+        """Update current dialogue line based on playback position."""
+        if self.line_times:
+            self.current_idx = find_current_dialogue_line(self.line_times, elapsed)
+    
+    def draw(self, row: int, width: int | None = None, max_row: int | None = None) -> None:
+        """Render dialogue window at specified row."""
+        if self.dialogue_lines:
+            draw_dialogue_window(
+                row=row,
+                dialogue_lines=self.dialogue_lines,
+                current_idx=self.current_idx,
+                width=width,
+                max_row=max_row,
+            )
+
+
+def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict | None = None) -> dict:
     """Main music player engine (VLC backend)."""
     manual_line_index = None
     arrow_key_time = None
@@ -120,6 +191,9 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                     time.sleep(0.05)
             return {"status": "ERROR"}
 
+    # Setup dialogue playback if markdown exists
+    dialogue_state = DialoguePlaybackState(file_path)
+
     sylt_data = _parse_sylt(audio)
     uslt_lines_raw = _parse_uslt(audio)
     uslt_lines: list[str] = [line for line, _ in uslt_lines_raw]
@@ -137,7 +211,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
         if uslt_lines_raw:
             is_uslt = True
             sylt_data = uslt_lines_raw
-            line_times = build_uslt_line_times(uslt_lines)
+            line_times = build_uslt_line_times(uslt_lines, duration)
     else:
         # Check if USLT is also present — SYLT may only cover part of the track.
         if has_uslt:
@@ -159,6 +233,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
     with raw_mode(sys.stdin):
         mp.play()
         time.sleep(0.3)
+        track_start = 0.0
 
         try:
             if not duration or duration <= 0:
@@ -186,8 +261,18 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
             else:
                 exp_lines, exp_times = [], []
 
-            # Draw initial lyric state: divider + first line greyed out.
-            if sylt_data or has_uslt:
+            # Draw initial lyric/dialogue state.
+            if dialogue_state.is_active():
+                right_col = playback_ui._last_right_left or 1
+                right_w = playback_ui._last_right_width or current_width
+                if dialogue_state.dialogue_lines:
+                    draw_dialogue_initial(
+                        lyric_row,
+                        dialogue_state.dialogue_lines[0],
+                        width=right_w, max_row=last_size[1], col=right_col,
+                        bottom_row=art_bottom_row,
+                    )
+            elif sylt_data or has_uslt:
                 right_col = playback_ui._last_right_left or 1
                 right_w = playback_ui._last_right_width or current_width
                 first_line = sylt_data[0][0] if sylt_data else (uslt_lines[0] if uslt_lines else "")
@@ -204,10 +289,10 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
 
             def update_ctrl_ui():
                 state = mp.get_state()
-                is_paused = (state == vlc.State(4))
+                is_paused = (state == _VLC_STATE_PAUSED)
                 vol = mp.audio_get_volume()
                 active_toast = toast_text if time.time() < toast_expiry else ""
-                if state != vlc.State(7):
+                if state != _VLC_STATE_ERROR:
                     status_ln, shortcuts_ln = _controls_line(
                         is_uslt or in_uslt_tail, is_paused, vol, active_toast
                     )
@@ -237,7 +322,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                     volume = mp.audio_get_volume()
                     prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
                         file_path, audio, pre_art, last_size,
-                        is_paused=(mp.get_state() == vlc.State(4)),
+                        is_paused=(mp.get_state() == _VLC_STATE_PAUSED),
                         volume=volume,
                         toast=toast_text if time.time() < toast_expiry else "",
                     )
@@ -254,7 +339,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                 elapsed = elapsed_ms / 1000.0 if elapsed_ms >= 0 else 0.0
 
                 state = mp.get_state()
-                if state in (vlc.State(6), vlc.State(5), vlc.State(7)):
+                if state in (_VLC_STATE_ERROR, _VLC_STATE_ENDED, _VLC_STATE_STOPPED):
                     break
                 if duration and elapsed >= duration:
                     break
@@ -315,13 +400,11 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
 
                     elif key.lower() == 'n':
                         mp.stop()
-                        _restore_stderr(old_stderr)
                         ui_utils.clear_screen()
                         return {'status': 'BACK'}
 
                     elif key.lower() == 'q':
                         mp.stop()
-                        _restore_stderr(old_stderr)
                         return {'status': 'QUIT_ALL'}
 
                     elif key in ('=', '+'):
@@ -339,7 +422,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                         update_ctrl_ui()
 
                     elif key.lower() == 'c':
-                        from src.playback_ui import toggle_credits
+                        from src.playback.playback_ui import toggle_credits
                         toggle_credits()
                         volume = mp.audio_get_volume()
                         prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
@@ -350,36 +433,24 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                         )
                         last_lyric_idx = -1
 
-                    elif key.lower() == 'i':
-                        from src.playback_ui import toggle_help
-                        toggle_help()
-                        volume = mp.audio_get_volume()
-                        prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
-                            file_path, audio, pre_art, last_size,
-                            is_paused=(mp.get_state() == _VLC_STATE_PAUSED),
-                            volume=volume,
-                            toast=toast_text if time.time() < toast_expiry else "",
+                update_progress_ui(prog_row, elapsed, duration, current_width)
+
+                # Render dialogue or lyrics
+                if dialogue_state.is_active():
+                    right_col = playback_ui._last_right_left or 1
+                    right_w = playback_ui._last_right_width or current_width
+                    
+                    dialogue_state.update(elapsed=elapsed)
+                    
+                    if dialogue_state.current_idx != last_lyric_idx:
+                        dialogue_state.draw(
+                            row=lyric_row,
+                            width=right_w,
+                            max_row=last_size[1],
                         )
-                        last_lyric_idx = -1
-
-                    elif key.lower() == 'm':
-                        from src.playback_ui import toggle_metadata
-                        toggle_metadata()
-                        volume = mp.audio_get_volume()
-                        prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
-                            file_path, audio, pre_art, last_size,
-                            is_paused=(mp.get_state() == _VLC_STATE_PAUSED),
-                            volume=volume,
-                            toast=toast_text if time.time() < toast_expiry else "",
-                        )
-                        last_lyric_idx = -1
-
-                if load_config().get('player_view') == 'ipod':
-                    update_progress_ipod(prog_row, elapsed, duration, current_width, current_width)
-                else:
-                    update_progress_ui(prog_row, elapsed, duration, current_width)
-
-                if sylt_data or has_uslt:
+                        last_lyric_idx = dialogue_state.current_idx
+                
+                elif sylt_data or has_uslt:
                     right_col = playback_ui._last_right_left or 1
                     right_w = playback_ui._last_right_width or current_width
 
@@ -435,7 +506,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                             _wrap_w = max(20, current_width - 8)
                             # Build times for the tail slice only.
                             tail_lines = uslt_lines[uslt_handoff_idx:]
-                            tail_raw_times = build_uslt_line_times(tail_lines)
+                            tail_raw_times = build_uslt_line_times(tail_lines, duration)
                             # Offset all times by the handoff point so they align with actual elapsed time.
                             tail_raw_times = [
                                 (t_start + sylt_handoff_end_s, t_end + sylt_handoff_end_s)
@@ -446,11 +517,7 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                             )
                             last_lyric_idx = -1
 
-                        elif current_idx < 0:
-                            # Before first SYLT timestamp — show initial greyed state.
-                            pass  # initial draw already rendered; nothing to update
-
-                        elif current_idx != last_lyric_idx:
+                        if current_idx != last_lyric_idx:
                             draw_lyric_window(
                                 lyric_row, sylt_data, current_idx,
                                 width=right_w, max_row=last_size[1], col=right_col,
@@ -458,18 +525,14 @@ def musicplayer(file_path: str, is_grouping: bool = False, preloaded_data: dict 
                             )
                             last_lyric_idx = current_idx
 
-                time.sleep(0.05)
-        except Exception as exc:
-            mp.stop()
-            _restore_stderr(old_stderr)
-            ui_utils.clear_screen()
-            sys.stdout.write(f"\033[1;31mPlayback Error:\033[0m {exc}\n")
-            sys.stdout.flush()
-            time.sleep(1.5)
-            return {'status': 'ERROR'}
+                time.sleep(0.02)
 
-    mp.stop()
-    _restore_stderr(old_stderr)
-    log_listening_history(file_path, track_start, time.time())
+        except KeyboardInterrupt:
+            pass
+        finally:
+            mp.stop()
+            log_listening_history(file_path, track_start, time.time())
+            _restore_stderr(old_stderr)
+
     ui_utils.clear_screen()
-    return {'status': 'FINISHED'}
+    return {"status": "OK"}

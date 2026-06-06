@@ -25,14 +25,8 @@ classifiers = [
     "Topic :: Terminals",
 ]
 dependencies = [
-    "mutagen>=1.46.0",
     "opencv-python>=4.13.0.92",
     "mutagen>=1.47.0",
-    "opencv-python>=4.5.0",
-    "numpy>=1.19.0",
-    "pyperclip>=1.11.0",
-    "python-vlc>=3.0.0",
-    "colorama>=0.4.0",
     "numpy>=2.0.2",
     "pyperclip>=1.8.2",
     "python-vlc>=3.0.21203",

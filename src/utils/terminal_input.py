@@ -8,13 +8,24 @@ import os
 import sys
 import time
 from contextlib import contextmanager
+from typing import Optional, Any
 
 _IS_WINDOWS = os.name == 'nt'
+
+# Expose module-level names so static type checkers don't consider them
+# possibly unbound when imports are platform-gated.
+msvcrt: Optional[Any] = None
+select: Optional[Any] = None
+termios: Optional[Any] = None
+
 if _IS_WINDOWS:
-    import msvcrt
+    import msvcrt as _msvcrt
+    msvcrt = _msvcrt
 else:
-    import select
-    import termios
+    import select as _select
+    import termios as _termios
+    select = _select
+    termios = _termios
 
 
 # Global state for escape sequence buffering
@@ -34,6 +45,9 @@ def raw_mode(file):
         yield
         return
 
+    # At runtime termios is available on non-Windows platforms; assert
+    # so static analyzers know the name is defined.
+    assert termios is not None
     old_attrs = termios.tcgetattr(file.fileno())
     new_attrs = termios.tcgetattr(file.fileno())
     new_attrs[3] &= ~(termios.ECHO | termios.ICANON)
@@ -42,13 +56,6 @@ def raw_mode(file):
         yield
     finally:
         termios.tcsetattr(file.fileno(), termios.TCSADRAIN, old_attrs)
-
-
-def is_data_available() -> bool:
-    """Check if there is keyboard data waiting to be read."""
-    if _IS_WINDOWS:
-        return msvcrt.kbhit()
-    return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
 
 
 def clear_escape_buffer() -> None:
@@ -74,6 +81,7 @@ def get_key_non_blocking() -> str | None:
         return result
 
     if _IS_WINDOWS:
+        assert msvcrt is not None
         if not msvcrt.kbhit():
             return None
         c = msvcrt.getwch()
@@ -90,6 +98,7 @@ def get_key_non_blocking() -> str | None:
         return c
 
     # Check if input is available
+    assert select is not None
     if not select.select([sys.stdin], [], [], 0)[0]:
         return None
 

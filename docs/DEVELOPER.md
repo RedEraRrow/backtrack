@@ -97,7 +97,7 @@ It also maintains a background sync thread to refresh metadata and reload the ca
 
 ### Metadata Browser
 
-`src/metadata_browser.py` provides a terminal editor for ID3 tags, lyrics frames, and album art. It can preview artwork as ASCII, open images, and replace APIC frames.
+`src/metadata_browser.py` provides a terminal editor for ID3 tags, lyrics frames, and album art. It can preview artwork as half-blocks, open images, and replace APIC frames.
 
 ## Adding Features
 
@@ -130,7 +130,7 @@ Important keys:
 - `history_enabled`
 - `search_weights`
 - `lyric_lead_in`
-- `ascii_width`
+- `art_width`
 - `music_directory`
 - `player_view`
 - `show_metadata_editor`

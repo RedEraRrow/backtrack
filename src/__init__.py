@@ -1,4 +1,6 @@
-"""Backtrack package entry point."""
+"""
+Backtrack package entry point.
+"""
 
 import os
 

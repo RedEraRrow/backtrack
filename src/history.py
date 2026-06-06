@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import datetime
 
-
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "../data/history.log")
 
 

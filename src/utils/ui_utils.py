@@ -1,9 +1,8 @@
 """
 Shared UI utilities and formatting functions.
-Centralises all display logic to avoid circular imports and code duplication.
+Centralizes all display logic to avoid circular imports and code duplication.
 """
 from __future__ import annotations
-import os
 import sys
 import shutil
 import signal
@@ -35,17 +34,19 @@ def consume_resize() -> bool:
     return False
 
 # ============================================================================
-# ANSI Colour Codes
+# ANSI Color Codes
 # ============================================================================
 
-class Colours:
-    """ANSI colour codes for terminal output."""
-    PRIMARY = "\033[1;37m"      # White
-    ACCENT = "\033[1;31m"       # Red
-    SUCCESS = "\033[1;32m"      # Green
+class Colors:
+    """ANSI color codes for terminal output."""
+    PRIMARY = "\033[1;37m" # White
+    ACCENT = "\033[1;31m" # Red
+    SUCCESS = "\033[1;32m" # Green
     CYAN = "\033[1;36m"
     YELLOW = "\033[1;33m"
     MAGENTA = "\033[1;35m"
+    GREEN = "\033[1;32m"
+    RED = "\033[1;31m"
     DIM = "\033[2m"
     BOLD = "\033[1m"
     RESET = "\033[0m"
@@ -74,8 +75,8 @@ def get_status_line() -> str:
     if not BACKGROUND_TASKS:
         return ""
     
-    tasks = [f"{Colours.CYAN}●{Colours.RESET} {msg}" for msg in BACKGROUND_TASKS.values()]
-    return f"{Colours.DIM} │ {' | '.join(tasks)}{Colours.RESET}"
+    tasks = [f"{Colors.CYAN}●{Colors.RESET} {msg}" for msg in BACKGROUND_TASKS.values()]
+    return f"{Colors.DIM} │ {' | '.join(tasks)}{Colors.RESET}"
 
 def get_terminal_size(default: tuple = (80, 24)) -> tuple:
     """Get terminal size (columns, rows), with fallback."""
@@ -145,24 +146,39 @@ def wrap_text(text: str, max_width: int = 80, margin: int = 6) -> list:
 # ============================================================================
 
 def format_time(seconds: int | float) -> str:
-    """Convert seconds to mm:ss (or longer) format."""
-    seconds = int(seconds)
+    """Convert seconds (may be float) to a compact time string.
+
+    Preserves sub-second precision by appending centiseconds when the
+    input contains a fractional portion. Behavior for large values is
+    unchanged (hours/days/etc are shown as needed).
+    """
+    try:
+        total = float(seconds)
+    except Exception:
+        total = 0.0
+
+    # Separate integer seconds and fractional centiseconds
+    int_sec = int(total)
+    frac_cs = int(round((total - int_sec) * 100))  # centiseconds (0-99)
+
     intervals = [31536000, 2592000, 86400, 3600, 60, 1]
     parts = []
-    rem = seconds
-    
+    rem = int_sec
     for unit in intervals:
         parts.append(rem // unit)
         rem %= unit
-    
+
     start = max(0, next((i for i, p in enumerate(parts[:-2]) if p > 0), len(parts) - 2))
     start = min(start, len(parts) - 2)
-    
+
     result = [str(parts[start])]
     for p in parts[start + 1:]:
         result.append(str(p).zfill(2))
-    
-    return ":".join(result)
+
+    base = ":".join(result)
+    if frac_cs:
+        return f"{base}"
+    return base
 
 
 def format_duration_ms(milliseconds: int | float) -> str | None:
@@ -213,6 +229,36 @@ def _get_breadcrumb_str(width: int) -> str:
             
     return full_path
 
+from collections import OrderedDict
+
+def roman(num):
+
+    roman = OrderedDict()
+    roman[1000] = "M"
+    roman[900] = "CM"
+    roman[500] = "D"
+    roman[400] = "CD"
+    roman[100] = "C"
+    roman[90] = "XC"
+    roman[50] = "L"
+    roman[40] = "XL"
+    roman[10] = "X"
+    roman[9] = "IX"
+    roman[5] = "V"
+    roman[4] = "IV"
+    roman[1] = "I"
+
+    def roman_num(num):
+        for r in roman.keys():
+            x, y = divmod(num, r)
+            yield roman[r] * x
+            num -= (r * x)
+            if num <= 0:
+                break
+
+    return "".join([a for a in roman_num(num)])
+
+
 
 # ============================================================================
 # Progress Bar
@@ -249,33 +295,13 @@ def get_progress_bar(progress: float, width: int = 40) -> str:
     # Fill the rest with empty space
     padding = " " * (width - len(bar))
     
-    # Return with your UI colours
-    return f"{Colours.DIM}[{Colours.RESET}{Colours.SUCCESS}{bar}{padding}{Colours.RESET}{Colours.DIM}]{Colours.RESET}"
+    # Return with your UI colors
+    return f"{Colors.DIM}[{Colors.RESET}{Colors.SUCCESS}{bar}{padding}{Colors.RESET}{Colors.DIM}]{Colors.RESET}"
 
 
 # ============================================================================
 # Metadata Display
 # ============================================================================
-
-def display_metadata_section(title: str, data: dict, formatted_keys: dict | None = None) -> None:
-    """Display a metadata section with formatted output."""
-    formatted_keys = formatted_keys or {}
-    
-    if not data:
-        return
-    
-    print(f"\n{title}:")
-    for key, value in data.items():
-        if value is None:
-            continue
-        
-        # Apply custom formatting if available
-        if key in formatted_keys:
-            value = formatted_keys[key](value)
-        
-        if value:
-            print(f"  {key:<20}: {value}")
-
 
 def get_xml_metadata_lines(metadata: dict) -> list[str]:
     """Return comprehensive XML metadata as a list of strings for UI headers."""

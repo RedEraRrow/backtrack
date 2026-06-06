@@ -8,8 +8,6 @@ import json
 import os
 from pathlib import Path
 
-
-# Default configuration constants
 DEFAULT_CONFIG = {
     "theme": {
         "primary": "\033[1;37m",
@@ -19,12 +17,13 @@ DEFAULT_CONFIG = {
     "history_enabled": True,
     "search_weights": {"title": 10, "artist": 8, "album": 5},
     "lyric_lead_in": 2.0,
-    "ascii_width": 80,
+    "art_width": 80,
     "music_directory": "",
     "player_view": "default",
+    "ignore_hidden_files": False,
     "show_metadata_editor": True,
+    "xml_db_path": "",
 }
-
 
 def _default_config_dir() -> Path:
     """Return the user config directory for Backtrack."""
@@ -39,10 +38,8 @@ def _default_config_dir() -> Path:
         return Path(xdg) / "backtrack"
     return Path.home() / ".config" / "backtrack"
 
-
 CONFIG_DIR = Path(os.getenv("BACKTRACK_CONFIG_DIR") or _default_config_dir())
 CONFIG_FILE = CONFIG_DIR / "config.json"
-
 
 def load_config() -> dict:
     """Load configuration from file or create defaults if missing."""
@@ -55,12 +52,10 @@ def load_config() -> dict:
     with open(CONFIG_FILE, "r") as f:
         cfg = json.load(f)
     
-    # Ensure all default keys exist
     for key, value in DEFAULT_CONFIG.items():
         cfg.setdefault(key, value)
     
     return cfg
-
 
 def save_config(config: dict) -> None:
     """Save configuration to file."""

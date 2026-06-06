@@ -131,12 +131,6 @@ Pick a result to play the track, sync lyrics, or edit metadata.
 | `-` / `_` | Decrease volume |
 | `↑` / `↓` | Move lyric selection when viewing unsynced lyrics |
 
-### Player View Modes
-
-Use Settings to choose the player view:
-- `default` — metadata plus album art
-- `ipod` — classic iPod-style now playing view
-
 ### Listening History
 
 The Listening History menu shows recent tracks you played and lets you replay them.
@@ -149,18 +143,18 @@ If a track contains unsynchronized lyrics (`USLT`), use Sync Lyrics to mark each
 
 Search results may offer metadata editing options for title, artist, album art, lyrics, and other tags.
 
+- `USLT`/`SYLT` lyrics can now be imported from an `.lrc` file from the metadata editor.
+
 ## Configuration
 
 Backtrack stores settings in `config/config.json`.
 
 Common keys:
 - `music_directory` — path to your music folder
-- `theme` — terminal colour values
 - `history_enabled` — track listening history
 - `search_weights` — search relevance weights
 - `lyric_lead_in` — lyric sync timing offset
-- `ascii_width` — album art width
-- `player_view` — `default` or `ipod`
+- `art_width` — album art width
 - `show_metadata_editor` — toggle metadata editor availability
 
 ## Supported Formats

@@ -7,20 +7,22 @@ from __future__ import annotations
 import os
 import time
 import string
+from src.utils.ui_utils import roman, Colors as C
 
-from src import prompt
-from src import ui_utils
+from src.utils import prompt
+from src.utils import ui_utils
 from src.music_library import (
-    build_library, load_library_cache, save_library_cache,
+    build_library, save_library_cache,
     load_xml_database, start_background_sync,
     get_grouped_data, get_group_sort_key, search_library, sort_library_logic
 )
 from src.history import get_history, clear_history
-from src.playback import musicplayer
-from src.lyric_timer import sync_lyrics
+from src.playback.playback import music_player
+from src.playback.lyrics.lyric_timer import sync_lyrics
 from src.config import load_config, save_config
 from src.state import NAV_STACK
-from src.metadata_browser import inspect_tag_loop, bulk_tag_manager, browse_metadata
+from src.id3.id3_browser import inspect_tag_loop
+from src.id3.bulk_id3_manager import bulk_id3_manager
 
 
 # ── Header helper ─────────────────────────────────────────────────────────────
@@ -32,7 +34,6 @@ def _menu_header(title: str, subtitle: str | None = None):
     Single bold title, optional dim subtitle on the same line, clean divider.
     Intentionally quiet — the choices are the content, not the header.
     """
-    C = ui_utils.Colours
 
     def _build() -> list[str]:
         cols = ui_utils.get_terminal_width()
@@ -60,11 +61,11 @@ def handle_search(library: list) -> str | None:
     search_targets = prompt.checkbox(
         "Search within:",
         choices=[
-            {"name": "Title",     "value": "title",  "checked": True},
-            {"name": "Artist",    "value": "artist", "checked": True},
-            {"name": "Album",     "value": "album",  "checked": True},
-            {"name": "Genre",     "value": "genre",  "checked": False},
-            {"name": "File Path", "value": "path",   "checked": False},
+            {"name": "Title",         "value": "title",         "checked": True},
+            {"name": "Artist",        "value": "artist",        "checked": True},
+            {"name": "Album",         "value": "album",         "checked": True},
+            {"name": "Genre",         "value": "genre",         "checked": False},
+            {"name": "Performers",    "value": "performers",     "checked": False},
         ]
     )
     if not search_targets:
@@ -108,7 +109,7 @@ def handle_search(library: list) -> str | None:
     )
     if action == "Play":
         ui_utils.clear_screen()
-        res = musicplayer(selected)
+        res = music_player(selected)
         ui_utils.clear_screen()
         if res and res.get("status") == "QUIT_ALL":
             return "QUIT_ALL"
@@ -159,7 +160,7 @@ def handle_history(library: list) -> str | None:
     )
     if action == "Play":
         ui_utils.clear_screen()
-        res = musicplayer(selected)
+        res = music_player(selected)
         ui_utils.clear_screen()
         if res and res.get("status") == "QUIT_ALL":
             return "QUIT_ALL"
@@ -184,10 +185,10 @@ def handle_settings(library_ref: list) -> None:
                 "Toggle Listening History",
                 "Clear History Log",
                 "Adjust Lyric Lead-in Time",
-                "Change UI Theme",
-                "Change Player View",
+                "Toggle Hidden Files",
                 "Toggle Metadata Editor",
                 "Update Music Directory",
+                "Update iTunes Library XML Path",
                 ".. Back",
             ],
             header=_menu_header("Settings"),
@@ -216,39 +217,6 @@ def handle_settings(library_ref: list) -> None:
                 print(f"Updated to {config['lyric_lead_in']} seconds")
                 time.sleep(1)
 
-        elif choice == "Change UI Theme":
-            colours = {
-                "Red":     "\033[1;31m",
-                "Blue":    "\033[1;34m",
-                "Magenta": "\033[1;35m",
-                "Cyan":    "\033[1;36m",
-            }
-            pick = prompt.select(
-                "Accent colour:",
-                choices=list(colours.keys()) + [".. Back"],
-                header=_menu_header("Settings", "Change UI Theme"),
-            )
-            if pick and pick != ".. Back":
-                config["theme"]["accent"] = colours[pick]
-                print(f"Theme changed to {pick}")
-                time.sleep(1)
-
-        elif choice == "Change Player View":
-            view_options = [
-                prompt.Choice("Default  — metadata + ASCII art",       value="default"),
-                prompt.Choice("iPod 2G  — classic Now Playing screen", value="ipod"),
-            ]
-            pick = prompt.select(
-                "Player view:",
-                choices=view_options + [prompt.Choice(".. Back", value=".. Back")],
-                header=_menu_header("Settings", "Change Player View"),
-            )
-            if pick and pick != ".. Back":
-                config["player_view"] = pick
-                label = "Default" if pick == "default" else "iPod 2G"
-                print(f"Player view set to: {label}")
-                time.sleep(1)
-
         elif choice == "Toggle Metadata Editor":
             config["show_metadata_editor"] = not config.get("show_metadata_editor", True)
             state = "VISIBLE" if config["show_metadata_editor"] else "HIDDEN"
@@ -260,8 +228,13 @@ def handle_settings(library_ref: list) -> None:
             if new_root and os.path.isdir(new_root):
                 config["music_directory"] = new_root
                 print("Re-scanning library...")
-                xml_db, xml_title_keys = load_xml_database("../data/Library.xml")
-                new_lib = build_library(new_root, xml_db=xml_db, xml_title_keys=xml_title_keys)
+                xml_db, xml_title_keys = load_xml_database(config["xml_db_path"] if config["xml_db_path"] else config.get("music_directory", ""))
+                new_lib = build_library(
+                    new_root,
+                    xml_db=xml_db,
+                    xml_title_keys=xml_title_keys,
+                    ignore_hidden=config.get("ignore_hidden_files", False),
+                )
                 save_library_cache(new_lib, _async=False)
                 existing_lib = library_ref[0]
                 existing_lib.clear()
@@ -269,6 +242,26 @@ def handle_settings(library_ref: list) -> None:
                 start_background_sync(existing_lib, xml_db, xml_title_keys)
                 print(f"Done — {len(new_lib)} tracks.")
                 time.sleep(1.5)
+        
+        elif choice == "Update iTunes Library XML Path":
+            new_path = prompt.path("iTunes Library XML file:")
+            if new_path and os.path.isfile(new_path):
+                config["xml_db_path"] = new_path
+                xml_db, xml_title_keys = load_xml_database(new_path)
+                if xml_db:
+                    print(f"Metadata database loaded: {len(xml_db)} tracks")
+                    start_background_sync(library_ref[0], xml_db, xml_title_keys)
+                else:
+                    print("Failed to load XML database.")
+                time.sleep(1.5)
+
+        elif choice == "Toggle Hidden Files":
+            config["ignore_hidden_files"] = not config.get("ignore_hidden_files", False)
+            state = "ON" if config["ignore_hidden_files"] else "OFF"
+            print(f"Hidden file filter: {state}")
+            if config["ignore_hidden_files"]:
+                print("Rebuild library via Update Music Directory to apply.")
+            time.sleep(1.5)
 
         save_config(config)
 
@@ -292,7 +285,7 @@ def play_queue(paths: list, is_grouping: bool = False, mode: str = "linear") -> 
 
     idx = 0
     while idx < len(playlist):
-        result = musicplayer(playlist[idx], is_grouping=is_grouping)
+        result = music_player(playlist[idx], is_grouping=is_grouping)
         if isinstance(result, dict):
             status = result.get("status", "")
             if status == "QUIT_ALL":
@@ -373,7 +366,7 @@ def browse_menu(library_ref: list) -> str | None:
                 if _show_editor:
                     _group_choices.append(prompt.Choice(title=f"Edit tags — all {cat_choice.lower()}", value="__bulk_edit__"))
                 _group_choices += group_names
-                _group_choices.append(".. Back")
+                _group_choices.append(prompt.Choice(".. Back", value=".. Back"))
 
                 selection = prompt.select(
                     f"{cat_choice}:",
@@ -395,7 +388,7 @@ def browse_menu(library_ref: list) -> str | None:
 
                 if selection == "__bulk_edit__":
                     paths = [s['path'] for name in group_names for s in grouped[name]]
-                    bulk_tag_manager(library, paths=paths)
+                    bulk_id3_manager(library, paths=paths)
                     continue
 
                 NAV_STACK.append(selection)
@@ -418,7 +411,7 @@ def browse_menu(library_ref: list) -> str | None:
                         if _show_editor:
                             _alb_choices.append(prompt.Choice(title=f"Edit tags — {selection}", value="__bulk_edit__"))
                         _alb_choices += album_list
-                        _alb_choices.append(".. Back")
+                        _alb_choices.append(prompt.Choice(".. Back", value=".. Back"))
 
                         alb = prompt.select(
                             "Albums:",
@@ -436,7 +429,7 @@ def browse_menu(library_ref: list) -> str | None:
                             continue
 
                         if alb == "__bulk_edit__":
-                            bulk_tag_manager(library, paths=[s['path'] for s in selected_songs])
+                            bulk_id3_manager(library, paths=[s['path'] for s in selected_songs])
                             continue
 
                         NAV_STACK.append(alb)
@@ -463,26 +456,49 @@ def browse_menu(library_ref: list) -> str | None:
                         discs = set(str(t.get('disc', '1')) for t in final_tracks)
                         has_multiple_discs = len(discs) > 1
 
-                        track_choices = []
-                        current_disc  = None
+                        track_choices  = []
+                        current_disc   = None
+                        current_work   = None
                         disc_track_map = {}
+                        work_track_map = {}
 
                         for t in final_tracks:
                             disc_val = str(t.get('disc', '1'))
+                            work     = t.get('work', '').strip()
+
                             disc_track_map.setdefault(disc_val, []).append(t['path'])
+                            if work:
+                                work_track_map.setdefault(work, []).append(t['path'])
+
+                            # Disc header
                             if has_multiple_discs and disc_val != current_disc:
                                 subtitle   = t.get('disc_subtitle', '')
                                 disc_title = subtitle if subtitle else f"Disc {disc_val}"
                                 track_choices.append(prompt.Choice(title=f"── {disc_title} ──", value=f"__disc_{disc_val}"))
                                 current_disc = disc_val
+                                current_work = None  # reset on new disc
+                                
+                            # Work header
+                            if work and work != current_work:
+                                d_pad = "  " if has_multiple_discs else ""
+                                track_choices.append(prompt.Choice(title=f"{d_pad}── {work} ──", value=f"__work__{work}"))
+                                current_work = work
 
-                            indent = "  " if has_multiple_discs else ""
-                            track_choices.append(
-                                prompt.Choice(
-                                    title=f"{indent}{str(t.get('track', '0')).zfill(2)} — {t.get('title', 'Unknown')}",
-                                    value=t['path'],
-                                )
-                            )
+                            # Track row
+                            base_pad = "  " if has_multiple_discs else ""
+                            mv_pad   = "  " if work else ""
+                            indent   = base_pad + mv_pad
+
+                            mv_num  = roman(int(str(t.get('movement_number', '')).strip())) if t.get('movement_number') else ""
+                            mv_name = t.get('movement_name', '').strip()
+
+                            if mv_name and mv_num != "":
+                                num_str = (str(t.get('track', '0')).zfill(2) + f" — {mv_num}.") if mv_num else str(t.get('track', '0')).zfill(2)
+                                label   = f"{indent}{num_str} {mv_name}"
+                            else:
+                                label = f"{indent}{str(t.get('track', '0')).zfill(2)} — {t.get('title', 'Unknown')}"
+
+                            track_choices.append(prompt.Choice(title=label, value=t['path']))
 
                         # Determine header title: album name if we came via album, else artist/group name
                         _track_context = NAV_STACK[-1] if NAV_STACK else selection
@@ -514,7 +530,7 @@ def browse_menu(library_ref: list) -> str | None:
                             continue
 
                         if path_choice_obj == "__bulk_edit__":
-                            bulk_tag_manager(library, paths=[t['path'] for t in final_tracks])
+                            bulk_id3_manager(library, paths=[t['path'] for t in final_tracks])
                             continue
 
                         # Disc header selected — offer play or bulk edit for that disc
@@ -530,7 +546,7 @@ def browse_menu(library_ref: list) -> str | None:
                             _disc_choices = [prompt.Choice(title=f"▶  Play all — {disc_label}", value="__play_all__")]
                             if _show_editor:
                                 _disc_choices.append(prompt.Choice(title=f"Edit tags — {disc_label}", value="__bulk_edit__"))
-                            _disc_choices.append(".. Back")
+                            _disc_choices.append(prompt.Choice(".. Back", value=".. Back"))
 
                             disc_action = prompt.select(
                                 "Disc:",
@@ -545,9 +561,32 @@ def browse_menu(library_ref: list) -> str | None:
                                 if res == "QUIT_ALL":
                                     return "QUIT_ALL"
                             elif disc_action == "__bulk_edit__":
-                                bulk_tag_manager(library, paths=disc_paths)
+                                bulk_id3_manager(library, paths=disc_paths)
                             continue
+                        
+                        # Work header selected — offer play or bulk edit for that work
+                        if isinstance(path_choice_obj, str) and path_choice_obj.startswith("__work__"):
+                            work_name    = path_choice_obj[len("__work__"):]
+                            work_paths   = work_track_map.get(work_name, [])
+                            _show_editor = load_config().get("show_metadata_editor", True)
+                            _work_choices = [prompt.Choice(title=f"▶  Play all — {work_name}", value="__play_all__")]
+                            if _show_editor:
+                                _work_choices.append(prompt.Choice(title=f"Edit tags — {work_name}", value="__bulk_edit__"))
+                            _work_choices.append(prompt.Choice(".. Back", value=".. Back"))
 
+                            work_action = prompt.select(
+                                "Work:",
+                                choices=_work_choices,
+                                header=_menu_header(work_name, _track_context),
+                            )
+                            if work_action == "__play_all__":
+                                res = play_queue(work_paths, is_grouping=(cat_choice == "Compilations"))
+                                if res == "QUIT_ALL":
+                                    return "QUIT_ALL"
+                            elif work_action == "__bulk_edit__":
+                                bulk_id3_manager(library, paths=work_paths)
+                            continue
+                        
                         # LEVEL 5: Track action
                         selected_track = next((t for t in final_tracks if t['path'] == path_choice_obj), None)
                         track_title    = selected_track['title'] if selected_track else os.path.basename(path_choice_obj)
@@ -572,7 +611,7 @@ def browse_menu(library_ref: list) -> str | None:
 
                             if action == "Play":
                                 ui_utils.clear_screen()
-                                res = musicplayer(path_choice_obj, is_grouping=(cat_choice == "Compilations"))
+                                res = music_player(path_choice_obj, is_grouping=(cat_choice == "Compilations"))
                                 ui_utils.clear_screen()
                                 if res and res.get("status") == "QUIT_ALL":
                                     return "QUIT_ALL"
@@ -610,7 +649,7 @@ def main_menu(library_ref: list) -> None:
     while True:
         choice = prompt.select(
             "Main Menu:",
-            choices=["Browse Library", "Search", "Listening History", "Metadata Browser", "Settings", "Exit"],
+            choices=["Browse Library", "Search", "Listening History", "Settings", "Exit"],
             header=_menu_header("Music Player"),
         )
 
@@ -628,7 +667,5 @@ def main_menu(library_ref: list) -> None:
             res = handle_history(library_ref[0])
             if res == "QUIT_ALL":
                 break
-        elif choice == "Metadata Browser":
-            browse_metadata(library_ref[0])
         elif choice == "Settings":
             handle_settings(library_ref)

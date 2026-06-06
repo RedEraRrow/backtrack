@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 import re
 import sys
-import textwrap
 
-from src import ui_utils
-from src.album_art import get_ascii
-from src.prompt import _hint
+from src.utils import ui_utils
+from src.art.album_art import get_viu_art
+from src.utils.prompt import _hint
 from src.state import NAV_STACK
+from src.utils.ui_utils import Colors as C
 
 ART_MAX_WIDTH = 64
 
@@ -59,10 +59,10 @@ def _layout_mode(cols: int) -> str:
     return 'minimal'
 
 
-def _get_ascii_cached(file_path: str, width: int) -> str:
+def _get_viu_art_cached(file_path: str, width: int) -> str:
     key = (file_path, width)
     if key not in _art_cache:
-        _art_cache[key] = get_ascii(file_path, width=width)
+        _art_cache[key] = get_viu_art(file_path, width=width)
     return _art_cache[key]
 
 
@@ -71,18 +71,22 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
     elapsed_str = ui_utils.format_time(elapsed)
     duration_str = ui_utils.format_time(duration)
     timer_text = f" {elapsed_str.rjust(5)} / {duration_str.ljust(5)} "
-    # Prefer to draw the progress bar within the artwork width when available.
+    
+    # Determine container width and padding
     global _last_art_width, _last_art_left
-    if _last_art_width and _last_art_left is not None and _last_art_width < width:
+    
+    if _last_art_width and _last_art_width > 0:
+        # Art was rendered; constrain progress bar to art width
         container_w = _last_art_width
-        left_pad = _last_art_left
+        left_pad = _last_art_left if _last_art_left is not None else 0
     else:
+        # No art; use full terminal width
         container_w = width
-        left_pad = max(0, (width - container_w) // 2)
+        left_pad = 0
+    
     bar_width = max(1, container_w - len(timer_text) - 2)
     percent = max(0.0, min(elapsed / duration, 1.0)) if duration else 0.0
     bar = ui_utils.get_progress_bar(percent, bar_width)
-    # centre the progress container under the art
     pad = ' ' * left_pad
 
     sys.stdout.write(f"\033[{row};1H\033[K{pad}{bar}{timer_text}")
@@ -115,7 +119,7 @@ def _get_people(audio, tag_key: str) -> list[tuple[str, str]]:
 
 
 def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4) -> list[str]:
-    """Build cast lines with the first block emphasised."""
+    """Build cast lines with the first block emphasized."""
     RESET, DIM = "\033[0m", "\033[2m"
     total = len(people)
     cap = limit * 2
@@ -166,7 +170,7 @@ def get_ui_state() -> dict:
 def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
                      cast_names: list[str] | None = None,
                      limit: int = 4) -> list[str]:
-    """Build a crew section prioritising cast matches and production roles."""
+    """Build a crew section prioritizing cast matches and production roles."""
     DIM, RESET = "\033[2m", "\033[0m"
     cast_names = cast_names or []
     cast_name_lower = [n.lower() for n in cast_names]
@@ -217,7 +221,6 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
 
 def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str, width: int | None = None) -> tuple[str, str]:
     """Return the current playback status and shortcut lines."""
-    C = ui_utils.Colours
     pp_icon = "⏸" if is_paused else "⏵"
     vol_slider = _volume_slider(volume, width=20)
     # Build centered transport controls (back, play/pause, forward)
@@ -261,7 +264,6 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str, widt
 
 def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
     """Build the left-side metadata display lines (compact)."""
-    C = ui_utils.Colours
 
     def _trim(text: str) -> str:
         return ui_utils.truncate_text(text, max(1, max_val_w), placeholder='…')
@@ -315,40 +317,6 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
     return lines
 
 
-def _right_col_lines(cast_people: list[tuple[str, str]], crew_people: list[tuple[str, str]],
-                     col_w: int, cast_limit: int, crew_limit: int) -> list[str]:
-    """Build the right-side cast and crew display lines (compact)."""
-    C = ui_utils.Colours
-    lines: list[str] = []
-    
-    if not _ui_state['show_credits']:
-        return lines
-    
-    if cast_people:
-        lines.append(f"{C.DIM}CAST{C.RESET}")
-        lines.extend(_build_cast_lines(cast_people, col_w, limit=min(cast_limit, 3)))
-    if crew_people:
-        if lines:
-            lines.append("")
-        lines.append(f"{C.DIM}PRODUCTION{C.RESET}")
-        top_names = [n for _, n in cast_people[:cast_limit]]
-        lines.extend(_build_crew_lines(crew_people, col_w, cast_names=top_names, limit=min(crew_limit, 2)))
-    return lines
-
-
-def _print_two_col(left: list[str], left_w: int,
-                   right: list[str], sep: str = " │ ") -> int:
-    """Print left and right columns with fixed left width and return row count."""
-    n = max(len(left), len(right))
-    for i in range(n):
-        l = left[i] if i < len(left) else ""
-        r = right[i] if i < len(right) else ""
-        vis = _visible_len(l)
-        pad = " " * max(0, left_w - vis)
-        sys.stdout.write(f"{l}{pad}{sep}{r}\n")
-    return n
-
-
 def _align_art_lines(art_lines: list[str], cols: int) -> list[str]:
     """Center art in the available terminal width using visible line width."""
     if not art_lines:
@@ -374,101 +342,6 @@ def _center_lines(lines: list[str], cols: int) -> list[str]:
         centered.append(" " * left + line)
     return centered
 
-def _draw_ipod_ui(file_path: str, audio, size: tuple,
-                  is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple[int, int, int, int]:
-    cols, rows = size
-    RESET = "\033[0m"
-    INV = "\033[7m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    FRAME = "\033[2;37m"
-
-    fw = min(max(36, cols - 4), 64)
-    pad = " " * ((cols - fw) // 2)
-
-    def _row(content: str, width: int = fw) -> str:
-        vis = _visible_len(content)
-        if vis > width:
-            content = content[:width - 1] + "…"
-            vis = width
-        return content + " " * (width - vis)
-
-    def _centre(text: str, width: int = fw) -> str:
-        text = text[:width]
-        total_pad = width - len(text)
-        left = total_pad // 2
-        return " " * left + text + " " * (total_pad - left)
-
-    ui_utils.clear_screen()
-    play_sym = "▶" if not is_paused else "⏸"
-    battery = "▓▓▓"
-    header_text = f" [{toast.upper()}]" if toast else " Now Playing"
-    header_inner = _row(f" {play_sym} {header_text} {battery.rjust(fw - 4 - len(header_text))}", fw)
-
-    print(f"{pad}{INV}{BOLD}{header_inner}{RESET}")
-    print(f"{pad}{FRAME}{'─' * fw}{RESET}")
-
-    try:
-        track_num = str(audio['TRCK']).split('/')[0].strip() if 'TRCK' in audio else "?"
-        track_tot = str(audio['TRCK']).split('/')[1].strip() if 'TRCK' in audio and '/' in str(audio['TRCK']) else "?"
-        counter = f"{track_num} of {track_tot}"
-    except Exception:
-        counter = ""
-    print(f"{pad}{DIM}{_row(f'  {counter}', fw)}{RESET}")
-    print()
-
-    title = str(audio['TIT2']) if 'TIT2' in audio else os.path.splitext(os.path.basename(file_path))[0]
-    artist = str(audio.get('TPE2') or audio.get('TPE1') or '')
-    album = str(audio['TALB']) if 'TALB' in audio else ''
-
-    inner = fw - 4
-    def _fit(s: str) -> str:
-        return s if len(s) <= inner else s[:inner - 1] + '…'
-
-    print(f"{pad}{BOLD}{_centre(_fit(title))}{RESET}")
-    if artist:
-        print(f"{pad}{_centre(_fit(artist))}")
-    if album:
-        print(f"{pad}{DIM}{_centre(_fit(album))}{RESET}")
-
-    print()
-    print(f"{pad}{FRAME}{'─' * fw}{RESET}")
-
-    v_blocks = ["", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-    v_idx = min(int((volume / 100) * 8), 8)
-    vol_str = f"VOL {''.join(v_blocks[1:v_idx+1]):<8} {volume:3d}%"
-    print(f"{pad}{DIM}{_row(f'  {vol_str}', fw)}{RESET}")
-    hints = "  ◀◀  ▶▶   |  MENU"
-    print(f"{pad}{DIM}{_row(hints, fw)}{RESET}")
-    print(f"{pad}{FRAME}{'─' * fw}{RESET}")
-
-    header_height = 12
-    prog_row = header_height + 1
-    ctrl_row = prog_row + 1
-    lyric_row = ctrl_row + 3
-    return prog_row, ctrl_row, lyric_row, cols
-
-
-def update_progress_ipod(row: int, elapsed: float, duration: float,
-                         width: int, cols: int) -> None:
-    """Draw the iPod-style centred progress bar."""
-    fw = min(max(36, cols - 4), 64)
-    pad = " " * ((cols - fw) // 2)
-    RESET = "\033[0m"
-    DIM = "\033[2m"
-
-    e_str = ui_utils.format_time(elapsed)
-    d_str = ui_utils.format_time(duration)
-    bar_w = fw - len(e_str) - len(d_str) - 4
-    bar_w = max(4, bar_w)
-    pct = max(0.0, min(elapsed / duration, 1.0)) if duration else 0.0
-    filled = int(pct * bar_w)
-    bar = "█" * filled + "░" * (bar_w - filled)
-
-    line = f"{e_str}  {DIM}{bar}{RESET}  {d_str}"
-    sys.stdout.write(f"\033[{row};1H\033[K{pad}{line}")
-    sys.stdout.flush()
-
 
 def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
                  is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple[int, int, int, int, int]:
@@ -478,12 +351,6 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     art_bottom_row is the last row occupied by the album art block (used to
     bound the lyric region so stale remnants are fully erased).
     """
-    from src.config import load_config
-    view = load_config().get('player_view', 'default')
-    if view == 'ipod':
-        result = _draw_ipod_ui(file_path, audio, size, is_paused, volume, toast)
-        # iPod UI has no side art; treat ctrl_row as the art bottom
-        return result + (result[1],)
     return _draw_default_ui(file_path, audio, pre_art, size, is_paused, volume, toast)
 
 
@@ -491,10 +358,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
                      is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple[int, int, int, int, int]:
     cols, rows = size
     global _last_art_width, _last_art_left, _last_right_left, _last_right_width
-    C = ui_utils.Colours
     mode = _layout_mode(cols)
-    wide_lyric_row: int | None = None
-    art_bottom_row: int = 0
 
     ui_utils.clear_screen()
     cast_people = _get_people(audio, 'TMCL')
@@ -506,27 +370,32 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     sys.stdout.write(f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}\n\n")
     row_cursor = 3
 
+    # ========== WIDE MODE ==========
     if mode == 'wide':
         art_w = min(cols // 2, ART_MAX_WIDTH)
         right_w = cols - art_w - 3
         meta_val_w = right_w - 10
-        art_str = pre_art if pre_art else _get_ascii_cached(file_path, width=art_w)
+        
+        # Render art
+        art_str = pre_art if pre_art else _get_viu_art_cached(file_path, width=art_w)
         art_lines = art_str.splitlines()
-        # track artwork width and left pad (art sits at left)
+        
         try:
             art_vis_w = max(_visible_len(a) for a in art_lines) if art_lines else art_w
         except ValueError:
             art_vis_w = art_w
+        
         _last_art_width = art_vis_w
         _last_art_left = 0
-        # right pane starts after artwork + two spaces (1-based column)
         _last_right_left = art_w + 3
         _last_right_width = right_w
 
-        cast_limit = min(3, (rows - 10) // 3)
-        crew_limit = max(1, (rows - 10) // 3)
+        # Build metadata
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
 
+        # Build credits (right pane)
+        cast_limit = min(3, (rows - 10) // 3)
+        crew_limit = max(1, (rows - 10) // 3)
         gap = ' ' * 4
         cast_col_w = max(12, (right_w - len(gap)) // 2)
         crew_col_w = max(12, right_w - cast_col_w - len(gap))
@@ -538,15 +407,11 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         cast_lines = cast_heading + cast_body
         crew_lines = crew_heading + crew_body
+        
+        # Layout: art + credits side-by-side
         right_line_count = max(len(cast_lines), len(crew_lines))
-        reserved_lyric_rows = 6
-        body_height = max(len(art_lines), right_line_count + reserved_lyric_rows)
-        body_start = row_cursor
-        if right_line_count:
-            wide_lyric_row = body_start + right_line_count + 1
-        else:
-            wide_lyric_row = body_start + max(1, len(art_lines) // 2)
-
+        body_height = max(len(art_lines), right_line_count)
+        
         for i in range(body_height):
             a = art_lines[i] if i < len(art_lines) else ''
             c = cast_lines[i] if i < len(cast_lines) else ''
@@ -557,7 +422,10 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             sys.stdout.write(f"{a}{pad_art}  {right}\n")
 
         row_cursor += body_height
-        art_bottom_row = row_cursor  # bottom of the art+credits block
+        sys.stdout.write("\n")
+        row_cursor += 1
+        
+        # Metadata centred below art
         for line in left_col:
             vis = _visible_len(line)
             pad = ' ' * max(0, (art_w - vis) // 2)
@@ -565,19 +433,23 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         row_cursor += len(left_col)
         sys.stdout.write("\n")
         row_cursor += 1
+        
+        art_bottom_row = row_cursor
+        lyric_row = row_cursor + 2
 
+    # ========== STANDARD MODE ==========
     elif mode == 'standard':
         _last_right_left = None
         _last_right_width = None
-        art_w = cols
-        max_art_h = max(3, rows - 12)
-        art_str = pre_art if pre_art else _get_ascii_cached(file_path, width=art_w)
+        
+        max_art_h = max(3, rows - 15)
+        art_str = pre_art if pre_art else _get_viu_art_cached(file_path, width=cols)
         art_lines = _align_art_lines(art_str.splitlines()[:max_art_h], cols)
 
         meta_val_w = cols - 12
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
 
-        # compute artwork visible width and left pad (art is centred by _align_art_lines)
+        # Track art dimensions
         if art_lines:
             leading = min(len(l) - len(l.lstrip(' ')) for l in art_lines)
             art_vis_w = max(_visible_len(l) - leading for l in art_lines)
@@ -587,9 +459,12 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             left_pad = 0
         _last_art_width = art_vis_w
         _last_art_left = left_pad
+        
         for line in art_lines:
             sys.stdout.write(f"{line}\n")
         row_cursor += len(art_lines)
+        sys.stdout.write("\n")
+        row_cursor += 1
 
         left_col = _center_lines(left_col, cols)
         for line in left_col:
@@ -599,22 +474,24 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         row_cursor += 1
 
         art_bottom_row = row_cursor
-        # Credits are printed after prog/ctrl rows (see below)
+        lyric_row = row_cursor + 2
 
+    # ========== MINIMAL MODE ==========
     else:
         _last_right_left = None
         _last_right_width = None
+        
+        meta_val_w = max(1, cols - 12)
+        left_col = _meta_left_lines(audio, file_path, meta_val_w)
+        
         if cols >= 34:
             art_w = cols
-            art_str = pre_art if pre_art else _get_ascii_cached(file_path, width=art_w)
+            art_str = pre_art if pre_art else _get_viu_art_cached(file_path, width=art_w)
             art_lines = _align_art_lines(art_str.splitlines(), cols)
-            max_art_h = max(3, rows - 12)
+            max_art_h = max(3, rows - 15)
             if len(art_lines) > max_art_h:
                 art_lines = art_lines[:max_art_h]
 
-            meta_val_w = max(1, cols - 12)
-            left_col = _meta_left_lines(audio, file_path, meta_val_w)
-            # compute artwork visible width and left pad for minimal view
             if art_lines:
                 leading = min(len(l) - len(l.lstrip(' ')) for l in art_lines)
                 art_vis_w = max(_visible_len(l) - leading for l in art_lines)
@@ -628,14 +505,15 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             for line in art_lines:
                 sys.stdout.write(f"{line}\n")
             row_cursor += len(art_lines)
+            sys.stdout.write("\n")
+            row_cursor += 1
 
             left_col = _center_lines(left_col, cols)
             for line in left_col:
                 sys.stdout.write(f"{line}\n")
             row_cursor += len(left_col)
         else:
-            meta_val_w = max(1, cols - 12)
-            left_col = _meta_left_lines(audio, file_path, meta_val_w)
+            # No art, just metadata
             available_rows = max(0, rows - row_cursor - 8)
             top_padding = max(0, (available_rows - len(left_col)) // 2)
             for _ in range(top_padding):
@@ -644,14 +522,16 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             for line in left_col:
                 sys.stdout.write(f"{line}\n")
             row_cursor += len(left_col)
+        
         art_bottom_row = row_cursor
+        lyric_row = row_cursor + 2
 
-    prog_row = row_cursor + 1
+    # ========== CONTROL ROWS (all modes) ==========
+    sys.stdout.write("\n")
+    row_cursor += 1
+    
+    prog_row = row_cursor
     ctrl_row = prog_row + 1
-    if wide_lyric_row is None:
-        lyric_row = ctrl_row + 3
-    else:
-        lyric_row = wide_lyric_row
 
     has_lyrics = bool(audio.getall('SYLT') or audio.getall('USLT'))
     is_uslt_track = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
@@ -663,25 +543,10 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         sys.stdout.write(f"\033[{ctrl_row + offset};1H\033[K{line}\n")
     sys.stdout.flush()
 
-    prog_row = row_cursor + 1
-    ctrl_row = prog_row + 1
-    if wide_lyric_row is None:
-        lyric_row = ctrl_row + 3
-    else:
-        lyric_row = wide_lyric_row
+    ctrl_row_end = ctrl_row + len(shortcut_lines)
+    sys.stdout.write(f"\033[{ctrl_row_end + 1};1H\033[K\n")
 
-    status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
-    shortcut_lines = shortcuts_ln.splitlines() or [""]
-
-    sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}\n")
-    for offset, line in enumerate(shortcut_lines, start=1):
-        sys.stdout.write(f"\033[{ctrl_row + offset};1H\033[K{line}\n")
-    sys.stdout.flush()
-
-    if wide_lyric_row is None:
-        lyric_row = ctrl_row + 1 + len(shortcut_lines) + 1
-
-    # Standard mode: print two-column credits between controls and lyrics
+    # ========== CREDITS (standard mode only) ==========
     if mode == 'standard' and has_cast and _ui_state['show_credits']:
         cast_limit = 3
         crew_limit = 3
@@ -696,19 +561,15 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         cast_lines_c = cast_heading + cast_body
         crew_lines_c = crew_heading + crew_body
         n = max(len(cast_lines_c), len(crew_lines_c))
-        credits_row = lyric_row
-        sys.stdout.write(f"\033[{credits_row};1H\033[K\n")
-        credits_row += 1
+        
+        credits_row = ctrl_row_end + 2
         for i in range(n):
             lft = cast_lines_c[i] if i < len(cast_lines_c) else ''
             rgt = crew_lines_c[i] if i < len(crew_lines_c) else ''
             pad = ' ' * max(0, col_w - _visible_len(lft))
             sys.stdout.write(f"\033[{credits_row + i};1H\033[K{lft}{pad}{gap}{rgt}\n")
+        
         lyric_row = credits_row + n + 1
-        # art_bottom_row for lyric clearing = terminal bottom
-        art_bottom_row = rows
-    elif mode != 'wide':
-        # minimal: lyrics go full-width, clear to terminal bottom
         art_bottom_row = rows
 
     return prog_row, ctrl_row, lyric_row, cols, art_bottom_row

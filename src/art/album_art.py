@@ -1,5 +1,5 @@
 """
-ASCII art and image conversion for terminal display powered by viu.
+Album art and image conversion for terminal display powered by viu.
 
 Captures clean terminal graphics sequences using 'viu'. Supports full native
 high-resolution half-blocks and inline graphic protocols without destructive flattening.
@@ -8,8 +8,6 @@ high-resolution half-blocks and inline graphic protocols without destructive fla
 import os
 import subprocess
 from mutagen.id3 import ID3
-
-MAX_ART_WIDTH = 48
 
 
 def render_with_viu(image_source: str | bytes, width: int = 100, is_bytes: bool = False) -> str:
@@ -51,7 +49,7 @@ def render_with_viu(image_source: str | bytes, width: int = 100, is_bytes: bool 
         return f"Error rendering with viu: {error_msg if error_msg else e}"
 
 
-def get_ascii_from_image_file(file_path: str, width: int) -> str:
+def get_viu_art_from_image_file(file_path: str, width: int) -> str:
     """Load image file and return its viu terminal sequence."""
     return render_with_viu(file_path, width=width, is_bytes=False)
 
@@ -78,7 +76,7 @@ def _select_apic_frame(audio: ID3, preferred_desc: str | None = None,
     return audio[apic_keys[0]]
 
 
-def get_ascii_from_mp3(file_path: str, width: int,
+def get_viu_art_from_mp3(file_path: str, width: int,
                        preferred_desc: str | None = None,
                        preferred_type: int | None = None) -> str:
     """Extract album art from MP3 and return its viu terminal sequence."""
@@ -94,12 +92,12 @@ def get_ascii_from_mp3(file_path: str, width: int,
         return f"Error loading MP3 art: {e}"
 
 
-def get_ascii(file_path: str, width: int = 100) -> str:
+def get_viu_art(file_path: str, width: int = 100) -> str:
     """Convert image or MP3 album art to a viu ANSI sequence."""
     if not os.path.isfile(file_path):
         return "Error: Invalid file path."
 
     ext = file_path.rsplit(".", 1)[-1].lower()
     if ext == "mp3":
-        return get_ascii_from_mp3(file_path, width)
-    return get_ascii_from_image_file(file_path, width)
+        return get_viu_art_from_mp3(file_path, width)
+    return get_viu_art_from_image_file(file_path, width)

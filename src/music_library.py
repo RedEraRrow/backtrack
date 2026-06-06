@@ -4,7 +4,6 @@ Music library management and metadata extraction.
 Handles building library, searching, grouping, and loading metadata from files and XML.
 """
 from __future__ import annotations
-from importlib import metadata
 import os
 import json
 import tempfile
@@ -13,7 +12,6 @@ import re
 import xml.etree.ElementTree as ET
 import unicodedata
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from typing import Any
@@ -62,23 +60,26 @@ TAG_MAP = {
     'TALB': 'Album',
     'TDRC': 'Year',
     'TCON': 'Genre',
-    'TRCK': 'Track',
-    'TPOS': 'Disc',
+    'TRCK': 'Track Number',
+    'TPOS': 'Disc Number',
     'GRP1': 'Grouping',
     'TCOM': 'Composer',
     'TENC': 'Encoded By',
     'COMM': 'Comment',
     'APIC': 'Album Art',
-    'TIPL': 'Producer',
+    'TIPL': 'Production Team',
     'TMCL': 'Performers',
     'TPUB': 'Publisher',
     'TDRL': 'Release Date',
     'TSO2': 'Album Artist Sort Order',
     'TSOA': 'Album Sort Order',
-    'TSOP': 'Performer Sort Order',
-    'USLT': 'Unsynchronised Lyrics',
-    'SYLT': 'Synchronised Lyrics',
+    'TSOP': 'Artist Sort Order',
+    'USLT': 'Un-synchronized Lyrics',
+    'SYLT': 'Synchronized Lyrics',
     'TSST': 'Set Subtitle',
+    'TIT1': 'Work Name',
+    'MVNM': 'Movement Name',
+    'MVIN': 'Movement Number',
 }
 
 
@@ -182,7 +183,7 @@ def _signal_background_sync() -> None:
 
 def sync_worker(library: list, xml_db: dict, xml_title_keys: set):
     global _cache_mtime
-    from src import ui_utils
+    from src.utils import ui_utils
 
     last_xml_mtime = _get_xml_mtime()
 
@@ -255,9 +256,14 @@ def get_metadata(file_path: str, xml_db: dict | None = None, xml_title_keys: set
         "genre": "Unknown Genre",
         "year": "Unknown Year",
         "grouping": "",
-        "play_count": 0
+        "work": "",
+        "movement_name": "",
+        "movement_number": "",
+        "play_count": 0,
+        "performers": "",
+        "producer": "",
     }
-
+    
     # 1. Try internal tags
     try:
         if file_path.endswith('.mp3'):
@@ -272,16 +278,40 @@ def get_metadata(file_path: str, xml_db: dict | None = None, xml_title_keys: set
             if 'GRP1' in tags: metadata["grouping"] = str(tags['GRP1'])
             if 'TPOS' in tags: metadata["disc"]   = str(tags['TPOS']).split('/')[0]
             if 'TSST' in tags: metadata["disc_subtitle"] = str(tags['TSST'])
+            if 'TIT1' in tags: metadata["work"]            = str(tags['TIT1'])
+            if 'MVNM' in tags: metadata["movement_name"]   = str(tags['MVNM'])
+            if 'MVIN' in tags: metadata["movement_number"] = str(tags['MVIN']).split('/')[0].strip()
+            if 'TMCL' in tags: metadata["performers"] = str(tags['TMCL'])
+            if 'TIPL' in tags: metadata["producer"] = str(tags['TIPL'])
+            txxx_ver = tags.get('TXXX:Version')
+            if txxx_ver:
+                metadata['txxx_version'] = str(txxx_ver)
         elif file_path.endswith(('.m4a', '.m4p', '.mp4')):
             tags = MP4(file_path)
-            metadata["title"] = str(tags.get('\xa9nam', [metadata["title"]])[0])
-            metadata["artist"]       = str(tags.get('\xa9ART', [metadata["artist"]])[0])
-            metadata["album_artist"] = str(tags.get('aART',   [metadata["album_artist"]])[0])
-            metadata["album"] = str(tags.get('\xa9alb', [metadata["album"]])[0])
-            trkn = tags.get('trkn', [(0, 0)])[0]
+            assert tags is not None
+            _t = tags.get('\xa9nam')
+            metadata["title"] = str(_t[0]) if _t else metadata["title"]
+            _a = tags.get('\xa9ART')
+            metadata["artist"] = str(_a[0]) if _a else metadata["artist"]
+            _aa = tags.get('aART')
+            metadata["album_artist"] = str(_aa[0]) if _aa else metadata["album_artist"]
+            _alb = tags.get('\xa9alb')
+            metadata["album"] = str(_alb[0]) if _alb else metadata["album"]
+            trkn = tags.get('trkn')
+            trkn = trkn[0] if trkn else (0, 0)
             metadata["track"] = str(trkn[0]) if isinstance(trkn, tuple) else str(trkn)
-            disk = tags.get('disk', [(1, 0)])[0]
+            disk = tags.get('disk')
+            disk = disk[0] if disk else (1, 0)
             metadata["disc"] = str(disk[0]) if isinstance(disk, tuple) else str(disk)
+            wrk = tags.get('©wrk')
+            wrk = wrk[0] if wrk else ''
+            if wrk: metadata["work"] = str(wrk)
+            mvn = tags.get('©mvn')
+            mvn = mvn[0] if mvn else ''
+            if mvn: metadata["movement_name"] = str(mvn)
+            mvi = tags.get('©mvi')
+            mvi = mvi[0] if mvi else None
+            if mvi is not None: metadata["movement_number"] = str(mvi)
     except Exception as e:
         pass
 
@@ -386,6 +416,7 @@ def get_metadata(file_path: str, xml_db: dict | None = None, xml_title_keys: set
                                                        metadata["title"]  = xml_info.get("Name",    metadata["title"])
             if metadata["genre"]  == "Unknown Genre":  metadata["genre"]  = xml_info.get("Genre",   "Unknown Genre")
             if metadata["year"]   == "Unknown Year":   metadata["year"]   = str(xml_info.get("Year", "Unknown Year"))
+            if metadata["performers"] == "":                metadata["performers"] = ", ".join(xml_info.get("Performers", []))
 
     metadata['cached_mtime'] = os.path.getmtime(file_path)
     return metadata
@@ -404,15 +435,15 @@ def get_song_duration(file_path: str) -> float:
 # ============================================================================
 
 
-def build_library(directory, xml_db=None, xml_title_keys=None):
+def build_library(directory, xml_db=None, xml_title_keys=None, ignore_hidden=False):
     library = []
-    xml_track_count = len(xml_db) // 4 if xml_db else 0 # Rough estimate due to multiple keys
-
     for root, _, files in os.walk(directory):
         for file in files:
             full_path = os.path.join(root, file)
             if file.lower().endswith(VALID_AUDIO_EXTENSIONS):
                 meta = get_metadata(full_path, xml_db, xml_title_keys)
+                if ignore_hidden and meta.get('txxx_version') == 'HIDDEN':
+                    continue
                 library.append(meta)
     return library
 
@@ -574,91 +605,6 @@ def sort_library_logic(tracks):
     return sorted(tracks, key=sort_key)
 
 
-def select_from_alpha_list(
-    items: list[str],
-    sort_key_fn: Callable[[str], str],
-    message: str,
-    *,
-    extra_top: list[str] | None = None,
-) -> list[str] | None:
-    """
-    Universal alphabet-browse helper.
-
-    Shows a letter picker (built from sort_key_fn) with a [Full List] toggle.
-    Returns the filtered, sorted list of items to display — or None if the
-    user chose Back at the letter screen.
-
-    Args:
-        items:        Pre-sorted list of display strings.
-        sort_key_fn:  fn(name) -> str  —  sort key for that name.
-        message:      Prompt label shown on the letter picker.
-        extra_top:    Optional extra choices prepended (e.g. ["[Play All]"]).
-    """
-    import string as _string
-    from src import prompt as _prompt
-
-    def _letter(name: str) -> str:
-        key = sort_key_fn(name)
-        ch = key[0].upper() if key else "#"
-        return ch if ch in _string.ascii_uppercase else "#"
-
-    letters = sorted({_letter(n) for n in items})
-    if "#" in letters:
-        letters.remove("#")
-        letters.append("#")
-
-    letter_sel = _prompt.select(message, choices=["[Full List]"] + letters + [".. Back"])
-
-    if not letter_sel or letter_sel == ".. Back":
-        return None
-
-    if letter_sel == "[Full List]":
-        return items
-
-    return [n for n in items if _letter(n) == letter_sel]
-    def get_sortable_name(display_name, sort_order_name):
-        # 1. Use explicit sort order if it exists
-        if sort_order_name and str(sort_order_name).strip():
-            return str(sort_order_name).lower()
-        
-        # 2. Otherwise, use display name but strip "The " for sorting
-        if not display_name:
-            return ""
-        name = str(display_name).lower()
-        if name.startswith("the "):
-            return name[4:].strip()
-        return name
-
-    def sort_key(track_data):
-        # Extract fields using the TAG_MAP keys
-        artist       = track_data.get('album_artist') or track_data.get('artist', 'Unknown Artist')
-        artist_sort  = track_data.get('Album Artist Sort Order') or track_data.get('Performer Sort Order')
-        
-        album = track_data.get('album', 'Unknown Album')
-        album_sort = track_data.get('Album Sort Order') # TSOA
-
-        # Handle the ValueError for years
-        year_val = track_data.get('year')
-        try:
-            clean_year = int(str(year_val))
-        except (ValueError, TypeError):
-            clean_year = 0
-
-        # Determine sort strings
-        final_artist_sort = get_sortable_name(artist, artist_sort)
-        final_album_sort = get_sortable_name(album, album_sort)
-
-        return (
-            final_artist_sort, 
-            -clean_year, 
-            final_album_sort, 
-            track_data.get('disc', '1'), 
-            track_data.get('track', '0')
-        )
-
-    return sorted(tracks, key=sort_key)
-
-
 def search_library(library: list, query: str, active_tags: list | None = None) -> list:
     """
     Search library for songs matching query.
@@ -672,8 +618,8 @@ def search_library(library: list, query: str, active_tags: list | None = None) -
     - Non-matching tracks are never returned regardless of recent history
     """
     recent = get_recent_paths()
-    active_tags = active_tags or ['title', 'artist', 'album', 'genre']
-    weights = {'title': 10, 'artist': 8, 'album': 5, 'genre': 3, 'path': 1}
+    active_tags = active_tags or ['title', 'artist', 'album', 'genre', 'performers']
+    weights = {'title': 10, 'artist': 8, 'album': 5, 'genre': 3, 'performers': 2}
 
     words = query.lower().split()
     results = []
