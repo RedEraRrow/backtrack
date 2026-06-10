@@ -15,12 +15,15 @@ from __future__ import annotations
 import re
 import sys
 import os
+import tempfile
 import textwrap
 import time
 import select as _sel
+import subprocess
 from typing import Any, Callable
 
 from src.utils import ui_utils
+C = ui_utils.Colors
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -62,25 +65,9 @@ def _wait_for_keypress(timeout: float = 0.05) -> bool:
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
 
-_HIDE  = "\033[?25l"
-_SHOW  = "\033[?25h"
-_RESET = "\033[0m"
-_BOLD  = "\033[1m"
-_DIM   = "\033[2m"
-_CYA   = "\033[1;36m"
-_GRN   = "\033[1;32m"
-_WHT   = "\033[1;37m"
-_ACC   = "\033[1;31m"
-_INV   = "\033[7m"
-_BACK  = "\033[47m"
-
 def _clrline():        return "\033[2K\r"
 def _goto(row, col=1): return f"\033[{row};{col}H"
 def _col(n):           return f"\033[{n}G"
-
-import shutil
-import math
-import re
 
 def _hint(*pairs, extra="") -> str:
     """
@@ -109,10 +96,10 @@ def _hint(*pairs, extra="") -> str:
     total_items = len(parsed_items)
 
     def render_inline(k, v):
-        if not k: return f"{_DIM}{v}{_RESET}"
-        return f"{_RESET}{_DIM}[{_RESET}{_BOLD}{k}{_RESET}{_DIM}] {v}{_RESET}"
+        if not k: return f"{C.DIM}{v}{C.RESET}"
+        return f"{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}{k}{C.RESET}{C.DIM}] {v}{C.RESET}"
 
-    sep = f"{_DIM} ⋅ {_RESET}"
+    sep = f"{C.DIM} ⋅ {C.RESET}"
     raw_sep_len = 3 
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -198,11 +185,11 @@ def _hint(*pairs, extra="") -> str:
             if k:
                 k_raw = f"[{k}]"
                 k_space_pad = " " * (max_k_len - len(k_raw))
-                left_side = f"{k_space_pad}{_RESET}{_DIM}[{_RESET}{_BOLD}{k}{_RESET}{_DIM}]{_RESET}"
+                left_side = f"{k_space_pad}{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}{k}{C.RESET}{C.DIM}]{C.RESET}"
             else:
                 left_side = " " * max_k_len
                 
-            right_side = f"{_DIM}{v}{_RESET}"
+            right_side = f"{C.DIM}{v}{C.RESET}"
             stack_lines.append(f"{' ' * global_pad}{left_side} {right_side}")
         return "\n".join(stack_lines)
 
@@ -215,15 +202,15 @@ def _hint(*pairs, extra="") -> str:
         if k:
             k_raw = f"[{k}]"
             k_pad = max(0, cols - len(k_raw)) // 2
-            split_lines.append(f"{' ' * k_pad}{_RESET}{_DIM}[{_RESET}{_BOLD}{k}{_RESET}{_DIM}]{_RESET}")
+            split_lines.append(f"{' ' * k_pad}{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}{k}{C.RESET}{C.DIM}]{C.RESET}")
             
         v_pad = max(0, cols - len(v)) // 2
-        split_lines.append(f"{' ' * v_pad}{_DIM}{v}{_RESET}")
+        split_lines.append(f"{' ' * v_pad}{C.DIM}{v}{C.RESET}")
         
         # Add centered separator dot between discrete blocks
         if i < total_items - 1:
             dot_pad = max(0, cols - 1) // 2
-            split_lines.append(f"{' ' * dot_pad}{_DIM}⋅{_RESET}")
+            split_lines.append(f"{' ' * dot_pad}{C.DIM}⋅{C.RESET}")
             
     return "\n".join(split_lines)
 
@@ -370,12 +357,12 @@ class _Widget:
         """Render lines at the anchored row, or full-screen clear + redraw on resize."""
         if self._full or self.row is None:
             # Full clear prevents any ghost lines from a previous render.
-            sys.stdout.write("\033[2J\033[H" + _HIDE)
+            sys.stdout.write("\033[2J\033[H" + C.HIDE)
             self.row   = 1
             self._full = False
             out = ""
         else:
-            out = _HIDE + _goto(self.row)
+            out = C.HIDE + _goto(self.row) + "\033[J" 
 
         for line in lines:
             out += _clrline() + line + "\n"
@@ -389,13 +376,13 @@ class _Widget:
     def clear(self) -> None:
         """Clear the rendered content from the terminal."""
         if self.row is None:
-            sys.stdout.write(_SHOW)
+            sys.stdout.write(C.SHOW)
             sys.stdout.flush()
             return
         out = _goto(self.row)
         for _ in range(self.last_h + 1):
             out += _clrline() + "\n"
-        out += _goto(self.row) + _SHOW
+        out += _goto(self.row) + C.SHOW
         sys.stdout.write(out)
         sys.stdout.flush()
         self.last_h = 0
@@ -507,8 +494,8 @@ def select(message: str, choices: list,
             viewport = cursor - vis + 1
 
         out = h_lines[:]
-        out.append(f"  {_DIM}{message}{_RESET}")
-        out.append(f"  {_DIM}╵ {viewport} above{_RESET}" if viewport > 0 else "")
+        out.append(f"  {C.DIM}{message}{C.RESET}")
+        out.append(f"  {C.DIM}╵ {viewport} above{C.RESET}" if viewport > 0 else "")
 
         for i in range(viewport, min(viewport + vis, n)):
             label = str(items[i].title)
@@ -516,12 +503,12 @@ def select(message: str, choices: list,
             if len(label) > max_w:
                 label = label[:max_w - 1] + "…"
             if i == cursor:
-                out.append(f"  {_ACC}›{_RESET} {_WHT}{_BOLD}{label}{_RESET}")
+                out.append(f"  {C.ACCENT}›{C.RESET} {C.PRIMARY}{C.BOLD}{label}{C.RESET}")
             else:
-                out.append(f"    {_DIM}{label}{_RESET}")
+                out.append(f"    {C.DIM}{label}{C.RESET}")
 
         remaining = n - viewport - vis
-        out.append(f"  {_DIM}╷ {remaining} below{_RESET}" if remaining > 0 else "")
+        out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
         out.extend(hint_lines)
         return out
 
@@ -534,7 +521,7 @@ def select(message: str, choices: list,
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[J")
+                sys.stdout.write("\033[2J\033[H")
                 sys.stdout.flush()
                 w.anchor_reset()
                 w.render(_lines())
@@ -562,163 +549,267 @@ def select(message: str, choices: list,
 
 # ── checkbox() ────────────────────────────────────────────────────────────────
 
-def checkbox(message: str, choices: list,
-             header: list | None | Callable[[], list[str]] = None) -> list | None:
-    """Space toggles, a all, Enter confirms, q / Ctrl-C → None.
+# CONSOLIDATED CHECKBOX FIX
+# Replace the checkbox() function (lines 556-848) with this
 
-    Args:
-        message: Prompt label shown above the list.
-        choices: Items to choose from (str, dict, or Choice).
-        header:  Optional list of plain strings rendered above the prompt.
+def checkbox(
+    message: str, 
+    choices: list[Any], 
+    interlock_category_callback: Callable[[Any], str] | None = None,
+    header: list | None | Callable[[], list[str]] = None
+) -> list[Any] | None:
     """
-    items    = _norm(choices)
+    Checkbox picker with category interlocking support.
+    Proper ANSI handling, cursor visibility, and responsive layout.
+    """
+    items = _norm(choices)
     if not items:
-        return None
-
-    checked  = [c.checked for c in items]
-    cursor   = 0
-    viewport = 0
-    fd       = sys.stdin.fileno()
-    old      = _get_term_attrs(fd)
-    w        = _Widget(fd)
-
-    # Base keyboard mapping specific to checkbox navigation
-    base_hints = {
-        "↑↓": "move",
-        "space": "toggle",
-        "a": "all",
-        "q": "quit",
-        "↵": "confirm"
-    }
-
-    # Converts flat dict maps into sequential pairs based on the active view
-    def get_hints_for_tier(tier: int) -> list[tuple[str, str]]:
-        # Wide screens (Tiers 1, 2, 3): Full labels
-        if tier <= 3:
-            return list(base_hints.items())
+        return []
+ 
+    raw_items = [{'obj': item, 'dimmed': False} for item in items]
+    index = 0
+    locked_category = None
+ 
+    def update_interlock_states(structured_list: list):
+        """Lock category on first check, dim incompatible alternatives."""
+        nonlocal locked_category
+        checked_items = [i for i in structured_list if i['obj'].checked]
         
-        # Aligned Stack (Tier 4): Truncate compound keys to conserve width bounds
-        elif tier == 4:
-            tier4_hints = {}
-            for k, v in base_hints.items():
-                k_short = k.split("/")[0]  # "↑↓/jk" -> "↑↓"
-                tier4_hints[k_short] = v
-            return list(tier4_hints.items())
-            
-        # Split Stack (Tier 5): Ultra narrow essential fallback
-        else:
-            return [("↑↓", "move"), ("space", "toggle"), ("↵", "confirm")]
-
-    last_tier = 1
-
+        if not checked_items or interlock_category_callback is None:
+            locked_category = None
+            for i in structured_list:
+                i['dimmed'] = False
+            return
+ 
+        locked_category = interlock_category_callback(checked_items[0]['obj'].value)
+        for i in structured_list:
+            item_cat = interlock_category_callback(i['obj'].value)
+            i['dimmed'] = (item_cat != locked_category)
+ 
+    def _ansi_len(s: str) -> int:
+        """Visible length ignoring ANSI codes."""
+        return len(re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s))
+ 
+    def _next_index(current: int, structured_list: list, direction: int) -> int:
+        """Skip dimmed items."""
+        n = len(structured_list)
+        steps = 0
+        idx = (current + direction) % n
+        while structured_list[idx]['dimmed'] and steps < n:
+            idx = (idx + direction) % n
+            steps += 1
+        return idx if steps < n else current
+ 
+    fd = sys.stdin.fileno()
+    old = _get_term_attrs(fd)
+    _set_raw(fd)
+    sys.stdout.write(C.HIDE)  # Hide cursor
+    sys.stdout.flush()
+    
+    w = _Widget(fd)
+ 
     def _header_lines() -> list[str]:
         if header is None:
             return []
         return header() if callable(header) else list(header)
-
-    def _lines():
-        nonlocal viewport, last_tier
-        cols    = _cols()
-        h_lines = _header_lines()
+ 
+    def _lines() -> list[str]:
+        cols = _cols()
+        out = _header_lines()
+        out.append(f"  {C.DIM}{message}{C.RESET}")
         
-        import re
-        max_header_w = 0
-        for hl in h_lines:
-            plain_hl = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', hl)
-            plain_hl = re.sub(r'[╭─│╰╮╯┌┐└┘├┤┬┴┼═║╔╗╚╝]', '', plain_hl).strip()
-            if len(plain_hl) > max_header_w:
-                max_header_w = len(plain_hl)
-
-        layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
-
-        # Fetch pairs configured exactly for the current tier expectation
-        active_pairs = get_hints_for_tier(last_tier)
-        hint_res = _hint(*active_pairs, extra=layout_constraint)
+        # Build structured items and calculate column widths
+        structured_items = []
+        max_label_w = 0
+        max_type_w = 0
+        max_frac_w = 0
         
-        # Safe unpack handler to protect against engine variations
-        if isinstance(hint_res, tuple):
-            hint_raw, tier = hint_res
-        else:
-            hint_raw, tier = hint_res, 1
+        for item in raw_items:
+            title = str(item['obj'].title)
+            fraction_part = ""
+            value_part = ""
+            
+            # Parse fraction (e.g., "27/27" at end)
+            frac_match = re.search(r"(\d+/\d+)\s*$", title)
+            if frac_match:
+                fraction_part = frac_match.group(1)
+                title = title[:frac_match.start()].rstrip()
+ 
+            # Split on vertical bar
+            if re.search(r"\s*\|\s*", title):
+                left_side, right_side = re.split(r"\s*\|\s*", title, maxsplit=1)
+                value_part = right_side.strip()
+                title = left_side.rstrip()
+            
+            # Extract category type [bracket] or trailing words
+            type_tag = ""
+            type_match = re.search(r"(?:\[([^\]]+)\]|([a-zA-Z\s\d]+))\s*$", title)
+            if type_match:
+                raw_type = type_match.group(1) or type_match.group(2)
+                type_tag = raw_type.strip().lower()
+                title = title[:type_match.start()].rstrip()
+            
+            label_name = title.rstrip()
+            max_label_w = max(max_label_w, len(label_name))
+            max_type_w = max(max_type_w, len(type_tag))
+            max_frac_w = max(max_frac_w, len(fraction_part))
+            
+            structured_items.append({
+                'obj': item['obj'],
+                'label': label_name,
+                'type': type_tag,
+                'value': value_part,
+                'fraction': fraction_part,
+                'dimmed': item['dimmed']
+            })
+ 
+        # Apply interlock filtering
+        update_interlock_states(structured_items)
+        for i, s_item in enumerate(structured_items):
+            raw_items[i]['dimmed'] = s_item['dimmed']
+ 
+        # Render rows
+        for idx, item in enumerate(structured_items):
+            is_current = (idx == index)
+            
+            # Build components with proper color handling
+            if item['dimmed']:
+                # Dimmed row
+                state_glyph = f"{C.DIM}•{C.RESET}"
+                label_str = f"{C.DIM}{item['label']}{C.RESET}"
+                type_str = f"{C.DIM}{item['type']}{C.RESET}" if item['type'] else ""
+                value_str = f"{C.DIM}{item['value']}{C.RESET}" if item['value'] else ""
+                pointer = " "
+            elif is_current:
+                # Current row (highlighted)
+                state_glyph = f"{C.GREEN}✔{C.RESET}" if item['obj'].checked else f"{C.DIM}•{C.RESET}"
+                label_str = f"{C.PRIMARY}{C.BOLD}{item['label']}{C.RESET}"
+                type_str = f"{C.DIM}{item['type']}{C.RESET}" if item['type'] else ""
+                value_str = f"{C.PRIMARY}{C.BOLD}{item['value']}{C.RESET}" if item['value'] else ""
+                pointer = "›"
+            else:
+                # Normal row
+                state_glyph = f"{C.GREEN}✔{C.RESET}" if item['obj'].checked else f"{C.DIM}•{C.RESET}"
+                label_str = item['label']
+                type_str = f"{C.DIM}{item['type']}{C.RESET}" if item['type'] else ""
+                value_str = item['value'] if item['value'] else ""
+                pointer = " "
+            
+            # Layout: pointer + glyph + label + pad + type + pad + value + pad + fraction
+            pad_label = " " * (max_label_w - len(item['label']) + 2)
+            pad_type = " " * (max_type_w - len(item['type']) + 2) if max_type_w else "  "
+            
+            frac_str = item['fraction']
+            if frac_str:
+                pad_frac = " " * (max_frac_w - len(frac_str))
+                if is_current:
+                    frac_str = f"{pad_frac}{C.PRIMARY}{frac_str}{C.RESET}"
+                else:
+                    frac_str = f"{pad_frac}{C.DIM}{frac_str}{C.RESET}"
+            
+            # Build line
+            left_part = f"  {pointer} {state_glyph}  {label_str}{pad_label}{type_str}{pad_type}"
+            if value_str:
+                sep = f"{C.DIM}|{C.RESET} " if is_current or not item['dimmed'] else "| "
+                left_part += f"{sep}{value_str}"
+            
+            # Calculate space for fraction
+            left_visible = _ansi_len(left_part)
+            frac_visible = _ansi_len(frac_str) if frac_str else 0
+            space_available = cols - left_visible - frac_visible - 2
+            
+            if space_available > 0:
+                line = left_part + (" " * space_available) + frac_str
+            else:
+                # Truncate left side if needed
+                max_left = cols - frac_visible - 5
+                truncated = left_part[:max_left] + "…"
+                line = truncated + (" " * (cols - _ansi_len(truncated) - frac_visible)) + frac_str
+            
+            out.append(line)
         
-        # If a tier boundary switch is encountered, shift text lists instantly
-        if tier != last_tier:
-            last_tier = tier
-            active_pairs = get_hints_for_tier(tier)
-            hint_res = _hint(*active_pairs, extra=layout_constraint)
-            hint_raw = hint_res[0] if isinstance(hint_res, tuple) else hint_res
-
-        hint_lines = hint_raw.split("\n") if hint_raw else []
+        out.append("")
+        hint_str = _hint(
+            ("↑↓", "move"), 
+            ("space", "toggle"), 
+            ("q", "quit"), 
+            ("↵", "confirm")
+        )
+        if isinstance(hint_str, tuple):
+            hint_str = hint_str[0]
+        out.extend(hint_str.split("\n") if hint_str else [])
         
-        # Calculate accurate viewport space factoring in multi-line dynamic hints
-        fixed_overhead = len(h_lines) + len(hint_lines) + 2
-        vis     = max(2, _visible_rows() - fixed_overhead)
-        
-        n       = len(items)
-        if cursor < viewport:
-            viewport = cursor
-        elif cursor >= viewport + vis:
-            viewport = cursor - vis + 1
-
-        n_checked = sum(checked)
-        out = h_lines[:]
-
-        checked_str = f"  {_DIM}({n_checked} selected){_RESET}" if n_checked else ""
-        out.append(f"  {_DIM}{message}{_RESET}{checked_str}")
-        out.append(f"  {_DIM}╵ {viewport} above{_RESET}" if viewport > 0 else "")
-
-        for i in range(viewport, min(viewport + vis, n)):
-            label = str(items[i].title)
-            max_w = cols - 10
-            if len(label) > max_w:
-                label = label[:max_w - 1] + "…"
-            tick         = f"{_GRN}✓{_RESET}" if checked[i] else f"{_DIM}·{_RESET}"
-            cursor_glyph = f"{_ACC}›{_RESET}" if i == cursor else " "
-            label_fmt    = f"{_WHT}{_BOLD}{label}{_RESET}" if i == cursor else (label if checked[i] else f"{_DIM}{label}{_RESET}")
-            out.append(f"  {cursor_glyph} {tick}  {label_fmt}")
-
-        remaining = n - viewport - vis
-        out.append(f"  {_DIM}╷ {remaining} below{_RESET}" if remaining > 0 else "")
-        
-        # Extend the dynamically calculated layout hints safely
-        out.extend(hint_lines)
         return out
-
+ 
     result = None
     try:
-        _set_raw(fd)
         sys.stdout.write("\033[2J\033[H")
         sys.stdout.flush()
         w.render(_lines())
-
+ 
         while True:
             if ui_utils.consume_resize():
-                # Clear terminal window real estate cleanly during tier adjustments
-                sys.stdout.write("\033[J")
+                sys.stdout.write("\033[2J\033[H")
                 sys.stdout.flush()
                 w.anchor_reset()
                 w.render(_lines())
                 continue
-
+ 
             if not _wait_for_keypress(0.05):
                 continue
-
+ 
             key = _read_key(fd)
-            if   key == 'CTRL_C':      break
-            elif key in ('UP',   'k'): cursor = (cursor - 1) % len(items); w.render(_lines())
-            elif key in ('DOWN', 'j'): cursor = (cursor + 1) % len(items); w.render(_lines())
-            elif key == 'SPACE':       checked[cursor] = not checked[cursor]; w.render(_lines())
-            elif key in ('a', 'A'):
-                all_on = all(checked)
-                checked[:] = [not all_on] * len(items)
+            current_lines = _lines()
+            structured = [s for line in [_lines()] for s in current_lines 
+                         if hasattr(s, 'obj')]  # Get current structured items
+            
+            # Rebuild structured for navigation
+            structured_items = []
+            for item in raw_items:
+                title = str(item['obj'].title)
+                type_tag = ""
+                value_part = ""
+                if re.search(r"\s*\|\s*", title):
+                    left, right = re.split(r"\s*\|\s*", title, maxsplit=1)
+                    value_part = right.strip()
+                    title = left.rstrip()
+                type_match = re.search(r"(?:\[([^\]]+)\]|([a-zA-Z\s\d]+))\s*$", title)
+                if type_match:
+                    type_tag = (type_match.group(1) or type_match.group(2)).strip().lower()
+                    title = title[:type_match.start()].rstrip()
+                structured_items.append({'obj': item['obj'], 'dimmed': item['dimmed']})
+            
+            if key == 'CTRL_C':
+                break
+            elif key in ('UP', 'k'):
+                index = _next_index(index, raw_items, -1)
                 w.render(_lines())
-            elif key == 'ENTER':       result = [items[i].value for i, c in enumerate(checked) if c]; break
-            elif key.lower() == 'q':   break
-
+            elif key in ('DOWN', 'j'):
+                index = _next_index(index, raw_items, 1)
+                w.render(_lines())
+            elif key == 'SPACE':
+                target = structured_items[index] if index < len(structured_items) else None
+                if target and interlock_category_callback and locked_category:
+                    target_cat = interlock_category_callback(target['obj'].value)
+                    if target_cat != locked_category and not target['obj'].checked:
+                        sys.stdout.write("\a")
+                        sys.stdout.flush()
+                        continue
+                if target:
+                    target['obj'].checked = not target['obj'].checked
+                w.render(_lines())
+            elif key == 'ENTER':
+                result = [item['obj'].value for item in raw_items if item['obj'].checked]
+                break
+            elif key.lower() == 'q':
+                break
+                
     finally:
         _restore_term_attrs(fd, old)
+        sys.stdout.write(C.SHOW)  # Show cursor before exit
+        sys.stdout.flush()
         w.clear()
-
+ 
     return result
 
 # ── confirm() ─────────────────────────────────────────────────────────────────
@@ -726,13 +817,13 @@ def checkbox(message: str, choices: list,
 def confirm(message: str, default: bool = False) -> bool:
     y = "Y" if default else "y"
     n = "N" if not default else "n"
-    hint = f"{_DIM}[{_RESET}{_BOLD}{y}{_RESET}{_DIM}/{_RESET}{_BOLD}{n}{_RESET}{_DIM}]{_RESET}"
+    hint = f"{C.DIM}[{C.RESET}{C.BOLD}{y}{C.RESET}{C.DIM}/{C.RESET}{C.BOLD}{n}{C.RESET}{C.DIM}]{C.RESET}"
     fd     = sys.stdin.fileno()
     old    = _get_term_attrs(fd)
     result = default
     try:
         _set_raw(fd)
-        sys.stdout.write(_HIDE + f"  {_DIM}{message}{_RESET}  {hint} ")
+        sys.stdout.write(C.HIDE + f"  {C.DIM}{message}{C.RESET}  {hint} ")
         sys.stdout.flush()
         while True:
             key = _read_key(fd)
@@ -742,7 +833,7 @@ def confirm(message: str, default: bool = False) -> bool:
             elif key.lower() == 'n': result = False; break
     finally:
         _restore_term_attrs(fd, old)
-        sys.stdout.write(_SHOW + "\n")
+        sys.stdout.write(C.SHOW + "\n")
         sys.stdout.flush()
     return result
 
@@ -774,14 +865,14 @@ def text(message: str, default: str = "") -> str | None:
         # 2. Draw
         if prev_lines > 0:
             sys.stdout.write(f"\r\033[{prev_lines}A")
-        sys.stdout.write(f"\r\033[J{_HIDE}")
+        sys.stdout.write(f"\r\033[J{C.HIDE}")
 
         # Label — dim, consistent with select/confirm
-        sys.stdout.write(f"\r  {_DIM}{message}{_RESET}\r\n")
+        sys.stdout.write(f"\r  {C.DIM}{message}{C.RESET}\r\n")
 
         # Input field — subtle left/right border glyphs to signal editable area
         for i, line in enumerate(wrapped_lines):
-            sys.stdout.write(f"\r  {_DIM}│{_RESET} {line:<{content_width}} {_DIM}│{_RESET}")
+            sys.stdout.write(f"\r  {C.DIM}│{C.RESET} {line:<{content_width}} {C.DIM}│{C.RESET}")
             if i < total_rows - 1:
                 sys.stdout.write("\r\n")
 
@@ -795,7 +886,7 @@ def text(message: str, default: str = "") -> str | None:
         else:
             sys.stdout.write("\r")
 
-        sys.stdout.write(_SHOW)
+        sys.stdout.write(C.SHOW)
         sys.stdout.flush()
 
         prev_lines = 1 + total_rows
@@ -893,8 +984,8 @@ def path(message: str, default: str = "") -> str | None:
         # Initialize stream with the primary input boxes
         render_stream = [
             clear_code,
-            f"\033[K  {_DIM}{message}{_RESET}\r\n",
-            f"\033[K  {_DIM}│{_RESET} {display:<{max_w}} {_DIM}│{_RESET}"
+            f"\033[K  {C.DIM}{message}{C.RESET}\r\n",
+            f"\033[K  {C.DIM}│{C.RESET} {display:<{max_w}} {C.DIM}│{C.RESET}"
         ]
         
         lines_count = 2
@@ -932,10 +1023,10 @@ def path(message: str, default: str = "") -> str | None:
                 
                 # Highlight active completion item when rotating choices via TAB key events
                 if idx == (_tab_index % len(visible_matches)):
-                    item_str = f"{_INV}{_BOLD}{name}{_RESET}"
+                    item_str = f"{C.INVERT}{C.BOLD}{name}{C.RESET}"
                     visible_len = len(name)
                 else:
-                    item_str = f"{_DIM}{name}{_RESET}"
+                    item_str = f"{C.DIM}{name}{C.RESET}"
                     visible_len = len(name)
                 
                 # Enforce column wrap barriers gracefully
@@ -952,7 +1043,7 @@ def path(message: str, default: str = "") -> str | None:
                 render_stream.append("  ".join(tooltip_parts))
                 
             if len(visible_matches) > 5:
-                render_stream.append(f" {_DIM}(+{len(visible_matches)-5}){_RESET}")
+                render_stream.append(f" {C.DIM}(+{len(visible_matches)-5}){C.RESET}")
 
         # Update frame footprints for the rollback execution next loop step
         _last_rendered_lines = lines_count
@@ -962,8 +1053,8 @@ def path(message: str, default: str = "") -> str | None:
         adjust_cursor = f"\033[{move_back_lines}A" if move_back_lines > 0 else ""
 
         sys.stdout.write(
-            _HIDE + "".join(render_stream) + 
-            adjust_cursor + _col(cursor_col + 1) + _SHOW
+            C.HIDE + "".join(render_stream) + 
+            adjust_cursor + _col(cursor_col + 1) + C.SHOW
         )
         sys.stdout.flush()
         _render_status_bar()
@@ -1052,9 +1143,9 @@ def _render_list_edit_cell(text: str, width: int, is_editing: bool, is_active_co
     
     # Render terminal block cursor
     if edit_pos >= len(buf_str):
-        display_str = buf_str + f"{_BACK}█{_RESET}"
+        display_str = buf_str + f"{C.BACK}█{C.RESET}"
     else:
-        display_str = buf_str[:edit_pos] + f"{_INV}{_BOLD}{buf_str[edit_pos]}{_RESET}" + buf_str[edit_pos+1:]
+        display_str = buf_str[:edit_pos] + f"{C.INVERT}{C.BOLD}{buf_str[edit_pos]}{C.RESET}" + buf_str[edit_pos+1:]
         
     # Pad with spaces to maintain column width visually (accounting for ANSI codes)
     visible_len = len(buf_str) + (1 if edit_pos >= len(buf_str) else 0)
@@ -1078,8 +1169,8 @@ def _build_list_edit_lines(
     edit_hints = {"tab": "next col", "esc": "cancel", "↵": "apply"}
 
     # 1. Header and top border
-    out.append(f"  {_DIM}{message}{_RESET}")
-    out.append(f"  {_DIM}{'─' * c}{_RESET}")
+    out.append(f"  {C.DIM}{message}{C.RESET}")
+    out.append(f"  {C.DIM}{'─' * c}{C.RESET}")
 
     # 2. Dynamic Column Sizing
     avail_w = max(10, inner - 4 - (2 * (num_cols - 1)))
@@ -1090,13 +1181,13 @@ def _build_list_edit_lines(
     if num_cols > 1:
         h_parts = [f"{headers[i]:<{col_w}}" for i in range(num_cols - 1)]
         h_parts.append(f"{headers[-1]}")
-        out.append(f"    {_DIM}{'  '.join(h_parts)}{_RESET}")
+        out.append(f"    {C.DIM}{'  '.join(h_parts)}{C.RESET}")
         
         u_parts = ["─" * col_w for _ in range(num_cols - 1)]
         u_parts.append("─" * last_w)
         out.append(f"    {'  '.join(u_parts)}")
     else:
-        out.append(f"    {_DIM}{headers[0]}{_RESET}")
+        out.append(f"    {C.DIM}{headers[0]}{C.RESET}")
         out.append(f"    {'─' * inner}")
 
     # 4. Viewport calculation
@@ -1116,14 +1207,14 @@ def _build_list_edit_lines(
 
     # 5. Render Items
     if n == 0:
-        out.append(f"    {_DIM}(empty list){_RESET}")
+        out.append(f"    {C.DIM}(empty list){C.RESET}")
     else:
         for i in range(viewport, min(viewport + vis, n)):
             item = items[i]
             is_sel = (i == cursor)
             
             row_is_editing = (is_sel and edit_mode)
-            cursor_glyph = f"{_ACC}›{_RESET}" if (is_sel and not edit_mode) else (" " if not row_is_editing else f"✎")
+            cursor_glyph = f"{C.ACCENT}›{C.RESET}" if (is_sel and not edit_mode) else (" " if not row_is_editing else f"✎")
 
             if num_cols > 1:
                 i_vals = list(item) if isinstance(item, (list, tuple)) else [str(item)]
@@ -1140,7 +1231,7 @@ def _build_list_edit_lines(
                 row_str = "  ".join(row_parts)
 
                 if is_sel and not edit_mode:
-                    out.append(f"  {cursor_glyph} {_WHT}{_BOLD}{row_str}{_RESET}")
+                    out.append(f"  {cursor_glyph} {C.PRIMARY}{C.BOLD}{row_str}{C.RESET}")
                 elif is_sel and edit_mode:
                     out.append(f"  {cursor_glyph} {row_str}")
                 else:
@@ -1150,12 +1241,12 @@ def _build_list_edit_lines(
                 val_str = str(item)
                 cell_str = _render_list_edit_cell(val_str, inner - 4, row_is_editing, True, edit_buf, edit_pos)
                 if is_sel and not edit_mode:
-                    out.append(f"  {cursor_glyph} {_WHT}{_BOLD}{cell_str}{_RESET}")
+                    out.append(f"  {cursor_glyph} {C.PRIMARY}{C.BOLD}{cell_str}{C.RESET}")
                 else:
                     out.append(f"  {cursor_glyph} {cell_str}")
 
     # 6. Bottom border and hints
-    out.append(f"  {_DIM}{'─' * c}{_RESET}")
+    out.append(f"  {C.DIM}{'─' * c}{C.RESET}")
     out.extend(hint_lines)
     
     return out, viewport
@@ -1211,7 +1302,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[J")
+                sys.stdout.write("\033[2J\033[H")
                 sys.stdout.flush()
                 w.anchor_reset()
                 _render()
@@ -1455,16 +1546,16 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
         lines = []
         
         # Header
-        lines.append(f"  {_DIM}{message}{_RESET}")
-        lines.append(f"  {_DIM}{'─' * c}{_RESET}")
+        lines.append(f"  {C.DIM}{message}{C.RESET}")
+        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
         
         # Month/Year display
         month_name = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m]
         
-        lines.append(f"  {_BOLD}{month_name} {y}{_RESET}")
+        lines.append(f"  {C.BOLD}{month_name} {y}{C.RESET}")
 
-        lines.append(f"  {_DIM}{'─' * c}{_RESET}")
+        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
         
         # Day headers
         day_headers = "Mo Tu We Th Fr Sa Su"
@@ -1482,13 +1573,13 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                     is_selected = (day == cursor_day)
                     if is_selected:
                         # Emphasize the cursor day more distinctly if in day mode
-                        style = f"{_ACC}{_BOLD}" if day_mode else f"{_BOLD}"
-                        week_parts.append(f"{style}{day:2d}{_RESET} ")
+                        style = f"{C.ACCENT}{C.BOLD}" if day_mode else f"{C.BOLD}"
+                        week_parts.append(f"{style}{day:2d}{C.RESET} ")
                     else:
                         week_parts.append(f"{day:2d} ")
             lines.append(f"  {''.join(week_parts)}")
         
-        lines.append(f"  {_DIM}{'─' * c}{_RESET}")
+        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
         
         # Dynamic shortcuts depending on navigation mode
         if not day_mode:
@@ -1524,7 +1615,7 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
         
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[J")
+                sys.stdout.write("\033[2J\033[H")
                 sys.stdout.flush()
                 w.anchor_reset()
                 _render()
@@ -1684,8 +1775,8 @@ def fraction_edit(message: str = "Edit metadata pair:",
         c = cols - 4
         lines = []
         
-        lines.append(f"  {_DIM}{message}{_RESET}")
-        lines.append(f"  {_DIM}{'─' * c}{_RESET}")
+        lines.append(f"  {C.DIM}{message}{C.RESET}")
+        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
         
         row = "  "
         for i, field in enumerate(field_order):
@@ -1698,18 +1789,18 @@ def fraction_edit(message: str = "Edit metadata pair:",
             if i == cursor_field:
                 pos = edit_positions[field]
                 if pos >= len(val_str):
-                    display = val_str + f"{_BACK}█{_RESET}"
+                    display = val_str + f"{C.BACK}█{C.RESET}"
                 else:
-                    display = val_str[:pos] + f"{_INV}{_BOLD}{val_str[pos]}{_RESET}" + val_str[pos+1:]
+                    display = val_str[:pos] + f"{C.INVERT}{C.BOLD}{val_str[pos]}{C.RESET}" + val_str[pos+1:]
                 row += f"{label} {display}"
             else:
                 if not val_str:
-                    row += f"{_DIM}{label} ──{_RESET}"
+                    row += f"{C.DIM}{label} ──{C.RESET}"
                 else:
                     row += f"{label} {val_str}"
         
         lines.append(row)
-        lines.append(f"  {_DIM}{'─' * c}{_RESET}")
+        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
 
         shortcuts = _hint(
             ("↵", "save"),
@@ -1730,7 +1821,7 @@ def fraction_edit(message: str = "Edit metadata pair:",
         
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[J")
+                sys.stdout.write("\033[2J\033[H")
                 sys.stdout.flush()
                 w.anchor_reset()
                 _render()
@@ -1845,8 +1936,8 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
         c = cols - 4
         lines = []
         
-        lines.append(f"  {_DIM}{message}{_RESET}")
-        lines.append(f"  {_DIM}{'─' * c}{_RESET}")
+        lines.append(f"  {C.DIM}{message}{C.RESET}")
+        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
         
         # Time display with separators
         row = "  "
@@ -1858,9 +1949,9 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
             if i == cursor_field:
                 # Editing cursor
                 if pos >= len(value):
-                    display = value + f"{_BACK}█{_RESET}"
+                    display = value + f"{C.BACK}█{C.RESET}"
                 else:
-                    display = value[:pos] + f"{_INV}{_BOLD}{value[pos]}{_RESET}" + value[pos+1:]
+                    display = value[:pos] + f"{C.INVERT}{C.BOLD}{value[pos]}{C.RESET}" + value[pos+1:]
             else:
                 display = value.ljust(field_maxlen[field], '0')
             
@@ -1875,8 +1966,8 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
                 row += "."
         
         lines.append(row)
-        lines.append(f"  {_DIM}{'─' * c}{_RESET}")
-        lines.append(f"  {_GRN}↵{_RESET} save  {_CYA}Tab{_RESET} next  {_ACC}q{_RESET} cancel  (Valid: 00:00:00 - 23:59:59)")
+        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
+        lines.append(f"  {C.GREEN}↵{C.RESET} save  {C.CYAN}Tab{C.RESET} next  {C.ACCENT}q{C.RESET} cancel  (Valid: 00:00:00 - 23:59:59)")
         
         w.render(lines)
     
@@ -1889,7 +1980,7 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
         
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[J")
+                sys.stdout.write("\033[2J\033[H")
                 sys.stdout.flush()
                 w.anchor_reset()
                 _render()
@@ -1943,3 +2034,21 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
         w.clear()
     
     return result
+
+def system_editor_edit(initial_text: str) -> str | None:
+    """Open system editor for long text."""
+    with tempfile.NamedTemporaryFile(suffix=".txt", mode='w+', encoding='utf-8', delete=False) as tf:
+        tf.write(initial_text)
+        temp_path = tf.name
+    try:
+        editor = os.environ.get('EDITOR', 'nano')
+        subprocess.run([editor, temp_path], check=True)
+        with open(temp_path, 'r', encoding='utf-8') as f:
+            result = f.read().strip()
+        return result if result else None
+    except Exception as e:
+        print(f"Error launching editor: {e}")
+        return None
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)

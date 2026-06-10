@@ -52,37 +52,6 @@ _sync_state = {
     "xml_title_keys": set(),
 }
 
-# ID3 tag to metadata field mapping — single source of truth for all modules
-TAG_MAP = {
-    'TIT2': 'Title',
-    'TPE1': 'Artist',
-    'TPE2': 'Album Artist',
-    'TALB': 'Album',
-    'TDRC': 'Year',
-    'TCON': 'Genre',
-    'TRCK': 'Track Number',
-    'TPOS': 'Disc Number',
-    'GRP1': 'Grouping',
-    'TCOM': 'Composer',
-    'TENC': 'Encoded By',
-    'COMM': 'Comment',
-    'APIC': 'Album Art',
-    'TIPL': 'Production Team',
-    'TMCL': 'Performers',
-    'TPUB': 'Publisher',
-    'TDRL': 'Release Date',
-    'TSO2': 'Album Artist Sort Order',
-    'TSOA': 'Album Sort Order',
-    'TSOP': 'Artist Sort Order',
-    'USLT': 'Un-synchronized Lyrics',
-    'SYLT': 'Synchronized Lyrics',
-    'TSST': 'Set Subtitle',
-    'TIT1': 'Work Name',
-    'MVNM': 'Movement Name',
-    'MVIN': 'Movement Number',
-}
-
-
 # ============================================================================
 # XML Database (iTunes Library.xml)
 # ============================================================================

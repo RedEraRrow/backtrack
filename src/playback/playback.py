@@ -10,6 +10,7 @@ import os
 import sys
 import time
 from pathlib import Path
+import textwrap
 
 import vlc
 from mutagen.id3 import ID3
@@ -24,6 +25,7 @@ from src.utils import ui_utils
 from src.history import log_listening_history
 from src.music_library import get_song_duration
 from src.art.album_art import get_viu_art_from_mp3
+# Change this block in src/playback/playback.py
 from src.playback.lyrics.lyrics import (
     _parse_sylt,
     _parse_uslt,
@@ -35,12 +37,11 @@ from src.playback.lyrics.lyrics import (
     expand_uslt_lines,
     find_current_uslt_line,
     find_uslt_handoff_index,
-    # Dialogue support
-    parse_markdown_file,
-    build_dialogue_line_times,
     find_current_dialogue_line,
-    draw_dialogue_window,
-    draw_dialogue_initial,
+    parse_markdown_file,
+    expand_dialogue_into_sentences,
+    _apply_markdown_formatting,
+    DialoguePlaybackState
 )
 from src.playback.playback_ui import (
     _controls_line,
@@ -57,6 +58,7 @@ from src.utils.terminal_input import (
     is_arrow_key,
     raw_mode,
 )
+from src.utils.ui_utils import Colors as C
 
 
 def _make_player(file_path: str) -> vlc.MediaPlayer:
@@ -99,68 +101,6 @@ def _render_grouping_cover(file_path: str, cols: int) -> str:
     else:
         art_w = min(45, max(1, cols))
     return get_viu_art_from_mp3(file_path, art_w, preferred_desc='Booklet', preferred_type=6)
-
-
-def _find_markdown_for_audio(audio_path: str) -> str | None:
-    """Find .md file next to audio file.
-    
-    Tries (in order):
-      1. {basename}.md
-      2. {basename}.dialogue.md
-    """
-    base = Path(audio_path).stem
-    parent = Path(audio_path).parent
-    
-    for pattern in [f"{base}.md", f"{base}.dialogue.md"]:
-        candidate = parent / pattern
-        if candidate.exists():
-            return str(candidate)
-    
-    return None
-
-
-class DialoguePlaybackState:
-    """Hold and manage dialogue playback state."""
-    
-    def __init__(self, audio_path: str):
-        md_path = _find_markdown_for_audio(audio_path)
-        self.dialogue_lines = None
-        self.load_error = None
-        
-        if md_path:
-            try:
-                self.dialogue_lines = parse_markdown_file(md_path)
-                if self.dialogue_lines is None:
-                    self.load_error = f"Failed to parse: {md_path}"
-            except Exception as e:
-                self.load_error = f"Error loading dialogue: {str(e)}"
-        
-        self.line_times = None
-        self.current_idx = 0
-        
-        if self.dialogue_lines:
-            self.line_times = build_dialogue_line_times(self.dialogue_lines)
-    
-    def is_active(self) -> bool:
-        """True if dialogue was loaded successfully."""
-        return self.dialogue_lines is not None and len(self.dialogue_lines) > 0
-    
-    def update(self, elapsed: float) -> None:
-        """Update current dialogue line based on playback position."""
-        if self.line_times:
-            self.current_idx = find_current_dialogue_line(self.line_times, elapsed)
-    
-    def draw(self, row: int, width: int | None = None, max_row: int | None = None) -> None:
-        """Render dialogue window at specified row."""
-        if self.dialogue_lines:
-            draw_dialogue_window(
-                row=row,
-                dialogue_lines=self.dialogue_lines,
-                current_idx=self.current_idx,
-                width=width,
-                max_row=max_row,
-            )
-
 
 def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict | None = None) -> dict:
     """Main music player engine (VLC backend)."""
@@ -261,20 +201,26 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
             else:
                 exp_lines, exp_times = [], []
 
+            # Geometry definitions parsed globally before initial window rendering checks
+            right_col = playback_ui._last_right_left or 1
+            right_w = playback_ui._last_right_width or current_width
+
             # Draw initial lyric/dialogue state.
             if dialogue_state.is_active():
-                right_col = playback_ui._last_right_left or 1
-                right_w = playback_ui._last_right_width or current_width
-                if dialogue_state.dialogue_lines:
-                    draw_dialogue_initial(
-                        lyric_row,
-                        dialogue_state.dialogue_lines[0],
-                        width=right_w, max_row=last_size[1], col=right_col,
-                        bottom_row=art_bottom_row,
-                    )
+                dialogue_state.update(0.0) # Fixed Unbound elapsed error (Passed explicit initial float)
+                
+                from src.playback.lyrics.lyrics import draw_dialogue_window
+                draw_dialogue_window(
+                    row=lyric_row,
+                    dialogue_lines=dialogue_state.expanded_chunks,
+                    current_idx=dialogue_state.current_idx,
+                    width=right_w,
+                    max_row=last_size[1],
+                    col=right_col,
+                    bottom_row=art_bottom_row
+                )
+
             elif sylt_data or has_uslt:
-                right_col = playback_ui._last_right_left or 1
-                right_w = playback_ui._last_right_width or current_width
                 first_line = sylt_data[0][0] if sylt_data else (uslt_lines[0] if uslt_lines else "")
                 draw_lyric_initial(
                     lyric_row, first_line,
@@ -348,6 +294,12 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                 if key:
                     clear_escape_buffer()
                     arrow = is_arrow_key(key)
+                    from src.playback.playback_ui import toggle_credits, toggle_help, toggle_metadata
+                    toggle_controls = {
+                        'c': toggle_credits, 
+                        'i': toggle_help, 
+                        'm' : toggle_metadata
+                    }
 
                     if key in (' ', 'p', 'P'):
                         mp.pause()
@@ -421,9 +373,8 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                         toast_expiry = time.time() + 1.0
                         update_ctrl_ui()
 
-                    elif key.lower() == 'c':
-                        from src.playback.playback_ui import toggle_credits
-                        toggle_credits()
+                    elif key.lower() in toggle_controls:   
+                        toggle_controls[key.lower()]()
                         volume = mp.audio_get_volume()
                         prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
                             file_path, audio, pre_art, last_size,
@@ -432,6 +383,7 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                             toast=toast_text if time.time() < toast_expiry else "",
                         )
                         last_lyric_idx = -1
+                        
 
                 update_progress_ui(prog_row, elapsed, duration, current_width)
 
@@ -443,10 +395,15 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                     dialogue_state.update(elapsed=elapsed)
                     
                     if dialogue_state.current_idx != last_lyric_idx:
-                        dialogue_state.draw(
+                        from src.playback.lyrics.lyrics import draw_dialogue_window
+                        draw_dialogue_window(
                             row=lyric_row,
+                            dialogue_lines=dialogue_state.expanded_chunks,
+                            current_idx=dialogue_state.current_idx,
                             width=right_w,
                             max_row=last_size[1],
+                            col=right_col,
+                            bottom_row=art_bottom_row
                         )
                         last_lyric_idx = dialogue_state.current_idx
                 
@@ -455,7 +412,6 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                     right_w = playback_ui._last_right_width or current_width
 
                     # Switch back to SYLT if we seek backwards past the handoff point.
-                    # This check runs regardless of current rendering mode.
                     if (
                         in_uslt_tail
                         and has_uslt
@@ -472,7 +428,6 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                             manual_line_index = None
 
                         current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
-                        # display_idx already indexes into exp_lines (no offset needed when in_uslt_tail).
                         display_idx = current_idx
                         display_idx = min(display_idx, len(exp_lines) - 1)
                         if display_idx != last_lyric_idx or manual_line_index is not None:
@@ -492,8 +447,7 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                             default=-1,
                         )
 
-                        # Check for handoff: SYLT is on its last line and elapsed
-                        # has passed the estimated end of that line.
+                        # Check for handoff: SYLT is on its last line and elapsed has passed.
                         if (
                             not in_uslt_tail
                             and has_uslt
@@ -504,10 +458,8 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                             in_uslt_tail = True
                             uslt_time_offset = 0.0
                             _wrap_w = max(20, current_width - 8)
-                            # Build times for the tail slice only.
                             tail_lines = uslt_lines[uslt_handoff_idx:]
                             tail_raw_times = build_uslt_line_times(tail_lines, duration)
-                            # Offset all times by the handoff point so they align with actual elapsed time.
                             tail_raw_times = [
                                 (t_start + sylt_handoff_end_s, t_end + sylt_handoff_end_s)
                                 for t_start, t_end in tail_raw_times
