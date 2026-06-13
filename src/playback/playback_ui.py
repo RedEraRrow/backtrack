@@ -32,9 +32,10 @@ _CREW_ORDER = ['creator', 'writer', 'producer', 'director', 'script editor', 'co
 
 _art_cache: dict = {}
 _ui_state = {
-    'show_metadata': True,
-    'show_credits': True,
+    'show_metadata': False,
+    'show_credits': False,
     'show_help': False,
+    'show_lyrics': False
 }
 # Last rendered artwork width (visible characters) used to align progress/controls
 _last_art_width: int | None = None
@@ -47,7 +48,7 @@ _last_right_width: int | None = None
 
 def _layout_mode(cols: int) -> str:
     """Return layout mode based on terminal width."""
-    if cols >= 100:
+    if cols >= 150:
         return 'wide'
     if cols >= 60:
         return 'standard'
@@ -147,6 +148,9 @@ def toggle_credits() -> None:
 def toggle_help() -> None:
     _ui_state['show_help'] = not _ui_state['show_help']
 
+def toggle_lyrics() -> None:
+    _ui_state['show_lyrics'] = not _ui_state['show_lyrics']
+
 
 def get_ui_state() -> dict:
     return _ui_state.copy()
@@ -231,6 +235,7 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str, widt
             ('+/-', 'volume'),
             ('m', 'meta'),
             ('c', 'cast'),
+            ('w', 'lyrics'),
             ('i', 'help'),
             ('n', 'next'),
             ('q', 'quit'),
@@ -254,13 +259,11 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
     lines: list[str] = []
     if title:
         lines.append(f"{C.BOLD}{_trim(title)}{C.RESET}")
-    if artist:
-        lines.append(_trim(artist))
     if album:
-        album_line = album
+        artist_album_line = (f"{_trim(artist)} — " if artist else "") + album
         if disc_subtitle:
-            album_line = f"{album} {disc_subtitle}"
-        lines.append(f"{C.DIM}{_trim(album_line)}{C.RESET}")
+            artist_album_line = (f"{_trim(artist)} — " if artist else "") + f"{album} {disc_subtitle}"
+        lines.append(f"{C.DIM}{_trim(artist_album_line)}{C.RESET}")
     elif disc_subtitle:
         lines.append(f"{C.DIM}{_trim(disc_subtitle)}{C.RESET}")
 
@@ -342,10 +345,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     crew_people = _get_people(audio, 'TIPL')
     has_cast = bool(cast_people or crew_people)
 
-    breadcrumb = ui_utils._get_breadcrumb_str(cols) if NAV_STACK else 'Music Player'
-    sys.stdout.write(f"{C.DIM}{breadcrumb}{C.RESET}\n")
-    sys.stdout.write(f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}\n\n")
-    row_cursor = 3
+    row_cursor = 0
 
     # ========== WIDE MODE (Lyrics inside right column panel, matching Art top height) ==========
     if mode == 'wide':
@@ -433,11 +433,23 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         _last_right_left = None
         _last_right_width = None
         
-        max_art_h = max(3, rows - 15)
-        art_str = pre_art if pre_art else _get_viu_art_cached(file_path, width=cols)
-        art_lines = _align_art_lines(art_str.splitlines()[:max_art_h], cols)
         meta_val_w = cols - 12
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
+
+        # 1. Dynamically calculate required bottom rows
+        is_uslt_track = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
+        _, temp_shortcuts = _controls_line(is_uslt_track, is_paused, volume, toast, width=cols)
+        control_rows = 2 + len(temp_shortcuts.splitlines() or [""])
+        
+        credits_est = 5 if (has_cast and _ui_state['show_credits']) else 0
+        lyrics_est = 6 if _ui_state['show_lyrics'] else 0
+        
+        # Calculate exactly how many rows we need to reserve
+        reserved_rows = len(left_col) + control_rows + credits_est + lyrics_est + 2
+        max_art_h = max(3, rows - reserved_rows)
+        
+        art_str = pre_art if pre_art else _get_viu_art_cached(file_path, width=cols)
+        art_lines = _align_art_lines(art_str.splitlines()[:max_art_h], cols)
 
         if art_lines:
             leading = min(len(l) - len(l.lstrip(' ')) for l in art_lines)
@@ -504,14 +516,26 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         meta_val_w = max(1, cols - 12)
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
         
+        # 1. Dynamically calculate required bottom rows
+        is_uslt_track = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
+        _, temp_shortcuts = _controls_line(is_uslt_track, is_paused, volume, toast, width=cols)
+        control_rows = 2 + len(temp_shortcuts.splitlines() or [""])
+        
+        lyrics_est = 6 if _ui_state['show_lyrics'] else 0
+        
+        # Calculate exactly how many rows we need to reserve
+        reserved_rows = len(left_col) + control_rows + lyrics_est + 2
+        
         if cols >= 34:
             art_w = cols
             art_str = pre_art if pre_art else _get_viu_art_cached(file_path, width=art_w)
             art_lines = _align_art_lines(art_str.splitlines(), cols)
-            max_art_h = max(3, rows - 15)
+            
+            max_art_h = max(3, rows - reserved_rows)
             if len(art_lines) > max_art_h: art_lines = art_lines[:max_art_h]
 
             if art_lines:
+                leading = min(len(l) - len(l.lstrip(' ')) for l in art_lines)
                 leading = min(len(l) - len(l.lstrip(' ')) for l in art_lines)
                 _last_art_width = max(_visible_len(l) - leading for l in art_lines)
                 _last_art_left = leading

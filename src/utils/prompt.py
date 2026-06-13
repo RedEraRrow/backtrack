@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from src.utils import ui_utils
 C = ui_utils.Colors
+from src.utils.ui_utils import visual_len
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -105,7 +106,7 @@ def _hint(*pairs, extra="") -> str:
     # ──────────────────────────────────────────────────────────────────────────
     # LAYOUT 1: Centred Long Line
     # ──────────────────────────────────────────────────────────────────────────
-    raw_len = sum(len(raw) for _, _, raw in parsed_items) + raw_sep_len * (total_items - 1)
+    raw_len = sum(visual_len(raw) for _, _, raw in parsed_items) + raw_sep_len * (total_items - 1)
     if raw_len <= cols:
         line = sep.join(render_inline(k, v) for k, v, _ in parsed_items)
         pad = max(0, cols - raw_len) // 2
@@ -132,7 +133,7 @@ def _hint(*pairs, extra="") -> str:
         idx = 0
         for r in pyr_dist:
             row_items = parsed_items[idx:idx+r]
-            r_raw_len = sum(len(raw) for _, _, raw in row_items) + raw_sep_len * (len(row_items) - 1)
+            r_raw_len = sum(visual_len(raw) for _, _, raw in row_items) + raw_sep_len * (len(row_items) - 1)
             
             if r_raw_len > cols:
                 fits = False
@@ -149,7 +150,7 @@ def _hint(*pairs, extra="") -> str:
     # ──────────────────────────────────────────────────────────────────────────
     # LAYOUT 3: Grid (Side-by-side uniform columns)
     # ──────────────────────────────────────────────────────────────────────────
-    max_item_len = max((len(raw) for _, _, raw in parsed_items), default=0)
+    max_item_len = max((visual_len(raw) for _, _, raw in parsed_items), default=0)
     gutter = 4
     col_width = max_item_len + gutter
     possible_cols = max(1, cols // col_width)
@@ -161,7 +162,7 @@ def _hint(*pairs, extra="") -> str:
             raw_row_len = sum(col_width for _ in row) - gutter
             formatted_parts = []
             for k, v, raw in row:
-                space_padding = " " * (col_width - len(raw))
+                space_padding = " " * (col_width - visual_len(raw))
                 formatted_parts.append(render_inline(k, v) + space_padding)
             
             row_str = "".join(formatted_parts).rstrip()
@@ -228,14 +229,17 @@ def _render_status_bar():
 # ── Choice ────────────────────────────────────────────────────────────────────
 
 class Choice:
-    __slots__ = ('title', 'value', 'checked')
+    __slots__ = ('title', 'value', 'checked', 'category', 'sub_label', 'display_val', 'count')
 
-    def __init__(self, title: str, value: object = None, checked: bool = False) -> None:
-        """Initialize a Choice option."""
-        self.title   = title
-        self.value   = value if value is not None else title
-        self.checked = checked
-
+    def __init__(self, title: str, value: object = None, checked: bool = False, 
+                 category: str = "", sub_label: str = "", display_val: str = "", count: str = "") -> None:
+        self.title       = title
+        self.value       = value if value is not None else title
+        self.checked     = checked
+        self.category    = category
+        self.sub_label   = sub_label
+        self.display_val = display_val
+        self.count       = count
 
 def _norm(choices: list) -> list:
     out = []
@@ -243,7 +247,7 @@ def _norm(choices: list) -> list:
         if isinstance(c, Choice):
             out.append(c)
         elif isinstance(c, str):
-            out.append(Choice(c, c))
+            out.append(Choice(title=c, value=c))
         elif isinstance(c, dict):
             out.append(Choice(
                 title   = c.get('name', c.get('title', str(c))),
@@ -254,9 +258,8 @@ def _norm(choices: list) -> list:
             out.append(Choice(c.title, c.value, getattr(c, 'checked', False)))
         else:
             s = str(c)
-            out.append(Choice(s, s))
+            out.append(Choice(title=s, value=s))
     return out
-
 
 # ── Key reader ────────────────────────────────────────────────────────────────
 
@@ -406,6 +409,21 @@ def select(message: str, choices: list,
     if not items:
         return None
 
+    # Pre-calculate dynamic column widths for pseudo-table layout
+    max_left_w = 0
+    max_cat_w = 0
+    has_extended_data = False
+    
+    for item in items:
+        left_len = visual_len(item.title)
+        if item.sub_label:
+            left_len += visual_len(item.sub_label) + 3 # For " (sub_label)"
+        max_left_w = max(max_left_w, left_len)
+        max_cat_w = max(max_cat_w, visual_len(item.category))
+        
+        if item.category or item.sub_label or getattr(item, 'display_val', "") or item.count:
+            has_extended_data = True
+
     cursor   = 0
     viewport = 0
     fd       = sys.stdin.fileno()
@@ -427,19 +445,14 @@ def select(message: str, choices: list,
 
     # Converts our flat dict maps into sequential pairs based on the active view
     def get_hints_for_tier(tier: int) -> list[tuple[str, str]]:
-        # Wide screens (Tiers 1, 2, 3): Full labels
         if tier <= 3:
             return list(combined_hints.items())
-        
-        # Aligned Stack (Tier 4): Truncate compound keys to conserve width bounds
         elif tier == 4:
             tier4_hints = {}
             for k, v in combined_hints.items():
-                k_short = k.split("/")[0]  # "↑↓/jk" -> "↑↓"
+                k_short = k.split("/")[0]
                 tier4_hints[k_short] = v
             return list(tier4_hints.items())
-            
-        # Split Stack (Tier 5): Ultra narrow essential fallback
         else:
             return [("↑↓", "move"), ("q", "quit"), ("↵", "confirm")]
 
@@ -465,17 +478,14 @@ def select(message: str, choices: list,
 
         layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
 
-        # Fetch pairs configured exactly for the current tier expectation
         active_pairs = get_hints_for_tier(last_tier)
         hint_res = _hint(*active_pairs, extra=layout_constraint)
         
-        # Safe unpack handler to protect against internal layout engine API changes
         if isinstance(hint_res, tuple):
             hint_raw, tier = hint_res
         else:
             hint_raw, tier = hint_res, 1
         
-        # If a tier boundary switch is encountered, shift text lists instantly
         if tier != last_tier:
             last_tier = tier
             active_pairs = get_hints_for_tier(tier)
@@ -497,15 +507,75 @@ def select(message: str, choices: list,
         out.append(f"  {C.DIM}{message}{C.RESET}")
         out.append(f"  {C.DIM}╵ {viewport} above{C.RESET}" if viewport > 0 else "")
 
+        # --- Dynamic Row Rendering Engine ---
         for i in range(viewport, min(viewport + vis, n)):
-            label = str(items[i].title)
-            max_w = cols - 6
-            if len(label) > max_w:
-                label = label[:max_w - 1] + "…"
-            if i == cursor:
-                out.append(f"  {C.ACCENT}›{C.RESET} {C.PRIMARY}{C.BOLD}{label}{C.RESET}")
+            obj = items[i]
+            is_current = (i == cursor)
+            
+            t_str = obj.title
+            s_str = obj.sub_label
+            c_str = obj.category
+            v_str = getattr(obj, 'display_val', "")
+            n_str = obj.count
+            
+            # Simple List Renderer (Fallback)
+            if not has_extended_data:
+                max_w = cols - 6
+                disp_label = t_str if visual_len(t_str) <= max_w else t_str[:max_w - 1] + "…"
+                
+                if is_current:
+                    out.append(f"  {C.ACCENT}›{C.RESET} {C.PRIMARY}{C.BOLD}{disp_label}{C.RESET}")
+                else:
+                    out.append(f"    {C.DIM}{disp_label}{C.RESET}")
+                    
+            # Pseudo-Table Renderer
             else:
-                out.append(f"    {C.DIM}{label}{C.RESET}")
+                if is_current:
+                    title_fmt = f"{C.PRIMARY}{C.BOLD}{t_str}{C.RESET}" + (f" {C.DIM}({s_str}){C.RESET}" if s_str else "")
+                    cat_fmt   = f"{C.DIM}{c_str}{C.RESET}" if c_str else ""
+                    val_fmt   = f"{C.PRIMARY}{C.BOLD}{v_str}{C.RESET}" if v_str else ""
+                    cnt_fmt   = f"{C.PRIMARY}{n_str}{C.RESET}" if n_str else ""
+                    pointer   = f"{C.ACCENT}›{C.RESET}"
+                else:
+                    title_fmt = f"{C.DIM}{t_str}{C.RESET}" + (f" {C.DIM}({s_str}){C.RESET}" if s_str else "")
+                    cat_fmt   = f"{C.DIM}{c_str}{C.RESET}" if c_str else ""
+                    val_fmt   = f"{C.DIM}{v_str}{C.RESET}" if v_str else ""
+                    cnt_fmt   = f"{C.DIM}{n_str}{C.RESET}" if n_str else ""
+                    pointer   = " "
+                
+                left_vis_len = visual_len(t_str) + (visual_len(s_str) + 3 if s_str else 0)
+                pad_left = " " * (max_left_w - left_vis_len + 2)
+                pad_cat  = " " * (max_cat_w - visual_len(c_str) + 2) if max_cat_w else "  "
+                
+                sep = f"{C.DIM}|{C.RESET}"
+                
+                # Assemble Left Block
+                left_part = f"  {pointer} {title_fmt}{pad_left}"
+                if max_cat_w:
+                    left_part += f"{cat_fmt}{pad_cat}"
+                    
+                if v_str:
+                    left_part += f"{sep} {val_fmt}"
+                    
+                # Evaluate Right Block (Counts/Metrics) and Truncate Safely
+                if n_str:
+                    left_visible = visual_len(left_part)
+                    cnt_visible = visual_len(cnt_fmt)
+                    space_available = cols - left_visible - cnt_visible - 2
+                    
+                    if space_available > 0:
+                        line = left_part + (" " * space_available) + cnt_fmt
+                    else:
+                        max_left = cols - cnt_visible - 5
+                        truncated = left_part[:max_left] + "…"
+                        line = truncated + (" " * (cols - visual_len(truncated) - cnt_visible)) + cnt_fmt
+                else:
+                    line = left_part
+                    # Fallback truncation if there's no count but the line is too long
+                    if visual_len(line) > cols - 2:
+                        line = line[:cols - 3] + "…"
+                        
+                out.append(line)
 
         remaining = n - viewport - vis
         out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
@@ -558,20 +628,16 @@ def checkbox(
     interlock_category_callback: Callable[[Any], str] | None = None,
     header: list | None | Callable[[], list[str]] = None
 ) -> list[Any] | None:
-    """
-    Checkbox picker with category interlocking support.
-    Proper ANSI handling, cursor visibility, and responsive layout.
-    """
+    
     items = _norm(choices)
     if not items:
         return []
- 
+
     raw_items = [{'obj': item, 'dimmed': False} for item in items]
     index = 0
     locked_category = None
- 
+
     def update_interlock_states(structured_list: list):
-        """Lock category on first check, dim incompatible alternatives."""
         nonlocal locked_category
         checked_items = [i for i in structured_list if i['obj'].checked]
         
@@ -580,18 +646,13 @@ def checkbox(
             for i in structured_list:
                 i['dimmed'] = False
             return
- 
+
         locked_category = interlock_category_callback(checked_items[0]['obj'].value)
         for i in structured_list:
             item_cat = interlock_category_callback(i['obj'].value)
             i['dimmed'] = (item_cat != locked_category)
- 
-    def _ansi_len(s: str) -> int:
-        """Visible length ignoring ANSI codes."""
-        return len(re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s))
- 
+
     def _next_index(current: int, structured_list: list, direction: int) -> int:
-        """Skip dimmed items."""
         n = len(structured_list)
         steps = 0
         idx = (current + direction) % n
@@ -599,217 +660,133 @@ def checkbox(
             idx = (idx + direction) % n
             steps += 1
         return idx if steps < n else current
- 
+
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     _set_raw(fd)
-    sys.stdout.write(C.HIDE)  # Hide cursor
+    sys.stdout.write(C.HIDE)
     sys.stdout.flush()
     
     w = _Widget(fd)
- 
-    def _header_lines() -> list[str]:
-        if header is None:
-            return []
-        return header() if callable(header) else list(header)
- 
+    
+    # Pre-calculate column widths
+    max_left_w = 0
+    max_cat_w = 0
+    for item in raw_items:
+        obj = item['obj']
+        left_len = visual_len(obj.title)
+        if obj.sub_label:
+            left_len += visual_len(obj.sub_label) + 3
+        max_left_w = max(max_left_w, left_len)
+        max_cat_w = max(max_cat_w, visual_len(obj.category))
+    
+    update_interlock_states(raw_items)
+
     def _lines() -> list[str]:
         cols = _cols()
-        out = _header_lines()
+        out = (header() if callable(header) else list(header or []))
         out.append(f"  {C.DIM}{message}{C.RESET}")
-        
-        # Build structured items and calculate column widths
-        structured_items = []
-        max_label_w = 0
-        max_type_w = 0
-        max_frac_w = 0
-        
-        for item in raw_items:
-            title = str(item['obj'].title)
-            fraction_part = ""
-            value_part = ""
-            
-            # Parse fraction (e.g., "27/27" at end)
-            frac_match = re.search(r"(\d+/\d+)\s*$", title)
-            if frac_match:
-                fraction_part = frac_match.group(1)
-                title = title[:frac_match.start()].rstrip()
- 
-            # Split on vertical bar
-            if re.search(r"\s*\|\s*", title):
-                left_side, right_side = re.split(r"\s*\|\s*", title, maxsplit=1)
-                value_part = right_side.strip()
-                title = left_side.rstrip()
-            
-            # Extract category type [bracket] or trailing words
-            type_tag = ""
-            type_match = re.search(r"(?:\[([^\]]+)\]|([a-zA-Z\s\d]+))\s*$", title)
-            if type_match:
-                raw_type = type_match.group(1) or type_match.group(2)
-                type_tag = raw_type.strip().lower()
-                title = title[:type_match.start()].rstrip()
-            
-            label_name = title.rstrip()
-            max_label_w = max(max_label_w, len(label_name))
-            max_type_w = max(max_type_w, len(type_tag))
-            max_frac_w = max(max_frac_w, len(fraction_part))
-            
-            structured_items.append({
-                'obj': item['obj'],
-                'label': label_name,
-                'type': type_tag,
-                'value': value_part,
-                'fraction': fraction_part,
-                'dimmed': item['dimmed']
-            })
- 
-        # Apply interlock filtering
-        update_interlock_states(structured_items)
-        for i, s_item in enumerate(structured_items):
-            raw_items[i]['dimmed'] = s_item['dimmed']
- 
-        # Render rows
-        for idx, item in enumerate(structured_items):
+
+        # 1. Dynamically calculate widths based on current data
+        # We need these to ensure the "|" dividers and values line up
+        max_left_w = 0
+        max_cat_w = 0
+        for s_item in raw_items:
+            obj = s_item['obj']
+            # Title + Sub-label width
+            t_len = visual_len(obj.title) + (visual_len(obj.sub_label) + 3 if obj.sub_label else 0)
+            max_left_w = max(max_left_w, t_len)
+            max_cat_w = max(max_cat_w, visual_len(obj.category))
+
+        for idx, s_item in enumerate(raw_items):
+            obj = s_item['obj']
             is_current = (idx == index)
-            
-            # Build components with proper color handling
-            if item['dimmed']:
-                # Dimmed row
-                state_glyph = f"{C.DIM}•{C.RESET}"
-                label_str = f"{C.DIM}{item['label']}{C.RESET}"
-                type_str = f"{C.DIM}{item['type']}{C.RESET}" if item['type'] else ""
-                value_str = f"{C.DIM}{item['value']}{C.RESET}" if item['value'] else ""
-                pointer = " "
+            is_dimmed = s_item['dimmed']
+
+            # Formatting logic (retaining your current variables)
+            if is_dimmed:
+                t_str = f"{C.DIM}{obj.title}{(' (' + obj.sub_label + ')') if obj.sub_label else ''}{C.RESET}"
+                c_str = f"{C.DIM}{obj.category}{C.RESET}" if obj.category else ""
+                v_str = f"{C.DIM}{obj.display_val}{C.RESET}" if obj.display_val else ""
+                n_str = f"{C.DIM}{obj.count}{C.RESET}" if obj.count else ""
+                ptr, glyph = " ", f"{C.DIM}•{C.RESET}"
             elif is_current:
-                # Current row (highlighted)
-                state_glyph = f"{C.GREEN}✔{C.RESET}" if item['obj'].checked else f"{C.DIM}•{C.RESET}"
-                label_str = f"{C.PRIMARY}{C.BOLD}{item['label']}{C.RESET}"
-                type_str = f"{C.DIM}{item['type']}{C.RESET}" if item['type'] else ""
-                value_str = f"{C.PRIMARY}{C.BOLD}{item['value']}{C.RESET}" if item['value'] else ""
-                pointer = "›"
+                t_str = f"{C.PRIMARY}{C.BOLD}{obj.title}{C.RESET}" + (f" {C.DIM}({obj.sub_label}){C.RESET}" if obj.sub_label else "")
+                c_str = f"{C.DIM}{obj.category}{C.RESET}" if obj.category else ""
+                v_str = f"{C.PRIMARY}{C.BOLD}{obj.display_val}{C.RESET}" if obj.display_val else ""
+                n_str = f"{C.PRIMARY}{obj.count}{C.RESET}" if obj.count else ""
+                ptr, glyph = "›", f"{C.GREEN}✔{C.RESET}" if obj.checked else f"{C.DIM}•{C.RESET}"
             else:
-                # Normal row
-                state_glyph = f"{C.GREEN}✔{C.RESET}" if item['obj'].checked else f"{C.DIM}•{C.RESET}"
-                label_str = item['label']
-                type_str = f"{C.DIM}{item['type']}{C.RESET}" if item['type'] else ""
-                value_str = item['value'] if item['value'] else ""
-                pointer = " "
+                t_str = f"{obj.title}" + (f" {C.DIM}({obj.sub_label}){C.RESET}" if obj.sub_label else "")
+                c_str = f"{C.DIM}{obj.category}{C.RESET}" if obj.category else ""
+                v_str = f"{obj.display_val}" if obj.display_val else ""
+                n_str = f"{C.DIM}{obj.count}{C.RESET}" if obj.count else ""
+                ptr, glyph = " ", f"{C.GREEN}✔{C.RESET}" if obj.checked else f"{C.DIM}•{C.RESET}"
+
+            # 2. Re-apply Alignment Logic
+            # Calculate actual length to determine necessary padding
+            t_vis_len = visual_len(obj.title) + (visual_len(obj.sub_label) + 3 if obj.sub_label else 0)
+            pad_left = " " * (max_left_w - t_vis_len + 2)
+            pad_cat = " " * (max_cat_w - visual_len(obj.category) + 2) if max_cat_w else "  "
+
+            # Assemble prefix
+            prefix = f"  {ptr} {glyph}  {t_str}{pad_left}{c_str}{pad_cat}"
+            divider = f"{C.DIM}|{C.RESET} "
+            count_part = f" {n_str}" if n_str else ""
+
+            # 3. Handle Truncation with the preserved alignment
+            # Total width available for the value column
+            avail_val = cols - visual_len(prefix) - visual_len(divider) - visual_len(count_part)
             
-            # Layout: pointer + glyph + label + pad + type + pad + value + pad + fraction
-            pad_label = " " * (max_label_w - len(item['label']) + 2)
-            pad_type = " " * (max_type_w - len(item['type']) + 2) if max_type_w else "  "
-            
-            frac_str = item['fraction']
-            if frac_str:
-                pad_frac = " " * (max_frac_w - len(frac_str))
-                if is_current:
-                    frac_str = f"{pad_frac}{C.PRIMARY}{frac_str}{C.RESET}"
-                else:
-                    frac_str = f"{pad_frac}{C.DIM}{frac_str}{C.RESET}"
-            
-            # Build line
-            left_part = f"  {pointer} {state_glyph}  {label_str}{pad_label}{type_str}{pad_type}"
-            if value_str:
-                sep = f"{C.DIM}|{C.RESET} " if is_current or not item['dimmed'] else "| "
-                left_part += f"{sep}{value_str}"
-            
-            # Calculate space for fraction
-            left_visible = _ansi_len(left_part)
-            frac_visible = _ansi_len(frac_str) if frac_str else 0
-            space_available = cols - left_visible - frac_visible - 2
-            
-            if space_available > 0:
-                line = left_part + (" " * space_available) + frac_str
+            if visual_len(v_str) > avail_val and avail_val > 3:
+                display_val = v_str[:avail_val - 3] + "..."
             else:
-                # Truncate left side if needed
-                max_left = cols - frac_visible - 5
-                truncated = left_part[:max_left] + "…"
-                line = truncated + (" " * (cols - _ansi_len(truncated) - frac_visible)) + frac_str
+                display_val = v_str
+            
+            line = f"{prefix}{divider}{display_val}"
+            
+            # 4. Final Count Placement
+            pad_right = cols - visual_len(line) - visual_len(count_part)
+            line += (" " * max(0, pad_right)) + count_part
             
             out.append(line)
-        
+
         out.append("")
-        hint_str = _hint(
-            ("↑↓", "move"), 
-            ("space", "toggle"), 
-            ("q", "quit"), 
-            ("↵", "confirm")
-        )
-        if isinstance(hint_str, tuple):
-            hint_str = hint_str[0]
-        out.extend(hint_str.split("\n") if hint_str else [])
-        
-        return out
- 
+        hint = _hint(("↑↓", "move"), ("space", "toggle"), ("q", "quit"), ("↵", "confirm"))
+        out.extend((hint[0] if isinstance(hint, tuple) else hint).split("\n"))
+        return out    
+
     result = None
     try:
         sys.stdout.write("\033[2J\033[H")
         sys.stdout.flush()
         w.render(_lines())
- 
         while True:
             if ui_utils.consume_resize():
                 sys.stdout.write("\033[2J\033[H")
-                sys.stdout.flush()
                 w.anchor_reset()
                 w.render(_lines())
                 continue
- 
-            if not _wait_for_keypress(0.05):
-                continue
- 
+            if not _wait_for_keypress(0.05): continue
             key = _read_key(fd)
-            current_lines = _lines()
-            structured = [s for line in [_lines()] for s in current_lines 
-                         if hasattr(s, 'obj')]  # Get current structured items
-            
-            # Rebuild structured for navigation
-            structured_items = []
-            for item in raw_items:
-                title = str(item['obj'].title)
-                type_tag = ""
-                value_part = ""
-                if re.search(r"\s*\|\s*", title):
-                    left, right = re.split(r"\s*\|\s*", title, maxsplit=1)
-                    value_part = right.strip()
-                    title = left.rstrip()
-                type_match = re.search(r"(?:\[([^\]]+)\]|([a-zA-Z\s\d]+))\s*$", title)
-                if type_match:
-                    type_tag = (type_match.group(1) or type_match.group(2)).strip().lower()
-                    title = title[:type_match.start()].rstrip()
-                structured_items.append({'obj': item['obj'], 'dimmed': item['dimmed']})
-            
-            if key == 'CTRL_C':
-                break
-            elif key in ('UP', 'k'):
-                index = _next_index(index, raw_items, -1)
-                w.render(_lines())
-            elif key in ('DOWN', 'j'):
-                index = _next_index(index, raw_items, 1)
-                w.render(_lines())
+            if key == 'CTRL_C': break
+            elif key in ('UP', 'k'): index = _next_index(index, raw_items, -1); w.render(_lines())
+            elif key in ('DOWN', 'j'): index = _next_index(index, raw_items, 1); w.render(_lines())
             elif key == 'SPACE':
-                target = structured_items[index] if index < len(structured_items) else None
+                target = raw_items[index]
                 if target and interlock_category_callback and locked_category:
-                    target_cat = interlock_category_callback(target['obj'].value)
-                    if target_cat != locked_category and not target['obj'].checked:
-                        sys.stdout.write("\a")
-                        sys.stdout.flush()
-                        continue
-                if target:
-                    target['obj'].checked = not target['obj'].checked
-                w.render(_lines())
+                    if interlock_category_callback(target['obj'].value) != locked_category and not target['obj'].checked:
+                        sys.stdout.write("\a"); sys.stdout.flush(); continue
+                target['obj'].checked = not target['obj'].checked
+                update_interlock_states(raw_items); w.render(_lines())
             elif key == 'ENTER':
-                result = [item['obj'].value for item in raw_items if item['obj'].checked]
-                break
-            elif key.lower() == 'q':
-                break
-                
+                result = [item['obj'].value for item in raw_items if item['obj'].checked]; break
+            elif key.lower() == 'q': break
     finally:
         _restore_term_attrs(fd, old)
-        sys.stdout.write(C.SHOW)  # Show cursor before exit
+        sys.stdout.write(C.SHOW)
         sys.stdout.flush()
         w.clear()
- 
     return result
 
 # ── confirm() ─────────────────────────────────────────────────────────────────
@@ -2041,7 +2018,7 @@ def system_editor_edit(initial_text: str) -> str | None:
         tf.write(initial_text)
         temp_path = tf.name
     try:
-        editor = os.environ.get('EDITOR', 'nano')
+        editor = os.environ.get('EDITOR', 'nvim')
         subprocess.run([editor, temp_path], check=True)
         with open(temp_path, 'r', encoding='utf-8') as f:
             result = f.read().strip()

@@ -49,6 +49,7 @@ from src.playback.playback_ui import (
     ART_MAX_WIDTH,
     draw_full_ui,
     update_progress_ui,
+    _ui_state
 )
 from src.playback import playback_ui
 from src.config import load_config
@@ -132,7 +133,7 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
             return {"status": "ERROR"}
 
     # Setup dialogue playback if markdown exists
-    dialogue_state = DialoguePlaybackState(file_path)
+    dialogue_state = DialoguePlaybackState(file_path, track_duration=duration)
 
     sylt_data = _parse_sylt(audio)
     uslt_lines_raw = _parse_uslt(audio)
@@ -179,7 +180,7 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
             if not duration or duration <= 0:
                 vlc_len = mp.get_length()
                 duration = vlc_len / 1000.0 if vlc_len > 0 else 999.0
-
+            
             volume = mp.audio_get_volume()
             prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
                 file_path, audio, pre_art, last_size,
@@ -205,28 +206,29 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
             right_col = playback_ui._last_right_left or 1
             right_w = playback_ui._last_right_width or current_width
 
-            # Draw initial lyric/dialogue state.
-            if dialogue_state.is_active():
-                dialogue_state.update(0.0) # Fixed Unbound elapsed error (Passed explicit initial float)
-                
-                from src.playback.lyrics.lyrics import draw_dialogue_window
-                draw_dialogue_window(
-                    row=lyric_row,
-                    dialogue_lines=dialogue_state.expanded_chunks,
-                    current_idx=dialogue_state.current_idx,
-                    width=right_w,
-                    max_row=last_size[1],
-                    col=right_col,
-                    bottom_row=art_bottom_row
-                )
+            if _ui_state['show_lyrics']:
+                # Draw initial lyric/dialogue state.
+                if dialogue_state.is_active():
+                    dialogue_state.update(0.0) # Fixed Unbound elapsed error (Passed explicit initial float)
+                    
+                    from src.playback.lyrics.lyrics import draw_dialogue_window
+                    draw_dialogue_window(
+                        row=lyric_row,
+                        dialogue_lines=dialogue_state.expanded_chunks,
+                        current_idx=dialogue_state.current_idx,
+                        width=right_w,
+                        max_row=last_size[1],
+                        col=right_col,
+                        bottom_row=art_bottom_row
+                    )
 
-            elif sylt_data or has_uslt:
-                first_line = sylt_data[0][0] if sylt_data else (uslt_lines[0] if uslt_lines else "")
-                draw_lyric_initial(
-                    lyric_row, first_line,
-                    width=right_w, max_row=last_size[1], col=right_col,
-                    bottom_row=art_bottom_row,
-                )
+                elif sylt_data or has_uslt:
+                    first_line = sylt_data[0][0] if sylt_data else (uslt_lines[0] if uslt_lines else "")
+                    draw_lyric_initial(
+                        lyric_row, first_line,
+                        width=right_w, max_row=last_size[1], col=right_col,
+                        bottom_row=art_bottom_row,
+                    )
 
             # Whether we are currently in the USLT tail phase (after SYLT ends).
             in_uslt_tail = False
@@ -294,11 +296,12 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                 if key:
                     clear_escape_buffer()
                     arrow = is_arrow_key(key)
-                    from src.playback.playback_ui import toggle_credits, toggle_help, toggle_metadata
+                    from src.playback.playback_ui import toggle_credits, toggle_help, toggle_metadata, toggle_lyrics
                     toggle_controls = {
                         'c': toggle_credits, 
                         'i': toggle_help, 
-                        'm' : toggle_metadata
+                        'm' : toggle_metadata,
+                        'w' : toggle_lyrics
                     }
 
                     if key in (' ', 'p', 'P'):
@@ -374,6 +377,9 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                         update_ctrl_ui()
 
                     elif key.lower() in toggle_controls:   
+                        # Wipe the screen so hiding lyrics actually removes them from the terminal
+                        ui_utils.clear_screen() 
+                        
                         toggle_controls[key.lower()]()
                         volume = mp.audio_get_volume()
                         prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
@@ -387,58 +393,59 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
 
                 update_progress_ui(prog_row, elapsed, duration, current_width)
 
-                # Render dialogue or lyrics
-                if dialogue_state.is_active():
-                    right_col = playback_ui._last_right_left or 1
-                    right_w = playback_ui._last_right_width or current_width
-                    
-                    dialogue_state.update(elapsed=elapsed)
-                    
-                    if dialogue_state.current_idx != last_lyric_idx:
-                        from src.playback.lyrics.lyrics import draw_dialogue_window
-                        draw_dialogue_window(
-                            row=lyric_row,
-                            dialogue_lines=dialogue_state.expanded_chunks,
-                            current_idx=dialogue_state.current_idx,
-                            width=right_w,
-                            max_row=last_size[1],
-                            col=right_col,
-                            bottom_row=art_bottom_row
-                        )
-                        last_lyric_idx = dialogue_state.current_idx
-                
-                elif sylt_data or has_uslt:
-                    right_col = playback_ui._last_right_left or 1
-                    right_w = playback_ui._last_right_width or current_width
-
-                    # Switch back to SYLT if we seek backwards past the handoff point.
-                    if (
-                        in_uslt_tail
-                        and has_uslt
-                        and sylt_handoff_end_s is not None
-                        and elapsed < sylt_handoff_end_s
-                    ):
-                        in_uslt_tail = False
-                        uslt_time_offset = 0.0
-                        last_lyric_idx = -1
-
-                    if is_uslt or in_uslt_tail:
-                        # Pure USLT track, or SYLT has ended and we've handed off.
-                        if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > 4.0:
-                            manual_line_index = None
-
-                        current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
-                        display_idx = current_idx
-                        display_idx = min(display_idx, len(exp_lines) - 1)
-                        if display_idx != last_lyric_idx or manual_line_index is not None:
-                            draw_uslt_window(
-                                lyric_row, exp_lines, exp_times,
-                                elapsed + uslt_time_offset,
-                                width=right_w, manual_idx=manual_line_index,
-                                max_row=last_size[1], col=right_col,
-                                bottom_row=art_bottom_row,
+                # Render dialogue or lyrics ONLY if toggled on
+                if _ui_state.get('show_lyrics', True):
+                    if dialogue_state.is_active():
+                        right_col = playback_ui._last_right_left or 1
+                        right_w = playback_ui._last_right_width or current_width
+                        
+                        dialogue_state.update(elapsed=elapsed)
+                        
+                        if dialogue_state.current_idx != last_lyric_idx:
+                            from src.playback.lyrics.lyrics import draw_dialogue_window
+                            draw_dialogue_window(
+                                row=lyric_row,
+                                dialogue_lines=dialogue_state.expanded_chunks,
+                                current_idx=dialogue_state.current_idx,
+                                width=right_w,
+                                max_row=last_size[1],
+                                col=right_col,
+                                bottom_row=art_bottom_row
                             )
-                            last_lyric_idx = display_idx
+                            last_lyric_idx = dialogue_state.current_idx
+                    
+                    elif sylt_data or has_uslt:
+                        right_col = playback_ui._last_right_left or 1
+                        right_w = playback_ui._last_right_width or current_width
+
+                        # Switch back to SYLT if we seek backwards past the handoff point.
+                        if (
+                            in_uslt_tail
+                            and has_uslt
+                            and sylt_handoff_end_s is not None
+                            and elapsed < sylt_handoff_end_s
+                        ):
+                            in_uslt_tail = False
+                            uslt_time_offset = 0.0
+                            last_lyric_idx = -1
+
+                        if is_uslt or in_uslt_tail:
+                            # Pure USLT track, or SYLT has ended and we've handed off.
+                            if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > 4.0:
+                                manual_line_index = None
+
+                            current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
+                            display_idx = current_idx
+                            display_idx = min(display_idx, len(exp_lines) - 1)
+                            if display_idx != last_lyric_idx or manual_line_index is not None:
+                                draw_uslt_window(
+                                    lyric_row, exp_lines, exp_times,
+                                    elapsed + uslt_time_offset,
+                                    width=right_w, manual_idx=manual_line_index,
+                                    max_row=last_size[1], col=right_col,
+                                    bottom_row=art_bottom_row,
+                                )
+                                last_lyric_idx = display_idx
 
                     else:
                         # SYLT track (with optional USLT tail).
@@ -488,3 +495,12 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
 
     ui_utils.clear_screen()
     return {"status": "OK"}
+
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) > 1:
+        file_path = sys.argv[1]
+        music_player(file_path=file_path)
+    else:
+        print("Usage: python -m src.playback.playback <file_path>")

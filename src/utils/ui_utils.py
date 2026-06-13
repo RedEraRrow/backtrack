@@ -8,6 +8,7 @@ import shutil
 import signal
 import textwrap
 from typing import Any
+import re
 
 from src.state import NAV_STACK
 
@@ -90,7 +91,6 @@ def get_terminal_size(default: tuple = (80, 24)) -> tuple:
     except Exception:
         return default
 
-
 def get_terminal_width(default: int = 80) -> int:
     """Get terminal width, with fallback."""
     cols, _ = get_terminal_size((default, default))
@@ -125,6 +125,13 @@ def truncate_text(text: str, max_width: int, placeholder: str = "…", front: bo
     else:
         # Back-truncate: keep the start, truncate from end
         return text[:max_width - len(placeholder)] + placeholder
+    
+
+def strip_ansi(s: str) -> str:
+    return re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s)
+
+def visual_len(s: str) -> int:
+    return len(strip_ansi(s))
 
 
 def divider(width: int | None = None, char: str = "─") -> str:

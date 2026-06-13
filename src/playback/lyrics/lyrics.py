@@ -124,10 +124,15 @@ def expand_uslt_lines(
     return exp_lines, exp_times
 
 
-def build_uslt_line_times(lines: list, track_duration: float, words_per_second: float = 2.2) -> list[tuple[float, float]]:
+def build_uslt_line_times(lines: list, track_duration: float) -> list[tuple[float, float]]:
     times = []
     t = 0.0
-    total_words = 0
+    # Calculate total words first
+    total_words = sum(max(1, len(re.sub(r'\([^)]*\)|\[[^\]]*\]', '', 
+                      line.text if hasattr(line, 'text') else str(line)).split())) 
+                      for line in lines)
+    
+    words_per_second = total_words / track_duration if total_words > 0 else 2.2
 
     for line in lines:
         text = line.text if hasattr(line, 'text') else str(line)
@@ -138,7 +143,7 @@ def build_uslt_line_times(lines: list, track_duration: float, words_per_second: 
         n = len(text.split())
         total_words += n
 
-    words_per_second = track_duration / total_words if total_words > 0 else 20
+    words_per_second = track_duration / total_words if total_words > 0 else 2.2
 
     for line in lines:
         text = line.text if hasattr(line, 'text') else str(line)
@@ -166,56 +171,46 @@ def find_current_uslt_line(line_times: list[tuple[float, float]], elapsed: float
 
 
 def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
-    lines_raw = normalize_lyric_newlines(text).split('\n')
+    lines = normalize_lyric_newlines(text).split('\n')
     dialogue_lines = []
-    current_speaker = ""
     
-    for line in lines_raw:
+    for line in lines:
         stripped = line.strip()
         if not stripped:
-            if dialogue_lines and not dialogue_lines[-1].is_empty():
-                dialogue_lines.append(DialogueLine())
             continue
-        
-        # 1. Normalize formatting just for structural boundary checks
-        match_normalized = stripped.replace('**', '').replace('*', '').strip()
-        
-        # 2. Match a true standalone stage direction line
-        if match_normalized.startswith('(') and match_normalized.endswith(')'):
-            stage = match_normalized[1:-1].strip()
-            # FORCE it to be a standalone stage direction element 
-            # rather than merging it into the current speaker's dialogue bubble
-            dialogue_lines.append(DialogueLine(stage_dir=stage))
-            continue 
-        
-        # 3. Match character speaker blocks
-        speaker_match = re.match(r'\*+([^*]+)\*+\s*(.*)', stripped)
-        if speaker_match:
-            speaker = speaker_match.group(1).strip()
-            rest = speaker_match.group(2).strip()
-            current_speaker = speaker
             
-            stage_dir, dialogue = "", ""
-            stage_match = re.match(r'\*\(([^)]*)\)\*:\s*(.*)', rest)
+        # Check for stage-only lines
+        stage_match = re.match(r'^\*+\(([^)]*)\)\*+$|^\(([^)]*)\)$', stripped)
+        if stage_match:
+            dialogue_lines.append(DialogueLine(stage_dir=(stage_match.group(1) or stage_match.group(2)).strip()))
+            continue
+
+        # Split at first colon only
+        if ':' in stripped:
+            header, dialogue = stripped.split(':', 1)
+            
+            # Extract stage dir from header (e.g., "**A** (sigh): text")
+            stage_dir = ""
+            stage_match = re.search(r'\(([^)]+)\)', header)
             if stage_match:
                 stage_dir = stage_match.group(1).strip()
-                dialogue = stage_match.group(2).strip()
-            else:
-                dialogue = rest
-                if dialogue.startswith(':'):
-                    dialogue = dialogue[1:].strip()
+                header = header.replace(stage_match.group(0), "")
             
-            dialogue_lines.append(DialogueLine(speaker=speaker, stage_dir=stage_dir, text=dialogue))
-            continue
-        
-        if current_speaker:
-            if dialogue_lines and dialogue_lines[-1].speaker == current_speaker and not dialogue_lines[-1].is_empty():
-                dialogue_lines[-1].text += f"\n{stripped}"
-            else:
-                dialogue_lines.append(DialogueLine(speaker=current_speaker, text=stripped))
+            # Extract all **Name** bolded blocks
+            speakers = re.findall(r'\*\*([^*]+)\*\*', header)
+            
+            dialogue_lines.append(DialogueLine(
+                speakers=[s.strip() for s in speakers],
+                stage_dir=stage_dir,
+                text=dialogue.strip()
+            ))
         else:
-            dialogue_lines.append(DialogueLine(text=stripped))
-    
+            # Append to last line if it doesn't look like a header
+            if dialogue_lines:
+                dialogue_lines[-1].text += f" {stripped}"
+            else:
+                dialogue_lines.append(DialogueLine(text=stripped))
+                
     return dialogue_lines
 
 def _apply_markdown_formatting(text: str) -> str:
@@ -240,16 +235,36 @@ def parse_markdown_file(file_path: str) -> list[DialogueLine] | None:
 
 
 class DialogueLine:
-    def __init__(self, speaker: str = "", stage_dir: str = "", text: str = ""):
-        self.speaker = speaker.strip()
+    def __init__(self, speakers: list[str] | None = None, stage_dir: str = "", text: str = ""):
+        self.speakers = speakers or []
         self.stage_dir = stage_dir.strip()
         self.text = text.strip()
     
+    @property
+    def speaker(self) -> str:
+        """Compatibility property for existing rendering logic."""
+
+        def format_list(items):
+            if not items:
+                return ""
+            
+            # Strip all items
+            items = [item.strip() for item in items]
+            
+            if len(items) == 1:
+                return f"**{items[0]}**"
+            
+            # Join all but last with ", ", then add "and" before last
+            return ", ".join(f"**{item}**" for item in items[:-1]) + " and " + f"**{items[-1]}**"
+
+
+        return format_list(self.speakers)
+
     def is_stage_direction(self) -> bool:
-        return not self.speaker and not self.text and self.stage_dir is not None
+        return not self.speakers and not self.text and bool(self.stage_dir)
     
     def is_empty(self) -> bool:
-        return not self.speaker and not self.text and not self.stage_dir
+        return not self.speakers and not self.text and not self.stage_dir
 
 
 def clean_text_for_timing(text: str) -> str:
@@ -260,89 +275,40 @@ def clean_text_for_timing(text: str) -> str:
 
 def expand_dialogue_into_sentences(
     dialogue_lines: list[DialogueLine], 
-    words_per_second: float = 2.2,
+    words_per_second: float,
     wrap_w: int = 50,
     max_sentence_chars: int = 110
 ) -> tuple[list[dict], list[tuple[float, float]]]:
-    """
-    Slices paragraph scripts precisely by sentence markers (.!?).
-    Preserves all inline punctuation and formatting completely.
-    """
     expanded_chunks: list[dict] = []
     time_windows: list[tuple[float, float]] = []
     total_elapsed = 0.0
 
-    # Change this line inside expand_dialogue_into_sentences:
     sentence_end_re = re.compile(r'(?<!\bMr)(?<!\bDr)(?<!\bMs)(?<!\bMrs)(?<!\.\.)(?<=[.!?])\s+(?=[A-Z"\*])')
 
     for idx, line in enumerate(dialogue_lines):
         if line.is_empty():
             continue
             
-        if not line.speaker and not line.text and line.stage_dir:
-            line_duration = max(1.5, len(line.stage_dir.split()) / words_per_second)
-            expanded_chunks.append({
-                'parent_idx': idx,
-                'is_first_of_line': True,
-                'is_standalone_stage': True,
-                'speaker': '',
-                'stage_dir': line.stage_dir,
-                'text': f"({line.stage_dir})"
-            })
-            time_windows.append((total_elapsed, total_elapsed + line_duration))
-            total_elapsed += line_duration
-            continue
-
         spoken_text_only = clean_text_for_timing(line.text)
         spoken_word_count = max(1, len(spoken_text_only.split()))
         line_duration = spoken_word_count / words_per_second
         
-        if line.text.strip():
-            raw_sentences = [s.strip() for s in sentence_end_re.split(line.text) if s.strip()]
-        else:
-            raw_sentences = []
-
+        raw_sentences = [s.strip() for s in sentence_end_re.split(line.text) if s.strip()]
         if not raw_sentences:
             raw_sentences = [line.text.strip()] if line.text.strip() else ["..."]
 
-        processed_sentences: list[str] = []
-        for sentence in raw_sentences:
-            if len(sentence) > max_sentence_chars and ',' in sentence:
-                comma_indices = [m.start() for m in re.finditer(r',', sentence)]
-                halfway = len(sentence) / 2.0
-                if comma_indices:
-                    best_comma_idx = min(comma_indices, key=lambda i: abs(i - halfway))
-                    part1 = sentence[:best_comma_idx + 1].strip()
-                    part2 = sentence[best_comma_idx + 1:].strip()
-                    if part1 and part2:
-                        processed_sentences.append(part1)
-                        processed_sentences.append(part2)
-                    else:
-                        processed_sentences.append(sentence)
-                else:
-                    processed_sentences.append(sentence)
-            else:
-                processed_sentences.append(sentence)
-        
-        total_chunks_words = sum(max(1, len(clean_text_for_timing(s).split())) for s in processed_sentences)
-        current_time = total_elapsed
-        
-        for s_idx, s in enumerate(processed_sentences):
+        for s in raw_sentences:
             wc = max(1, len(clean_text_for_timing(s).split()))
-            chunk_duration = line_duration * (wc / total_chunks_words) if total_chunks_words > 0 else line_duration
+            chunk_duration = line_duration * (wc / spoken_word_count) if spoken_word_count > 0 else line_duration
             
             expanded_chunks.append({
                 'parent_idx': idx,
-                'is_first_of_line': (s_idx == 0),
-                'is_standalone_stage': False,
                 'speaker': line.speaker,
                 'stage_dir': line.stage_dir,
                 'text': s
             })
-            time_windows.append((current_time, current_time + chunk_duration))
-            current_time += chunk_duration
-            
-        total_elapsed += line_duration
+            time_windows.append((total_elapsed, total_elapsed + chunk_duration))
+            total_elapsed += chunk_duration
 
     return expanded_chunks, time_windows
 
@@ -356,107 +322,98 @@ def draw_dialogue_window(
     col: int = 1,
     bottom_row: int | None = None
 ) -> None:
-    """
-    Renders a clean 3-line scroll view layout (Previous, Current, Next).
-    Current line gets speaker+stage_dir in left column (with wrapping if needed).
-    Previous/next lines get speaker name only.
-    """
+    """Draw dialogue window with previous/subsequent lines fully greyed out."""
     if not dialogue_lines or not (0 <= current_idx < len(dialogue_lines)):
         return
-
-    speaker_width = max(12, min(width // 3, 26))
-    text_col = col + speaker_width + 3
-    text_width = max(20, width - speaker_width - 5)
+    
+    padded_width = width - 2
+    speaker_width = max(12, min(padded_width // 3, 26))
+    text_width = max(20, padded_width - speaker_width - 5)
     clear_limit = bottom_row if bottom_row is not None else max_row
-
-    # Clear the entire region
+    
+    # Clear the entire dialogue area
     for i in range(row, clear_limit + 1):
         sys.stdout.write(f"\033[{i};{col}H\033[K")
-
+    
     out_row = row
     sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{'─' * width}{C.RESET}")
     out_row += 2
-
-    # Collect window items: prev (if exists), current, next (if exists)
+    
+    # Build window: previous (inactive), current (active), next (inactive)
     window_items = []
     if current_idx - 1 >= 0:
         window_items.append((dialogue_lines[current_idx - 1], False))
     window_items.append((dialogue_lines[current_idx], True))
     if current_idx + 1 < len(dialogue_lines):
         window_items.append((dialogue_lines[current_idx + 1], False))
-
-    current_speaker = dialogue_lines[current_idx].get('speaker', '').strip()
-
+    
     for chunk, is_active in window_items:
         speaker = chunk.get('speaker', '').strip()
         stage_dir = chunk.get('stage_dir', '').strip()
         text = chunk.get('text', '').strip()
-
-        # Build left column (speaker + optional stage direction)
+        
         left_lines = []
-        if speaker:
-            if is_active and stage_dir:
-                # Current line: try to fit speaker + stage on one line
-                stage_text = f"({stage_dir})"
-                combined = f"{speaker} {stage_text}"
-                
-                if len(combined) <= speaker_width:
-                    # Fits on one line
-                    left_lines.append(f"{C.BOLD}{speaker}{C.RESET} {C.DIM}{stage_text}{C.RESET}")
-                else:
-                    # Doesn't fit: speaker on first line, stage wraps below
-                    left_lines.append(f"{C.BOLD}{speaker}{C.RESET}")
-                    for stage_line in textwrap.wrap(stage_text, width=speaker_width):
-                        left_lines.append(f"{C.DIM}{stage_line}{C.RESET}")
-            elif is_active:
-                # Current line, no stage direction
-                left_lines.append(f"{C.BOLD}{speaker}{C.RESET}")
-            else:
-                # Previous/next: only show speaker if different from current
-                if speaker != current_speaker:
-                    left_lines.append(f"{C.DIM}{speaker}{C.RESET}")
-
-        # Build right column (dialogue text)
         right_lines = []
+        
+        # Process speaker and stage direction
+        if speaker:
+            wrapped_speaker = textwrap.wrap(speaker, width=speaker_width)
+            formatted_speakers = [_apply_markdown_formatting(s) for s in wrapped_speaker]
+            
+            if is_active:
+                # Active: speaker in bold/formatted, stage dir in dim
+                left_lines.extend(formatted_speakers)
+                if stage_dir:
+                    stage_text = f"({stage_dir})"
+                    left_lines.extend([f"{C.DIM}{s}{C.RESET}" for s in textwrap.wrap(stage_text, width=speaker_width)])
+            else:
+                # Inactive: everything greyed out
+                left_lines.extend([f"{C.DIM}{s}{C.RESET}" for s in formatted_speakers])
+                if stage_dir:
+                    stage_text = f"({stage_dir})"
+                    left_lines.extend([f"{C.DIM}{s}{C.RESET}" for s in textwrap.wrap(stage_text, width=speaker_width)])
+        
+        # Process dialogue text
         if text:
             if is_active:
+                # Active: formatted text
                 formatted_text = _apply_markdown_formatting(text)
                 right_lines = textwrap.wrap(formatted_text, width=text_width) or [""]
             else:
+                # Inactive: stripped and greyed out
                 plain_text = _strip_markdown(text)
                 right_lines = [f"{C.DIM}{line}{C.RESET}" for line in textwrap.wrap(plain_text, width=text_width)] or [""]
-
-        # Calculate total rows needed for this block
+        
         max_rows = max(len(left_lines), len(right_lines)) if (left_lines or right_lines) else 1
+        
+        # Check if we have space for this item
         if out_row + max_rows + 2 > clear_limit:
             break
-
-        # Draw the block
+        
+        # Render each row of this dialogue item
         for i in range(max_rows):
-            # Left column
             if i < len(left_lines):
+                # Calculate clean length to account for ANSI codes
                 clean_len = len(re.sub(r'\033\[[0-9;]*m', '', left_lines[i]))
                 padding = " " * (speaker_width - clean_len)
                 left_cell = f"{left_lines[i]}{padding}"
             else:
                 left_cell = " " * speaker_width
-
-            # Right column
+            
             if i < len(right_lines):
                 right_cell = f"{right_lines[i]}"
             else:
                 right_cell = ""
-
-            # Draw the line
+            
+            # Write the line with divider
             if right_cell:
-                sys.stdout.write(f"\033[{out_row};{col}H{left_cell} {C.DIM}│{C.RESET} {right_cell}")
+                sys.stdout.write(f"\033[{out_row};{col + 1}H{left_cell} {C.DIM}│{C.RESET} {right_cell}")
             else:
-                sys.stdout.write(f"\033[{out_row};{col}H{left_cell} {C.DIM}│{C.RESET}")
+                sys.stdout.write(f"\033[{out_row};{col + 1}H{left_cell} {C.DIM}│{C.RESET}")
             out_row += 1
-
-        # Padding between blocks
+        
         out_row += 2
-
+    
     sys.stdout.flush()
 
 
@@ -554,7 +511,7 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
     _, term_rows = ui_utils.get_terminal_size()
     max_row = max_row or term_rows
     budget = max(4, max_row - row - 1)
-    wrap_w = max(20, width - 8)
+    wrap_w = max(20, width - 10)
 
     p_raw = sylt_data[current_idx - 1][0] if current_idx > 0 else ""
     c_raw = sylt_data[current_idx][0] if 0 <= current_idx < len(sylt_data) else ""
@@ -576,20 +533,20 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
         sys.stdout.write(f"\033[{i};{col}H\033[K")
 
     out_row = row
-    rule = "─" * (width - 1)
+    rule = "─" * width # Ensure rule hits absolute terminal boundary edge
     sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
     out_row += 2
     
-    if p_line: sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}  {p_line}{C.RESET}")
+    if p_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {p_line}{C.RESET}")
     out_row += 2
     
     for i, seg in enumerate(c_wrap or [""]):
         pfx = "▶ " if i == 0 else "  "
-        if seg: sys.stdout.write(f"\033[{out_row};{col}H  {C.BOLD}{pfx}{seg}{C.RESET}")
+        if seg: sys.stdout.write(f"\033[{out_row};{col + 1}H  {C.BOLD}{pfx}{seg}{C.RESET}")
         out_row += 1
         
     out_row += 1
-    if n_line: sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}  {n_line}{C.RESET}")
+    if n_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {n_line}{C.RESET}")
     sys.stdout.flush()
 
 
@@ -604,7 +561,7 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
         width = pui._last_right_width or width
 
     width = width or ui_utils.get_terminal_width()
-    wrap_w = max(20, width - 8)
+    wrap_w = max(20, width - 10)
     _, term_rows = ui_utils.get_terminal_size()
     max_row = max_row or term_rows
 
@@ -639,22 +596,22 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
         sys.stdout.write(f"\033[{i};{col}H\033[K")
 
     out_row = row
-    rule = "─" * (width - 1)
+    rule = "─" * width # Full bleed rule line
     sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
     out_row += 2
     
-    if prev_line: sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}  {prev_line}{C.RESET}")
+    if prev_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {prev_line}{C.RESET}")
     out_row += 2
 
     for i, seg in enumerate(curr_wrapped):
         if i == 0:
-            sys.stdout.write(f"\033[{out_row};{col}H  {hl}{pfx}{seg}{C.RESET}{scroll_hint}")
+            sys.stdout.write(f"\033[{out_row};{col + 1}H  {hl}{pfx}{seg}{C.RESET}{scroll_hint}")
         else:
-            sys.stdout.write(f"\033[{out_row};{col}H    {hl}{seg}{C.RESET}")
+            sys.stdout.write(f"\033[{out_row};{col + 1}H    {hl}{seg}{C.RESET}")
         out_row += 1
 
     out_row += 1
-    if next_line: sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}  {next_line}{C.RESET}")
+    if next_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {next_line}{C.RESET}")
     sys.stdout.flush()
 
 
@@ -756,7 +713,7 @@ def _find_markdown_for_audio(audio_path: str) -> str | None:
 class DialoguePlaybackState:
     """Manages sentence-by-sentence narrative dialogue states cleanly."""
     
-    def __init__(self, audio_path: str):
+    def __init__(self, audio_path: str, track_duration: float):
         md_path = _find_markdown_for_audio(audio_path)
         raw_dialogue_lines = None
         self.expanded_chunks: list[dict] = []
@@ -773,9 +730,15 @@ class DialoguePlaybackState:
                 self.load_error = f"Error reading markdown: {str(e)}"
         
         if raw_dialogue_lines:
-            # Breaks blocks into individual sentence components automatically
+            # Calculate total words first to derive dynamic WPS
+            total_words = sum(max(1, len(clean_text_for_timing(line.text).split())) 
+                              for line in raw_dialogue_lines if not line.is_empty())
+            
+            # Prevent division by zero
+            dynamic_wps = total_words / track_duration if track_duration > 0 else 2.2
+            
             self.expanded_chunks, self.line_times = expand_dialogue_into_sentences(
-                raw_dialogue_lines, words_per_second=2.2, wrap_w=50
+                raw_dialogue_lines, words_per_second=dynamic_wps, wrap_w=50
             )
             
     def is_active(self) -> bool:

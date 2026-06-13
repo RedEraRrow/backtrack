@@ -37,69 +37,74 @@ PROGRESS_ROW = 4
 def _draw_progress(elapsed: float, total: float, cols: int) -> None:
     """Draw progress bar for lyric sync."""
     progress    = min(elapsed / total, 1.0) if total else 0
-    bar         = ui_utils.get_progress_bar(progress, cols - 16)
+    bar         = ui_utils.get_progress_bar(progress, cols - 18)
     elapsed_str = ui_utils.format_time(elapsed)
     total_str   = ui_utils.format_time(total)
     sys.stdout.write(
-        f"\033[{PROGRESS_ROW};1H\033[K"
+        f"\033[{PROGRESS_ROW + 1};1H\033[K"
         f"  {bar}  {C.YELLOW}{elapsed_str}{C.DIM}/{C.RESET}{C.YELLOW}{total_str}{C.RESET}"
     )
     sys.stdout.flush()
  
  
 def _draw(file_path: str, lines: list, i: int, start_time: float, total: float, marked_count: int, just_marked_at: float | None = None, offset_ms: int = 0) -> None:
-    """Draw lyric sync interface."""
     cols = ui_utils.get_terminal_width()
     ui_utils.clear_screen()
  
-    print(f"{C.CYAN}{ui_utils.divider(cols)}{C.RESET}")
+    print() # ── ROW PADDING: Top margin
+    print(f"{C.CYAN}{ui_utils.divider(cols)}{C.RESET}") # Full width divider
     title = os.path.basename(file_path)
-    print(f"{C.BOLD}  LYRIC SYNC  {C.DIM}│{C.RESET}  {C.PRIMARY}{title}{C.RESET}")
+    # Added 1 extra space at the start for column padding
+    print(f"   {C.BOLD}LYRIC SYNC  {C.DIM}│{C.RESET}  {C.PRIMARY}{title}{C.RESET}")
     print(f"{C.CYAN}{ui_utils.divider(cols)}{C.RESET}")
  
     print()  # placeholder for progress bar
     print(f"{C.DIM}{'─' * cols}{C.RESET}")
  
     line_num   = max(i, 0) + 1
+    line_str   = "  Line_num string..." 
     line_str   = f"  Line {line_num} of {len(lines)}"
     marked_str = f"✓ {marked_count} marked"
-    padding    = cols - len(line_str) - len(marked_str) - 2
-    print(f"{C.PRIMARY}{line_str}{C.RESET}{' ' * max(padding, 1)}{C.GREEN}{marked_str}{C.RESET}")
+    
+    # Account for 2 columns of global layout padding here:
+    padding    = (cols - 2) - len(line_str) - len(marked_str) - 2
+    print(f" {C.PRIMARY}{line_str}{C.RESET}{' ' * max(padding, 1)}{C.GREEN}{marked_str}{C.RESET}")
     print()
  
     prev = lines[i - 1] if i > 0 else None
     if prev:
-        print(f"  {C.RED}{C.DIM}{prev}{C.RESET}")
+        print(f"   {C.RED}{C.DIM}{prev}{C.RESET}") # Extra space
     else:
-        print(f"  {C.DIM}— start —{C.RESET}")
+        print(f"   {C.DIM}— start —{C.RESET}")
     print()
  
     curr = lines[i] if i >= 0 else "GET READY…"
-    print(f"  {C.PRIMARY}{C.BOLD}▶  {curr}{C.RESET}")
+    print(f"   {C.PRIMARY}{C.BOLD}▶  {curr}{C.RESET}") # Extra space
     print()
  
     nxt = lines[i + 1] if i < len(lines) - 1 else None
     if nxt:
-        print(f"  {C.GREEN}{nxt}{C.RESET}")
+        print(f"   {C.GREEN}{nxt}{C.RESET}") # Extra space
     else:
-        print(f"  {C.DIM}— end —{C.RESET}")
+        print(f"   {C.DIM}— end —{C.RESET}")
  
     print()
     print(f"{C.DIM}{ui_utils.divider(cols)}{C.RESET}")
  
     if just_marked_at is not None:
         marked_time = ui_utils.format_time(just_marked_at / 1000)
-        print(f"  {C.GREEN}{C.BOLD}✓ Marked at {marked_time}{C.RESET}")
+        print(f"   {C.GREEN}{C.BOLD}✓ Marked at {marked_time}{C.RESET}")
     else:
-        print(f"  {C.DIM}waiting for mark…{C.RESET}")
+        print(f"   {C.DIM}waiting for mark…{C.RESET}")
  
     print()
     offset_str = f"{offset_ms:+d}ms"
-    print(f"  {C.YELLOW}SPACE / ENTER{C.RESET}  {C.DIM}mark     {C.RESET}{C.RED}Q{C.RESET}  {C.DIM}quit     {C.RESET}{C.DIM}offset: {C.RESET}{C.YELLOW}{offset_str}{C.RESET}  {C.DIM}(set in Settings › Lyric Lead-in){C.RESET}")
+    print(f"   {C.YELLOW}SPACE / ENTER{C.RESET}  {C.DIM}mark     {C.RESET}{C.RED}Q{C.RESET}  {C.DIM}quit     {C.RESET}{C.DIM}offset: {C.RESET}{C.YELLOW}{offset_str}{C.RESET}  {C.DIM}(set in Settings › Lyric Lead-in){C.RESET}")
     print(f"{C.CYAN}{'─' * cols}{C.RESET}")
+    print() # ── ROW PADDING: Bottom margin
  
     sys.stdout.flush()
- 
+    
  
 def sync_lyrics(file_path: str) -> None:
     """Interactive lyric synchronization: match lyrics to timestamps."""

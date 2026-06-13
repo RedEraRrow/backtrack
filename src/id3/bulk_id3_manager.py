@@ -25,6 +25,7 @@ from src.music_library import refresh_library_entry
 
 from collections import Counter
 import textwrap
+import re
 
 from mutagen.id3._frames import APIC
 
@@ -185,7 +186,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         unique = set(vals)
         if len(unique) == 1:
             v = vals[0]
-            return v if len(v) <= VAL_MAX else v[:VAL_MAX - 1] + "…"
+            return v
  
         n_vary = len(unique)
         return f"{{{n_vary} values}}"
@@ -194,32 +195,6 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     bulk_alias_col = min(ALIAS_MAX, max((len(_b_alias(t)) + 3 for t in all_tag_counts), default=0))
     _fixed = bulk_tag_col + bulk_alias_col + 32
     bulk_val_col = min(VAL_MAX, max(cols - _fixed, 10))
- 
-    def _tag_option_title(tag, count):
-        alias = _b_alias(tag)
-        category = get_tag_category(tag).lower()  # lowercase matches sentence style
-        
-        # 1. Dim the friendly name inline using system _DIM/escape codes
-        if alias:
-            # Keep the ID high-contrast, but drop the helper name down a visual layer
-            descriptor = f"{tag} {C.DIM}({alias}){C.RESET}"
-            raw_len = len(tag) + len(alias) + 3
-        else:
-            descriptor = tag
-            raw_len = len(tag)
-            
-        # Standardize a precise, predictable left-aligned layout matrix boundary (e.g., 38 columns wide)
-        pad_len = max(0, 38 - raw_len)
-        left_part = f"{descriptor}{' ' * pad_len}"
-
-        # 2. Dim the brackets and category string together
-        category_part = f"{C.DIM}{category:<15}{C.RESET}"
-        
-        val_disp = _value_summary(tag)
-        count_str = f"{count}/{len(album_tracks)}"
-        
-        # 3. Splitting layout strings beautifully down a clean data channel
-        return f"{left_part} {category_part} | {val_disp:<40}  {count_str}"
  
     selected_tags = []
     target_tag_id = None
@@ -234,64 +209,36 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         if target_val is None:
             return
     else:
-        tag_options = [prompt.Choice(_tag_option_title(t, c), t)
-                       for t, c in sorted(all_tag_counts.items())]
+        # Multi-select tag list
+        sorted_tags = sorted(all_tag_counts.items(), key=lambda x: x[1], reverse=True)
+        tag_choices = []
         
-        # We hook directly into get_tag_category to manage real-time visual blocking
-        callback = None if operation == "Delete Tags" else get_tag_category
+        for t, c in sorted_tags:
+            tag_choices.append(prompt.Choice(
+                title=t,
+                value=t,
+                category=get_tag_category(t).lower(),
+                sub_label=_b_alias(t),
+                display_val=_value_summary(t),
+                count=f"{c}/{len(album_tracks)}"
+            ))
+        
+        # Disable category interlock if the user is just deleting tags
+        active_callback = None if operation == "Delete Tags" else get_tag_category
         
         selected_tags = prompt.checkbox(
-            message=f"Select tags to {operation.lower()}:",
-            choices=tag_options,
-            interlock_category_callback=callback
+            "Tags:",
+            choices=tag_choices,
+            interlock_category_callback=active_callback,
         )
         
         if not selected_tags:
             return
-
-        # Real-time UI validation has already filtered out incompatibilities cleanly.
-        if operation == "Rename Tags":
-            target_val = prompt.text("New tag ID (e.g. TPE2, COMM[eng]):")
-            if target_val:
-                target_val = target_val.upper()
-        elif operation == "Set Common Value":
-            first_tag = selected_tags[0]
-            existing_vals = tag_values.get(first_tag, [])
-            fallback_val = existing_vals[0] if existing_vals else ""
-            target_val = prompt_for_value(first_tag, current_value=fallback_val)
- 
-    if target_val is None and operation not in ["Delete Tags"]:
-        return
- 
-    apic_tags = [t for t in selected_tags if t.startswith('APIC')]
-    non_apic_tags = [t for t in selected_tags if not t.startswith('APIC')]
-    new_apic_frame = None
-    new_apic_desc = None
- 
-    if apic_tags and operation != "Delete Tags":
-        apic_action = prompt.select(
-            f"Bulk APIC action ({len(apic_tags)} tags):",
-            choices=["Replace Image", "Edit Description", "Edit Picture Type", "Skip APIC"]
-        )
         
-        if apic_action == "Replace Image":
-            payload = prompt_for_image_payload()
-            if payload:
-                img_data, mime, pic_type, desc = payload
-                new_apic_frame = APIC(encoding=3, mime=mime, type=pic_type, desc=desc, data=img_data)
-            else:
-                apic_tags = []
-        elif apic_action == "Edit Description":
-            new_apic_desc = prompt.text("New description for all APIC tags:")
-            if new_apic_desc is None:
-                apic_tags = []
-        elif apic_action == "Edit Picture Type":
-            new_apic_frame = prompt_for_picture_type()
-        else:
-            apic_tags = []
- 
-    if not prompt.confirm(f"Apply {op_display} to {len(album_tracks)} tracks?"):
-        return
+        if operation in ("Set Common Value",):
+            target_val = prompt_for_value(selected_tags[0], current_value="")
+            if target_val is None:
+                return
  
     count_modified = 0
     for path in album_tracks:
@@ -300,41 +247,31 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             changed = False
  
             if operation == "Add New Tag":
-                assert target_tag_id is not None
-                assert target_val is not None
-                new_frame = create_frame(target_tag_id, target_val)
-                if new_frame:
-                    audio.add(new_frame)
-                    changed = True
- 
-            for tag in apic_tags:
-                if tag in audio:
+                try:
+                    assert target_tag_id is not None
+                    assert target_val is not None
+                    new_frame = create_frame(target_tag_id, target_val)
+                    if new_frame:
+                        audio.add(new_frame)
+                        changed = True
+                except (ValueError, AssertionError):
+                    pass
+            else:
+                for tag in selected_tags:
                     if operation == "Delete Tags":
-                        audio.pop(tag)
-                        changed = True
-                    elif new_apic_desc is not None:
-                        audio[tag].desc = new_apic_desc
-                        changed = True
-                    elif isinstance(new_apic_frame, int):
-                        audio[tag].type = new_apic_frame
-                        changed = True
-                    elif isinstance(new_apic_frame, APIC):
                         audio.delall(tag)
-                        audio.add(new_apic_frame)
-                        changed = True
- 
-            for tag in non_apic_tags:
-                if tag in audio:
-                    if operation == "Delete Tags":
-                        audio.pop(tag)
                         changed = True
                     elif operation == "Rename Tags":
-                        old_frame = audio.pop(tag)
-                        assert target_val is not None
-                        if rename_frame(audio, old_frame, target_val):
-                            changed = True
-                        else:
-                            audio.add(old_frame)
+                        try:
+                            new_tag = prompt.text(f"Rename {tag} to:")
+                            if new_tag and new_tag != tag:
+                                old_frame = audio.pop(tag)
+                                if rename_frame(audio, old_frame, new_tag):
+                                    changed = True
+                                else:
+                                    audio.add(old_frame)
+                        except KeyError:
+                            pass
                     elif operation == "Set Common Value":
                         audio.delall(tag)
                         try:
@@ -373,131 +310,6 @@ def select_files() -> list[str]:
                 files.append(os.path.join(root, fname))
     
     return sorted(files)
-
-
-def bulk_edit_tags(file_paths: list[str], library: list) -> None:
-    """Main bulk edit workflow."""
-    if not file_paths:
-        print("No files selected.")
-        time.sleep(1)
-        return
-    
-    tag_counts, tag_values, people_tags = collect_tag_data(file_paths)
-    
-    if not tag_counts:
-        print("No tags found in selected files.")
-        time.sleep(1)
-        return
-    
-    sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
-    
-    while True:
-        options = []
-        for tag_id, count in sorted_tags[:15]:
-            info = get_tag_info(tag_id)
-            label = info.label if info else "Unknown"
-            category = get_tag_category(tag_id).upper()
-            options.append(f"{tag_id:<8} [{category:<6}] {label:<25} ({count}/{len(file_paths)} files)")
-        
-        options.append("Custom Tag")
-        options.append("Back")
-        
-        choice = prompt.select("Select tag to bulk edit:", choices=options)
-        
-        if not choice or choice == "Back":
-            break
-        
-        if choice == "Custom Tag":
-            tag_id = prompt.text("Tag ID (e.g., TIT2, TMCL):")
-            if not tag_id:
-                continue
-            tag_id = tag_id.upper()
-        else:
-            tag_id = choice.split()[0]
-        
-        ops = ["Set Value", "Rename Tag", "Delete Tag", "Back"]
-        operation = prompt.select(f"Operation for {tag_id}:", choices=ops)
-        
-        if not operation or operation == "Back":
-            continue
-        
-        if operation == "Set Value":
-            primary_category = get_tag_category(tag_id)
-            tag_id_list = [tag_id]
-            
-            if prompt.confirm("Apply to other tags too?"):
-                multi_tags = prompt.checkbox(
-                    "Select additional tags:",
-                    choices=[t for t, _ in sorted_tags if t != tag_id]
-                )
-                if multi_tags is not None:
-                    # ANSI INTERLOCK REJECTION CHECK FOR STANDALONE WINDOW:
-                    for t in multi_tags:
-                        if get_tag_category(t) == primary_category:
-                            tag_id_list.append(t)
-                        else:
-                            print(f"  {C.BOLD}- {t:<8} [OMITTED] -> Incompatible with {tag_id} ({primary_category}){C.RESET}")
-                    if len(tag_id_list) > 1:
-                        time.sleep(2)
-                else:
-                    continue
-            
-            existing_vals = tag_values.get(tag_id_list[0], [])
-            fallback_val = existing_vals[0] if existing_vals else ""
-            new_value = prompt_for_value(tag_id_list[0], current_value=fallback_val)
-            if new_value is None:
-                continue
-            
-            if not prompt.confirm(f"Set value on {len(file_paths)} tracks?"):
-                continue
-
-            success, fail = apply_bulk_operation_to_files(
-                file_paths=file_paths,
-                operation='set',
-                tag_ids=tag_id_list,
-                target_value=new_value,
-                library=library
-            )
-            
-            print(f"Done: {success} operations succeeded. Failed: {fail} operations.")
-            time.sleep(2)
-        
-        elif operation == "Rename Tag":
-            new_tag_id = prompt.text(f"Rename {tag_id} to:")
-            if not new_tag_id or new_tag_id.upper() == tag_id:
-                continue
-            
-            new_tag_id = new_tag_id.upper()
-            if get_tag_category(tag_id) != get_tag_category(new_tag_id):
-                print(f"Error: Type mismatch between {tag_id} and {new_tag_id}.")
-                time.sleep(2)
-                continue
-            
-            if not prompt.confirm(f"Rename tag on {len(file_paths)} tracks?"):
-                continue
-
-            success, fail = apply_bulk_operation_to_files(
-                file_paths=file_paths,
-                operation='rename',
-                tag_ids=[tag_id],
-                target_value=new_tag_id,
-                library=library
-            )
-            print(f"Done: {success} files updated. Failed: {fail} files.")
-            time.sleep(2)
-        
-        elif operation == "Delete Tag":
-            if not prompt.confirm(f"Delete {tag_id} from all {len(file_paths)} files?"):
-                continue
-            
-            success, fail = apply_bulk_operation_to_files(
-                file_paths=file_paths,
-                operation='delete',
-                tag_ids=[tag_id],
-                library=library
-            )
-            print(f"Done: {success} files updated. Failed: {fail} files.")
-            time.sleep(2)
 
 
 def bulk_replace_apic(file_paths: list[str], library: list) -> None:
@@ -553,7 +365,7 @@ def main_menu(library: list) -> None:
         if choice == "Edit Tags":
             file_paths = select_files()
             if file_paths:
-                bulk_edit_tags(file_paths, library)
+                bulk_id3_manager(file_paths)
         
         elif choice == "Replace Album Art":
             file_paths = select_files()

@@ -21,7 +21,7 @@ from src.playback.playback import music_player
 from src.playback.lyrics.lyric_timer import sync_lyrics
 from src.config import load_config, save_config
 from src.state import NAV_STACK
-from src.id3.id3_browser import inspect_tag_loop
+from src.id3.id3_browser import id3_browser
 from src.id3.bulk_id3_manager import bulk_id3_manager
 
 
@@ -32,7 +32,6 @@ def _menu_header(title: str, subtitle: str | None = None):
     Resize-aware header callable for prompt.select's header= parameter.
 
     Single bold title, optional dim subtitle on the same line, clean divider.
-    Intentionally quiet — the choices are the content, not the header.
     """
 
     def _build() -> list[str]:
@@ -41,6 +40,7 @@ def _menu_header(title: str, subtitle: str | None = None):
         title_str    = f"{C.BOLD}{title}{C.RESET}"
         subtitle_str = f"  {C.DIM}{subtitle}{C.RESET}" if subtitle else ""
         lines = [
+            "",
             f"  {title_str}{subtitle_str}",
             f"{C.DIM}{ui_utils.divider(cols, '─')}{C.RESET}",
         ]
@@ -61,10 +61,10 @@ def handle_search(library: list) -> str | None:
     search_targets = prompt.checkbox(
         "Search within:",
         choices=[
-            {"name": "Title",         "value": "title",         "checked": True},
-            {"name": "Artist",        "value": "artist",        "checked": True},
-            {"name": "Album",         "value": "album",         "checked": True},
-            {"name": "Genre",         "value": "genre",         "checked": False},
+            {"name": "Title",         "value": "title",          "checked": True },
+            {"name": "Artist",        "value": "artist",         "checked": True },
+            {"name": "Album",         "value": "album",          "checked": True },
+            {"name": "Genre",         "value": "genre",          "checked": False},
             {"name": "Performers",    "value": "performers",     "checked": False},
         ]
     )
@@ -119,7 +119,7 @@ def handle_search(library: list) -> str | None:
         ui_utils.clear_screen()
     elif action == "Edit Metadata":
         ui_utils.clear_screen()
-        inspect_tag_loop(selected, library_metadata=song_meta, library=library)
+        id3_browser(selected, library=library)
         ui_utils.clear_screen()
 
     return None
@@ -623,7 +623,7 @@ def browse_menu(library_ref: list) -> str | None:
 
                             elif action == "Edit Metadata":
                                 ui_utils.clear_screen()
-                                inspect_tag_loop(path_choice_obj, library_metadata=selected_track, library=library)
+                                id3_browser(path_choice_obj, library=library)
                                 ui_utils.clear_screen()
 
                         NAV_STACK.pop()

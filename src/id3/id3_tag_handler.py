@@ -371,10 +371,11 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     
     # ========== DATE ==========
     if category == 'date':
-        default_val = str(current_value) if current_value else ""
-        return prompt.text(
+        default_val = str(current_value).split(" ")[0] if current_value else ""
+        default_time = str(current_value).split(" ")[1] if str(current_value).split(" ")[1] else ""
+        return prompt.calendar_select(
             f"{label} (YYYY, YYYY-MM-DD, etc.):",
-            default=default_val
+            initial=default_val
         )
     
     # ========== FRACTION (TRACK/DISC/MOVEMENT) ==========
