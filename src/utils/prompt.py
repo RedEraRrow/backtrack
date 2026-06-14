@@ -24,7 +24,10 @@ from typing import Any, Callable
 
 from src.utils import ui_utils
 C = ui_utils.Colors
-from src.utils.ui_utils import visual_len
+
+def visual_len(s: str) -> int:
+    """Get visible length of string, ignoring ANSI escape codes."""
+    return len(re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s))
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -393,234 +396,213 @@ class _Widget:
 
 # ── select() ─────────────────────────────────────────────────────────────────
 
+def _truncate_visual(text: str, max_visual_len: int, ellipsis: str = "…") -> str:
+    """Truncate text to max visual length, preserving readability.
+    
+    Counts actual visible characters, not ANSI codes.
+    Returns truncated text without ANSI codes.
+    """
+    if max_visual_len <= 0:
+        return ""
+    visible = text
+    if visual_len(visible) <= max_visual_len:
+        return visible
+    
+    # Truncate to fit ellipsis
+    target = max_visual_len - visual_len(ellipsis)
+    if target <= 0:
+        return visible[:1]
+    
+    result = ""
+    vis_count = 0
+    for char in visible:
+        if vis_count >= target:
+            break
+        result += char
+        vis_count += 1
+    
+    return result + ellipsis
+
+
 def select(message: str, choices: list,
            header: list | None | Callable[[], list[str]] = None,
-           extra_hints: dict[str, str] | None = None) -> str | None:
-    """Arrow keys / jk navigate, Enter selects, q / Ctrl-C → None.
-
-    Args:
-        message: Prompt label shown above the list.
-        choices: Items to choose from (str, dict, or Choice).
-        header:  Optional list of plain strings rendered above the prompt.
-        extra_hints: Optional dict of custom key-action bindings to merge
-                     (e.g., {'space': 'toggle', 'a': 'all'}).
-    """
+           extra_hints: dict[str, dict] | None = None) -> str | None:
+    """Arrow keys / jk navigate, Enter selects, q / Ctrl-C → None."""
     items = _norm(choices)
     if not items:
         return None
 
-    # Pre-calculate dynamic column widths for pseudo-table layout
-    max_left_w = 0
-    max_cat_w = 0
-    has_extended_data = False
-    
-    for item in items:
-        left_len = visual_len(item.title)
-        if item.sub_label:
-            left_len += visual_len(item.sub_label) + 3 # For " (sub_label)"
-        max_left_w = max(max_left_w, left_len)
-        max_cat_w = max(max_cat_w, visual_len(item.category))
-        
-        if item.category or item.sub_label or getattr(item, 'display_val', "") or item.count:
-            has_extended_data = True
+    has_extended_data = any(
+        item.category or item.sub_label or 
+        getattr(item, 'display_val', "") or item.count
+        for item in items
+    )
 
-    cursor   = 0
+    cursor = 0
     viewport = 0
-    fd       = sys.stdin.fileno()
-    old      = _get_term_attrs(fd)
-    w        = _Widget(fd)
+    fd = sys.stdin.fileno()
+    old = _get_term_attrs(fd)
+    w = _Widget(fd)
+    display_hints = {k: list(v.keys())[0] for k, v in (extra_hints or {}).items()}
+    base_hints = {"↑↓": "move", "q": "quit", "↵": "confirm"}
+    combined_hints = {**display_hints, **base_hints} if extra_hints else base_hints
 
-    # Base keyboard mapping from your navigation options loop
-    base_hints = {
-        "↑↓": "move",
-        "q": "quit",
-        "↵": "confirm"
-    }
-    
-    # Merge context-specific hints if provided by another menu layout
-    if extra_hints:
-        combined_hints = {**extra_hints, **base_hints}
-    else:
-        combined_hints = base_hints
-
-    # Converts our flat dict maps into sequential pairs based on the active view
     def get_hints_for_tier(tier: int) -> list[tuple[str, str]]:
-        if tier <= 3:
-            return list(combined_hints.items())
-        elif tier == 4:
-            tier4_hints = {}
-            for k, v in combined_hints.items():
-                k_short = k.split("/")[0]
-                tier4_hints[k_short] = v
-            return list(tier4_hints.items())
-        else:
-            return [("↑↓", "move"), ("q", "quit"), ("↵", "confirm")]
+        if tier <= 3: return list(combined_hints.items())
+        elif tier == 4: return [(k.split("/")[0], v) for k, v in combined_hints.items()]
+        else: return [("↑↓", "move"), ("q", "quit"), ("↵", "confirm")]
 
     last_tier = 1
 
     def _header_lines() -> list[str]:
-        if header is None:
-            return []
-        return header() if callable(header) else list(header)
+        return header() if callable(header) else list(header or [])
 
-    def _lines():
+    def _lines() -> list[str]:
         nonlocal viewport, last_tier
-        cols    = _cols()
+        cols = _cols()
         h_lines = _header_lines()
         
-        import re
-        max_header_w = 0
-        for hl in h_lines:
-            plain_hl = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', hl)
-            plain_hl = re.sub(r'[╭─│╰╮╯┌┐└┘├┤┬┴┼═║╔╗╚╝]', '', plain_hl).strip()
-            if len(plain_hl) > max_header_w:
-                max_header_w = len(plain_hl)
-
-        layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
-
+        # Hints handling
         active_pairs = get_hints_for_tier(last_tier)
-        hint_res = _hint(*active_pairs, extra=layout_constraint)
-        
-        if isinstance(hint_res, tuple):
-            hint_raw, tier = hint_res
-        else:
-            hint_raw, tier = hint_res, 1
-        
+        hint_res = _hint(*active_pairs)
+        hint_raw, tier = hint_res if isinstance(hint_res, tuple) else (hint_res, 1)
         if tier != last_tier:
             last_tier = tier
-            active_pairs = get_hints_for_tier(tier)
-            hint_res = _hint(*active_pairs, extra=layout_constraint)
-            hint_raw = hint_res[0] if isinstance(hint_res, tuple) else hint_res
-
+            hint_raw = _hint(*get_hints_for_tier(tier))[0]
         hint_lines = hint_raw.split("\n") if hint_raw else []
         
+        # Viewport logic
         fixed_overhead = len(h_lines) + len(hint_lines) + 2
-        vis     = max(2, _visible_rows() - fixed_overhead)
-        
-        n       = len(items)
-        if cursor < viewport:
-            viewport = cursor
-        elif cursor >= viewport + vis:
-            viewport = cursor - vis + 1
+        vis = max(2, _visible_rows() - fixed_overhead - 1)
+        n = len(items)
+        if viewport > max(0, n - vis): viewport = max(0, n - vis)
+        if cursor < viewport: viewport = cursor
+        elif cursor >= viewport + vis: viewport = cursor - vis + 1
 
         out = h_lines[:]
         out.append(f"  {C.DIM}{message}{C.RESET}")
-        out.append(f"  {C.DIM}╵ {viewport} above{C.RESET}" if viewport > 0 else "")
+        
+        # Above indicator
+        if viewport > 0:
+            out.append(f"  {C.DIM}╷ {viewport} above{C.RESET}")
+        
+        if has_extended_data:
+            # Calculate ideal widths (Unified with checkbox list)
+            ideal_title_w = max((visual_len(i.title) + (visual_len(i.sub_label) + 3 if i.sub_label else 0) for i in items), default=0)
+            ideal_cat_w = max((visual_len(i.category) for i in items), default=0)
+            ideal_val_w = max((visual_len(getattr(i, 'display_val', "")) for i in items), default=0)
 
-        # --- Dynamic Row Rendering Engine ---
-        for i in range(viewport, min(viewport + vis, n)):
-            obj = items[i]
-            is_current = (i == cursor)
+            # Distribute space (Unified MIN values)
+            available = cols - 15
+            MIN_TITLE, MIN_CAT, MIN_VAL = 16, 5, 12
+            MIN_TOTAL = MIN_TITLE + MIN_CAT + MIN_VAL
             
-            t_str = obj.title
-            s_str = obj.sub_label
-            c_str = obj.category
-            v_str = getattr(obj, 'display_val', "")
-            n_str = obj.count
-            
-            # Simple List Renderer (Fallback)
-            if not has_extended_data:
-                max_w = cols - 6
-                disp_label = t_str if visual_len(t_str) <= max_w else t_str[:max_w - 1] + "…"
-                
-                if is_current:
-                    out.append(f"  {C.ACCENT}›{C.RESET} {C.PRIMARY}{C.BOLD}{disp_label}{C.RESET}")
-                else:
-                    out.append(f"    {C.DIM}{disp_label}{C.RESET}")
-                    
-            # Pseudo-Table Renderer
+            if available < MIN_TOTAL:
+                use_title_w, use_cat_w, use_val_w = MIN_TITLE, MIN_CAT, MIN_VAL
+            elif available >= (ideal_title_w + ideal_cat_w + ideal_val_w):
+                use_title_w, use_cat_w, use_val_w = ideal_title_w, ideal_cat_w, ideal_val_w
             else:
+                rem = available - MIN_TOTAL
+                take_title = min(max(0, ideal_title_w - MIN_TITLE), rem)
+                use_title_w = MIN_TITLE + take_title
+                rem -= take_title
+                take_cat = min(max(0, ideal_cat_w - MIN_CAT), rem)
+                use_cat_w = MIN_CAT + take_cat
+                rem -= take_cat
+                use_val_w = MIN_VAL + rem
+
+            # Render items
+            for i in range(viewport, min(viewport + vis, n)):
+                obj = items[i]
+                is_current = (i == cursor)
+
+                # Title/Sub-label processing
+                sub_part = f" ({obj.sub_label})" if obj.sub_label else ""
+                if visual_len(obj.title) + visual_len(sub_part) <= use_title_w:
+                    t_trunc, s_trunc = obj.title, obj.sub_label or ""
+                    s_fmt = f" {C.DIM}({s_trunc}){C.RESET}" if s_trunc else ""
+                else:
+                    t_trunc = _truncate_visual(obj.title, max(MIN_TITLE, use_title_w - 6), "…")
+                    s_trunc = _truncate_visual(obj.sub_label or "", 3, "…")
+                    s_fmt = f" {C.DIM}({s_trunc}){C.RESET}" if obj.sub_label else ""
+                
+                t_fmt = f"{C.PRIMARY if is_current else ''}{t_trunc}{C.RESET}"
+                c_trunc = _truncate_visual(obj.category, use_cat_w, "…")
+                
+                # Apply styles
                 if is_current:
-                    title_fmt = f"{C.PRIMARY}{C.BOLD}{t_str}{C.RESET}" + (f" {C.DIM}({s_str}){C.RESET}" if s_str else "")
-                    cat_fmt   = f"{C.DIM}{c_str}{C.RESET}" if c_str else ""
-                    val_fmt   = f"{C.PRIMARY}{C.BOLD}{v_str}{C.RESET}" if v_str else ""
-                    cnt_fmt   = f"{C.PRIMARY}{n_str}{C.RESET}" if n_str else ""
-                    pointer   = f"{C.ACCENT}›{C.RESET}"
+                    t_str, c_str = f"{t_fmt}{C.BOLD}{s_fmt}{C.RESET}", f"{C.PRIMARY}{C.BOLD}{c_trunc}{C.RESET}"
                 else:
-                    title_fmt = f"{C.DIM}{t_str}{C.RESET}" + (f" {C.DIM}({s_str}){C.RESET}" if s_str else "")
-                    cat_fmt   = f"{C.DIM}{c_str}{C.RESET}" if c_str else ""
-                    val_fmt   = f"{C.DIM}{v_str}{C.RESET}" if v_str else ""
-                    cnt_fmt   = f"{C.DIM}{n_str}{C.RESET}" if n_str else ""
-                    pointer   = " "
+                    t_str, c_str = f"{t_fmt}{C.DIM}{s_fmt}{C.RESET}", f"{C.DIM}{c_trunc}{C.RESET}"
+
+                pad_t = " " * max(0, use_title_w - visual_len(t_fmt + s_fmt) + 2)
+                pad_c = " " * max(0, use_cat_w - visual_len(c_trunc) + 2)
                 
-                left_vis_len = visual_len(t_str) + (visual_len(s_str) + 3 if s_str else 0)
-                pad_left = " " * (max_left_w - left_vis_len + 2)
-                pad_cat  = " " * (max_cat_w - visual_len(c_str) + 2) if max_cat_w else "  "
+                # Prefix (including space for glyph to match checkbox alignment)
+                ptr = "›" if is_current else " "
+                prefix = f"  {C.ACCENT}{ptr}{C.RESET}   {t_str}{pad_t}{c_str}{pad_c}"
                 
-                sep = f"{C.DIM}|{C.RESET}"
+                # Value/Count
+                divider = f"{C.DIM}|{C.RESET} "
+                space_for_val = cols - visual_len(prefix) - visual_len(divider) - len(str(obj.count)) - 2
+                v_trunc = _truncate_visual(obj.display_val, max(0, space_for_val), "…")
                 
-                # Assemble Left Block
-                left_part = f"  {pointer} {title_fmt}{pad_left}"
-                if max_cat_w:
-                    left_part += f"{cat_fmt}{pad_cat}"
-                    
-                if v_str:
-                    left_part += f"{sep} {val_fmt}"
-                    
-                # Evaluate Right Block (Counts/Metrics) and Truncate Safely
-                if n_str:
-                    left_visible = visual_len(left_part)
-                    cnt_visible = visual_len(cnt_fmt)
-                    space_available = cols - left_visible - cnt_visible - 2
-                    
-                    if space_available > 0:
-                        line = left_part + (" " * space_available) + cnt_fmt
-                    else:
-                        max_left = cols - cnt_visible - 5
-                        truncated = left_part[:max_left] + "…"
-                        line = truncated + (" " * (cols - visual_len(truncated) - cnt_visible)) + cnt_fmt
-                else:
-                    line = left_part
-                    # Fallback truncation if there's no count but the line is too long
-                    if visual_len(line) > cols - 2:
-                        line = line[:cols - 3] + "…"
-                        
+                v_str = f"{C.PRIMARY}{C.BOLD}{v_trunc}{C.RESET}" if is_current else f"{C.DIM}{v_trunc}{C.RESET}"
+                n_str = f"{C.PRIMARY}{obj.count}{C.RESET}" if is_current else f"{C.DIM}{obj.count}{C.RESET}"
+                
+                line = f"{prefix}{divider}{v_str}"
+                line += " " * max(0, cols - visual_len(line) - len(str(obj.count)) - 1) + n_str
+                out.append(line)
+        else:
+            # Render items without extended metadata
+            for i in range(viewport, min(viewport + vis, n)):
+                obj = items[i]
+                is_current = (i == cursor)
+                
+                # Extract the display string from the Choice object
+                display_text = obj.title
+                
+                # Apply color and styling
+                t_fmt = f"{C.PRIMARY if is_current else C.DIM}{display_text}{C.RESET}"
+                
+                # Prefix (including space for pointer to match layout)
+                ptr = "›" if is_current else " "
+                prefix = f"  {C.ACCENT}{ptr}{C.RESET}   {t_fmt}"
+                
+                # Calculate padding to ensure clean right-alignment if needed
+                line = prefix
+                line += " " * max(0, cols - visual_len(line) - 1)
                 out.append(line)
 
         remaining = n - viewport - vis
-        out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
+        if remaining > 0:
+            out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}")
+        
         out.extend(hint_lines)
         return out
-
-    result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[2J\033[H")
-        sys.stdout.flush()
+        sys.stdout.write("\033[2J\033[H"); sys.stdout.flush()
         w.render(_lines())
-
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[2J\033[H")
-                sys.stdout.flush()
+                sys.stdout.write("\033[2J\033[H"); sys.stdout.flush()
                 w.anchor_reset()
                 w.render(_lines())
                 continue
-
-            if not _wait_for_keypress(0.05):
-                continue
-
+            if not _wait_for_keypress(0.05): continue
             key = _read_key(fd)
-            if   key == 'CTRL_C':                break
-            elif key in ('UP',   'k'):           cursor = (cursor - 1) % len(items); w.render(_lines())
-            elif key in ('DOWN', 'j'):           cursor = (cursor + 1) % len(items); w.render(_lines())
-            elif key == 'HOME':                  cursor = 0;                          w.render(_lines())
-            elif key == 'END':                   cursor = len(items) - 1;             w.render(_lines())
-            elif key == 'PGUP':                  cursor = max(0, cursor - _visible_rows()); w.render(_lines())
-            elif key == 'PGDN':                  cursor = min(len(items) - 1, cursor + _visible_rows()); w.render(_lines())
-            elif key == 'ENTER':                 result = items[cursor].value; break
-            elif key.lower() == 'q':             result = None; break
-
+            if key == 'CTRL_C': break
+            elif key in ('UP', 'k'): cursor = (cursor - 1) % len(items); w.render(_lines())
+            elif key in ('DOWN', 'j'): cursor = (cursor + 1) % len(items); w.render(_lines())
+            elif key == 'ENTER': return items[cursor].value
+            elif extra_hints and key in extra_hints: sys.stdout.write("\033[2J\033[H"); next(iter(extra_hints[key].values()))(); w.anchor_reset(); w.render(_lines())
+            elif key.lower() == 'q': break
     finally:
-        _restore_term_attrs(fd, old)
-        w.clear()
-
-    return result
+        _restore_term_attrs(fd, old); w.clear()
+    return None
 
 # ── checkbox() ────────────────────────────────────────────────────────────────
-
-# CONSOLIDATED CHECKBOX FIX
-# Replace the checkbox() function (lines 556-848) with this
 
 def checkbox(
     message: str, 
@@ -635,22 +617,33 @@ def checkbox(
 
     raw_items = [{'obj': item, 'dimmed': False} for item in items]
     index = 0
+    viewport = 0
     locked_category = None
 
     def update_interlock_states(structured_list: list):
         nonlocal locked_category
+        # Find all currently checked items
         checked_items = [i for i in structured_list if i['obj'].checked]
         
+        # If nothing is checked, unlock everything
         if not checked_items or interlock_category_callback is None:
             locked_category = None
             for i in structured_list:
                 i['dimmed'] = False
             return
 
+        # Determine the locked category based on the first checked item
         locked_category = interlock_category_callback(checked_items[0]['obj'].value)
+        
+        # Dim items that don't match the locked category
         for i in structured_list:
             item_cat = interlock_category_callback(i['obj'].value)
-            i['dimmed'] = (item_cat != locked_category)
+            # An item is ONLY dimmed if it's NOT checked AND belongs to a different category
+            # If it is checked, it must be part of the locked category
+            if i['obj'].checked:
+                i['dimmed'] = (item_cat != locked_category)
+            else:
+                i['dimmed'] = (item_cat != locked_category)
 
     def _next_index(current: int, structured_list: list, direction: int) -> int:
         n = len(structured_list)
@@ -663,102 +656,114 @@ def checkbox(
 
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
-    _set_raw(fd)
-    sys.stdout.write(C.HIDE)
-    sys.stdout.flush()
-    
     w = _Widget(fd)
-    
-    # Pre-calculate column widths
-    max_left_w = 0
-    max_cat_w = 0
-    for item in raw_items:
-        obj = item['obj']
-        left_len = visual_len(obj.title)
-        if obj.sub_label:
-            left_len += visual_len(obj.sub_label) + 3
-        max_left_w = max(max_left_w, left_len)
-        max_cat_w = max(max_cat_w, visual_len(obj.category))
     
     update_interlock_states(raw_items)
 
     def _lines() -> list[str]:
+        nonlocal viewport
         cols = _cols()
         out = (header() if callable(header) else list(header or []))
         out.append(f"  {C.DIM}{message}{C.RESET}")
 
-        # 1. Dynamically calculate widths based on current data
-        # We need these to ensure the "|" dividers and values line up
-        max_left_w = 0
-        max_cat_w = 0
+        # Viewport logic
+        fixed_overhead = len(out) + 2 
+        vis = max(2, _visible_rows() - fixed_overhead - 1)
+        n = len(raw_items)
+        if viewport > max(0, n - vis): viewport = max(0, n - vis)
+        if index < viewport: viewport = index
+        elif index >= viewport + vis: viewport = index - vis + 1
+
+        # Calculate ideal widths
+        ideal_title_w = 0
+        ideal_cat_w = 0
+        ideal_val_w = 0
         for s_item in raw_items:
             obj = s_item['obj']
-            # Title + Sub-label width
             t_len = visual_len(obj.title) + (visual_len(obj.sub_label) + 3 if obj.sub_label else 0)
-            max_left_w = max(max_left_w, t_len)
-            max_cat_w = max(max_cat_w, visual_len(obj.category))
+            ideal_title_w = max(ideal_title_w, t_len)
+            ideal_cat_w = max(ideal_cat_w, visual_len(obj.category))
+            ideal_val_w = max(ideal_val_w, visual_len(obj.display_val))
 
-        for idx, s_item in enumerate(raw_items):
-            obj = s_item['obj']
-            is_current = (idx == index)
-            is_dimmed = s_item['dimmed']
+        # Distribute space
+        available = cols - 15
+        MIN_TITLE, MIN_CAT, MIN_VAL = 16, 5, 12  # Slightly increased MIN_TITLE
+        MIN_TOTAL = MIN_TITLE + MIN_CAT + MIN_VAL
+        
+        total_ideal = ideal_title_w + ideal_cat_w + ideal_val_w
+        if available < MIN_TOTAL:
+            use_title_w, use_cat_w, use_val_w = MIN_TITLE, MIN_CAT, MIN_VAL
+        elif available >= total_ideal:
+            use_title_w, use_cat_w, use_val_w = ideal_title_w, ideal_cat_w, ideal_val_w
+        else:
+            remaining = available - MIN_TOTAL
+            take_title = min(max(0, ideal_title_w - MIN_TITLE), remaining)
+            use_title_w = MIN_TITLE + take_title
+            remaining -= take_title
+            take_cat = min(max(0, ideal_cat_w - MIN_CAT), remaining)
+            use_cat_w = MIN_CAT + take_cat
+            remaining -= take_cat
+            use_val_w = MIN_VAL + remaining
 
-            # Formatting logic (retaining your current variables)
+        # Render items
+        for i in range(viewport, min(viewport + vis, n)):
+            s_item = raw_items[i]
+            obj, is_dimmed = s_item['obj'], s_item['dimmed']
+            is_current = (i == index)
+
+            # Flexible Title/Sub-label split
+            sub_part = f" ({obj.sub_label})" if obj.sub_label else ""
+            if visual_len(obj.title) + visual_len(sub_part) <= use_title_w:
+                t_trunc, s_trunc = obj.title, obj.sub_label or ""
+                s_fmt = f" {C.DIM}({s_trunc}){C.RESET}" if s_trunc else ""
+            else:
+                # Prioritize title, truncate sub-label first if needed
+                t_trunc = _truncate_visual(obj.title, max(MIN_TITLE, use_title_w - 6), "…")
+                s_trunc = _truncate_visual(obj.sub_label or "", 3, "…")
+                s_fmt = f" {C.DIM}({s_trunc}){C.RESET}" if obj.sub_label else ""
+            
+            t_fmt = f"{C.PRIMARY if is_current else ''}{t_trunc}{C.RESET}"
+            c_trunc = _truncate_visual(obj.category, use_cat_w, "…")
+            
+            # Apply styles
             if is_dimmed:
-                t_str = f"{C.DIM}{obj.title}{(' (' + obj.sub_label + ')') if obj.sub_label else ''}{C.RESET}"
-                c_str = f"{C.DIM}{obj.category}{C.RESET}" if obj.category else ""
-                v_str = f"{C.DIM}{obj.display_val}{C.RESET}" if obj.display_val else ""
-                n_str = f"{C.DIM}{obj.count}{C.RESET}" if obj.count else ""
-                ptr, glyph = " ", f"{C.DIM}•{C.RESET}"
+                t_str, c_str = f"{C.DIM}{t_fmt}{s_fmt}{C.RESET}", f"{C.DIM}{c_trunc}{C.RESET}"
             elif is_current:
-                t_str = f"{C.PRIMARY}{C.BOLD}{obj.title}{C.RESET}" + (f" {C.DIM}({obj.sub_label}){C.RESET}" if obj.sub_label else "")
-                c_str = f"{C.DIM}{obj.category}{C.RESET}" if obj.category else ""
-                v_str = f"{C.PRIMARY}{C.BOLD}{obj.display_val}{C.RESET}" if obj.display_val else ""
-                n_str = f"{C.PRIMARY}{obj.count}{C.RESET}" if obj.count else ""
-                ptr, glyph = "›", f"{C.GREEN}✔{C.RESET}" if obj.checked else f"{C.DIM}•{C.RESET}"
+                t_str, c_str = f"{t_fmt}{C.BOLD}{s_fmt}{C.RESET}", f"{C.PRIMARY}{C.BOLD}{c_trunc}{C.RESET}"
             else:
-                t_str = f"{obj.title}" + (f" {C.DIM}({obj.sub_label}){C.RESET}" if obj.sub_label else "")
-                c_str = f"{C.DIM}{obj.category}{C.RESET}" if obj.category else ""
-                v_str = f"{obj.display_val}" if obj.display_val else ""
-                n_str = f"{C.DIM}{obj.count}{C.RESET}" if obj.count else ""
-                ptr, glyph = " ", f"{C.GREEN}✔{C.RESET}" if obj.checked else f"{C.DIM}•{C.RESET}"
+                t_str, c_str = f"{t_fmt}{C.DIM}{s_fmt}{C.RESET}", f"{C.DIM}{c_trunc}{C.RESET}"
 
-            # 2. Re-apply Alignment Logic
-            # Calculate actual length to determine necessary padding
-            t_vis_len = visual_len(obj.title) + (visual_len(obj.sub_label) + 3 if obj.sub_label else 0)
-            pad_left = " " * (max_left_w - t_vis_len + 2)
-            pad_cat = " " * (max_cat_w - visual_len(obj.category) + 2) if max_cat_w else "  "
-
-            # Assemble prefix
-            prefix = f"  {ptr} {glyph}  {t_str}{pad_left}{c_str}{pad_cat}"
-            divider = f"{C.DIM}|{C.RESET} "
-            count_part = f" {n_str}" if n_str else ""
-
-            # 3. Handle Truncation with the preserved alignment
-            # Total width available for the value column
-            avail_val = cols - visual_len(prefix) - visual_len(divider) - visual_len(count_part)
+            pad_t = " " * max(0, use_title_w - visual_len(t_fmt + s_fmt) + 2)
+            pad_c = " " * max(0, use_cat_w - visual_len(c_trunc) + 2)
             
-            if visual_len(v_str) > avail_val and avail_val > 3:
-                display_val = v_str[:avail_val - 3] + "..."
-            else:
-                display_val = v_str
+            ptr = "›" if is_current else " "
+            glyph = f"{C.GREEN}✔{C.RESET}" if obj.checked else f"{C.DIM}•{C.RESET}"
+            prefix = f"  {C.ACCENT}{ptr}{C.RESET} {glyph}  {t_str}{pad_t}{c_str}{pad_c}"
             
-            line = f"{prefix}{divider}{display_val}"
+            # Value/Count
+            divider = f"{C.DIM}|{C.RESET} " if obj.display_val else ""
+            space_for_val = cols - visual_len(prefix) - visual_len(divider) - len(str(obj.count)) - 2
+            v_trunc = _truncate_visual(obj.display_val, max(0, space_for_val), "…")
             
-            # 4. Final Count Placement
-            pad_right = cols - visual_len(line) - visual_len(count_part)
-            line += (" " * max(0, pad_right)) + count_part
+            v_str = f"{C.PRIMARY}{C.BOLD}{v_trunc}{C.RESET}" if is_current else f"{C.DIM}{v_trunc}{C.RESET}"
+            n_str = f"{C.PRIMARY}{obj.count}{C.RESET}" if is_current else f"{C.DIM}{obj.count}{C.RESET}"
             
+            line = f"{prefix}{divider}{v_str}"
+            line += " " * max(0, cols - visual_len(line) - len(str(obj.count)) - 1) + n_str
             out.append(line)
 
-        out.append("")
+        # "X more..." indicator
+        hidden_count = n - (viewport + vis)
+        if hidden_count > 0:
+            out.append(f"  {C.DIM}╷ {hidden_count} below{C.RESET}")
+
         hint = _hint(("↑↓", "move"), ("space", "toggle"), ("q", "quit"), ("↵", "confirm"))
         out.extend((hint[0] if isinstance(hint, tuple) else hint).split("\n"))
-        return out    
-
-    result = None
+        return out
+    
     try:
-        sys.stdout.write("\033[2J\033[H")
+        _set_raw(fd)
+        sys.stdout.write(C.HIDE)
         sys.stdout.flush()
         w.render(_lines())
         while True:
@@ -774,20 +779,18 @@ def checkbox(
             elif key in ('DOWN', 'j'): index = _next_index(index, raw_items, 1); w.render(_lines())
             elif key == 'SPACE':
                 target = raw_items[index]
-                if target and interlock_category_callback and locked_category:
-                    if interlock_category_callback(target['obj'].value) != locked_category and not target['obj'].checked:
-                        sys.stdout.write("\a"); sys.stdout.flush(); continue
+                if target['dimmed']: continue
                 target['obj'].checked = not target['obj'].checked
                 update_interlock_states(raw_items); w.render(_lines())
             elif key == 'ENTER':
-                result = [item['obj'].value for item in raw_items if item['obj'].checked]; break
+                return [item['obj'].value for item in raw_items if item['obj'].checked]
             elif key.lower() == 'q': break
     finally:
         _restore_term_attrs(fd, old)
         sys.stdout.write(C.SHOW)
         sys.stdout.flush()
         w.clear()
-    return result
+    return None
 
 # ── confirm() ─────────────────────────────────────────────────────────────────
 
@@ -1228,7 +1231,7 @@ def _build_list_edit_lines(
     
     return out, viewport
 
-def list_edit(message: str, initial_items: list | None = None, headers: tuple[str, ...] = ("ROLE", "NAME")) -> list | None:
+def list_edit(message: str, initial_items: list | None = None, headers: tuple[str, ...] = ("ROLE", "NAME")) -> list[tuple[str, str]] | None:
     """Arrow keys navigate, 'a' adds, 'e' edits in-place, 'd' deletes, Enter saves.
     
     Supports in-place cell editing with Tab navigation between columns.

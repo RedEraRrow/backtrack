@@ -26,14 +26,14 @@ from src.music_library import refresh_library_entry
 
 from src.id3.id3_tag_handler import (
     get_tag_info,
-    get_tag_category,
     summarize_tag_value,
     prompt_for_value,
     create_frame,
     rename_frame,
     create_apic_frame,
-    TAG_REGISTRY,
+    parse_composite_tag_id,
 )
+from src.id3.tag_registry import *
 
 
 # ============================================================================
@@ -312,28 +312,46 @@ def id3_browser(file_path: str, library: list = []) -> None:
         # Map tags to Choice objects for the new select engine
         tag_choices = []
         for t in tags:
-            info = get_tag_info(t)
+            from src.id3.id3_tag_handler import parse_composite_tag_id
+            base_id, desc_value, lang_value = parse_composite_tag_id(t)
+            info = get_tag_info(base_id)
             tag_choices.append(prompt.Choice(
                 title=t,
                 value=t,
-                category=get_tag_category(t).lower() if info else "",
-                sub_label=info.label if info and info.label else "",
+                category=get_ui_category(t) if info else "",
+                sub_label=get_preferred_tag_name(base_id),
                 display_val=summarize_tag_value(t, audio[t]),
             ))
 
         xml_data = library_metadata.get('xml_data') if library_metadata else None
         has_id3 = file_path.lower().endswith('.mp3')
-        extras = (["Add Tag"] if has_id3 else []) + (["Toggle XML"] if xml_data and has_id3 else []) + ["Back"]
+        extras = (["Toggle XML"] if xml_data and has_id3 else [])
         
         # Merge tag choices with functional extras
         all_choices = tag_choices + [prompt.Choice(e) for e in extras]
 
+        def _add_tag_flow():
+            tag_id = prompt.text("Tag ID (e.g. TPE2, TXXX:Transcription:eng):")
+            if tag_id:
+                from src.id3.id3_tag_handler import parse_composite_tag_id
+                base_id, _, _ = parse_composite_tag_id(tag_id)
+                info = get_tag_info(base_id)
+                value = prompt_for_value(base_id) if info else prompt.text(f"Value for {tag_id}:")
+                if value is not None:
+                    new_frame = create_frame(tag_id, value)
+                    if new_frame:
+                        audio.add(new_frame)
+                        _save(audio)
+                        print(f"Added {tag_id}.")
+                        time.sleep(1)
+
         choice = prompt.select(
             "Select tag to manage:",
             choices=all_choices,
-            header=_main_header
+            header=_main_header,
+            extra_hints={'n': {"new tag": _add_tag_flow}}
         )
-
+        
         if choice == "Toggle XML":
             show_xml = not show_xml
             continue
@@ -353,7 +371,7 @@ def id3_browser(file_path: str, library: list = []) -> None:
                         print(f"Added {tag_id}.")
                         time.sleep(1)
             continue
-        elif not choice or choice == "Back":
+        elif not choice:
             break
 
         # Edit tag logic (preserving your existing flow)
@@ -362,15 +380,16 @@ def id3_browser(file_path: str, library: list = []) -> None:
             if choice not in audio: break
             
             raw_val = audio[choice]
-            category = get_tag_category(choice)
+            category = get_ui_category(choice)
 
             def _tag_header() -> list[str]:
                 cols = ui_utils.get_terminal_width()
-                if tag_id:
-                    info = get_tag_info(tag_id)
+                if choice:
+                    tag_id = choice.title
+                    info = get_tag_info(str(tag_id))
                 else:
                     info = None
-                label = info.label if info else choice
+                label = info.name if info else choice
                 lines = [f"{C.BOLD}{choice}{C.RESET}  {C.DIM}({label}){C.RESET}", f"{C.DIM}{'─' * cols}{C.RESET}"]
                 
                 if category == 'image':
@@ -420,7 +439,7 @@ def id3_browser(file_path: str, library: list = []) -> None:
                     else: audio.add(old); print("Rename failed.")
                     time.sleep(1); break
             elif action == "Edit":
-                if (new_v := prompt_for_value(choice, current_value=audio.get(choice))) is not None:
+                if (new_v := prompt_for_value(choice, current_value=audio.get(choice), initial_people=getattr(raw_val, 'people', []))) is not None:
                     if (f := create_frame(choice, new_v)): audio.add(f); _save(audio); print("Updated.")
                     else: print("Format error."); time.sleep(1.5)
                     time.sleep(1); break

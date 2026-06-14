@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
     "ignore_hidden_files": False,
     "show_metadata_editor": True,
     "xml_db_path": "",
+    "tag_name_preferences" : {}
 }
 
 def _default_config_dir() -> Path:
