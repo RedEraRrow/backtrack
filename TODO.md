@@ -71,7 +71,7 @@ Legend: ✅ done · 🟡 partial · ⬜ open
 ⬜ 67. for the mds, also include an md on formatting for lyrics files etc.
 ⬜ 68. NOTE TO SELF: think about checking xml and m4p logic, in my recent memory it didn't work so i ignored it
 ⬜ 69. option to import to sylt from json and uslt or json and md, as well as option to import to uslt from txt, rtf, md etc.
-⬜ 70. ONGOING: ensure up-to-date mds, docstrings, and all other text. ensure all functions, classes, etc. across the project have docstrings
+⬜ 70. ONGOING: ensure up-to-date mds, docstrings, and all other text. ensure all functions, classes, files etc. across the project have docstrings.
 
 ## IDEA 
 How about with bulk editing, being able to set a pattern
