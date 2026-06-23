@@ -1,9 +1,3 @@
-"""
-Configuration management for Music Player.
-
-Handles loading, saving, and accessing application configuration.
-"""
-
 import json
 import os
 from pathlib import Path
@@ -22,12 +16,12 @@ DEFAULT_CONFIG = {
     "player_view": "default",
     "ignore_hidden_files": False,
     "show_metadata_editor": True,
+    "show_lyrics_editor": True,
     "xml_db_path": "",
     "tag_name_preferences" : {}
 }
 
 def _default_config_dir() -> Path:
-    """Return the user config directory for Backtrack."""
     if os.name == "nt":
         appdata = os.getenv("APPDATA")
         if appdata:
@@ -43,23 +37,21 @@ CONFIG_DIR = Path(os.getenv("BACKTRACK_CONFIG_DIR") or _default_config_dir())
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 def load_config() -> dict:
-    """Load configuration from file or create defaults if missing."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_FILE.exists():
         with open(CONFIG_FILE, "w") as f:
             json.dump(DEFAULT_CONFIG, f, indent=4)
         return DEFAULT_CONFIG.copy()
-    
+
     with open(CONFIG_FILE, "r") as f:
         cfg = json.load(f)
-    
+
     for key, value in DEFAULT_CONFIG.items():
         cfg.setdefault(key, value)
-    
+
     return cfg
 
 def save_config(config: dict) -> None:
-    """Save configuration to file."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)

@@ -15,6 +15,9 @@ from __future__ import annotations
 import re
 import sys
 import os
+import math
+import datetime
+import calendar as cal
 import tempfile
 import textwrap
 import time
@@ -24,10 +27,6 @@ from typing import Any, Callable
 
 from src.utils import ui_utils
 C = ui_utils.Colors
-
-def visual_len(s: str) -> int:
-    """Get visible length of string, ignoring ANSI escape codes."""
-    return len(re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s))
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -67,8 +66,6 @@ def _wait_for_keypress(timeout: float = 0.05) -> bool:
     return bool(_sel.select([sys.stdin], [], [], timeout)[0])
 
 
-# ── ANSI ──────────────────────────────────────────────────────────────────────
-
 def _clrline():        return "\033[2K\r"
 def _goto(row, col=1): return f"\033[{row};{col}H"
 def _col(n):           return f"\033[{n}G"
@@ -82,12 +79,12 @@ def _hint(*pairs, extra="") -> str:
         return ""
 
     cols = ui_utils.get_terminal_width()
-    
+
     # Parse items into structured tuples: (key, value, raw_string_for_math)
     parsed_items = []
     for k, v in pairs:
         parsed_items.append((k, v, f"[{k}] {v}"))
-        
+
     if extra:
         plain_extra = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', extra).strip()
         if plain_extra:
@@ -104,20 +101,16 @@ def _hint(*pairs, extra="") -> str:
         return f"{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}{k}{C.RESET}{C.DIM}] {v}{C.RESET}"
 
     sep = f"{C.DIM} ⋅ {C.RESET}"
-    raw_sep_len = 3 
+    raw_sep_len = len(' ⋅ ')
 
-    # ──────────────────────────────────────────────────────────────────────────
     # LAYOUT 1: Centred Long Line
-    # ──────────────────────────────────────────────────────────────────────────
-    raw_len = sum(visual_len(raw) for _, _, raw in parsed_items) + raw_sep_len * (total_items - 1)
+    raw_len = sum(len(raw) for _, _, raw in parsed_items) + raw_sep_len * (total_items - 1)
     if raw_len <= cols:
         line = sep.join(render_inline(k, v) for k, v, _ in parsed_items)
         pad = max(0, cols - raw_len) // 2
         return (" " * pad) + line
 
-    # ──────────────────────────────────────────────────────────────────────────
     # LAYOUT 2: Upside-Down Pyramid
-    # ──────────────────────────────────────────────────────────────────────────
     def get_pyramid_distribution(n):
         rows = []
         current_row_size = math.ceil(math.sqrt(2 * n))
@@ -128,7 +121,6 @@ def _hint(*pairs, extra="") -> str:
             current_row_size = max(1, current_row_size - 1)
         return rows
 
-    import math
     pyr_dist = get_pyramid_distribution(total_items)
     if len(pyr_dist) > 1 and pyr_dist[0] > pyr_dist[-1]:
         fits = True
@@ -136,24 +128,22 @@ def _hint(*pairs, extra="") -> str:
         idx = 0
         for r in pyr_dist:
             row_items = parsed_items[idx:idx+r]
-            r_raw_len = sum(visual_len(raw) for _, _, raw in row_items) + raw_sep_len * (len(row_items) - 1)
-            
+            r_raw_len = sum(len(raw) for _, _, raw in row_items) + raw_sep_len * (len(row_items) - 1)
+
             if r_raw_len > cols:
                 fits = False
                 break
-                
+
             line = sep.join(render_inline(k, v) for k, v, _ in row_items)
             pad = max(0, cols - r_raw_len) // 2
             pyr_lines.append((" " * pad) + line)
             idx += r
-            
+
         if fits:
             return "\n".join(pyr_lines)
 
-    # ──────────────────────────────────────────────────────────────────────────
     # LAYOUT 3: Grid (Side-by-side uniform columns)
-    # ──────────────────────────────────────────────────────────────────────────
-    max_item_len = max((visual_len(raw) for _, _, raw in parsed_items), default=0)
+    max_item_len = max((len(raw) for _, _, raw in parsed_items), default=0)
     gutter = 4
     col_width = max_item_len + gutter
     possible_cols = max(1, cols // col_width)
@@ -165,18 +155,16 @@ def _hint(*pairs, extra="") -> str:
             raw_row_len = sum(col_width for _ in row) - gutter
             formatted_parts = []
             for k, v, raw in row:
-                space_padding = " " * (col_width - visual_len(raw))
+                space_padding = " " * (col_width - len(raw))
                 formatted_parts.append(render_inline(k, v) + space_padding)
-            
+
             row_str = "".join(formatted_parts).rstrip()
             pad = max(0, cols - raw_row_len) // 2
             grid_lines.append((" " * pad) + row_str)
         return "\n".join(grid_lines)
 
-    # ──────────────────────────────────────────────────────────────────────────
     # LAYOUT 4: Aligned Vertical Stack
     # Center aligned: Keys right-aligned to spine, values left-aligned from spine
-    # ──────────────────────────────────────────────────────────────────────────
     max_k_len = max((len(f"[{k}]") for k, _, _ in parsed_items if k), default=0)
     max_v_len = max((len(v) for _, v, _ in parsed_items), default=0)
     total_stack_w = max_k_len + 1 + max_v_len # key + space + value
@@ -184,7 +172,7 @@ def _hint(*pairs, extra="") -> str:
     if total_stack_w <= cols:
         stack_lines = []
         global_pad = max(0, cols - total_stack_w) // 2
-        
+
         for k, v, _ in parsed_items:
             if k:
                 k_raw = f"[{k}]"
@@ -192,57 +180,47 @@ def _hint(*pairs, extra="") -> str:
                 left_side = f"{k_space_pad}{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}{k}{C.RESET}{C.DIM}]{C.RESET}"
             else:
                 left_side = " " * max_k_len
-                
+
             right_side = f"{C.DIM}{v}{C.RESET}"
             stack_lines.append(f"{' ' * global_pad}{left_side} {right_side}")
         return "\n".join(stack_lines)
 
-    # ──────────────────────────────────────────────────────────────────────────
     # LAYOUT 5: Split Vertical Stack (Ultimate Narrow Fallback)
     # Key on row 1, value on row 2, dot separator between pairs.
-    # ──────────────────────────────────────────────────────────────────────────
     split_lines = []
     for i, (k, v, _) in enumerate(parsed_items):
         if k:
             k_raw = f"[{k}]"
             k_pad = max(0, cols - len(k_raw)) // 2
             split_lines.append(f"{' ' * k_pad}{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}{k}{C.RESET}{C.DIM}]{C.RESET}")
-            
+
         v_pad = max(0, cols - len(v)) // 2
         split_lines.append(f"{' ' * v_pad}{C.DIM}{v}{C.RESET}")
-        
+
         # Add centered separator dot between discrete blocks
         if i < total_items - 1:
             dot_pad = max(0, cols - 1) // 2
             split_lines.append(f"{' ' * dot_pad}{C.DIM}⋅{C.RESET}")
-            
+
     return "\n".join(split_lines)
 
 def _render_status_bar():
-    """Renders the status bar at the absolute bottom of the terminal."""
-    cols = ui_utils.get_terminal_width()
     rows = ui_utils.get_terminal_height()
     status = ui_utils.get_status_line()
-    
-    if status:
-        sys.stdout.write(f"\033[{rows};1H\033[2K{status}")
-        sys.stdout.flush()
+    # \0337 / \0338 save and restore cursor position (DEC) so the cursor
+    # stays at the text input caret rather than jumping to the status bar row.
+    sys.stdout.write(f"\0337\033[{rows};1H\033[2K{status}\0338")
+    sys.stdout.flush()
 
-
-# ── Choice ────────────────────────────────────────────────────────────────────
 
 class Choice:
-    __slots__ = ('title', 'value', 'checked', 'category', 'sub_label', 'display_val', 'count')
+    __slots__ = ('title', 'value', 'checked')
 
-    def __init__(self, title: str, value: object = None, checked: bool = False, 
-                 category: str = "", sub_label: str = "", display_val: str = "", count: str = "") -> None:
-        self.title       = title
-        self.value       = value if value is not None else title
-        self.checked     = checked
-        self.category    = category
-        self.sub_label   = sub_label
-        self.display_val = display_val
-        self.count       = count
+    def __init__(self, title: str, value: object = None, checked: bool = False) -> None:
+        self.title   = title
+        self.value   = value if value is not None else title
+        self.checked = checked
+
 
 def _norm(choices: list) -> list:
     out = []
@@ -250,7 +228,7 @@ def _norm(choices: list) -> list:
         if isinstance(c, Choice):
             out.append(c)
         elif isinstance(c, str):
-            out.append(Choice(title=c, value=c))
+            out.append(Choice(c, c))
         elif isinstance(c, dict):
             out.append(Choice(
                 title   = c.get('name', c.get('title', str(c))),
@@ -261,13 +239,11 @@ def _norm(choices: list) -> list:
             out.append(Choice(c.title, c.value, getattr(c, 'checked', False)))
         else:
             s = str(c)
-            out.append(Choice(title=s, value=s))
+            out.append(Choice(s, s))
     return out
 
-# ── Key reader ────────────────────────────────────────────────────────────────
 
 def _read_key(fd: int) -> str:
-    """Read a single key press from file descriptor."""
     if _IS_WINDOWS:
         ch = msvcrt.getwch()
         if ch in ('\x00', '\xe0'):
@@ -291,6 +267,26 @@ def _read_key(fd: int) -> str:
             if ch2 == b'[':
                 ch3 = os.read(fd, 1)
                 seq = ch3.decode('utf-8', errors='replace')
+                if seq == '<':
+                    # SGR mouse event: \033[<btn;col;row{M|m}
+                    buf = ''
+                    while len(buf) < 24:
+                        c = os.read(fd, 1).decode('utf-8', errors='replace')
+                        if c in ('M', 'm'):
+                            parts = buf.split(';')
+                            if len(parts) == 3:
+                                try:
+                                    btn, col, row = int(parts[0]), int(parts[1]), int(parts[2])
+                                    if c == 'm':
+                                        return f'MOUSE_RELEASE:{btn}:{row}:{col}'
+                                    if btn == 64: return 'SCROLL_UP'
+                                    if btn == 65: return 'SCROLL_DOWN'
+                                    if btn in (0, 1, 2): return f'MOUSE_CLICK:{btn}:{row}:{col}'
+                                except ValueError:
+                                    pass
+                            return 'ESC'
+                        buf += c
+                    return 'ESC'
                 if seq.isdigit():
                     os.read(fd, 4)
                     return 'ESC'
@@ -300,7 +296,7 @@ def _read_key(fd: int) -> str:
                     '5': 'PGUP', '6': 'PGDN',
                 }.get(seq, 'ESC')
             return 'ESC'
-        except Exception:
+        except (OSError, EOFError):
             return 'ESC'
     decoded = ch.decode('utf-8', errors='replace')
     if decoded in ('\r', '\n'): return 'ENTER'
@@ -310,21 +306,24 @@ def _read_key(fd: int) -> str:
     if decoded == '\t':   return 'TAB'
     return decoded
 
-# ── Viewport helpers ──────────────────────────────────────────────────────────
-
 def _visible_rows() -> int:
-    """Get number of visible rows in terminal."""
     _, rows = ui_utils.get_terminal_size()
-    return max(4, rows - 6)
+    return max(4, rows - 7)  # -7 reserves last row for the persistent status bar
 
 
 def _cols() -> int:
-    """Get number of columns in terminal."""
     return ui_utils.get_terminal_width()
 
 
+def _rows() -> int:
+    return ui_utils.get_terminal_height()
+
+
+def _hint_lines(*pairs, extra="") -> list[str]:
+    return _hint(*pairs, extra=extra).splitlines()
+
+
 def _wrap_bordered_input_lines(text: str, content_width: int) -> list[str]:
-    """Wrap input text for a bordered prompt field."""
     lines: list[str] = []
     for raw_line in text.split("\n"):
         if raw_line == "":
@@ -334,8 +333,6 @@ def _wrap_bordered_input_lines(text: str, content_width: int) -> list[str]:
             lines.extend(wrapped)
     return lines
 
-
-# ── Widget: anchored block renderer ──────────────────────────────────────────
 
 class _Widget:
     """
@@ -348,7 +345,6 @@ class _Widget:
     """
 
     def __init__(self, fd: int) -> None:
-        """Initialize the widget with a file descriptor."""
         self.fd      = fd
         self.row     = None   # anchor row, 1-based
         self.last_h  = 0
@@ -360,15 +356,17 @@ class _Widget:
         self._full = True
 
     def render(self, lines: list) -> None:
-        """Render lines at the anchored row, or full-screen clear + redraw on resize."""
+        rows = ui_utils.get_terminal_height()
+        lines = lines[:rows - 1]  # reserve last row for the persistent status bar
+
         if self._full or self.row is None:
             # Full clear prevents any ghost lines from a previous render.
-            sys.stdout.write("\033[2J\033[H" + C.HIDE)
+            sys.stdout.write("\033[H\033[3J\033[J" + C.HIDE)
             self.row   = 1
             self._full = False
             out = ""
         else:
-            out = C.HIDE + _goto(self.row) + "\033[J" 
+            out = C.HIDE + _goto(self.row) + "\033[J"
 
         for line in lines:
             out += _clrline() + line + "\n"
@@ -376,274 +374,194 @@ class _Widget:
         for _ in range(max(0, self.last_h - len(lines))):
             out += _clrline() + "\n"
         self.last_h = len(lines)
+
+        # Stamp the status bar atomically in the same flush — no flicker.
+        status = ui_utils.get_status_line()
+        out += f"\033[{rows};1H\033[2K{status}"
+
         sys.stdout.write(out)
         sys.stdout.flush()
 
     def clear(self) -> None:
-        """Clear the rendered content from the terminal."""
-        if self.row is None:
-            sys.stdout.write(C.SHOW)
-            sys.stdout.flush()
-            return
-        out = _goto(self.row)
-        for _ in range(self.last_h + 1):
-            out += _clrline() + "\n"
-        out += _goto(self.row) + C.SHOW
-        sys.stdout.write(out)
+        sys.stdout.write("\033[H\033[3J\033[J" + C.SHOW)
         sys.stdout.flush()
         self.last_h = 0
-
-
-# ── select() ─────────────────────────────────────────────────────────────────
-
-def _truncate_visual(text: str, max_visual_len: int, ellipsis: str = "…") -> str:
-    """Truncate text to max visual length, preserving readability.
-    
-    Counts actual visible characters, not ANSI codes.
-    Returns truncated text without ANSI codes.
-    """
-    if max_visual_len <= 0:
-        return ""
-    visible = text
-    if visual_len(visible) <= max_visual_len:
-        return visible
-    
-    # Truncate to fit ellipsis
-    target = max_visual_len - visual_len(ellipsis)
-    if target <= 0:
-        return visible[:1]
-    
-    result = ""
-    vis_count = 0
-    for char in visible:
-        if vis_count >= target:
-            break
-        result += char
-        vis_count += 1
-    
-    return result + ellipsis
+        self.row    = None
+        self._full  = True
 
 
 def select(message: str, choices: list,
            header: list | None | Callable[[], list[str]] = None,
-           extra_hints: dict[str, dict] | None = None) -> str | None:
-    """Arrow keys / jk navigate, Enter selects, q / Ctrl-C → None."""
+           extra_hints: dict[str, str] | None = None) -> str | None:
+    """Arrow keys / jk navigate, Enter selects, q / Ctrl-C → None.
+
+    Args:
+        message: Prompt label shown above the list.
+        choices: Items to choose from (str, dict, or Choice).
+        header:  Optional list of plain strings rendered above the prompt.
+        extra_hints: Optional dict of custom key-action bindings to merge
+                     (e.g., {'space': 'toggle', 'a': 'all'}).
+    """
     items = _norm(choices)
     if not items:
         return None
 
-    has_extended_data = any(
-        item.category or item.sub_label or 
-        getattr(item, 'display_val', "") or item.count
-        for item in items
-    )
-
-    cursor = 0
+    cursor   = 0
     viewport = 0
-    fd = sys.stdin.fileno()
-    old = _get_term_attrs(fd)
-    w = _Widget(fd)
-    display_hints = {k: list(v.keys())[0] for k, v in (extra_hints or {}).items()}
-    base_hints = {"↑↓": "move", "q": "quit", "↵": "confirm"}
-    combined_hints = {**display_hints, **base_hints} if extra_hints else base_hints
+    fd       = sys.stdin.fileno()
+    old      = _get_term_attrs(fd)
+    w        = _Widget(fd)
 
-    def get_hints_for_tier(tier: int) -> list[tuple[str, str]]:
-        if tier <= 3: return list(combined_hints.items())
-        elif tier == 4: return [(k.split("/")[0], v) for k, v in combined_hints.items()]
-        else: return [("↑↓", "move"), ("q", "quit"), ("↵", "confirm")]
+    base_hints = {
+        "↑↓": "move",
+        "q": "quit",
+        "↵": "confirm"
+    }
 
-    last_tier = 1
+    if extra_hints:
+        combined_hints = {**extra_hints, **base_hints}
+    else:
+        combined_hints = base_hints
+
+    _last_hlen = [0]
 
     def _header_lines() -> list[str]:
-        return header() if callable(header) else list(header or [])
+        if header is None:
+            return []
+        return header() if callable(header) else list(header)
 
-    def _lines() -> list[str]:
-        nonlocal viewport, last_tier
-        cols = _cols()
+    def _lines():
+        nonlocal viewport
+        cols    = _cols()
         h_lines = _header_lines()
-        
-        # Hints handling
-        active_pairs = get_hints_for_tier(last_tier)
-        hint_res = _hint(*active_pairs)
-        hint_raw, tier = hint_res if isinstance(hint_res, tuple) else (hint_res, 1)
-        if tier != last_tier:
-            last_tier = tier
-            hint_raw = _hint(*get_hints_for_tier(tier))[0]
-        hint_lines = hint_raw.split("\n") if hint_raw else []
-        
-        # Viewport logic
+        _last_hlen[0] = len(h_lines)
+
+        max_header_w = 0
+        for hl in h_lines:
+            plain_hl = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', hl)
+            plain_hl = re.sub(r'[╭─│╰╮╯┌┐└┘├┤┬┴┼═║╔╗╚╝]', '', plain_hl).strip()
+            if len(plain_hl) > max_header_w:
+                max_header_w = len(plain_hl)
+
+        layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
+
+        hint_lines = _hint(*list(combined_hints.items()), extra=layout_constraint).splitlines()
+
         fixed_overhead = len(h_lines) + len(hint_lines) + 2
-        vis = max(2, _visible_rows() - fixed_overhead - 1)
-        n = len(items)
-        if viewport > max(0, n - vis): viewport = max(0, n - vis)
-        if cursor < viewport: viewport = cursor
-        elif cursor >= viewport + vis: viewport = cursor - vis + 1
+        vis     = max(2, _visible_rows() - fixed_overhead)
+
+        n       = len(items)
+        if cursor < viewport:
+            viewport = cursor
+        elif cursor >= viewport + vis:
+            viewport = cursor - vis + 1
 
         out = h_lines[:]
         out.append(f"  {C.DIM}{message}{C.RESET}")
-        
-        # Above indicator
-        if viewport > 0:
-            out.append(f"  {C.DIM}╷ {viewport} above{C.RESET}")
-        
-        if has_extended_data:
-            # Calculate ideal widths (Unified with checkbox list)
-            ideal_title_w = max((visual_len(i.title) + (visual_len(i.sub_label) + 3 if i.sub_label else 0) for i in items), default=0)
-            ideal_cat_w = max((visual_len(i.category) for i in items), default=0)
-            ideal_val_w = max((visual_len(getattr(i, 'display_val', "")) for i in items), default=0)
+        out.append(f"  {C.DIM}╵ {viewport} above{C.RESET}" if viewport > 0 else "")
 
-            # Distribute space (Unified MIN values)
-            available = cols - 15
-            MIN_TITLE, MIN_CAT, MIN_VAL = 16, 5, 12
-            MIN_TOTAL = MIN_TITLE + MIN_CAT + MIN_VAL
-            
-            if available < MIN_TOTAL:
-                use_title_w, use_cat_w, use_val_w = MIN_TITLE, MIN_CAT, MIN_VAL
-            elif available >= (ideal_title_w + ideal_cat_w + ideal_val_w):
-                use_title_w, use_cat_w, use_val_w = ideal_title_w, ideal_cat_w, ideal_val_w
+        for i in range(viewport, min(viewport + vis, n)):
+            label = str(items[i].title)
+            max_w = cols - 6
+            if len(label) > max_w:
+                label = label[:max_w - 1] + "…"
+            if i == cursor:
+                out.append(f"  {C.ACCENT}›{C.RESET} {C.PRIMARY}{C.BOLD}{label}{C.RESET}")
             else:
-                rem = available - MIN_TOTAL
-                take_title = min(max(0, ideal_title_w - MIN_TITLE), rem)
-                use_title_w = MIN_TITLE + take_title
-                rem -= take_title
-                take_cat = min(max(0, ideal_cat_w - MIN_CAT), rem)
-                use_cat_w = MIN_CAT + take_cat
-                rem -= take_cat
-                use_val_w = MIN_VAL + rem
-
-            # Render items
-            for i in range(viewport, min(viewport + vis, n)):
-                obj = items[i]
-                is_current = (i == cursor)
-
-                # Title/Sub-label processing
-                sub_part = f" ({obj.sub_label})" if obj.sub_label else ""
-                if visual_len(obj.title) + visual_len(sub_part) <= use_title_w:
-                    t_trunc, s_trunc = obj.title, obj.sub_label or ""
-                    s_fmt = f" {C.DIM}({s_trunc}){C.RESET}" if s_trunc else ""
-                else:
-                    t_trunc = _truncate_visual(obj.title, max(MIN_TITLE, use_title_w - 6), "…")
-                    s_trunc = _truncate_visual(obj.sub_label or "", 3, "…")
-                    s_fmt = f" {C.DIM}({s_trunc}){C.RESET}" if obj.sub_label else ""
-                
-                t_fmt = f"{C.PRIMARY if is_current else ''}{t_trunc}{C.RESET}"
-                c_trunc = _truncate_visual(obj.category, use_cat_w, "…")
-                
-                # Apply styles
-                if is_current:
-                    t_str, c_str = f"{t_fmt}{C.BOLD}{s_fmt}{C.RESET}", f"{C.PRIMARY}{C.BOLD}{c_trunc}{C.RESET}"
-                else:
-                    t_str, c_str = f"{t_fmt}{C.DIM}{s_fmt}{C.RESET}", f"{C.DIM}{c_trunc}{C.RESET}"
-
-                pad_t = " " * max(0, use_title_w - visual_len(t_fmt + s_fmt) + 2)
-                pad_c = " " * max(0, use_cat_w - visual_len(c_trunc) + 2)
-                
-                # Prefix (including space for glyph to match checkbox alignment)
-                ptr = "›" if is_current else " "
-                prefix = f"  {C.ACCENT}{ptr}{C.RESET}   {t_str}{pad_t}{c_str}{pad_c}"
-                
-                # Value/Count
-                divider = f"{C.DIM}|{C.RESET} "
-                space_for_val = cols - visual_len(prefix) - visual_len(divider) - len(str(obj.count)) - 2
-                v_trunc = _truncate_visual(obj.display_val, max(0, space_for_val), "…")
-                
-                v_str = f"{C.PRIMARY}{C.BOLD}{v_trunc}{C.RESET}" if is_current else f"{C.DIM}{v_trunc}{C.RESET}"
-                n_str = f"{C.PRIMARY}{obj.count}{C.RESET}" if is_current else f"{C.DIM}{obj.count}{C.RESET}"
-                
-                line = f"{prefix}{divider}{v_str}"
-                line += " " * max(0, cols - visual_len(line) - len(str(obj.count)) - 1) + n_str
-                out.append(line)
-        else:
-            # Render items without extended metadata
-            for i in range(viewport, min(viewport + vis, n)):
-                obj = items[i]
-                is_current = (i == cursor)
-                
-                # Extract the display string from the Choice object
-                display_text = obj.title
-                
-                # Apply color and styling
-                t_fmt = f"{C.PRIMARY if is_current else C.DIM}{display_text}{C.RESET}"
-                
-                # Prefix (including space for pointer to match layout)
-                ptr = "›" if is_current else " "
-                prefix = f"  {C.ACCENT}{ptr}{C.RESET}   {t_fmt}"
-                
-                # Calculate padding to ensure clean right-alignment if needed
-                line = prefix
-                line += " " * max(0, cols - visual_len(line) - 1)
-                out.append(line)
+                out.append(f"    {C.DIM}{label}{C.RESET}")
 
         remaining = n - viewport - vis
-        if remaining > 0:
-            out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}")
-        
+        out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
         out.extend(hint_lines)
         return out
+
+    result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[2J\033[H"); sys.stdout.flush()
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000h\033[?1006h")
+        sys.stdout.write("\033[H\033[3J\033[J")
+        sys.stdout.flush()
         w.render(_lines())
+
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[2J\033[H"); sys.stdout.flush()
+                sys.stdout.write("\033[H\033[3J\033[J")
+                sys.stdout.flush()
                 w.anchor_reset()
                 w.render(_lines())
                 continue
-            if not _wait_for_keypress(0.05): continue
-            key = _read_key(fd)
-            if key == 'CTRL_C': break
-            elif key in ('UP', 'k'): cursor = (cursor - 1) % len(items); w.render(_lines())
-            elif key in ('DOWN', 'j'): cursor = (cursor + 1) % len(items); w.render(_lines())
-            elif key == 'ENTER': return items[cursor].value
-            elif extra_hints and key in extra_hints: sys.stdout.write("\033[2J\033[H"); next(iter(extra_hints[key].values()))(); w.anchor_reset(); w.render(_lines())
-            elif key.lower() == 'q': break
-    finally:
-        _restore_term_attrs(fd, old); w.clear()
-    return None
 
-# ── checkbox() ────────────────────────────────────────────────────────────────
+            if not _wait_for_keypress(0.05):
+                continue
+
+            key = _read_key(fd)
+            if   key == 'CTRL_C':                break
+            elif key in ('UP',   'k'):           cursor = (cursor - 1) % len(items); w.render(_lines())
+            elif key in ('DOWN', 'j'):           cursor = (cursor + 1) % len(items); w.render(_lines())
+            elif key == 'HOME':                  cursor = 0;                          w.render(_lines())
+            elif key == 'END':                   cursor = len(items) - 1;             w.render(_lines())
+            elif key == 'PGUP':                  cursor = max(0, cursor - _visible_rows()); w.render(_lines())
+            elif key == 'PGDN':                  cursor = min(len(items) - 1, cursor + _visible_rows()); w.render(_lines())
+            elif key == 'ENTER':                 result = items[cursor].value; break
+            elif key.lower() == 'q':             result = None; break
+            elif key == 'SCROLL_UP':             cursor = (cursor - 1) % len(items); w.render(_lines())
+            elif key == 'SCROLL_DOWN':           cursor = (cursor + 1) % len(items); w.render(_lines())
+            elif key.startswith('MOUSE_CLICK:'):
+                parts = key.split(':')
+                r = int(parts[2])
+                if w.row is None:
+                    continue
+                i = r - w.row - _last_hlen[0] - 2
+                idx = viewport + i
+                if 0 <= idx < len(items):
+                    cursor = idx
+                    result = items[cursor].value
+                    break
+
+    finally:
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000l\033[?1006l")
+        _restore_term_attrs(fd, old)
+        w.clear()
+
+    return result
 
 def checkbox(
-    message: str, 
-    choices: list[Any], 
+    message: str,
+    choices: list[Any],
     interlock_category_callback: Callable[[Any], str] | None = None,
     header: list | None | Callable[[], list[str]] = None
 ) -> list[Any] | None:
-    
+    """
+    Checkbox picker with category interlocking support.
+    Proper ANSI handling, cursor visibility, and responsive layout.
+    """
     items = _norm(choices)
     if not items:
         return []
 
     raw_items = [{'obj': item, 'dimmed': False} for item in items]
     index = 0
-    viewport = 0
     locked_category = None
 
     def update_interlock_states(structured_list: list):
         nonlocal locked_category
-        # Find all currently checked items
         checked_items = [i for i in structured_list if i['obj'].checked]
-        
-        # If nothing is checked, unlock everything
+
         if not checked_items or interlock_category_callback is None:
             locked_category = None
             for i in structured_list:
                 i['dimmed'] = False
             return
 
-        # Determine the locked category based on the first checked item
         locked_category = interlock_category_callback(checked_items[0]['obj'].value)
-        
-        # Dim items that don't match the locked category
         for i in structured_list:
             item_cat = interlock_category_callback(i['obj'].value)
-            # An item is ONLY dimmed if it's NOT checked AND belongs to a different category
-            # If it is checked, it must be part of the locked category
-            if i['obj'].checked:
-                i['dimmed'] = (item_cat != locked_category)
-            else:
-                i['dimmed'] = (item_cat != locked_category)
+            i['dimmed'] = (item_cat != locked_category)
+
+    def _ansi_len(s: str) -> int:
+        return len(re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s))
 
     def _next_index(current: int, structured_list: list, direction: int) -> int:
         n = len(structured_list)
@@ -656,156 +574,240 @@ def checkbox(
 
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
+    _set_raw(fd)
+    if not _IS_WINDOWS:
+        sys.stdout.write("\033[?1000h\033[?1006h")
+    sys.stdout.write(C.HIDE)
+    sys.stdout.flush()
+
+    _cb_hlen = [0]
     w = _Widget(fd)
-    
-    update_interlock_states(raw_items)
+
+    def _header_lines() -> list[str]:
+        if header is None:
+            return []
+        return header() if callable(header) else list(header)
 
     def _lines() -> list[str]:
-        nonlocal viewport
         cols = _cols()
-        out = (header() if callable(header) else list(header or []))
+        out = _header_lines()
+        _cb_hlen[0] = len(out)
         out.append(f"  {C.DIM}{message}{C.RESET}")
 
-        # Viewport logic
-        fixed_overhead = len(out) + 2 
-        vis = max(2, _visible_rows() - fixed_overhead - 1)
-        n = len(raw_items)
-        if viewport > max(0, n - vis): viewport = max(0, n - vis)
-        if index < viewport: viewport = index
-        elif index >= viewport + vis: viewport = index - vis + 1
+        # Build structured items and calculate column widths
+        structured_items = []
+        max_label_w = 0
+        max_type_w = 0
+        max_frac_w = 0
 
-        # Calculate ideal widths
-        ideal_title_w = 0
-        ideal_cat_w = 0
-        ideal_val_w = 0
-        for s_item in raw_items:
-            obj = s_item['obj']
-            t_len = visual_len(obj.title) + (visual_len(obj.sub_label) + 3 if obj.sub_label else 0)
-            ideal_title_w = max(ideal_title_w, t_len)
-            ideal_cat_w = max(ideal_cat_w, visual_len(obj.category))
-            ideal_val_w = max(ideal_val_w, visual_len(obj.display_val))
+        for item in raw_items:
+            title = str(item['obj'].title)
+            fraction_part = ""
+            value_part = ""
 
-        # Distribute space
-        available = cols - 15
-        MIN_TITLE, MIN_CAT, MIN_VAL = 16, 5, 12  # Slightly increased MIN_TITLE
-        MIN_TOTAL = MIN_TITLE + MIN_CAT + MIN_VAL
-        
-        total_ideal = ideal_title_w + ideal_cat_w + ideal_val_w
-        if available < MIN_TOTAL:
-            use_title_w, use_cat_w, use_val_w = MIN_TITLE, MIN_CAT, MIN_VAL
-        elif available >= total_ideal:
-            use_title_w, use_cat_w, use_val_w = ideal_title_w, ideal_cat_w, ideal_val_w
-        else:
-            remaining = available - MIN_TOTAL
-            take_title = min(max(0, ideal_title_w - MIN_TITLE), remaining)
-            use_title_w = MIN_TITLE + take_title
-            remaining -= take_title
-            take_cat = min(max(0, ideal_cat_w - MIN_CAT), remaining)
-            use_cat_w = MIN_CAT + take_cat
-            remaining -= take_cat
-            use_val_w = MIN_VAL + remaining
+            frac_match = re.search(r"(\d+/\d+)\s*$", title)
+            if frac_match:
+                fraction_part = frac_match.group(1)
+                title = title[:frac_match.start()].rstrip()
 
-        # Render items
-        for i in range(viewport, min(viewport + vis, n)):
-            s_item = raw_items[i]
-            obj, is_dimmed = s_item['obj'], s_item['dimmed']
-            is_current = (i == index)
+            if re.search(r"\s*\|\s*", title):
+                left_side, right_side = re.split(r"\s*\|\s*", title, maxsplit=1)
+                value_part = right_side.strip()
+                title = left_side.rstrip()
 
-            # Flexible Title/Sub-label split
-            sub_part = f" ({obj.sub_label})" if obj.sub_label else ""
-            if visual_len(obj.title) + visual_len(sub_part) <= use_title_w:
-                t_trunc, s_trunc = obj.title, obj.sub_label or ""
-                s_fmt = f" {C.DIM}({s_trunc}){C.RESET}" if s_trunc else ""
-            else:
-                # Prioritize title, truncate sub-label first if needed
-                t_trunc = _truncate_visual(obj.title, max(MIN_TITLE, use_title_w - 6), "…")
-                s_trunc = _truncate_visual(obj.sub_label or "", 3, "…")
-                s_fmt = f" {C.DIM}({s_trunc}){C.RESET}" if obj.sub_label else ""
-            
-            t_fmt = f"{C.PRIMARY if is_current else ''}{t_trunc}{C.RESET}"
-            c_trunc = _truncate_visual(obj.category, use_cat_w, "…")
-            
-            # Apply styles
-            if is_dimmed:
-                t_str, c_str = f"{C.DIM}{t_fmt}{s_fmt}{C.RESET}", f"{C.DIM}{c_trunc}{C.RESET}"
+            type_tag = ""
+            type_match = re.search(r"(?:\[([^\]]+)\]|([a-zA-Z\s\d]+))\s*$", title)
+            if type_match:
+                raw_type = type_match.group(1) or type_match.group(2)
+                type_tag = raw_type.strip().lower()
+                title = title[:type_match.start()].rstrip()
+
+            label_name = title.rstrip()
+            max_label_w = max(max_label_w, len(label_name))
+            max_type_w = max(max_type_w, len(type_tag))
+            max_frac_w = max(max_frac_w, len(fraction_part))
+
+            structured_items.append({
+                'obj': item['obj'],
+                'label': label_name,
+                'type': type_tag,
+                'value': value_part,
+                'fraction': fraction_part,
+                'dimmed': item['dimmed']
+            })
+
+        update_interlock_states(structured_items)
+        for i, s_item in enumerate(structured_items):
+            raw_items[i]['dimmed'] = s_item['dimmed']
+
+        for idx, item in enumerate(structured_items):
+            is_current = (idx == index)
+
+            # Build components with proper color handling
+            if item['dimmed']:
+                state_glyph = f"{C.DIM}•{C.RESET}"
+                label_str = f"{C.DIM}{item['label']}{C.RESET}"
+                type_str = f"{C.DIM}{item['type']}{C.RESET}" if item['type'] else ""
+                value_str = f"{C.DIM}{item['value']}{C.RESET}" if item['value'] else ""
+                pointer = " "
             elif is_current:
-                t_str, c_str = f"{t_fmt}{C.BOLD}{s_fmt}{C.RESET}", f"{C.PRIMARY}{C.BOLD}{c_trunc}{C.RESET}"
+                state_glyph = f"{C.GREEN}✔{C.RESET}" if item['obj'].checked else f"{C.DIM}•{C.RESET}"
+                label_str = f"{C.PRIMARY}{C.BOLD}{item['label']}{C.RESET}"
+                type_str = f"{C.DIM}{item['type']}{C.RESET}" if item['type'] else ""
+                value_str = f"{C.PRIMARY}{C.BOLD}{item['value']}{C.RESET}" if item['value'] else ""
+                pointer = "›"
             else:
-                t_str, c_str = f"{t_fmt}{C.DIM}{s_fmt}{C.RESET}", f"{C.DIM}{c_trunc}{C.RESET}"
+                state_glyph = f"{C.GREEN}✔{C.RESET}" if item['obj'].checked else f"{C.DIM}•{C.RESET}"
+                label_str = item['label']
+                type_str = f"{C.DIM}{item['type']}{C.RESET}" if item['type'] else ""
+                value_str = item['value'] if item['value'] else ""
+                pointer = " "
 
-            pad_t = " " * max(0, use_title_w - visual_len(t_fmt + s_fmt) + 2)
-            pad_c = " " * max(0, use_cat_w - visual_len(c_trunc) + 2)
-            
-            ptr = "›" if is_current else " "
-            glyph = f"{C.GREEN}✔{C.RESET}" if obj.checked else f"{C.DIM}•{C.RESET}"
-            prefix = f"  {C.ACCENT}{ptr}{C.RESET} {glyph}  {t_str}{pad_t}{c_str}{pad_c}"
-            
-            # Value/Count
-            divider = f"{C.DIM}|{C.RESET} " if obj.display_val else ""
-            space_for_val = cols - visual_len(prefix) - visual_len(divider) - len(str(obj.count)) - 2
-            v_trunc = _truncate_visual(obj.display_val, max(0, space_for_val), "…")
-            
-            v_str = f"{C.PRIMARY}{C.BOLD}{v_trunc}{C.RESET}" if is_current else f"{C.DIM}{v_trunc}{C.RESET}"
-            n_str = f"{C.PRIMARY}{obj.count}{C.RESET}" if is_current else f"{C.DIM}{obj.count}{C.RESET}"
-            
-            line = f"{prefix}{divider}{v_str}"
-            line += " " * max(0, cols - visual_len(line) - len(str(obj.count)) - 1) + n_str
+            pad_label = " " * (max_label_w - len(item['label']) + 2)
+            pad_type = " " * (max_type_w - len(item['type']) + 2) if max_type_w else "  "
+
+            frac_str = item['fraction']
+            if frac_str:
+                pad_frac = " " * (max_frac_w - len(frac_str))
+                if is_current:
+                    frac_str = f"{pad_frac}{C.PRIMARY}{frac_str}{C.RESET}"
+                else:
+                    frac_str = f"{pad_frac}{C.DIM}{frac_str}{C.RESET}"
+
+            left_part = f"  {pointer} {state_glyph}  {label_str}{pad_label}{type_str}{pad_type}"
+            if value_str:
+                sep = f"{C.DIM}|{C.RESET} " if is_current or not item['dimmed'] else "| "
+                left_part += f"{sep}{value_str}"
+
+            left_visible = _ansi_len(left_part)
+            frac_visible = _ansi_len(frac_str) if frac_str else 0
+            space_available = cols - left_visible - frac_visible - 2
+
+            if space_available > 0:
+                line = left_part + (" " * space_available) + frac_str
+            else:
+                max_left = cols - frac_visible - 5
+                truncated = left_part[:max_left] + "…"
+                line = truncated + (" " * (cols - _ansi_len(truncated) - frac_visible)) + frac_str
+
             out.append(line)
 
-        # "X more..." indicator
-        hidden_count = n - (viewport + vis)
-        if hidden_count > 0:
-            out.append(f"  {C.DIM}╷ {hidden_count} below{C.RESET}")
+        out.append("")
+        hint_str = _hint(
+            ("↑↓", "move"),
+            ("spc", "toggle"),
+            ("q", "quit"),
+            ("↵", "confirm")
+        )
+        if isinstance(hint_str, tuple):
+            hint_str = hint_str[0]
+        out.extend(hint_str.split("\n") if hint_str else [])
 
-        hint = _hint(("↑↓", "move"), ("space", "toggle"), ("q", "quit"), ("↵", "confirm"))
-        out.extend((hint[0] if isinstance(hint, tuple) else hint).split("\n"))
         return out
-    
+
+    result = None
     try:
-        _set_raw(fd)
-        sys.stdout.write(C.HIDE)
+        sys.stdout.write("\033[H\033[3J\033[J")
         sys.stdout.flush()
         w.render(_lines())
+
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.write("\033[H\033[3J\033[J")
+                sys.stdout.flush()
                 w.anchor_reset()
                 w.render(_lines())
                 continue
-            if not _wait_for_keypress(0.05): continue
+
+            if not _wait_for_keypress(0.05):
+                continue
+
             key = _read_key(fd)
-            if key == 'CTRL_C': break
-            elif key in ('UP', 'k'): index = _next_index(index, raw_items, -1); w.render(_lines())
-            elif key in ('DOWN', 'j'): index = _next_index(index, raw_items, 1); w.render(_lines())
+
+            if key == 'CTRL_C':
+                break
+            elif key in ('UP', 'k'):
+                index = _next_index(index, raw_items, -1)
+                w.render(_lines())
+            elif key in ('DOWN', 'j'):
+                index = _next_index(index, raw_items, 1)
+                w.render(_lines())
+            elif key == 'SCROLL_UP':
+                index = _next_index(index, raw_items, -1)
+                w.render(_lines())
+            elif key == 'SCROLL_DOWN':
+                index = _next_index(index, raw_items, 1)
+                w.render(_lines())
+            elif key.startswith('MOUSE_CLICK:'):
+                parts = key.split(':')
+                r = int(parts[2])
+                if w.row is None:
+                    continue
+                i = r - w.row - _cb_hlen[0] - 1
+                if 0 <= i < len(raw_items) and not raw_items[i]['dimmed']:
+                    index = i
+                    target = raw_items[index]
+                    if interlock_category_callback and locked_category:
+                        target_cat = interlock_category_callback(target['obj'].value)
+                        if target_cat != locked_category and not target['obj'].checked:
+                            sys.stdout.write("\a")
+                            sys.stdout.flush()
+                            w.render(_lines())
+                            continue
+                    target['obj'].checked = not target['obj'].checked
+                    w.render(_lines())
             elif key == 'SPACE':
-                target = raw_items[index]
-                if target['dimmed']: continue
-                target['obj'].checked = not target['obj'].checked
-                update_interlock_states(raw_items); w.render(_lines())
+                target = raw_items[index] if index < len(raw_items) else None
+                if target and interlock_category_callback and locked_category:
+                    target_cat = interlock_category_callback(target['obj'].value)
+                    if target_cat != locked_category and not target['obj'].checked:
+                        sys.stdout.write("\a")
+                        sys.stdout.flush()
+                        continue
+                if target:
+                    target['obj'].checked = not target['obj'].checked
+                w.render(_lines())
             elif key == 'ENTER':
-                return [item['obj'].value for item in raw_items if item['obj'].checked]
-            elif key.lower() == 'q': break
+                result = [item['obj'].value for item in raw_items if item['obj'].checked]
+                break
+            elif key.lower() == 'q':
+                break
+
     finally:
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000l\033[?1006l")
         _restore_term_attrs(fd, old)
         sys.stdout.write(C.SHOW)
         sys.stdout.flush()
         w.clear()
-    return None
 
-# ── confirm() ─────────────────────────────────────────────────────────────────
+    return result
+
 
 def confirm(message: str, default: bool = False) -> bool:
-    y = "Y" if default else "y"
-    n = "N" if not default else "n"
-    hint = f"{C.DIM}[{C.RESET}{C.BOLD}{y}{C.RESET}{C.DIM}/{C.RESET}{C.BOLD}{n}{C.RESET}{C.DIM}]{C.RESET}"
     fd     = sys.stdin.fileno()
     old    = _get_term_attrs(fd)
+    w      = _Widget(fd)
     result = default
+
+    def _render():
+        cols = ui_utils.get_terminal_width()
+        dflt = "yes" if default else "no"
+        lines = [
+            f"  {C.DIM}{message}{C.RESET}",
+            f"{C.DIM}{'─' * cols}{C.RESET}",
+        ]
+        lines.extend([f"  {s}" for s in _hint(
+            ("y", "yes"), ("n", "no"), ("↵", f"default ({dflt})")
+        ).splitlines()])
+        w.render(lines)
+
     try:
         _set_raw(fd)
-        sys.stdout.write(C.HIDE + f"  {C.DIM}{message}{C.RESET}  {hint} ")
-        sys.stdout.flush()
+        _render()
         while True:
+            if not _wait_for_keypress(0.05):
+                continue
             key = _read_key(fd)
             if   key == 'CTRL_C':    result = False; break
             elif key == 'ENTER':     result = default; break
@@ -813,12 +815,10 @@ def confirm(message: str, default: bool = False) -> bool:
             elif key.lower() == 'n': result = False; break
     finally:
         _restore_term_attrs(fd, old)
-        sys.stdout.write(C.SHOW + "\n")
-        sys.stdout.flush()
+        w.clear()
+
     return result
 
-
-# ── text() ────────────────────────────────────────────────────────────────────
 
 def text(message: str, default: str = "") -> str | None:
     buf    = list(default)
@@ -826,13 +826,13 @@ def text(message: str, default: str = "") -> str | None:
     fd     = sys.stdin.fileno()
     old    = _get_term_attrs(fd)
     result = None
-    
+
     # Track how many physical lines were drawn to clear them later
     prev_lines = 0
 
     def _render():
         nonlocal prev_lines
-        cols = _cols() # Uses the existing helper in prompt.py
+        cols = _cols()
         content = "".join(buf)
         content_width = max(1, cols - 6)
 
@@ -842,21 +842,17 @@ def text(message: str, default: str = "") -> str | None:
         cursor_col = len(pre_lines[-1]) if pre_lines else 0
         total_rows = len(wrapped_lines)
 
-        # 2. Draw
         if prev_lines > 0:
             sys.stdout.write(f"\r\033[{prev_lines}A")
         sys.stdout.write(f"\r\033[J{C.HIDE}")
 
-        # Label — dim, consistent with select/confirm
         sys.stdout.write(f"\r  {C.DIM}{message}{C.RESET}\r\n")
 
-        # Input field — subtle left/right border glyphs to signal editable area
         for i, line in enumerate(wrapped_lines):
             sys.stdout.write(f"\r  {C.DIM}│{C.RESET} {line:<{content_width}} {C.DIM}│{C.RESET}")
             if i < total_rows - 1:
                 sys.stdout.write("\r\n")
 
-        # Cursor positioning
         rows_to_move_up = (total_rows - 1) - cursor_row
         if rows_to_move_up > 0:
             sys.stdout.write(f"\033[{rows_to_move_up}A")
@@ -874,12 +870,18 @@ def text(message: str, default: str = "") -> str | None:
 
     try:
         _set_raw(fd)
+        sys.stdout.write("\033[H\033[3J\033[J")
+        sys.stdout.flush()
         _render()
         while True:
-            if ui_utils.consume_resize(): _render()
+            if ui_utils.consume_resize():
+                sys.stdout.write("\033[H\033[3J\033[J")
+                sys.stdout.flush()
+                _render()
+                continue
             if not _wait_for_keypress(0.05): continue
             key = _read_key(fd)
-            
+
             if   key == 'CTRL_C':             result = None;         break
             elif key == 'ENTER':              result = "".join(buf); break
             elif key == 'BACKSPACE' and pos > 0:
@@ -902,14 +904,11 @@ def text(message: str, default: str = "") -> str | None:
                 buf.insert(pos, key); pos += 1; _render()
     finally:
         _restore_term_attrs(fd, old)
-        # Clean exit: ensure the terminal prompt starts below your text
-        sys.stdout.write("\r\n" * 2) 
+        sys.stdout.write("\033[H\033[3J\033[J" + C.SHOW)
         sys.stdout.flush()
-        
+
     return result
 
-
-# ── path() ────────────────────────────────────────────────────────────────────
 
 def path(message: str, default: str = "") -> str | None:
     buf          = list(default)
@@ -919,10 +918,10 @@ def path(message: str, default: str = "") -> str | None:
     result       = None
     _tab_matches : list = []
     _tab_index   = 0
-    
+
     # Tracks the exact number of rows written in the previous render cycle
     # to roll back cleanly without scrolling or flickering the viewport.
-    _last_rendered_lines = 1 
+    _last_rendered_lines = 1
 
     def _completions(current: str) -> list:
         try:
@@ -935,7 +934,7 @@ def path(message: str, default: str = "") -> str | None:
                 for e in os.listdir(base)
                 if e.startswith(stub) and not e.startswith('.')
             )
-        except Exception:
+        except OSError:
             return []
 
     def _render():
@@ -944,7 +943,7 @@ def path(message: str, default: str = "") -> str | None:
         content = "".join(buf)
         prefix  = "  │ "
         max_w   = max(1, cols - 6)
-        
+
         if pos > max_w:
             display  = content[pos - max_w: pos]
             disp_pos = max_w
@@ -952,29 +951,24 @@ def path(message: str, default: str = "") -> str | None:
             display  = content[:max_w]
             disp_pos = pos
 
-        # Calculate the precise horizontal terminal column index where the blinking cursor resides
         cursor_col = len(prefix) + disp_pos
 
-        # 1. Rewind the vertical cursor position up to the initial prompt line boundary
         clear_code = ""
         if _last_rendered_lines > 1:
             clear_code += f"\033[{_last_rendered_lines - 1}A"
         clear_code += "\r"
 
-        # Initialize stream with the primary input boxes
         render_stream = [
             clear_code,
             f"\033[K  {C.DIM}{message}{C.RESET}\r\n",
             f"\033[K  {C.DIM}│{C.RESET} {display:<{max_w}} {C.DIM}│{C.RESET}"
         ]
-        
+
         lines_count = 2
 
-        # ── COMPONENT SEPARATION (Inspired by Questionary) ──
         # Do not output autocomplete options when at a subdirectory juncture or when empty
         should_show_hints = content and not content.endswith('/') and not content.endswith(os.path.sep)
 
-        # Real-time synchronization layer: ensure entries match the current stub prefix
         visible_matches = []
         if should_show_hints and _tab_matches:
             stub = os.path.basename(content)
@@ -983,33 +977,28 @@ def path(message: str, default: str = "") -> str | None:
                 if name.startswith(stub):
                     visible_matches.append(m)
 
-        # 2. Draw the Hovering Tooltip box immediately underneath the input caret location
         if visible_matches:
             render_stream.append("\r\n\033[K")
             lines_count += 1
-            
-            # Pad spaces horizontally to position suggestions neatly under the active segment word
+
             start_pad = min(cursor_col, max(0, cols - 35))
             render_stream.append(" " * start_pad)
-            
+
             tooltip_parts = []
             current_len = start_pad
-            
-            # Cap the rendering pool to a tight top-5 slice to prevent clutter
+
             for idx, match in enumerate(visible_matches[:5]):
                 name = os.path.basename(match.rstrip('/'))
                 if os.path.isdir(match):
                     name += "/"
-                
-                # Highlight active completion item when rotating choices via TAB key events
+
                 if idx == (_tab_index % len(visible_matches)):
                     item_str = f"{C.INVERT}{C.BOLD}{name}{C.RESET}"
                     visible_len = len(name)
                 else:
                     item_str = f"{C.DIM}{name}{C.RESET}"
                     visible_len = len(name)
-                
-                # Enforce column wrap barriers gracefully
+
                 if current_len + visible_len + 2 > cols:
                     render_stream.append("  ".join(tooltip_parts) + "\r\n\033[K" + " " * start_pad)
                     lines_count += 1
@@ -1018,22 +1007,20 @@ def path(message: str, default: str = "") -> str | None:
                 else:
                     tooltip_parts.append(item_str)
                     current_len += visible_len + 2
-            
+
             if tooltip_parts:
                 render_stream.append("  ".join(tooltip_parts))
-                
+
             if len(visible_matches) > 5:
                 render_stream.append(f" {C.DIM}(+{len(visible_matches)-5}){C.RESET}")
 
-        # Update frame footprints for the rollback execution next loop step
         _last_rendered_lines = lines_count
 
-        # Position the caret back on the string index tracking point safely
         move_back_lines = lines_count - 2
         adjust_cursor = f"\033[{move_back_lines}A" if move_back_lines > 0 else ""
 
         sys.stdout.write(
-            C.HIDE + "".join(render_stream) + 
+            C.HIDE + "".join(render_stream) +
             adjust_cursor + _col(cursor_col + 1) + C.SHOW
         )
         sys.stdout.flush()
@@ -1043,39 +1030,36 @@ def path(message: str, default: str = "") -> str | None:
         _set_raw(fd)
         _tab_matches = _completions("".join(buf))
         _render()
-        
+
         while True:
             if ui_utils.consume_resize(): _render()
             if not _wait_for_keypress(0.05): continue
             key = _read_key(fd)
-            
+
             if key == 'CTRL_C':
                 result = None; break
             elif key == 'ENTER':
                 result = "".join(buf); break
-                
+
             elif key == 'TAB':
                 current_text = "".join(buf)
                 stub = os.path.basename(current_text) if (current_text and not current_text.endswith('/')) else ""
-                
-                # Derive matching sub-arrays
+
                 visible_matches = [m for m in _tab_matches if os.path.basename(m.rstrip('/')).startswith(stub)] if stub else _tab_matches
-                
+
                 if visible_matches:
                     completed = visible_matches[_tab_index % len(visible_matches)]
-                    if os.path.isdir(completed) and not completed.endswith("/"): 
+                    if os.path.isdir(completed) and not completed.endswith("/"):
                         completed += "/"
-                    
-                    # Update buffer variables natively
+
                     buf[:] = list(completed)
                     pos = len(buf)
                     _tab_index += 1
-                    
-                    # Pre-calculate adjacent children files lookup listings
+
                     _tab_matches = _completions("".join(buf))
                 _render()
                 continue
-                
+
             elif key == 'BACKSPACE' and pos > 0:
                 buf.pop(pos - 1); pos -= 1
                 _tab_matches = _completions("".join(buf))
@@ -1086,48 +1070,39 @@ def path(message: str, default: str = "") -> str | None:
                 _tab_matches = _completions("".join(buf))
                 _tab_index = 0
                 _render()
-            elif key == 'LEFT'  and pos > 0:        
+            elif key == 'LEFT'  and pos > 0:
                 pos -= 1; _render()
-            elif key == 'RIGHT' and pos < len(buf): 
+            elif key == 'RIGHT' and pos < len(buf):
                 pos += 1; _render()
-            elif key == 'HOME':                     
+            elif key == 'HOME':
                 pos = 0; _render()
-            elif key == 'END':                      
+            elif key == 'END':
                 pos = len(buf); _render()
             elif len(key) == 1 and key.isprintable():
                 buf.insert(pos, key); pos += 1
-                
-                # Regenerate matching directories listings instantly on every keystroke
+
                 _tab_matches = _completions("".join(buf))
                 _tab_index = 0
                 _render()
-                
+
     finally:
-        # Erase visible trailing residues down before dropping completely out to main screens
-        clear_down = f"\033[{_last_rendered_lines - 2}B\n" if _last_rendered_lines > 2 else "\n"
         _restore_term_attrs(fd, old)
-        sys.stdout.write(clear_down)
+        sys.stdout.write("\033[H\033[3J\033[J" + C.SHOW)
         sys.stdout.flush()
-        
+
     return result
 
-# ── list_edit() ────────────────────────────────────────────────────────────────────
-
 def _render_list_edit_cell(text: str, width: int, is_editing: bool, is_active_col: bool, edit_buf: list[str], edit_pos: int) -> str:
-    """Renders a single table cell, handling text truncation and cursor rendering."""
     if not is_editing or not is_active_col:
         return ui_utils.truncate_text(text, width)
-        
-    # We are actively editing this specific cell
+
     buf_str = "".join(edit_buf)
-    
-    # Render terminal block cursor
+
     if edit_pos >= len(buf_str):
         display_str = buf_str + f"{C.BACK}█{C.RESET}"
     else:
         display_str = buf_str[:edit_pos] + f"{C.INVERT}{C.BOLD}{buf_str[edit_pos]}{C.RESET}" + buf_str[edit_pos+1:]
-        
-    # Pad with spaces to maintain column width visually (accounting for ANSI codes)
+
     visible_len = len(buf_str) + (1 if edit_pos >= len(buf_str) else 0)
     padding = max(0, width - visible_len)
     return display_str + (" " * padding)
@@ -1138,31 +1113,27 @@ def _build_list_edit_lines(
     cursor: int, viewport: int,
     edit_mode: bool, edit_col: int, edit_buf: list[str], edit_pos: int
 ) -> tuple[list[str], int]:
-    """Builds the UI lines for the list_edit widget and calculates the new viewport bounds."""
     num_cols = len(headers)
     cols = _cols()
     c = cols - 4
     inner = c
     out = []
 
-    base_hints = {"↑↓": "move", "a": "add", "e": "edit", "d": "delete", "↵": "save", "q": "quit"}
+    base_hints = {"↑↓": "move", "a": "add", "e": "edit", "d": "delete", "i": "import", "↵": "save", "q": "quit"}
     edit_hints = {"tab": "next col", "esc": "cancel", "↵": "apply"}
 
-    # 1. Header and top border
     out.append(f"  {C.DIM}{message}{C.RESET}")
-    out.append(f"  {C.DIM}{'─' * c}{C.RESET}")
+    out.append(f"{C.DIM}{'─' * cols}{C.RESET}")
 
-    # 2. Dynamic Column Sizing
     avail_w = max(10, inner - 4 - (2 * (num_cols - 1)))
     col_w = avail_w // num_cols
     last_w = avail_w - (col_w * (num_cols - 1))
 
-    # 3. Dynamic Column Headers
     if num_cols > 1:
         h_parts = [f"{headers[i]:<{col_w}}" for i in range(num_cols - 1)]
         h_parts.append(f"{headers[-1]}")
         out.append(f"    {C.DIM}{'  '.join(h_parts)}{C.RESET}")
-        
+
         u_parts = ["─" * col_w for _ in range(num_cols - 1)]
         u_parts.append("─" * last_w)
         out.append(f"    {'  '.join(u_parts)}")
@@ -1170,12 +1141,11 @@ def _build_list_edit_lines(
         out.append(f"    {C.DIM}{headers[0]}{C.RESET}")
         out.append(f"    {'─' * inner}")
 
-    # 4. Viewport calculation
     active_hints = edit_hints if edit_mode else base_hints
     hint_res = _hint(*active_hints.items())
     hint_raw = hint_res[0] if isinstance(hint_res, tuple) else hint_res
     hint_lines = hint_raw.split("\n") if hint_raw else []
-    
+
     fixed_overhead = 6 + len(hint_lines)
     vis = max(2, _visible_rows() - fixed_overhead)
     n = len(items)
@@ -1185,29 +1155,28 @@ def _build_list_edit_lines(
     elif cursor >= viewport + vis:
         viewport = cursor - vis + 1
 
-    # 5. Render Items
     if n == 0:
         out.append(f"    {C.DIM}(empty list){C.RESET}")
     else:
         for i in range(viewport, min(viewport + vis, n)):
             item = items[i]
             is_sel = (i == cursor)
-            
+
             row_is_editing = (is_sel and edit_mode)
             cursor_glyph = f"{C.ACCENT}›{C.RESET}" if (is_sel and not edit_mode) else (" " if not row_is_editing else f"✎")
 
             if num_cols > 1:
                 i_vals = list(item) if isinstance(item, (list, tuple)) else [str(item)]
                 while len(i_vals) < num_cols: i_vals.append("")
-                
+
                 row_parts = []
                 for j in range(num_cols - 1):
                     cell_str = _render_list_edit_cell(str(i_vals[j]), col_w, row_is_editing, edit_col == j, edit_buf, edit_pos)
                     row_parts.append(f"{cell_str:<{col_w}}" if not (row_is_editing and edit_col == j) else cell_str)
-                
+
                 last_cell = _render_list_edit_cell(str(i_vals[-1]), last_w, row_is_editing, edit_col == (num_cols - 1), edit_buf, edit_pos)
                 row_parts.append(last_cell)
-                
+
                 row_str = "  ".join(row_parts)
 
                 if is_sel and not edit_mode:
@@ -1217,7 +1186,6 @@ def _build_list_edit_lines(
                 else:
                     out.append(f"  {cursor_glyph} {row_str}")
             else:
-                # 1-Column Formatting
                 val_str = str(item)
                 cell_str = _render_list_edit_cell(val_str, inner - 4, row_is_editing, True, edit_buf, edit_pos)
                 if is_sel and not edit_mode:
@@ -1225,15 +1193,14 @@ def _build_list_edit_lines(
                 else:
                     out.append(f"  {cursor_glyph} {cell_str}")
 
-    # 6. Bottom border and hints
-    out.append(f"  {C.DIM}{'─' * c}{C.RESET}")
+    out.append(f"{C.DIM}{'─' * cols}{C.RESET}")
     out.extend(hint_lines)
-    
+
     return out, viewport
 
-def list_edit(message: str, initial_items: list | None = None, headers: tuple[str, ...] = ("ROLE", "NAME")) -> list[tuple[str, str]] | None:
+def list_edit(message: str, initial_items: list | None = None, headers: tuple[str, ...] = ("ROLE", "NAME")) -> list | None:
     """Arrow keys navigate, 'a' adds, 'e' edits in-place, 'd' deletes, Enter saves.
-    
+
     Supports in-place cell editing with Tab navigation between columns.
     """
     items    = list(initial_items) if initial_items else []
@@ -1244,7 +1211,6 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
     w        = _Widget(fd)
     num_cols = len(headers)
 
-    # --- EDIT STATE ---
     edit_mode = False
     edit_col  = 0
     edit_buf  = []
@@ -1252,7 +1218,6 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
     edit_backup = None
 
     def _render():
-        """Passes current state to the renderer and updates the terminal."""
         nonlocal viewport
         lines, new_viewport = _build_list_edit_lines(
             message, items, headers,
@@ -1263,7 +1228,6 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
         w.render(lines)
 
     def _commit_edit_buffer():
-        """Saves the current edit buffer back into the items array."""
         val = "".join(edit_buf)
         if num_cols > 1:
             curr = list(items[cursor]) if isinstance(items[cursor], (list, tuple)) else [str(items[cursor])]
@@ -1276,13 +1240,13 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write("\033[H\033[3J\033[J")
         sys.stdout.flush()
         _render()
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.write("\033[H\033[3J\033[J")
                 sys.stdout.flush()
                 w.anchor_reset()
                 _render()
@@ -1292,68 +1256,62 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                 continue
 
             key = _read_key(fd)
-            
-            # ==========================================
-            # MODE: EDITING
-            # ==========================================
+
             if edit_mode:
                 if key == 'ESC':
                     items[cursor] = edit_backup
                     edit_mode = False
                     _render()
-                    
+
                 elif key == 'ENTER':
                     _commit_edit_buffer()
                     edit_mode = False
                     _render()
-                    
+
                 elif key == 'TAB':
                     if num_cols > 1:
                         _commit_edit_buffer()
                         edit_col = (edit_col + 1) % num_cols
-                        
+
                         curr = items[cursor]
                         i_vals = list(curr) if isinstance(curr, (list, tuple)) else [str(curr)]
                         while len(i_vals) < num_cols: i_vals.append("")
-                        
+
                         edit_buf = list(str(i_vals[edit_col]))
                         edit_pos = len(edit_buf)
                         _render()
-                        
+
                 elif key == 'BACKSPACE' and edit_pos > 0:
                     edit_buf.pop(edit_pos - 1)
                     edit_pos -= 1
                     _render()
-                    
+
                 elif key == 'LEFT' and edit_pos > 0:
                     edit_pos -= 1
                     _render()
-                    
+
                 elif key == 'RIGHT' and edit_pos < len(edit_buf):
                     edit_pos += 1
                     _render()
-                    
+
                 elif key == 'HOME':
                     edit_pos = 0
                     _render()
-                    
+
                 elif key == 'END':
                     edit_pos = len(edit_buf)
                     _render()
-                    
+
                 elif key == 'SPACE':
                     edit_buf.insert(edit_pos, ' ')
                     edit_pos += 1
                     _render()
-                    
+
                 elif len(key) == 1 and key.isprintable():
                     edit_buf.insert(edit_pos, key)
                     edit_pos += 1
                     _render()
 
-            # ==========================================
-            # MODE: NAVIGATION
-            # ==========================================
             else:
                 if key == 'CTRL_C':
                     break
@@ -1363,26 +1321,24 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                 elif key in ('DOWN', 'j'):
                     if items: cursor = (cursor + 1) % len(items)
                     _render()
-                    
-                # --- IN-PLACE ADD ---
+
                 elif key == 'a':
                     empty_item = tuple(["" for _ in range(num_cols)]) if num_cols > 1 else ""
                     items.append(empty_item)
                     cursor = len(items) - 1
-                    
+
                     edit_mode = True
                     edit_col = 0
                     edit_buf = []
                     edit_pos = 0
                     edit_backup = empty_item
                     _render()
-                    
-                # --- IN-PLACE EDIT ---
+
                 elif key == 'e' and items:
                     edit_mode = True
                     edit_col = 0
-                    edit_backup = items[cursor] 
-                    
+                    edit_backup = items[cursor]
+
                     if num_cols > 1:
                         curr = items[cursor]
                         i_vals = list(curr) if isinstance(curr, (list, tuple)) else [str(curr)]
@@ -1390,11 +1346,10 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                         edit_buf = list(str(i_vals[0]))
                     else:
                         edit_buf = list(str(items[cursor]))
-                        
+
                     edit_pos = len(edit_buf)
                     _render()
-                    
-                # --- DELETE ---
+
                 elif key in ('d', 'BACKSPACE', 'DELETE') and items:
                     items.pop(cursor)
                     if items:
@@ -1402,10 +1357,31 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     else:
                         cursor = 0
                     _render()
-                    
+
                 elif key == 'ENTER':
                     result = items
                     break
+
+                elif key == 'i':
+                    _restore_term_attrs(fd, old)
+                    text_input = system_editor_edit(initial_text="")
+                    _set_raw(fd)
+                    sys.stdout.write("\033[H\033[3J\033[J")
+                    sys.stdout.flush()
+                    w.anchor_reset()
+                    if text_input:
+                        for _line in text_input.splitlines():
+                            _line = _line.strip()
+                            if not _line:
+                                continue
+                            if num_cols > 1:
+                                _role, _, _name = _line.partition(':')
+                                items.append((_role.strip(), _name.strip()))
+                            else:
+                                items.append(_line)
+                        cursor = len(items) - 1 if items else 0
+                    _render()
+
                 elif key.lower() == 'q':
                     ui_utils.clear_screen()
                     result = items if confirm("Discard changes?", default=False) else initial_items
@@ -1418,16 +1394,11 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
     return result
 
 
-
-# ── calendar_select() ────────────────────────────────────────────────────────────────────
-
 def _is_leap_year(year: int) -> bool:
-    """Check if a year is a leap year (Gregorian calendar)."""
     return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
 
 
 def _days_in_month(year: int, month: int) -> int:
-    """Get the number of days in a given month."""
     if month in (1, 3, 5, 7, 8, 10, 12):
         return 31
     elif month in (4, 6, 9, 11):
@@ -1438,7 +1409,6 @@ def _days_in_month(year: int, month: int) -> int:
 
 
 def _validate_date(year: int, month: int, day: int) -> bool:
-    """Validate a date tuple."""
     if not (1 <= month <= 12):
         return False
     if not (1 <= day <= _days_in_month(year, month)):
@@ -1454,20 +1424,19 @@ def _parse_date(date_str: str) -> tuple[int, int, int] | None:
     """
     if not date_str:
         return None
-    
+
     # Remove common separators
-    import re
     parts = re.split(r'[-/\s.]', date_str.strip())
     parts = [p for p in parts if p]
-    
+
     if len(parts) != 3:
         return None
-    
+
     try:
         nums = [int(p) for p in parts]
     except ValueError:
         return None
-    
+
     # Detect format based on size and ranges
     if nums[0] > 1900:  # First is year (YYYY-MM-DD or YYYY/MM/DD)
         year, month, day = nums[0], nums[1], nums[2]
@@ -1479,7 +1448,7 @@ def _parse_date(date_str: str) -> tuple[int, int, int] | None:
             day, month, year = nums[0], nums[1], nums[2]
     else:
         return None
-    
+
     if _validate_date(year, month, day):
         return (year, month, day)
     return None
@@ -1488,62 +1457,57 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
     """
     Interactive calendar widget for date selection.
     Allows month/year navigation and in-place day selection.
-    
+
     Args:
         message: Prompt label
         initial: Initial date (YYYY-MM-DD or flexible format)
-        
+
     Returns:
         Selected date as YYYY-MM-DD string, or None if cancelled
     """
-    # Parse initial date
     if initial:
         parsed = _parse_date(initial)
         if parsed:
             y, m, d = parsed
         else:
             # Fallback to today
-            import datetime
             today = datetime.date.today()
             y, m, d = today.year, today.month, today.day
     else:
-        import datetime
         today = datetime.date.today()
         y, m, d = today.year, today.month, today.day
-    
+
     cursor_day = d
     day_mode = False  # False: Navigates Month/Year | True: Navigates Days
-    
+
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w = _Widget(fd)
-    
+
     def _render():
-        """Render calendar grid."""
-        import calendar as cal
         cols = ui_utils.get_terminal_width()
         c = cols - 4
         lines = []
-        
+
         # Header
         lines.append(f"  {C.DIM}{message}{C.RESET}")
-        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
-        
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+
         # Month/Year display
         month_name = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m]
-        
+
         lines.append(f"  {C.BOLD}{month_name} {y}{C.RESET}")
 
-        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
-        
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+
         # Day headers
         day_headers = "Mo Tu We Th Fr Sa Su"
         lines.append(f"  {day_headers}")
-        
+
         # Calendar grid
         cal_obj = cal.monthcalendar(y, m)
-        
+
         for week in cal_obj:
             week_parts = []
             for day in week:
@@ -1552,80 +1516,75 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                 else:
                     is_selected = (day == cursor_day)
                     if is_selected:
-                        # Emphasize the cursor day more distinctly if in day mode
                         style = f"{C.ACCENT}{C.BOLD}" if day_mode else f"{C.BOLD}"
                         week_parts.append(f"{style}{day:2d}{C.RESET} ")
                     else:
                         week_parts.append(f"{day:2d} ")
             lines.append(f"  {''.join(week_parts)}")
-        
-        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
-        
-        # Dynamic shortcuts depending on navigation mode
+
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+
         if not day_mode:
             shortcuts = _hint(
                 ("↵", "confirm"),
                 ("q", "exit"),
-                ("Tab", "switch to Day Selection"),
-                ("←→", "change month"),
-                ("↑↓", "change year"),
-                ("m", "manual date entry"),
+                ("tab", "switch to day mode"),
+                ("←→", "month"),
+                ("↑↓", "year"),
+                ("m", "manual entry"),
             )
         else:
             shortcuts = _hint(
                 ("↵", "confirm"),
                 ("q", "exit"),
-                ("Tab", "switch to Month/Year Selection"),
-                ("←→", "prev/next day"),
-                ("↑↓", "-7 / +7 days"),
-                ("m", "manual date entry"),
+                ("tab", "switch to month/year"),
+                ("←→", "±1 day"),
+                ("↑↓", "±7 days"),
+                ("m", "manual entry"),
             )
 
         shortcuts = shortcuts.splitlines()
         lines.extend([f"  {s}" for s in shortcuts])
 
         w.render(lines)
-    
+
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write("\033[H\033[3J\033[J")
         sys.stdout.flush()
         _render()
-        
+
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.write("\033[H\033[3J\033[J")
                 sys.stdout.flush()
                 w.anchor_reset()
                 _render()
                 continue
-            
+
             if not _wait_for_keypress(0.05):
                 continue
-            
+
             key = _read_key(fd)
-            
+
             if key == 'ENTER':
                 result = f"{y:04d}-{m:02d}-{cursor_day:02d}"
                 break
             elif key == 'ESC' or key == 'q':
                 break
-            
+
             elif key == 'TAB':
-                # Toggle navigation mode
                 day_mode = not day_mode
-            
+
             elif key == 'RIGHT':
                 if not day_mode:
-                    # Next month
                     m += 1
                     if m > 12:
                         m = 1
                         y += 1
                     cursor_day = min(cursor_day, _days_in_month(y, m))
                 else:
-                    # Next day
                     cursor_day += 1
                     if cursor_day > _days_in_month(y, m):
                         m += 1
@@ -1633,17 +1592,15 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                             m = 1
                             y += 1
                         cursor_day = 1
-                        
+
             elif key == 'LEFT':
                 if not day_mode:
-                    # Previous month
                     m -= 1
                     if m < 1:
                         m = 12
                         y -= 1
                     cursor_day = min(cursor_day, _days_in_month(y, m))
                 else:
-                    # Previous day
                     cursor_day -= 1
                     if cursor_day < 1:
                         m -= 1
@@ -1651,14 +1608,12 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                             m = 12
                             y -= 1
                         cursor_day = _days_in_month(y, m)
-                        
+
             elif key == 'UP':
                 if not day_mode:
-                    # Previous year
                     y -= 1
                     cursor_day = min(cursor_day, _days_in_month(y, m))
                 else:
-                    # Grid up (Previous week / -7 days)
                     cursor_day -= 7
                     if cursor_day < 1:
                         m -= 1
@@ -1667,14 +1622,12 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                             y -= 1
                         # Wraps into the last day of the previous month
                         cursor_day = _days_in_month(y, m)
-                        
+
             elif key == 'DOWN':
                 if not day_mode:
-                    # Next year
                     y += 1
                     cursor_day = min(cursor_day, _days_in_month(y, m))
                 else:
-                    # Grid down (Next week / +7 days)
                     cursor_day += 7
                     if cursor_day > _days_in_month(y, m):
                         m += 1
@@ -1685,7 +1638,6 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                         cursor_day = 1
 
             elif key == 'm':
-                # Manual entry
                 w.clear()
                 manual = text("Enter date (YYYY-MM-DD):", default=f"{y:04d}-{m:02d}-{cursor_day:02d}")
                 if manual:
@@ -1693,37 +1645,271 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                     if parsed:
                         y, m, d = parsed
                         cursor_day = d
-                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.write("\033[H\033[3J\033[J")
                 sys.stdout.flush()
 
             elif key.isdigit() and int(key) >= 1 and int(key) <= 9:
-                # Quick day selection (1-9)
                 day = int(key)
                 if day <= _days_in_month(y, m):
                     cursor_day = day
-            
+
             _render()
-    
+
     finally:
         _restore_term_attrs(fd, old)
         w.clear()
-    
+
     return result
 
 
+def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> str | None:
+    """
+    Combined single-screen date + time editor.
 
-# ── fraction_edit() ────────────────────────────────────────────────────────────────────
+    Date section: calendar grid (TAB toggles month/year ↔ day navigation).
+    Time section: HH:MM:SS.ms fields (TAB advances field).
+    TAB from date-day-mode → time section; TAB from last time field → date.
+    ENTER saves from any position. Returns ISO 8601 string or None if cancelled.
+    """
+    _sep = 'T' if 'T' in initial else (' ' if ' ' in initial else None)
+    date_str, time_str = initial.split(_sep, 1) if _sep else (initial, "")
+
+    parsed = _parse_date(date_str) if date_str else None
+    if parsed:
+        year, month, cursor_day = parsed
+    else:
+        _today = datetime.date.today()
+        year, month, cursor_day = _today.year, _today.month, _today.day
+
+    day_mode = False
+
+    t_parts = time_str.split(':')
+    _h = t_parts[0] if t_parts and t_parts[0] else "00"
+    _mi = t_parts[1] if len(t_parts) > 1 else "00"
+    if len(t_parts) > 2:
+        _sp = t_parts[2].split('.')
+        _s, _ms = (_sp[0] if _sp else "00"), (_sp[1] if len(_sp) > 1 else "000")
+    else:
+        _s, _ms = "00", "000"
+
+    tfields = {
+        'hours':   list(_h[-2:].zfill(2)),
+        'minutes': list(_mi[-2:].zfill(2)),
+        'seconds': list(_s[-2:].zfill(2)),
+        'millis':  list(_ms[-3:].zfill(3)),
+    }
+    torder  = ['hours', 'minutes', 'seconds', 'millis']
+    tmaxlen = {'hours': 2, 'minutes': 2, 'seconds': 2, 'millis': 3}
+    tcursor = 0
+    tpos    = {k: len(tfields[k]) for k in torder}
+
+    section = 'date'
+
+    fd  = sys.stdin.fileno()
+    old = _get_term_attrs(fd)
+    w   = _Widget(fd)
+
+    def _render():
+        cols = ui_utils.get_terminal_width()
+        lines = []
+
+        lines.append(f"  {C.DIM}{message}{C.RESET}")
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+
+        # Date section
+        month_name = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][month]
+        dpfx = C.BOLD if section == 'date' else C.DIM
+        lines.append(f"  {dpfx}{month_name} {year}{C.RESET}")
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+        lines.append("  Mo Tu We Th Fr Sa Su")
+
+        for week in cal.monthcalendar(year, month):
+            parts = []
+            for day in week:
+                if day == 0:
+                    parts.append("   ")
+                elif day == cursor_day and section == 'date':
+                    style = f"{C.ACCENT}{C.BOLD}" if day_mode else C.BOLD
+                    parts.append(f"{style}{day:2d}{C.RESET} ")
+                else:
+                    parts.append(f"{day:2d} ")
+            lines.append(f"  {''.join(parts)}")
+
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+
+        # Time section
+        tpfx = C.BOLD if section == 'time' else C.DIM
+        row = f"  {tpfx}Time{C.RESET}  "
+        for i, field in enumerate(torder):
+            val = "".join(tfields[field])
+            pos = tpos[field]
+            if section == 'time' and i == tcursor:
+                if pos >= len(val):
+                    cell = val + f"{C.BACK}█{C.RESET}"
+                else:
+                    cell = val[:pos] + f"{C.INVERT}{C.BOLD}{val[pos]}{C.RESET}" + val[pos+1:]
+            else:
+                cell = f"{C.DIM}{val.ljust(tmaxlen[field], '0')}{C.RESET}"
+            row += cell
+            if i == 0:   row += ":"
+            elif i == 1: row += ":"
+            elif i == 2: row += "."
+        lines.append(row)
+
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+
+        if section == 'date':
+            if not day_mode:
+                h = _hint(("←→", "month"), ("↑↓", "year"), ("tab", "day mode"), ("↵", "save"), ("q", "cancel"))
+            else:
+                h = _hint(("←→↑↓", "navigate"), ("tab", "→ time"), ("↵", "save"), ("q", "cancel"))
+        else:
+            h = _hint(("←→", "cursor"), ("tab", "next / → date"), ("↵", "save"), ("q", "cancel"))
+
+        lines.extend([f"  {s}" for s in h.splitlines()])
+        w.render(lines)
+
+    def _build_result() -> str:
+        h  = "".join(tfields['hours']).zfill(2)
+        mi = "".join(tfields['minutes']).zfill(2)
+        s  = "".join(tfields['seconds']).zfill(2)
+        ms = "".join(tfields['millis']).zfill(3)
+        hms = f"{h}:{mi}:{s}"
+        date_part = f"{year:04d}-{month:02d}-{cursor_day:02d}"
+        if hms == "00:00:00":
+            return date_part
+        return f"{date_part}T{hms}" if ms == "000" else f"{date_part}T{hms}.{ms}"
+
+    result = None
+    try:
+        _set_raw(fd)
+        sys.stdout.write("\033[H\033[3J\033[J")
+        sys.stdout.flush()
+        _render()
+
+        while True:
+            if ui_utils.consume_resize():
+                sys.stdout.write("\033[H\033[3J\033[J")
+                sys.stdout.flush()
+                w.anchor_reset()
+                _render()
+                continue
+
+            if not _wait_for_keypress(0.05):
+                continue
+
+            key = _read_key(fd)
+
+            if key in ('ESC', 'CTRL_C') or key.lower() == 'q':
+                break
+
+            if key == 'ENTER':
+                result = _build_result()
+                break
+
+            if key == 'TAB':
+                if section == 'date':
+                    if not day_mode:
+                        day_mode = True
+                    else:
+                        day_mode = False
+                        section = 'time'
+                        tcursor = 0
+                else:
+                    if tcursor < len(torder) - 1:
+                        tcursor += 1
+                    else:
+                        tcursor = 0
+                        section = 'date'
+
+            elif section == 'date':
+                if key == 'RIGHT':
+                    if not day_mode:
+                        month += 1
+                        if month > 12: month, year = 1, year + 1
+                        cursor_day = min(cursor_day, _days_in_month(year, month))
+                    else:
+                        cursor_day += 1
+                        if cursor_day > _days_in_month(year, month):
+                            month += 1
+                            if month > 12: month, year = 1, year + 1
+                            cursor_day = 1
+                elif key == 'LEFT':
+                    if not day_mode:
+                        month -= 1
+                        if month < 1: month, year = 12, year - 1
+                        cursor_day = min(cursor_day, _days_in_month(year, month))
+                    else:
+                        cursor_day -= 1
+                        if cursor_day < 1:
+                            month -= 1
+                            if month < 1: month, year = 12, year - 1
+                            cursor_day = _days_in_month(year, month)
+                elif key == 'UP':
+                    if not day_mode:
+                        year -= 1
+                        cursor_day = min(cursor_day, _days_in_month(year, month))
+                    else:
+                        cursor_day -= 7
+                        if cursor_day < 1:
+                            month -= 1
+                            if month < 1: month, year = 12, year - 1
+                            cursor_day = _days_in_month(year, month)
+                elif key == 'DOWN':
+                    if not day_mode:
+                        year += 1
+                        cursor_day = min(cursor_day, _days_in_month(year, month))
+                    else:
+                        cursor_day += 7
+                        if cursor_day > _days_in_month(year, month):
+                            month += 1
+                            if month > 12: month, year = 1, year + 1
+                            cursor_day = 1
+
+            else:  # time section
+                cur_f = torder[tcursor]
+                buf   = tfields[cur_f]
+                pos   = tpos[cur_f]
+                maxl  = tmaxlen[cur_f]
+
+                if key == 'BACKSPACE':
+                    if pos > 0:
+                        buf.pop(pos - 1)
+                        tpos[cur_f] = pos - 1
+                elif key == 'DELETE':
+                    if pos < len(buf):
+                        buf.pop(pos)
+                elif key == 'LEFT':
+                    tpos[cur_f] = max(0, pos - 1)
+                elif key == 'RIGHT':
+                    tpos[cur_f] = min(len(buf), pos + 1)
+                elif key == 'HOME':
+                    tpos[cur_f] = 0
+                elif key == 'END':
+                    tpos[cur_f] = len(buf)
+                elif key.isdigit() and len(buf) < maxl:
+                    buf.insert(pos, key)
+                    tpos[cur_f] = pos + 1
+
+            _render()
+
+    finally:
+        _restore_term_attrs(fd, old)
+        w.clear()
+
+    return result
+
 
 def fraction_edit(message: str = "Edit metadata pair:",
                     tag: str = "TRCK", value: str = "") -> dict | None:
     """
     In-place editor for an isolated single tag's current/total values.
     Allows integers, floats, spaces, and strings.
-    
+
     Returns:
         Dict with keys: {'current', 'total'} or None if cancelled
     """
-    # 1. Setup contextual descriptors based on the isolated tag type
     tag_config = {
         "TRCK": ("Track", "of"),
         "TPOS": ("Disc", "of"),
@@ -1738,34 +1924,34 @@ def fraction_edit(message: str = "Edit metadata pair:",
 
     field_order = ['current', 'total']
     field_labels = {'current': lbl_idx, 'total': lbl_tot}
-    
+
     cursor_field = 0
     edit_buffers = {
         'current': list(curr_val),
         'total': list(tot_val)
     }
     edit_positions = {k: len(edit_buffers[k]) for k in field_order}
-    
+
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w = _Widget(fd)
-    
+
     def _render():
         cols = ui_utils.get_terminal_width()
         c = cols - 4
         lines = []
-        
+
         lines.append(f"  {C.DIM}{message}{C.RESET}")
-        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
-        
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+
         row = "  "
         for i, field in enumerate(field_order):
             if i > 0:
                 row += " "
-            
+
             label = field_labels[field]
             val_str = "".join(edit_buffers[field])
-            
+
             if i == cursor_field:
                 pos = edit_positions[field]
                 if pos >= len(val_str):
@@ -1778,43 +1964,43 @@ def fraction_edit(message: str = "Edit metadata pair:",
                     row += f"{C.DIM}{label} ──{C.RESET}"
                 else:
                     row += f"{label} {val_str}"
-        
+
         lines.append(row)
-        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
 
         shortcuts = _hint(
             ("↵", "save"),
-            ("Tab", "change field"),
-            ("q", "cancel"),
+            ("tab", "next field"),
+            ("esc/q", "cancel"),
         )
         shortcuts = shortcuts.splitlines()
         lines.extend([f"  {s}" for s in shortcuts])
-        
+
         w.render(lines)
-    
+
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write("\033[H\033[3J\033[J")
         sys.stdout.flush()
         _render()
-        
+
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.write("\033[H\033[3J\033[J")
                 sys.stdout.flush()
                 w.anchor_reset()
                 _render()
                 continue
-            
+
             if not _wait_for_keypress(0.05):
                 continue
-            
+
             key = _read_key(fd)
             current_field = field_order[cursor_field]
             buf = edit_buffers[current_field]
             pos = edit_positions[current_field]
-            
+
             if key == 'ENTER':
                 result = {'current': "".join(edit_buffers['current']), 'total': "".join(edit_buffers['total'])}
                 break
@@ -1836,34 +2022,31 @@ def fraction_edit(message: str = "Edit metadata pair:",
             elif len(key) == 1 and (key.isalnum() or key in ".- "):
                 buf.insert(pos, key)
                 edit_positions[current_field] = pos + 1
-            
+
             _render()
-    
+
     finally:
         _restore_term_attrs(fd, old)
         w.clear()
-    
-    return result
 
-# ── time_edit() ────────────────────────────────────────────────────────────────────
+    return result
 
 def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | None:
     """
     In-place editor for time input (HH:MM:SS).
     Supports milliseconds and auto-validation.
-    
+
     Args:
         message: Prompt label
         initial: Initial time (HH:MM:SS or HH:MM:SS.mmm)
-        
+
     Returns:
         Formatted time string or None if cancelled
     """
-    # Parse initial time
     parts = initial.split(':')
     hours = parts[0] if parts and parts[0] else "00"
     minutes = parts[1] if len(parts) > 1 and parts[1] else "00"
-    
+
     if len(parts) > 2:
         sec_parts = parts[2].split('.')
         seconds = sec_parts[0] if sec_parts else "00"
@@ -1871,14 +2054,14 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
     else:
         seconds = "00"
         millis = "000"
-    
+
     fields = {
         'hours': list(hours[-2:].zfill(2)),
         'minutes': list(minutes[-2:].zfill(2)),
         'seconds': list(seconds[-2:].zfill(2)),
         'millis': list(millis[-3:].zfill(3)),
     }
-    
+
     field_order = ['hours', 'minutes', 'seconds', 'millis']
     field_labels = {
         'hours': 'HH',
@@ -1892,16 +2075,15 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
         'seconds': 2,
         'millis': 3,
     }
-    
+
     cursor_field = 0
     positions = {k: len(fields[k]) for k in field_order}
-    
+
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w = _Widget(fd)
-    
+
     def _validate_time() -> bool:
-        """Validate the time."""
         try:
             h = int("".join(fields['hours']) or "0")
             m = int("".join(fields['minutes']) or "0")
@@ -1909,72 +2091,68 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
             return 0 <= h < 24 and 0 <= m < 60 and 0 <= s < 60
         except ValueError:
             return False
-    
+
     def _render():
-        """Render the time editor."""
         cols = ui_utils.get_terminal_width()
         c = cols - 4
         lines = []
-        
+
         lines.append(f"  {C.DIM}{message}{C.RESET}")
-        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
-        
-        # Time display with separators
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+
         row = "  "
         for i, field in enumerate(field_order):
             label = field_labels[field]
             value = "".join(fields[field])
             pos = positions[field]
-            
+
             if i == cursor_field:
-                # Editing cursor
                 if pos >= len(value):
                     display = value + f"{C.BACK}█{C.RESET}"
                 else:
                     display = value[:pos] + f"{C.INVERT}{C.BOLD}{value[pos]}{C.RESET}" + value[pos+1:]
             else:
                 display = value.ljust(field_maxlen[field], '0')
-            
+
             row += display
-            
-            # Separators
+
             if i == 0:
                 row += ":"
             elif i == 1:
                 row += ":"
             elif i == 2:
                 row += "."
-        
+
         lines.append(row)
-        lines.append(f"  {C.DIM}{'─' * c}{C.RESET}")
-        lines.append(f"  {C.GREEN}↵{C.RESET} save  {C.CYAN}Tab{C.RESET} next  {C.ACCENT}q{C.RESET} cancel  (Valid: 00:00:00 - 23:59:59)")
-        
+        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+        lines.extend(_hint(('↵', 'save'), ('tab', 'next field'), ('q', 'cancel')).splitlines())
+
         w.render(lines)
-    
+
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write("\033[H\033[3J\033[J")
         sys.stdout.flush()
         _render()
-        
+
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.write("\033[H\033[3J\033[J")
                 sys.stdout.flush()
                 w.anchor_reset()
                 _render()
                 continue
-            
+
             if not _wait_for_keypress(0.05):
                 continue
-            
+
             key = _read_key(fd)
             current_field = field_order[cursor_field]
             buf = fields[current_field]
             pos = positions[current_field]
             max_len = field_maxlen[current_field]
-            
+
             if key == 'ENTER':
                 if _validate_time():
                     h = "".join(fields['hours']).zfill(2)
@@ -2003,16 +2181,15 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
             elif key == 'END':
                 positions[current_field] = len(buf)
             elif key.isdigit() and len(buf) < max_len:
-                # Only allow digits, respect max length
                 buf.insert(pos, key)
                 positions[current_field] = pos + 1
-            
+
             _render()
-    
+
     finally:
         _restore_term_attrs(fd, old)
         w.clear()
-    
+
     return result
 
 def system_editor_edit(initial_text: str) -> str | None:
@@ -2021,12 +2198,12 @@ def system_editor_edit(initial_text: str) -> str | None:
         tf.write(initial_text)
         temp_path = tf.name
     try:
-        editor = os.environ.get('EDITOR', 'nvim')
+        editor = os.environ.get('EDITOR', 'nano')
         subprocess.run([editor, temp_path], check=True)
         with open(temp_path, 'r', encoding='utf-8') as f:
             result = f.read().strip()
         return result if result else None
-    except Exception as e:
+    except (OSError, subprocess.CalledProcessError) as e:
         print(f"Error launching editor: {e}")
         return None
     finally:

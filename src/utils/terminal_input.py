@@ -1,22 +1,17 @@
-"""
-Terminal input handling for raw mode keyboard input.
-
-Provides non-blocking keyboard input, raw mode management, and escape sequence handling.
-"""
 from __future__ import annotations
 import os
 import sys
 import time
 from contextlib import contextmanager
-from typing import Optional, Any
+from typing import Any
 
 _IS_WINDOWS = os.name == 'nt'
 
 # Expose module-level names so static type checkers don't consider them
 # possibly unbound when imports are platform-gated.
-msvcrt: Optional[Any] = None
-select: Optional[Any] = None
-termios: Optional[Any] = None
+msvcrt: Any | None = None
+select: Any | None = None
+termios: Any | None = None
 
 if _IS_WINDOWS:
     import msvcrt as _msvcrt
@@ -35,12 +30,7 @@ _escape_start_time = None
 
 @contextmanager
 def raw_mode(file):
-    """
-    Context manager for raw terminal mode (no echo, no canonical input).
-    
-    Allows capturing keypresses without requiring Enter.
-    Automatically restores terminal settings on exit.
-    """
+    """Raw terminal mode: no echo, no canonical input."""
     if _IS_WINDOWS:
         yield
         return
@@ -59,19 +49,12 @@ def raw_mode(file):
 
 
 def clear_escape_buffer() -> None:
-    """Clear pending escape sequence buffer."""
     global _pending_escape, _escape_start_time
     _pending_escape = None
     _escape_start_time = None
 
 
 def get_key_non_blocking() -> str | None:
-    """
-    Read a single key press without blocking.
-    
-    Properly handles multi-byte escape sequences (e.g., arrow keys).
-    Returns the complete key sequence or None if no input available.
-    """
     global _pending_escape, _escape_start_time
 
     # If we have a complete escape sequence, return it
@@ -97,16 +80,13 @@ def get_key_non_blocking() -> str | None:
             return '\x7f'
         return c
 
-    # Check if input is available
     assert select is not None
     if not select.select([sys.stdin], [], [], 0)[0]:
         return None
 
-    # Read one byte
     c = sys.stdin.read(1)
     full = (_pending_escape or "") + c
 
-    # Handle escape sequences
     if full.startswith('\x1b'):
         if _escape_start_time is None:
             _escape_start_time = time.time()
@@ -121,15 +101,6 @@ def get_key_non_blocking() -> str | None:
 
 
 def is_arrow_key(key: str | None) -> str | None:
-    """
-    Check if key is an arrow key sequence.
-    
-    Args:
-        key: The key sequence to check
-        
-    Returns:
-        The arrow key direction ('A'=up, 'B'=down, 'C'=right, 'D'=left) or None
-    """
     if key and len(key) >= 3 and key[-1] in 'ABCD':
         return key[-1]
     return None
