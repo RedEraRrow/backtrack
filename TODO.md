@@ -25,3 +25,4 @@
 25. make track items have more data if e.g. different track to album artists, duration etc.
 26. filenames may be esoteric so use track data instead for titles etc. (have obviously seperate filepath tag field in metadata that is made clear is not id3)
 27. remove add tag button, make a shortcut instead
+28. absolute library paths (how is tis not already in there???)
