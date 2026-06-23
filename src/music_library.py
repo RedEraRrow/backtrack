@@ -243,6 +243,7 @@ def _get_default_metadata(file_path: str) -> dict:
         "play_count": 0,
         "bpm": "0",
         "people": "",
+        "duration": 0.0,
         "cached_mtime": 0,
     }
 
@@ -292,6 +293,15 @@ def get_metadata(file_path: str, xml_db: dict | None = None,
                 metadata.update(extracted)
         except (mutagen.MutagenError, OSError):  # type: ignore[reportPrivateImportUsage]
             pass
+
+    # Cache the audio duration (seconds) so track lists can show it without
+    # re-reading every file during browse.
+    try:
+        mf = mutagen.File(file_path)
+        if mf is not None and getattr(mf, "info", None) is not None:
+            metadata["duration"] = float(getattr(mf.info, "length", 0.0) or 0.0)
+    except Exception:
+        pass
 
     # Enrich from XML database if available
     if xml_db and xml_title_keys:
@@ -540,6 +550,9 @@ def build_library(directory: str, xml_db: dict | None = None,
         List of track metadata dictionaries
     """
     library = []
+    # Resolve to an absolute path so stored track paths remain valid no matter
+    # what the working directory is when the library is later loaded.
+    directory = os.path.abspath(os.path.expanduser(directory))
     for root, _, files in os.walk(directory):
         for file in files:
             if file.lower().endswith(VALID_AUDIO_EXTENSIONS):

@@ -16,7 +16,7 @@ from src.utils import ui_utils
 from src.history import log_listening_history
 from src.music_library import get_song_duration
 from src.art.album_art import get_viu_art_from_mp3
-from src.playback.lyrics.lyrics import (
+from src.lyrics.lyrics import (
     _parse_sylt,
     _parse_uslt,
     build_uslt_line_times,
@@ -41,10 +41,9 @@ from src.playback.playback_ui import (
     draw_full_ui,
     update_progress_ui,
     _ui_state,
-    toggle_credits,
     toggle_metadata,
-    toggle_lyrics,
     toggle_help,
+    cycle_right_pane,
 )
 from src.playback import playback_ui
 from src.utils.terminal_input import (
@@ -76,6 +75,39 @@ def _handle_seek(mp, elapsed: float, duration: float, seek_amount: int) -> None:
     mp.set_time(int(target * 1000))
 
 
+def _apply_equalizer(mp, audio) -> bool:
+    """Apply the file's EQU2 equalisation to playback via libvlc's equaliser.
+
+    Each stored (frequency, gain) point is snapped to the nearest libvlc band
+    (the 10 ISO bands match the editor's defaults), so absent bands stay flat.
+    Returns True if an equaliser was applied.
+    """
+    try:
+        frames = audio.getall('EQU2')
+    except Exception:
+        frames = []
+    adjustments = [pt for fr in frames for pt in (getattr(fr, 'adjustments', None) or [])]
+    if not adjustments:
+        return False
+
+    try:
+        eq = vlc.AudioEqualizer()
+        count = vlc.libvlc_audio_equalizer_get_band_count()
+        band_freqs = [vlc.libvlc_audio_equalizer_get_band_frequency(i) for i in range(count)]
+        for freq, gain in adjustments:
+            if not freq or freq <= 0:
+                continue
+            # Nearest band by frequency ratio (log-ish distance).
+            def _ratio(k: int) -> float:
+                r = band_freqs[k] / freq
+                return r if r >= 1.0 else 1.0 / r
+            idx = min(range(count), key=_ratio)
+            eq.set_amp_at_index(float(max(-20.0, min(20.0, gain))), idx)
+        return bool(mp.set_equalizer(eq) == 0)
+    except Exception:
+        return False
+
+
 def _set_stderr_to_null() -> tuple[int, int]:
     devnull = os.open(os.devnull, os.O_WRONLY)
     old_stderr = os.dup(2)
@@ -99,7 +131,10 @@ def _render_grouping_cover(file_path: str, cols: int) -> str:
         art_w = min(45, max(1, cols))
     return get_viu_art_from_mp3(file_path, art_w, preferred_desc='Booklet', preferred_type=6)
 
-def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict | None = None) -> dict:
+def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict | None = None,
+                 queue_titles: list[str] | None = None, queue_index: int = 0) -> dict:
+    # Register up-next context so the queue view ('u') can render it.
+    playback_ui.set_queue_context(queue_titles or [], queue_index)
     manual_line_index = None
     arrow_key_time = None
     uslt_time_offset = 0.0
@@ -153,6 +188,11 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
 
     old_stderr, _ = _set_stderr_to_null()
     mp = _make_player(file_path)
+
+    # Apply the track's stored equalisation (EQU2) to the audio output, if any.
+    if _apply_equalizer(mp, audio):
+        toast_text = "♫ Equaliser applied"
+        toast_expiry = time.time() + 2.5
 
     last_size = ui_utils.get_terminal_size()
     last_lyric_idx = -1
@@ -294,9 +334,7 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                     clear_escape_buffer()
                     arrow = is_arrow_key(key)
                     toggle_controls = {
-                        'c': toggle_credits,
                         'm': toggle_metadata,
-                        'w': toggle_lyrics,
                     }
 
                     if key in (' ', 'p', 'P'):
@@ -358,17 +396,19 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                         return {'status': 'QUIT_ALL'}
 
                     elif key in ('=', '+'):
-                        new_vol = min(100, mp.audio_get_volume() + 10)
+                        new_vol = min(100, mp.audio_get_volume() + 5)
                         mp.audio_set_volume(new_vol)
                         toast_text = f'Volume: {new_vol}%'
                         toast_expiry = time.time() + 1.0
+                        playback_ui.draw_volume_bar(new_vol)
                         update_ctrl_ui()
 
                     elif key in ('-', '_'):
-                        new_vol = max(0, mp.audio_get_volume() - 10)
+                        new_vol = max(0, mp.audio_get_volume() - 5)
                         mp.audio_set_volume(new_vol)
                         toast_text = f'Volume: {new_vol}%'
                         toast_expiry = time.time() + 1.0
+                        playback_ui.draw_volume_bar(new_vol)
                         update_ctrl_ui()
 
                     elif key.lower() == 'i':
@@ -383,8 +423,22 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                         )
                         last_lyric_idx = -1
 
-                    elif key.lower() in toggle_controls and not (key.lower() == 'w' and not has_lyrics):
-                        # Wipe the screen so hiding lyrics actually removes them from the terminal
+                    elif key.lower() == 'w':
+                        # Single key cycles the right column: off → lyrics →
+                        # queue → lyrics+credits (unavailable views skipped).
+                        ui_utils.clear_screen()
+                        cycle_right_pane(has_lyrics, has_credits, playback_ui.has_queue())
+                        volume = mp.audio_get_volume()
+                        prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
+                            file_path, audio, pre_art, last_size,
+                            is_paused=(mp.get_state() == _VLC_STATE_PAUSED),
+                            volume=volume,
+                            toast=toast_text if time.time() < toast_expiry else "",
+                        )
+                        last_lyric_idx = -1
+
+                    elif key.lower() in toggle_controls:
+                        # Wipe the screen so toggling actually removes content from the terminal
                         ui_utils.clear_screen()
 
                         toggle_controls[key.lower()]()
@@ -400,7 +454,7 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
 
                 update_progress_ui(prog_row, elapsed, duration, current_width)
 
-                if _ui_state.get('show_lyrics', True):
+                if _ui_state.get('show_lyrics', True) and not _ui_state.get('show_queue'):
                     if dialogue_state.is_active():
                         right_col = playback_ui._last_right_left or 1
                         right_w = playback_ui._last_right_width or current_width

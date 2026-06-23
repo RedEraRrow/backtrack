@@ -9,6 +9,7 @@ from src.music_library import (
 )
 from src.menus import main_menu
 from src.id3.tag_registry import TAG_REGISTRY
+from src.state import QuitToTerminal
 from src.utils import prompt, ui_utils
 
 
@@ -48,6 +49,9 @@ def _reenrich_default_tracks(library: list, xml_db: dict, xml_title_keys: set) -
 
 def _run(config: dict) -> None:
     config = _init_tag_preferences(config)
+    # Persist immediately so first-run tag preferences survive an instant quit;
+    # the settings menu also autosaves, so "save & quit" (q) needs nothing more.
+    save_config(config)
 
     xml_db, xml_title_keys = _load_metadata_db(config)
     library = load_library_cache()
@@ -70,6 +74,7 @@ def _run(config: dict) -> None:
     # First run: prompt for music directory
     ui_utils.clear_screen()
     root = config.get("music_directory") or prompt.path("Select your Music Directory:")
+    root = os.path.abspath(os.path.expanduser(root)) if root else root
 
     if not root or not os.path.isdir(root):
         ui_utils.show_loading("No valid directory selected.")
@@ -101,6 +106,8 @@ def main() -> None:
     ui_utils.enter_alt_screen()
     try:
         _run(config)
+    except QuitToTerminal:
+        pass  # Shift-Q from anywhere in the menus — unwind straight to the shell.
     finally:
         ui_utils.exit_alt_screen()
 

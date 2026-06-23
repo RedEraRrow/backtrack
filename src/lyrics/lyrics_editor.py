@@ -107,7 +107,7 @@ def _load(mp3_path: str) -> tuple[list, str, dict] | None:
             data = json.load(f)
         return data['segments'], SOURCE_TRANSCRIPT, {'jpath': jpath, 'data': data, 'mp3': mp3_path}
     try:
-        from src.playback.lyrics.lyrics import normalize_lyric_newlines
+        from src.lyrics.lyrics import normalize_lyric_newlines
         audio = ID3(mp3_path)
 
         sylt = audio.getall('SYLT')
@@ -445,7 +445,7 @@ def lyrics_editor(mp3_path: str) -> None:
             with open(jpath.replace('.json', '.srt'), 'w', encoding='utf-8') as f:
                 f.write(_rebuild_srt(segs))
         else:
-            from src.playback.lyrics.lyric_timer import save_sylt_entries
+            from src.lyrics.lyric_timer import save_sylt_entries
             entries = [(s['text'], max(0, int((s['start'] or 0) * 1000)))
                        for s in segs if s.get('start') is not None]
             save_sylt_entries(aux['mp3'], entries)

@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from mutagen.id3 import ID3
 from mutagen.id3._frames import SYLT, USLT, TMCL, TIPL, TXXX, WXXX, COMM  # type: ignore[reportPrivateImportUsage]
-from mutagen.id3._frames import APIC
+from mutagen.id3._frames import APIC, EQU2, RVA2
 
 from src.id3.tag_registry import (TAG_REGISTRY, TagInfo, parse_composite_tag_id, get_tag_info, get_tag_category, get_preferred_tag_name)
 from src.music_library import refresh_library_entry
@@ -79,6 +79,18 @@ def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | 
     parsed_base, parsed_desc, parsed_lang = parse_composite_tag_id(tag_id)
 
     try:
+        # Audio-adjustment frames carry structured payloads from their own
+        # editors (see _prompt_for_equalisation / _prompt_for_rva2).
+        if parsed_base == 'EQU2':
+            if isinstance(value, dict) and value.get('__eq__'):
+                return EQU2(method=0, desc='', adjustments=list(value.get('adjustments', [])))
+            return None
+
+        if parsed_base == 'RVA2':
+            if isinstance(value, dict) and value.get('__rva2__'):
+                return RVA2(desc='', channel=1, gain=float(value['gain']), peak=0.0)
+            return None
+
         if info.frame_type == 'IMAGE':
             if isinstance(value, bytes) and len(value) > 0:
                 mime = _get_mime_type(value)
@@ -235,6 +247,35 @@ def rename_frame(audio_obj: ID3, old_frame, new_id: str) -> bool:
         return False
 
 
+def _prompt_for_equalisation(current_value: Any) -> dict | None:
+    """Interactive graphic equaliser for an EQU2 frame."""
+    existing: list[tuple[float, float]] = []
+    if current_value is not None and hasattr(current_value, 'adjustments'):
+        existing = [(float(freq), float(gain)) for freq, gain in current_value.adjustments]
+
+    adjustments = prompt.equaliser_edit("Equalisation — boost/cut per frequency band:", existing)
+    if adjustments is None:
+        return None
+    return {'__eq__': True, 'adjustments': sorted(adjustments)}
+
+
+def _prompt_for_rva2(current_value: Any) -> dict | None:
+    """Single master-channel volume adjustment (dB) for an RVA2 frame."""
+    cur = f"{current_value.gain:g}" if (current_value is not None and hasattr(current_value, 'gain')) else ""
+    val = prompt.text("Volume adjustment (dB, +boost / −cut, master channel):", default=cur)
+    if val is None:
+        return None
+    val = val.strip().lstrip('+')
+    if not val:
+        return None
+    try:
+        gain = float(val)
+    except ValueError:
+        ui_utils.show_status("Enter a number in decibels, e.g. 3 or -2.5")
+        return None
+    return {'__rva2__': True, 'gain': gain}
+
+
 def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: list | None = None) -> Any | None:
     info = get_tag_info(tag_id)
     if not info:
@@ -243,6 +284,13 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     label = get_preferred_tag_name(tag_id)
     ui_cat = info.ui_category
     fmt = info.format_spec
+    base_id, _, _ = parse_composite_tag_id(tag_id)
+
+    # Structured audio-adjustment editors (binary frames).
+    if base_id == 'EQU2':
+        return _prompt_for_equalisation(current_value)
+    if base_id == 'RVA2':
+        return _prompt_for_rva2(current_value)
 
     # Extract editor-ready defaults from whatever current_value is.
     # It may be a raw mutagen frame (single-file edit), a summary string
@@ -343,6 +391,13 @@ def summarize_tag_value(tag_id: str, raw_frame) -> str:
     if info.ui_category == 'lyrics':
         sylt_data = getattr(raw_frame, 'text', [])
         return f"{len(sylt_data)} lines"
+
+    # AUDIO ADJUSTMENT (EQU2 / RVA2)
+    if hasattr(raw_frame, 'adjustments'):
+        bands = getattr(raw_frame, 'adjustments', [])
+        return f"{len(bands)} band(s)"
+    if hasattr(raw_frame, 'gain') and hasattr(raw_frame, 'channel'):
+        return f"{getattr(raw_frame, 'gain', 0):+g} dB"
 
     # Generic text
     if hasattr(raw_frame, 'text'):

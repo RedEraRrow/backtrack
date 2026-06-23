@@ -55,11 +55,21 @@ _ui_state = {
     'show_credits': False,
     'show_lyrics': False,
     'show_help': False,
+    'show_queue': False,
+    'pane_mode': 'off',   # off → lyrics → queue → lyrics+credits (single-key cycle)
 }
+# Up-next context for the queue view: list of display titles + current index.
+_queue_ctx: dict = {'titles': [], 'index': 0}
 # Last rendered artwork width (visible characters) used to align progress/controls
 _last_art_width: int | None = None
 # Left pad (columns) where the artwork starts when printed
 _last_art_left: int | None = None
+# Artwork vertical geometry (1-based top row and rendered height in rows), used
+# to draw the full-height volume bar to the right of the art.
+_last_art_top: int | None = None
+_last_art_height: int | None = None
+# Explicit 1-based column where the volume bar is drawn (None = no room / hidden).
+_last_vol_bar_col: int | None = None
 # Right pane geometry when in wide mode (1-based column of start, and width)
 _last_right_left: int | None = None
 _last_right_width: int | None = None
@@ -185,6 +195,65 @@ def _volume_slider(volume: int, width: int = 20) -> str:
     return line
 
 
+# Eighth-block glyphs that fill a cell from the bottom up — used for the
+# fractional top cell of the vertical volume bar.
+_V_BLOCKS = " ▁▂▃▄▅▆▇█"
+
+
+def _volume_bar_geometry() -> tuple[int, int, int] | None:
+    """Return (column, top_row, height) for the volume bar, or None if there
+    is no rendered artwork or no horizontal room to the right of it."""
+    if not (_last_vol_bar_col and _last_art_top and _last_art_height):
+        return None
+    if _last_art_height < 3:
+        return None
+    cols = ui_utils.get_terminal_width()
+    if _last_vol_bar_col < 1 or _last_vol_bar_col + 1 > cols:
+        return None
+    return _last_vol_bar_col, _last_art_top, _last_art_height
+
+
+def _volume_bar_cells(volume: int) -> list[str]:
+    """Build absolute-positioned cells for a pretty full-height vertical volume
+    bar sitting just right of the album art. Fills bottom-up; the boundary cell
+    uses a fractional block. A small percentage label sits beneath it."""
+    geo = _volume_bar_geometry()
+    if geo is None:
+        return []
+    bar_col, top, height = geo
+
+    pct = max(0.0, min(100.0, float(volume))) / 100.0
+    exact = pct * height
+    full = int(exact)
+    rem = exact - full
+
+    cells: list[str] = []
+    for d in range(height):  # d = distance from the bottom (0 = bottom row)
+        row = top + (height - 1 - d)
+        if d < full:
+            glyph = f"{C.DIM}█{C.RESET}"            # filled level — dim, not bright
+        elif d == full and rem > 0.01:
+            glyph = f"{C.DIM}{_V_BLOCKS[max(1, round(rem * 8))]}{C.RESET}"
+        else:
+            glyph = f"{C.DIM}░{C.RESET}"            # unused section — hollow "tube"
+        cells.append(f"\033[{row};{bar_col}H{glyph}")
+
+    # Speaker glyph at the top; percentage just below the bar in a fixed 3-wide
+    # field so shorter values (100 → 90 → 0) fully overwrite the previous one.
+    cells.append(f"\033[{top};{bar_col}H{C.DIM}♪{C.RESET}")
+    label_col = max(1, bar_col - 1)
+    cells.append(f"\033[{top + height};{label_col}H{C.DIM}{int(round(volume)):>3}{C.RESET}")
+    return cells
+
+
+def draw_volume_bar(volume: int) -> None:
+    """Live-redraw just the vertical volume bar (called on +/- volume changes)."""
+    cells = _volume_bar_cells(volume)
+    if cells:
+        sys.stdout.write("\0337" + "".join(cells) + "\0338")
+        sys.stdout.flush()
+
+
 def toggle_metadata() -> None:
     _ui_state['show_metadata'] = not _ui_state['show_metadata']
 
@@ -201,8 +270,79 @@ def toggle_help() -> None:
     _ui_state['show_help'] = not _ui_state['show_help']
 
 
+def toggle_queue() -> None:
+    _ui_state['show_queue'] = not _ui_state['show_queue']
+
+
+def _set_pane_mode(mode: str) -> None:
+    _ui_state['pane_mode'] = mode
+    _ui_state['show_lyrics'] = mode in ('lyrics', 'lyrics+credits')
+    _ui_state['show_credits'] = mode in ('credits', 'lyrics+credits')
+    _ui_state['show_queue'] = mode == 'queue'
+
+
+def cycle_right_pane(has_lyrics: bool = True, has_credits: bool = True,
+                     has_queue_flag: bool = True) -> None:
+    """Advance the right column through the available views with a single key:
+    off → lyrics → queue → lyrics+credits → off (states with no content are skipped)."""
+    states = ['off']
+    if has_lyrics:
+        states.append('lyrics')
+    if has_queue_flag:
+        states.append('queue')
+    if has_lyrics and has_credits:
+        states.append('lyrics+credits')
+    elif has_credits:
+        states.append('credits')
+
+    cur = _ui_state.get('pane_mode', 'off')
+    if cur not in states:
+        cur = 'off'
+    _set_pane_mode(states[(states.index(cur) + 1) % len(states)])
+
+
+def set_queue_context(titles: list[str], index: int) -> None:
+    """Register the current play queue so the queue view can render it."""
+    _queue_ctx['titles'] = list(titles or [])
+    _queue_ctx['index'] = index
+
+
+def has_queue() -> bool:
+    return len(_queue_ctx['titles']) > 1
+
+
 def get_ui_state() -> dict:
     return _ui_state.copy()
+
+
+def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
+    """Render the play queue as a scrolling list centred on the current track."""
+    titles = _queue_ctx['titles']
+    idx = _queue_ctx['index']
+    if not titles:
+        return [f"{C.DIM}(queue empty){C.RESET}"]
+
+    out = [f"{C.DIM}UP NEXT  ({idx + 1}/{len(titles)}){C.RESET}", ""]
+    body_rows = max(1, max_rows - len(out))
+
+    # Window the list so the current track stays visible.
+    if len(titles) <= body_rows:
+        start = 0
+    else:
+        start = max(0, min(idx - body_rows // 2, len(titles) - body_rows))
+    end = min(len(titles), start + body_rows)
+
+    for i in range(start, end):
+        num = f"{i + 1:>2}. "
+        avail = max(4, max_w - len(num) - 2)
+        title = titles[i]
+        if len(title) > avail:
+            title = title[:avail - 1] + "…"
+        if i == idx:
+            out.append(f"{C.ACCENT}▶ {C.RESET}{C.BOLD}{num}{title}{C.RESET}")
+        else:
+            out.append(f"  {C.DIM}{num}{title}{C.RESET}")
+    return out
 
 
 def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
@@ -280,17 +420,15 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
         return status, shortcuts
 
     hint_args = [
-        ('spc', 'play/pause'),
+        ('space', 'play/pause'),
         ('←→', '±5s'),
         ('j/l', '±1s'),
         (',/.', '±30s'),
         ('+/-', 'volume'),
         ('m', 'meta'),
     ]
-    if has_credits:
-        hint_args.append(('c', 'cast'))
-    if has_lyrics:
-        hint_args.append(('w', 'lyrics'))
+    if has_lyrics or has_credits or has_queue():
+        hint_args.append(('w', 'panel'))
     if is_uslt:
         hint_args.append(('↑↓', 'scroll'))
     hint_args += [('i', 'hide help'), ('n', 'next'), ('q', 'quit')]
@@ -386,7 +524,12 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
                      is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple[int, int, int, int, int]:
     cols, rows = size
     global _last_art_width, _last_art_left, _last_right_left, _last_right_width
+    global _last_art_top, _last_art_height, _last_vol_bar_col
     mode = _layout_mode(cols)
+    # Reset art geometry each frame; only branches that draw art repopulate it.
+    _last_art_top = None
+    _last_art_height = None
+    _last_vol_bar_col = None
 
     # 1. Clear terminal — home first (no scroll), erase saved lines, erase to end.
     frame_buffer = ["\033[H\033[3J\033[J"]
@@ -402,7 +545,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     row_cursor = 0
 
     if mode == 'wide':
-        show_pane = _ui_state['show_credits'] or _ui_state['show_lyrics']
+        show_pane = _ui_state['show_credits'] or _ui_state['show_lyrics'] or _ui_state['show_queue']
         is_uslt_track = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
 
         if not show_pane:
@@ -417,12 +560,17 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
             _last_art_left = left_margin
             _last_art_width = actual_art_w
+            _last_art_top = 1
+            _last_art_height = len(art_lines)
+            _last_vol_bar_col = left_margin + actual_art_w + 3
             _last_right_left = None
             _last_right_width = None
 
             for line in art_lines:
                 log(" " * left_margin + line)
             row_cursor += len(art_lines)
+            for cell in _volume_bar_cells(volume):
+                log(cell)
             log("")
             row_cursor += 1
 
@@ -464,12 +612,18 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         _last_art_width = art_vis_w
         _last_art_left = left_margin
+        _last_art_top = 1
+        _last_art_height = len(art_lines)
         _last_right_left = art_w + _WIDE_SPLIT_GUTTER
         _last_right_width = right_w
+        # Bar sits in the gutter between the art half and the right pane.
+        _last_vol_bar_col = art_w + 1
 
         for line in art_lines:
             log(" " * left_margin + line)
         row_cursor += len(art_lines)
+        for cell in _volume_bar_cells(volume):
+            log(cell)
         log("")
         row_cursor += 1
 
@@ -489,6 +643,17 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         log(f"\033[{ctrl_row};1H\033[K{status_ln}")
         for offset, line in enumerate(shortcut_lines, start=1):
             log(f"\033[{ctrl_row + offset};1H\033[K{line}")
+
+        # Queue view takes over the whole right pane when toggled on.
+        if _ui_state['show_queue']:
+            pane_rows = max(3, (ctrl_row - 1) - 3)
+            for qi, line in enumerate(_build_queue_lines(right_w, pane_rows)):
+                log(f"\033[{3 + qi};{_last_right_left}H{line}")
+            lyric_row = ctrl_row  # suppress the lyric area while the queue shows
+            art_bottom_row = ctrl_row - 1
+            _render_frame_buffer(frame_buffer, rows)
+            sys.stdout.flush()
+            return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
 
         credits_lines = []
         if has_cast and _ui_state['show_credits']:
@@ -549,8 +714,14 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             _last_art_left = 0
             _last_art_width = cols if art_lines else 0
 
+        _last_art_top = 1
+        _last_art_height = len(art_lines)
+        _last_vol_bar_col = (_last_art_left or 0) + (_last_art_width or 0) + 3
+
         for line in art_lines: log(line)
         row_cursor += len(art_lines)
+        for cell in _volume_bar_cells(volume):
+            log(cell)
         log("")
         row_cursor += 1
 
@@ -572,6 +743,17 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         ctrl_row_end = ctrl_row + len(shortcut_lines)
 
+        if _ui_state['show_queue']:
+            q_start = ctrl_row_end + 2
+            q_rows = max(3, rows - q_start)
+            for qi, line in enumerate(_build_queue_lines(cols - 2, q_rows)):
+                log(f"\033[{q_start + qi};1H\033[K{line}")
+            lyric_row = rows  # no lyric area while the queue shows
+            art_bottom_row = rows
+            _render_frame_buffer(frame_buffer, rows)
+            sys.stdout.flush()
+            return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
+
         c_lines = []
         cr_lines = []
 
@@ -579,8 +761,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             cast_limit, crew_limit = 3, 3
             gap = '  '
             col_w = max(12, (cols - len(gap)) // 2)
-            c_lines = [f"{C.DIM}CAST{C.RESET}"] + _build_cast_lines(cast_people, col_w, limit=cast_limit)
-            cr_lines = [f"{C.DIM}PRODUCTION{C.RESET}"] + _build_crew_lines(crew_people, col_w, cast_names=[n for _, n in cast_people[:cast_limit]], limit=crew_limit)
+            c_lines = [f"{C.DIM}PERFORMERS{C.RESET}"] + _build_cast_lines(cast_people, col_w, limit=cast_limit)
+            cr_lines = [f"{C.DIM}PRODUCTION TEAM{C.RESET}"] + _build_crew_lines(crew_people, col_w, cast_names=[n for _, n in cast_people[:cast_limit]], limit=crew_limit)
 
             for i in range(max(len(c_lines), len(cr_lines))):
                 lft = c_lines[i] if i < len(c_lines) else ''

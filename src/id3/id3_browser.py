@@ -9,7 +9,7 @@ import numpy as np
 import cv2
 
 from src.utils import prompt
-from src.playback.lyrics.lyric_timer import save_sylt_entries
+from src.lyrics.lyric_timer import save_sylt_entries
 from mutagen.id3 import ID3
 import mutagen.id3
 from mutagen.id3._frames import APIC, USLT
@@ -247,6 +247,23 @@ def inspect_tag_loop(
 ) -> None:
     show_xml = False
 
+    # Duration is constant for the file — compute it ONCE here, not per render.
+    # (The header is redrawn on every keypress/resize; reading the file each
+    # time made resizing feel sluggish.)
+    _cached_dur = 0.0
+    try:
+        _cached_dur = float((library_metadata or {}).get("duration") or 0.0)
+    except (TypeError, ValueError):
+        _cached_dur = 0.0
+    if not _cached_dur:
+        try:
+            import mutagen
+            _mf = mutagen.File(file_path)
+            if _mf is not None and getattr(_mf, "info", None) is not None:
+                _cached_dur = float(getattr(_mf.info, "length", 0.0) or 0.0)
+        except Exception:
+            _cached_dur = 0.0
+
     def _save(audio_obj):
         audio_obj.save(v2_version=3)
         if library is not None:
@@ -259,7 +276,6 @@ def inspect_tag_loop(
 
     def _main_header() -> list[str]:
         cols = ui_utils.get_terminal_width()
-        name = os.path.basename(file_path)
         ext = os.path.splitext(file_path)[1].upper().lstrip('.')
 
         try:
@@ -267,16 +283,55 @@ def inspect_tag_loop(
         except OSError:
             size_str = ""
 
-        inner = cols - 6
-        content_right = f"  [{ext}]{size_str}  "
-        reserved = len(content_right) + 2
-        content_left = f"  {ui_utils.truncate_text(name, max(1, inner - reserved))}"
-        padding = ' ' * max(0, inner - len(content_left) - len(content_right))
+        dur_str = f"  {ui_utils.format_time(int(_cached_dur))}" if _cached_dur else ""
+
+        # Prefer real tags over the (possibly cryptic) filename. Read live from
+        # the loaded ID3 object, falling back to the cached library metadata,
+        # and only to the filename when there is no title at all.
+        meta = library_metadata or {}
+        _PLACEHOLDERS = {"", "Unknown Artist", "Unknown Album", "Unknown Genre", "Unknown Year"}
+
+        def _from_tags(frame: str, meta_key: str) -> str:
+            try:
+                fr = audio.get(frame)
+                if fr is not None and getattr(fr, "text", None):
+                    val = str(fr.text[0]).strip()
+                    if val:
+                        return val
+            except Exception:
+                pass
+            val = str(meta.get(meta_key, "")).strip()
+            return "" if val in _PLACEHOLDERS else val
+
+        title = _from_tags("TIT2", "title")
+        artist = _from_tags("TPE1", "artist") or _from_tags("TPE2", "album_artist")
+        if not title:
+            title = os.path.splitext(os.path.basename(file_path))[0]
+
+        # Full-width rounded box: bold title (· dim artist) left, dim meta right.
+        inner = max(12, cols - 4)
+        right = f"[{ext}]{dur_str}{size_str}"
+        avail = max(4, inner - len(right) - 2)
+
+        if len(title) > avail:
+            title = title[:avail - 1] + "…"
+        left_styled = f"{C.BOLD}{title}{C.RESET}"
+        left_vis = len(title)
+        rem = avail - left_vis
+        if artist and rem > 5:
+            suffix = f" · {artist}"
+            if len(suffix) > rem:
+                suffix = suffix[:rem - 1] + "…"
+            left_styled += f"{C.DIM}{suffix}{C.RESET}"
+            left_vis += len(suffix)
+
+        gap = max(1, inner - left_vis - len(right))
+        title_line = f"{left_styled}{' ' * gap}{C.DIM}{right}{C.RESET}"
 
         lines = [
-            f"  {C.DIM}╭{'─' * inner}╮{C.RESET}",
-            f"  {C.DIM}│{C.RESET}{C.BOLD}{content_left}{C.RESET}{C.DIM}{content_right}{padding}│{C.RESET}",
-            f"  {C.DIM}╰{'─' * inner}╯{C.RESET}",
+            f"{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}",
+            f"{C.DIM}│{C.RESET} {title_line} {C.DIM}│{C.RESET}",
+            f"{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}",
             "",
         ]
 
@@ -297,33 +352,64 @@ def inspect_tag_loop(
             break
 
         cols = ui_utils.get_terminal_width()
-        TAG_MAX   = 20
-        ALIAS_MAX = 20
-        VAL_MAX   = cols - TAG_MAX - ALIAS_MAX - 2
-
 
         def _tag_title(tag_id: str) -> str:
+            # Plain text; select(columns=True) lays out and greys the columns:
+            #   TAG (friendly name)   type   | value
             info = get_tag_info(tag_id)
-            alias = f"({info.name[0]})" if info else ""
-            tag_disp = tag_id if len(tag_id) <= TAG_MAX else tag_id[:TAG_MAX - 1] + "…"
+            alias = info.name[0] if info else ""
+            if len(alias) > 22:
+                alias = alias[:21] + "…"
+            paren = f" ({alias})" if alias else ""
+            category = get_tag_category(tag_id)
             val = summarize_tag_value(tag_id, audio[tag_id])
-            val_disp = val if len(val) <= VAL_MAX else val[:VAL_MAX - 1] + "…"
-            return f"{tag_disp:<{TAG_MAX}} {alias if len(alias) <= ALIAS_MAX else alias[:ALIAS_MAX - 1] + "…":<{ALIAS_MAX}} | {val_disp}"
+            return f"{tag_id}{paren} [{category}] | {val}"
 
-        tag_choices = [prompt.Choice(title=_tag_title(t), value=t) for t in tags]
+        # A clearly-labelled, read-only filesystem path row — distinct from the
+        # ID3 tags below it so it is never mistaken for a stored tag value.
+        filepath_row = prompt.Choice(
+            title=f"⌁ File path  {C.DIM}(filesystem — not an ID3 tag){C.RESET}",
+            value="__filepath__",
+        )
+        tag_choices = [filepath_row, prompt.separator()] + [
+            prompt.Choice(title=_tag_title(t), value=t) for t in tags
+        ]
         xml_data = library_metadata.get('xml_data') if library_metadata else None
         has_id3 = file_path.lower().endswith('.mp3')
 
-        extras = (["Add Tag"] if has_id3 else []) + (["Toggle XML"] if xml_data and has_id3 else [])
+        extras = (["Toggle XML"] if xml_data and has_id3 else [])
+
+        _shortcuts = {'a': 'Add Tag'} if has_id3 else None
+        _extra_hints = {'a': 'add tag'} if has_id3 else None
 
         choice = prompt.select(
             "Select tag to manage:",
             choices=tag_choices + extras,
-            header=_main_header
+            header=_main_header,
+            shortcuts=_shortcuts,
+            extra_hints=_extra_hints,
+            columns=True,
         )
 
         if choice == "Toggle XML":
             show_xml = not show_xml
+            continue
+
+        if choice == "__filepath__":
+            _fp_header = [
+                f"  {C.BOLD}File path{C.RESET}  {C.DIM}(filesystem location — not stored in ID3){C.RESET}",
+                f"{C.DIM}{'─' * cols}{C.RESET}",
+                f"  {file_path}",
+                f"{C.DIM}{'─' * cols}{C.RESET}",
+            ]
+            fp_action = prompt.select(
+                "Action:",
+                choices=["Copy path to clipboard"],
+                header=_fp_header,
+            )
+            if fp_action == "Copy path to clipboard":
+                pyperclip.copy(file_path)
+                ui_utils.show_status("File path copied.")
             continue
 
         if choice == "Add Tag":

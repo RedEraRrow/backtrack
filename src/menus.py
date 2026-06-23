@@ -3,7 +3,7 @@ import os
 import random
 import string
 
-_LETTER_FILTER_THRESHOLD = 20  # show A-Z letter filter when a browse group exceeds this count
+_LETTER_FILTER_THRESHOLD = 52  # show A-Z letter filter when a browse group exceeds this count
 from src.utils.ui_utils import roman, Colors as C
 
 from src.utils import prompt
@@ -16,7 +16,7 @@ from src.music_library import (
 )
 from src.history import get_history, clear_history
 from src.playback.playback import music_player
-from src.playback.lyrics.lyrics_editor import lyrics_editor
+from src.lyrics.lyrics_editor import lyrics_editor
 from src.config import load_config, save_config
 from src.state import NAV_STACK
 from src.id3.id3_browser import inspect_tag_loop
@@ -178,42 +178,62 @@ def handle_history(library: list) -> str | None:
 
 def handle_settings(library_ref: list) -> None:
     config = load_config()
+    _cursor = 0
 
     while True:
+        _choices: list = [
+            prompt.separator("PLAYBACK"),
+            "Adjust Lyric Lead-in Time",
+            prompt.separator("LIBRARY"),
+            "Update Music Directory",
+            "Update iTunes Library XML Path",
+        ]
+        if config.get("xml_db_path"):
+            _choices.append("Clear iTunes Library XML Path")
+        _choices += [
+            "Toggle Hidden Files",
+            prompt.separator("EDITORS"),
+            "Toggle Metadata Editor",
+            "Toggle Lyrics Editor",
+            prompt.separator("HISTORY"),
+            "Toggle Listening History",
+            "Clear History Log",
+        ]
+
         choice = prompt.select(
             "Settings:",
-            choices=[
-                "Toggle Listening History",
-                "Clear History Log",
-                "Adjust Lyric Lead-in Time",
-                "Toggle Hidden Files",
-                "Toggle Metadata Editor",
-                "Toggle Lyrics Editor",
-                "Update Music Directory",
-                "Update iTunes Library XML Path",
-            ],
+            choices=_choices,
             header=_menu_header("Settings"),
+            index=_cursor,
         )
 
         if not choice:
             break
 
-        elif choice == "Toggle Listening History":
+        # Stay on the row that was just acted on, rather than jumping to the top.
+        _cursor = next((i for i, c in enumerate(_choices)
+                        if not isinstance(c, prompt.Choice) and c == choice), _cursor)
+
+        if choice == "Toggle Listening History":
             config["history_enabled"] = not config["history_enabled"]
             ui_utils.show_status(f"History: {'ENABLED' if config['history_enabled'] else 'DISABLED'}")
 
         elif choice == "Clear History Log":
-            if prompt.confirm("Sure? Cannot be undone."):
-                if clear_history():
-                    ui_utils.show_status("History cleared.")
-                else:
-                    ui_utils.show_status("Failed to clear history.")
+            entry_count = len(get_history(limit=10 ** 9))
+            if entry_count == 0:
+                ui_utils.show_status("History is already empty.")
+            elif prompt.confirm(f"Delete all {entry_count} history entries? Cannot be undone."):
+                ui_utils.show_status("History cleared." if clear_history() else "Failed to clear history.")
 
         elif choice == "Adjust Lyric Lead-in Time":
-            val = prompt.text(f"Lead-in seconds (current {config['lyric_lead_in']}):")
-            if val and val.replace('.', '', 1).isdigit():
-                config["lyric_lead_in"] = float(val)
-                ui_utils.show_status(f"Updated to {config['lyric_lead_in']} seconds")
+            val = prompt.text("Lead-in seconds:", default=str(config["lyric_lead_in"]))
+            if val is not None:
+                try:
+                    seconds = round(max(0.0, float(val)), 2)
+                    config["lyric_lead_in"] = seconds
+                    ui_utils.show_status(f"Lyric lead-in set to {seconds:g}s")
+                except ValueError:
+                    ui_utils.show_status("Enter a number (e.g. 2 or 1.5).")
 
         elif choice == "Toggle Metadata Editor":
             config["show_metadata_editor"] = not config.get("show_metadata_editor", True)
@@ -227,7 +247,8 @@ def handle_settings(library_ref: list) -> None:
 
         elif choice == "Update Music Directory":
             new_root = prompt.path("Music directory:")
-            if new_root and os.path.isdir(new_root):
+            if new_root and os.path.isdir(os.path.expanduser(new_root)):
+                new_root = os.path.abspath(os.path.expanduser(new_root))
                 config["music_directory"] = new_root
                 ui_utils.show_status("Re-scanning library...")
                 xml_db, xml_title_keys = load_xml_database(config["xml_db_path"] if config["xml_db_path"] else config.get("music_directory", ""))
@@ -255,6 +276,11 @@ def handle_settings(library_ref: list) -> None:
                 else:
                     ui_utils.show_status("Failed to load XML database.")
 
+        elif choice == "Clear iTunes Library XML Path":
+            config["xml_db_path"] = ""
+            _cursor = 0  # option disappears from the list, so reset the cursor
+            ui_utils.show_status("iTunes Library XML path cleared.")
+
         elif choice == "Toggle Hidden Files":
             config["ignore_hidden_files"] = not config.get("ignore_hidden_files", False)
             state = "ON" if config["ignore_hidden_files"] else "OFF"
@@ -265,15 +291,21 @@ def handle_settings(library_ref: list) -> None:
         save_config(config)
 
 
-def play_queue(paths: list, mode: str = "linear") -> str | None:
+def play_queue(paths: list, mode: str = "linear", library: list | None = None) -> str | None:
     """Play a queue of file paths in the given mode (linear, shuffle, repeat_one, repeat_all)."""
     playlist = list(paths)
     if mode == "shuffle":
         random.shuffle(playlist)
 
+    # Build display titles for the in-player queue view (falls back to filename).
+    title_map = {}
+    if library:
+        title_map = {s['path']: (s.get('title') or os.path.basename(s['path'])) for s in library}
+    titles = [title_map.get(p) or os.path.splitext(os.path.basename(p))[0] for p in playlist]
+
     idx = 0
     while idx < len(playlist):
-        result = music_player(playlist[idx])
+        result = music_player(playlist[idx], queue_titles=titles, queue_index=idx)
         if isinstance(result, dict):
             status = result.get("status", "")
             if status == "QUIT_ALL":
@@ -361,7 +393,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
 
             if selection == "__play_all__":
                 paths = [s['path'] for name in group_names for s in grouped[name]]
-                res = play_queue(paths)
+                res = play_queue(paths, library=library)
                 if res == "QUIT_ALL":
                     NAV_STACK.clear()
                     NAV_STACK.append("Home")
@@ -388,33 +420,35 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         reverse=True,
                     )
 
-                    if len(album_list) == 1:
-                        alb = album_list[0]
-                    else:
-                        _show_editor = _cfg.get("show_metadata_editor", True)
-                        _alb_choices = [prompt.Choice(title=f"▶  Play all — {selection}", value="__play_all__")]
+                    # Always present the album list — even a single album is worth
+                    # showing as its own entry (albums are distinct from the artist).
+                    _show_editor = _cfg.get("show_metadata_editor", True)
+                    _single_album = len(album_list) <= 1
+                    _alb_choices: list = []
+                    if not _single_album:
+                        _alb_choices.append(prompt.Choice(title=f"▶  Play all — {selection}", value="__play_all__"))
                         if _show_editor:
                             _alb_choices.append(prompt.Choice(title=f"Edit tags — {selection}", value="__bulk_edit__"))
-                        _alb_choices += album_list
+                    _alb_choices += album_list
 
-                        alb = prompt.select(
-                            "Albums:",
-                            choices=_alb_choices,
-                            header=_menu_header(selection, cat_choice),
-                        )
+                    alb = prompt.select(
+                        "Albums:",
+                        choices=_alb_choices,
+                        header=_menu_header(selection, cat_choice),
+                    )
 
-                        if not alb:
-                            break
+                    if not alb:
+                        break
 
-                        if alb == "__play_all__":
-                            res = play_queue([s['path'] for s in selected_songs])
-                            if res == "QUIT_ALL":
-                                return "QUIT_ALL"
-                            continue
+                    if alb == "__play_all__":
+                        res = play_queue([s['path'] for s in selected_songs], library=library)
+                        if res == "QUIT_ALL":
+                            return "QUIT_ALL"
+                        continue
 
-                        if alb == "__bulk_edit__":
-                            bulk_id3_manager(library, paths=[s['path'] for s in selected_songs])
-                            continue
+                    if alb == "__bulk_edit__":
+                        bulk_id3_manager(library, paths=[s['path'] for s in selected_songs])
+                        continue
 
                     NAV_STACK.append(alb)
                     track_paths = [s['path'] for s in albums[alb]]
@@ -476,17 +510,33 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         else:
                             label = f"{indent}{str(t.get('track', '0')).zfill(2)} — {t.get('title', 'Unknown')}"
 
+                        # Extra context: featured-artist marker when the track
+                        # artist differs from the album artist, plus duration.
+                        # Kept as plain text — select() truncates by raw length.
+                        _aa = (t.get('album_artist') or '').strip()
+                        _ar = (t.get('artist') or '').strip()
+                        if _ar and _aa and _ar.lower() != _aa.lower():
+                            label += f"  · {_ar}"
+                        _dur = t.get('duration') or 0
+                        if _dur:
+                            label += f"  ({ui_utils.format_time(int(_dur))})"
+
                         track_choices.append(prompt.Choice(title=label, value=t['path']))
 
                     _track_context = NAV_STACK[-1] if NAV_STACK else selection
                     _show_editor   = _cfg.get("show_metadata_editor", True)
-                    _track_header_choices = [
-                        prompt.Choice(title=f"▶  Play all — {_track_context}", value="__play_all__")
-                    ]
-                    if _show_editor:
-                        _track_header_choices.append(
-                            prompt.Choice(title=f"Edit tags — {_track_context}", value="__bulk_edit__")
-                        )
+                    # With a single track, "Play all" / "Edit tags — all" are just
+                    # noise — the lone track row already does both jobs.
+                    if len(final_tracks) <= 1:
+                        _track_header_choices = []
+                    else:
+                        _track_header_choices = [
+                            prompt.Choice(title=f"▶  Play all — {_track_context}", value="__play_all__")
+                        ]
+                        if _show_editor:
+                            _track_header_choices.append(
+                                prompt.Choice(title=f"Edit tags — {_track_context}", value="__bulk_edit__")
+                            )
 
                     path_choice_obj = prompt.select(
                         "Tracks:",
@@ -498,7 +548,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         break
 
                     if path_choice_obj == "__play_all__":
-                        res = play_queue([t['path'] for t in final_tracks])
+                        res = play_queue([t['path'] for t in final_tracks], library=library)
                         if res == "QUIT_ALL":
                             return "QUIT_ALL"
                         continue
@@ -527,7 +577,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                             header=_menu_header(disc_label, _track_context),
                         )
                         if disc_action == "__play_all__":
-                            res = play_queue(disc_paths)
+                            res = play_queue(disc_paths, library=library)
                             if res == "QUIT_ALL":
                                 return "QUIT_ALL"
                         elif disc_action == "__bulk_edit__":
@@ -549,7 +599,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                             header=_menu_header(work_name, _track_context),
                         )
                         if work_action == "__play_all__":
-                            res = play_queue(work_paths)
+                            res = play_queue(work_paths, library=library)
                             if res == "QUIT_ALL":
                                 return "QUIT_ALL"
                         elif work_action == "__bulk_edit__":

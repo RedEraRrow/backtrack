@@ -17,6 +17,7 @@ from src.id3.id3_tag_handler import (
     _prompt_for_image_metadata,
     _EXT_TO_MIME,
 )
+from src.id3.tag_registry import parse_composite_tag_id
 from src.utils import ui_utils
 from src.utils.ui_utils import get_terminal_width, Colors as C
 from src.music_library import refresh_library_entry
@@ -94,27 +95,33 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             ui_utils.show_status(f"Error scanning {os.path.basename(path)}: {e}")
             continue
 
-    def _bulk_header():
-        available_width = max(10, cols - 10)
-        content = f"Bulk edit  {len(album_tracks)} tracks"
+    def _bulk_header(subtitle: str | None = None):
+        """Rounded, full-width box header: bold title left, track count right,
+        optional dim subtitle line. Returns a builder for select()/checkbox()."""
+        def _build():
+            cols_now = get_terminal_width()
+            inner = max(12, cols_now - 4)  # content width between the │ borders
+            title = "Bulk Edit"
+            count = f"{len(album_tracks)} track" + ("" if len(album_tracks) == 1 else "s")
+            gap = max(2, inner - len(title) - len(count))
+            title_line = f"{C.BOLD}{title}{C.RESET}{' ' * gap}{C.DIM}{count}{C.RESET}"
 
-        wrapped = []
-        for raw_line in content.split("\n"):
-            if raw_line == "":
-                wrapped.append("")
-            else:
-                wrapped.extend(textwrap.wrap(raw_line, width=available_width, drop_whitespace=False) or [""])
-
-        return [
-            f"  ╭{'─' * (available_width + 2)}╮",
-            *[f"  │ {line:<{available_width}} │" for line in wrapped],
-            f"  ╰{'─' * (available_width + 2)}╯"
-        ]
+            lines = [
+                f"{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}",
+                f"{C.DIM}│{C.RESET} {title_line} {C.DIM}│{C.RESET}",
+            ]
+            if subtitle:
+                sub = subtitle if len(subtitle) <= inner else subtitle[:inner - 1] + "…"
+                lines.append(f"{C.DIM}│{C.RESET} {C.DIM}{sub:<{inner}}{C.RESET} {C.DIM}│{C.RESET}")
+            lines.append(f"{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}")
+            lines.append("")
+            return lines
+        return _build
 
     operation = prompt.select(
         "Operation:",
         choices=["Set value", "Delete tags", "Rename tags", "Add new tag"],
-        header=_bulk_header
+        header=_bulk_header()
     )
 
     if not operation:
@@ -133,9 +140,12 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         ui_utils.show_status("No tags found.")
         return
 
-    ALIAS_MAX = 22
-    TAG_MAX = 12
-    VAL_MAX = 200
+    # Friendly-name column: modest, bounded width (truncates long names with an
+    # ellipsis inside the brackets). Value column: bounded so the whole row fits
+    # the terminal — otherwise the line overflows and the label's closing bracket
+    # gets clipped by the fallback truncation.
+    alias_budget = max(20, min(32, cols - 48))
+    VAL_MAX = max(10, cols - alias_budget - 33)
 
     def _b_alias(tag):
         info = get_tag_info(tag)
@@ -162,42 +172,41 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         n_vary = len(unique)
         return f"{{{n_vary} values}}"
 
-    bulk_tag_col = min(TAG_MAX, max((len(t) for t in all_tag_counts), default=6))
-    bulk_alias_col = min(ALIAS_MAX, max((len(_b_alias(t)) + 3 for t in all_tag_counts), default=0))
-    _fixed = bulk_tag_col + bulk_alias_col + 32
-    bulk_val_col = min(VAL_MAX, max(cols - _fixed, 10))
-
     def _tag_option_title(tag, count):
+        # Plain text only — checkbox() lays out the columns and greys the
+        # friendly-name and type columns itself. Rendered as:
+        #   TAG (friendly name)   type   | value   count/total
+        # (single divider before value; other columns separated by blanks).
         alias = _b_alias(tag)
+        if len(alias) > alias_budget:
+            # Keep the trailing ellipsis tight (no dangling space before it).
+            alias = alias[:alias_budget - 1].rstrip() + "…"
         category = get_tag_category(tag).lower()
-
-        if alias:
-            descriptor = f"{tag} {C.DIM}({alias}){C.RESET}"
-            raw_len = len(tag) + len(alias) + 3
-        else:
-            descriptor = tag
-            raw_len = len(tag)
-
-        pad_len = max(0, 38 - raw_len)
-        left_part = f"{descriptor}{' ' * pad_len}"
-
-        category_part = f"{C.DIM}{category:<15}{C.RESET}"
-
         val_disp = _value_summary(tag)
+
+        paren = f" ({alias})" if alias else ""
         count_str = f"{count}/{len(album_tracks)}"
 
-        return f"{left_part} {category_part} | {val_disp:<40}  {count_str}"
+        return f"{tag}{paren} [{category}] | {val_disp}  {count_str}"
 
     selected_tags = []
     target_tag_id = None
     target_val = None
 
     if operation == "Add New Tag":
-        target_tag_id = prompt.text("New Tag ID (e.g. TSO2, COMM[eng]):")
-        if not target_tag_id:
+        raw_id = prompt.text("New Tag ID (e.g. TSO2, COMM[eng], TXXX:Mood):")
+        if not raw_id:
             return
-        target_tag_id = target_tag_id.split(':')[0].upper() + ":" + ":".join(target_tag_id.split(':')[1:])
-        target_val = prompt.text(f"Value for {target_tag_id}:")
+        # Upper-case the base, preserving any :desc:lang or [lang] suffix.
+        _parts = raw_id.split(':')
+        target_tag_id = _parts[0].upper() + ((":" + ":".join(_parts[1:])) if len(_parts) > 1 else "")
+        base_id, _, _ = parse_composite_tag_id(target_tag_id)
+        # Reuse the same type-aware value prompt as single-track editing so the
+        # right widget (date picker, fraction editor, etc.) is used in bulk too.
+        if get_tag_info(base_id):
+            target_val = prompt_for_value(target_tag_id)
+        else:
+            target_val = prompt.text(f"Value for {target_tag_id}:")
         if target_val is None:
             return
     else:
@@ -209,7 +218,8 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         selected_tags = prompt.checkbox(
             message=f"Select tags to {operation.lower()}:",
             choices=tag_options,
-            interlock_category_callback=callback
+            interlock_category_callback=callback,
+            header=_bulk_header()
         )
 
         if not selected_tags:

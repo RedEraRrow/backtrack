@@ -12,7 +12,7 @@ except ImportError:
 from mutagen.id3 import ID3
 
 from src.config import load_config
-from src.playback.lyrics.lyrics import normalize_lyric_newlines
+from src.lyrics.lyrics import normalize_lyric_newlines
 from src.utils import ui_utils
 from src.utils.terminal_input import raw_mode, get_key_non_blocking
 from src.utils.ui_utils import Colors as C

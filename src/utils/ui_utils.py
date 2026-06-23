@@ -300,7 +300,7 @@ def get_progress_bar(progress: float, width: int = 40) -> str:
 
     padding = " " * (width - len(bar))
 
-    return f"{Colors.DIM}[{Colors.RESET}{Colors.GREEN}{bar}{padding}{Colors.RESET}{Colors.DIM}]{Colors.RESET}"
+    return f"{Colors.DIM}[{Colors.RESET}{Colors.PRIMARY}{bar}{padding}{Colors.RESET}{Colors.DIM}]{Colors.RESET}"
 
 
 def get_xml_metadata_lines(metadata: dict) -> list[str]:
