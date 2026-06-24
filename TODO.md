@@ -72,6 +72,9 @@ Legend: ✅ done · 🟡 partial · ⬜ open
 ⬜ 68. NOTE TO SELF: think about checking xml and m4p logic, in my recent memory it didn't work so i ignored it
 ⬜ 69. option to import to sylt from json and uslt or json and md, as well as option to import to uslt from txt, rtf, md etc.
 ⬜ 70. ONGOING: ensure up-to-date mds, docstrings, and all other text. ensure all functions, classes, files etc. across the project have docstrings.
+⬜ 71. i tried to get viu to work with proper images but it messed up the spacing and layout massively, so if you can get it to work cleanly go for it, but otherwise remove viu as a dependency and just calculate the half blocks in-project instead
+⬜ 72. ensure all dependencies are listed in requirements.txt and pyproject.toml
+⬜ 73. NOT URGENT: ensure no segmentation fault on mobile terminal (investigate), and general cross-compatibility
 
 ## IDEA 
 How about with bulk editing, being able to set a pattern

@@ -1,6 +1,6 @@
 # Backtrack
 
-Backtrack is a terminal music player for macOS/Linux that plays audio with VLC, shows embedded lyrics, and lets you browse your music library in the terminal.
+Backtrack is a terminal music player for macOS/Linux that plays audio with VLC, shows embedded lyrics, and lets you browse your music library in the terminal. [IN DEVELOPMENT, NOT FULLY USABLE YET]
 
 ## Quick Start
 
