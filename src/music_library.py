@@ -1,3 +1,4 @@
+"""Library scanning, metadata extraction, search, sort, and background sync."""
 from __future__ import annotations
 import os
 import json
@@ -297,7 +298,7 @@ def get_metadata(file_path: str, xml_db: dict | None = None,
     # Cache the audio duration (seconds) so track lists can show it without
     # re-reading every file during browse.
     try:
-        mf = mutagen.File(file_path)
+        mf = mutagen.File(file_path)  # type: ignore[reportPrivateImportUsage]
         if mf is not None and getattr(mf, "info", None) is not None:
             metadata["duration"] = float(getattr(mf.info, "length", 0.0) or 0.0)
     except Exception:

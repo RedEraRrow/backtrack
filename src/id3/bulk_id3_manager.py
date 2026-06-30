@@ -1,3 +1,4 @@
+"""Bulk ID3 tag operations across multiple files."""
 from __future__ import annotations
 import os
 import mutagen.id3
@@ -9,6 +10,7 @@ from src.id3.id3_tag_handler import (
     apply_bulk_edit,
     get_tag_info,
     get_tag_category,
+    display_tag_id,
     summarize_tag_value,
     create_apic_frame,
     create_frame,
@@ -26,6 +28,15 @@ from collections import Counter
 import textwrap
 
 from mutagen.id3._frames import APIC
+
+# Structured columns for the bulk tag picker. Column 1 holds the tag id AND the
+# friendly name as two styled segments (TAG bright + friendly dim) in one column.
+_BULK_COLUMNS = [
+    prompt.Column(style='primary'),                                     # TAG (friendly)
+    prompt.Column(style='dynamic-dim'),                                 # type / category
+    prompt.Column(style='normal', flex=True),                           # value summary
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # count / total
+]
 
 
 def prompt_for_image_payload() -> tuple[bytes, str, int, str] | None:
@@ -100,27 +111,28 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         optional dim subtitle line. Returns a builder for select()/checkbox()."""
         def _build():
             cols_now = get_terminal_width()
-            inner = max(12, cols_now - 4)  # content width between the │ borders
+            mh = ui_utils.MARGIN_H
+            inner = max(12, cols_now - 2 * mh - 4)
             title = "Bulk Edit"
             count = f"{len(album_tracks)} track" + ("" if len(album_tracks) == 1 else "s")
             gap = max(2, inner - len(title) - len(count))
             title_line = f"{C.BOLD}{title}{C.RESET}{' ' * gap}{C.DIM}{count}{C.RESET}"
 
             lines = [
-                f"{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}",
-                f"{C.DIM}│{C.RESET} {title_line} {C.DIM}│{C.RESET}",
+                f"{' ' * mh}{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}",
+                f"{' ' * mh}{C.DIM}│{C.RESET} {title_line} {C.DIM}│{C.RESET}",
             ]
             if subtitle:
                 sub = subtitle if len(subtitle) <= inner else subtitle[:inner - 1] + "…"
-                lines.append(f"{C.DIM}│{C.RESET} {C.DIM}{sub:<{inner}}{C.RESET} {C.DIM}│{C.RESET}")
-            lines.append(f"{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}")
+                lines.append(f"{' ' * mh}{C.DIM}│{C.RESET} {C.DIM}{sub:<{inner}}{C.RESET} {C.DIM}│{C.RESET}")
+            lines.append(f"{' ' * mh}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}")
             lines.append("")
             return lines
         return _build
 
     operation = prompt.select(
         "Operation:",
-        choices=["Set value", "Delete tags", "Rename tags", "Add new tag"],
+        choices=["Set value", "Copy from first track", "Delete tags", "Rename tags", "Add new tag"],
         header=_bulk_header()
     )
 
@@ -130,11 +142,12 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     op_display = operation.lower()
     op_map = {
         "Set value": "Set Common Value",
+        "Copy from first track": "Copy From First Track",
         "Delete tags": "Delete Tags",
         "Rename tags": "Rename Tags",
         "Add new tag": "Add New Tag",
     }
-    operation = op_map.get(operation, operation)
+    operation = str(op_map.get(operation, operation))
 
     if not all_tag_counts and operation not in ("Add New Tag",):
         ui_utils.show_status("No tags found.")
@@ -172,22 +185,18 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         n_vary = len(unique)
         return f"{{{n_vary} values}}"
 
-    def _tag_option_title(tag, count):
-        # Plain text only — checkbox() lays out the columns and greys the
-        # friendly-name and type columns itself. Rendered as:
-        #   TAG (friendly name)   type   | value   count/total
-        # (single divider before value; other columns separated by blanks).
+    def _tag_option_cells(tag, count):
+        # Column 1 = TAG (bright) + friendly name (dim) as two segments.
         alias = _b_alias(tag)
-        if len(alias) > alias_budget:
-            # Keep the trailing ellipsis tight (no dangling space before it).
-            alias = alias[:alias_budget - 1].rstrip() + "…"
+        friendly = f" ({alias})" if alias else ""
         category = get_tag_category(tag).lower()
         val_disp = _value_summary(tag)
-
-        paren = f" ({alias})" if alias else ""
-        count_str = f"{count}/{len(album_tracks)}"
-
-        return f"{tag}{paren} [{category}] | {val_disp}  {count_str}"
+        return [
+            [(display_tag_id(tag), 'primary'), (friendly, 'dynamic-dim')],
+            category,
+            val_disp,
+            f"{count}/{len(album_tracks)}",
+        ]
 
     selected_tags = []
     target_tag_id = None
@@ -210,16 +219,18 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         if target_val is None:
             return
     else:
-        tag_options = [prompt.Choice(_tag_option_title(t, c), t)
+        tag_options = [prompt.Choice(title=t, value=t, cells=_tag_option_cells(t, c))
                        for t, c in sorted(all_tag_counts.items())]
 
         callback = None if operation == "Delete Tags" else get_tag_category
 
-        selected_tags = prompt.checkbox(
+        selected_tags = prompt.select(
             message=f"Select tags to {operation.lower()}:",
             choices=tag_options,
             interlock_category_callback=callback,
-            header=_bulk_header()
+            header=_bulk_header(),
+            columns=_BULK_COLUMNS,
+            multi=True,
         )
 
         if not selected_tags:
@@ -234,6 +245,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             existing_vals = tag_values.get(first_tag, [])
             fallback_val = existing_vals[0] if existing_vals else ""
             target_val = prompt_for_value(first_tag, current_value=fallback_val)
+        elif operation == "Copy From First Track":
+            # Values come directly from the first track; no extra prompt needed.
+            target_val = "_copy_from_first_"
 
     if target_val is None and operation not in ["Delete Tags"]:
         return
@@ -269,6 +283,18 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     if not prompt.confirm(f"Apply {op_display} to {len(album_tracks)} tracks?"):
         return
 
+    # For copy-from-first, read source frames once from the first track.
+    copy_source_frames: dict = {}
+    if operation == "Copy From First Track" and album_tracks:
+        try:
+            _src = ID3(album_tracks[0])
+            for tag in selected_tags:
+                if tag in _src:
+                    copy_source_frames[tag] = _src[tag]
+        except Exception as e:
+            ui_utils.show_status(f"Could not read source track: {e}")
+            return
+
     count_modified = 0
     for path in album_tracks:
         try:
@@ -302,6 +328,14 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                         changed = True
 
             for tag in non_apic_tags:
+                if operation == "Copy From First Track":
+                    src_frame = copy_source_frames.get(tag)
+                    if src_frame is not None and path != album_tracks[0]:
+                        import copy as _copy
+                        audio.delall(tag)
+                        audio.add(_copy.deepcopy(src_frame))
+                        changed = True
+                    continue
                 if tag in audio:
                     if operation == "Delete Tags":
                         audio.pop(tag)
@@ -401,9 +435,10 @@ def bulk_edit_tags(file_paths: list[str], library: list) -> None:
             tag_id_list = [tag_id]
 
             if prompt.confirm("Apply to other tags too?"):
-                multi_tags = prompt.checkbox(
+                multi_tags = prompt.select(
                     "Select additional tags:",
-                    choices=[t for t, _ in sorted_tags if t != tag_id]
+                    choices=[t for t, _ in sorted_tags if t != tag_id],
+                    multi=True,
                 )
                 if multi_tags is not None:
                     for t in multi_tags:

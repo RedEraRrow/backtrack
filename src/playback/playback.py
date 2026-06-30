@@ -1,3 +1,4 @@
+"""VLC playback engine and the interactive player loop."""
 from __future__ import annotations
 import os
 import sys
@@ -102,7 +103,7 @@ def _apply_equalizer(mp, audio) -> bool:
                 r = band_freqs[k] / freq
                 return r if r >= 1.0 else 1.0 / r
             idx = min(range(count), key=_ratio)
-            eq.set_amp_at_index(float(max(-20.0, min(20.0, gain))), idx)
+            eq.set_amp_at_index(float(max(-20.0, min(20.0, gain))), idx)  # type: ignore[reportOptionalMemberAccess]
         return bool(mp.set_equalizer(eq) == 0)
     except Exception:
         return False
@@ -150,7 +151,7 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
             audio = ID3(file_path)
             duration = get_song_duration(file_path)
             pre_art = None
-        except (FileNotFoundError, OSError, mutagen.id3.ID3NoHeaderError) as exc:
+        except (FileNotFoundError, OSError, mutagen.id3.ID3NoHeaderError) as exc:  # type: ignore[reportPrivateImportUsage]
             ui_utils.clear_screen()
             sys.stdout.write(f"\033[1;31mPlayback Error:\033[0m Could not load structure for:\n")
             sys.stdout.write(f" → {file_path}\n")
@@ -332,6 +333,21 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                 key = get_key_non_blocking()
                 if key:
                     clear_escape_buffer()
+
+                    if key == 'FOCUS_OUT':
+                        pass  # silently consume — no redraw needed on blur
+                    elif key == 'FOCUS_IN':
+                        # Redraw the full UI when the window regains focus; the
+                        # screen may have been dirtied by other apps while away.
+                        volume = mp.audio_get_volume()
+                        prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
+                            file_path, audio, pre_art, last_size,
+                            is_paused=(mp.get_state() == _VLC_STATE_PAUSED),
+                            volume=volume,
+                            toast=toast_text if time.time() < toast_expiry else "",
+                        )
+                        last_lyric_idx = -1
+
                     arrow = is_arrow_key(key)
                     toggle_controls = {
                         'm': toggle_metadata,
@@ -390,6 +406,12 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                         mp.stop()
                         ui_utils.clear_screen()
                         return {'status': 'BACK'}
+
+                    elif key in ('b', 'B'):
+                        # Stop playback and return to the page we came from (#41).
+                        mp.stop()
+                        ui_utils.clear_screen()
+                        return {'status': 'STOP'}
 
                     elif key.lower() == 'q':
                         mp.stop()

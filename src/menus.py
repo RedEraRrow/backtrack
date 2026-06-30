@@ -1,3 +1,4 @@
+"""Top-level TUI menu hierarchy: browse, search, history, settings, and playback."""
 from __future__ import annotations
 import os
 import random
@@ -16,11 +17,33 @@ from src.music_library import (
 )
 from src.history import get_history, clear_history
 from src.playback.playback import music_player
-from src.lyrics.lyrics_editor import lyrics_editor
+from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
 from src.config import load_config, save_config
 from src.state import NAV_STACK
 from src.id3.id3_browser import inspect_tag_loop
 from src.id3.bulk_id3_manager import bulk_id3_manager
+from src.id3.tag_registry import TAG_REGISTRY
+
+# Structured column layouts for browse lists (no string parsing — each Choice
+# carries explicit `cells`).
+_TRACK_COLUMNS = [
+    prompt.Column(style='primary', max_frac=0.5),                # title (truncates)
+    prompt.Column(style='dynamic-dim', flex=True, align='left', gap=3),  # featured artist (full)
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # duration (pinned right)
+]
+_ALBUM_COLUMNS = [
+    prompt.Column(style='primary', flex=True),                   # album name
+    prompt.Column(style='dynamic-dim', flex=True, align='left', gap=3),  # album artist
+]
+
+def _idx_of(choices: list, value, default: int = 0) -> int:
+    """Index of the choice whose value == `value` (for restoring the cursor on back)."""
+    for i, c in enumerate(choices):
+        cv = c.value if isinstance(c, prompt.Choice) else c
+        if cv == value:
+            return i
+    return default
+
 
 def _menu_header(title: str, subtitle: str | None = None):
     """Return a lazy header builder callable for prompt.select's header= parameter."""
@@ -44,7 +67,7 @@ def handle_search(library: list) -> str | None:
         ui_utils.show_status("Library is empty. Scan a directory first.")
         return None
 
-    search_targets = prompt.checkbox(
+    search_targets = prompt.select(
         "Search within:",
         choices=[
             {"name": "Title",         "value": "title",         "checked": True},
@@ -52,7 +75,8 @@ def handle_search(library: list) -> str | None:
             {"name": "Album",         "value": "album",         "checked": True},
             {"name": "Genre",         "value": "genre",         "checked": False},
             {"name": "People",         "value": "people",         "checked": False},
-        ]
+        ],
+        multi=True,
     )
     if not search_targets:
         return None
@@ -92,7 +116,7 @@ def handle_search(library: list) -> str | None:
     track_title = song_meta['title'] if song_meta else os.path.basename(selected)
 
     _action_choices = ["Play"]
-    if _show_lyrics:
+    if _show_lyrics and find_lyrics(selected):
         _action_choices.append("Edit Lyrics")
     if _show_editor:
         _action_choices.append("Edit Metadata")
@@ -131,11 +155,33 @@ def handle_history(library: list) -> str | None:
         ui_utils.show_status("No listening history available.")
         return None
 
+    def _nice_dur(raw: str) -> str:
+        try:
+            secs = int(str(raw).rstrip('s'))
+        except ValueError:
+            return str(raw)
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        parts = []
+        if h:
+            parts.append(f"{h}h")
+        if m:
+            parts.append(f"{m}m")
+        if s or not parts:
+            parts.append(f"{s}s")
+        return " ".join(parts)
+
     choices = []
     for ts, dur, path in history_entries:
         song = next((s for s in library if s['path'] == path), None)
-        title = f"{song['title']} — {song['artist']}" if song else os.path.basename(path)
-        choices.append(prompt.Choice(title=f"[{ts}] {title} ({dur})", value=path))
+        if song:
+            title = song.get('title') or os.path.splitext(os.path.basename(path))[0]
+            artist = (song.get('artist') or '').strip()
+            label = f"{title} — {artist}" if artist and artist != 'Unknown Artist' else title
+        else:
+            label = os.path.splitext(os.path.basename(path))[0]
+        ts_short = ts[:16] if len(ts) >= 16 else ts  # drop seconds
+        choices.append(prompt.Choice(title=f"{label}   ({_nice_dur(dur)} · {ts_short})", value=path))
 
     selected = prompt.select(
         "History:",
@@ -150,7 +196,7 @@ def handle_history(library: list) -> str | None:
 
     _cfg = load_config()
     _action_choices = ["Play"]
-    if _cfg.get("show_lyrics_editor", True):
+    if _cfg.get("show_lyrics_editor", True) and find_lyrics(selected):
         _action_choices.append("Edit Lyrics")
 
     if len(_action_choices) == 1:
@@ -176,6 +222,47 @@ def handle_history(library: list) -> str | None:
     return None
 
 
+def _handle_tag_name_preferences() -> None:
+    """Settings sub-screen: edit preferred friendly names for tags via list_edit."""
+    config = load_config()
+    prefs: dict = dict(config.get('tag_name_preferences', {}))
+    initial: list = [(tag_id, prefs.get(tag_id, "")) for tag_id in TAG_REGISTRY]
+
+    def _tag_pref_hints(col: int, row: list) -> list:
+        if col != 1:
+            return []
+        tag_id = row[0].strip() if row else ""
+        info = TAG_REGISTRY.get(tag_id)
+        return info.name if info else []
+
+    result = prompt.list_edit(
+        "Tag name preferences — TAG · PREFERRED NAME (blank name = use default):",
+        initial_items=initial,
+        headers=("TAG", "PREFERRED NAME"),
+        col_ratios=(1, 4),
+        col_hints=_tag_pref_hints,
+        fixed_rows=True,
+        locked_cols={0},
+    )
+    if result is None:
+        return
+
+    new_prefs: dict = {}
+    for row in result:
+        cols = list(row) if isinstance(row, (list, tuple)) else [str(row), ""]
+        while len(cols) < 2:
+            cols.append("")
+        tag_id, name = str(cols[0]).strip(), str(cols[1]).strip()
+        if tag_id and name and tag_id in TAG_REGISTRY:
+            new_prefs[tag_id] = name
+
+    changed = sum(1 for k, v in new_prefs.items() if prefs.get(k) != v) + \
+              sum(1 for k in prefs if k not in new_prefs)
+    config['tag_name_preferences'] = new_prefs
+    save_config(config)
+    ui_utils.show_status(f"Tag name preferences saved ({changed} changed).")
+
+
 def handle_settings(library_ref: list) -> None:
     config = load_config()
     _cursor = 0
@@ -195,6 +282,9 @@ def handle_settings(library_ref: list) -> None:
             prompt.separator("EDITORS"),
             "Toggle Metadata Editor",
             "Toggle Lyrics Editor",
+            "Tag Name Preferences",
+            "Sort List Delimiter",
+            "Name Corpus Size",
             prompt.separator("HISTORY"),
             "Toggle Listening History",
             "Clear History Log",
@@ -244,6 +334,36 @@ def handle_settings(library_ref: list) -> None:
             config["show_lyrics_editor"] = not config.get("show_lyrics_editor", True)
             state = "VISIBLE" if config["show_lyrics_editor"] else "HIDDEN"
             ui_utils.show_status(f"Lyrics editor: {state}")
+
+        elif choice == "Tag Name Preferences":
+            _handle_tag_name_preferences()
+            config = load_config()  # pick up changes written by the sub-handler
+            continue
+
+        elif choice == "Sort List Delimiter":
+            current = config.get("sort_list_delimiter", "/")
+            picked = prompt.select(
+                f"Delimiter for multi-artist sort values (current: {current!r}):",
+                choices=["/ (slash)", "| (pipe)", "; (semicolon)", ", (comma)"],
+            )
+            if picked:
+                delim = picked.split()[0]
+                config["sort_list_delimiter"] = delim
+                ui_utils.show_status(f"Sort list delimiter set to {delim!r}.")
+
+        elif choice == "Name Corpus Size":
+            current = config.get("name_corpus", "full")
+            picked = prompt.select(
+                f"Name corpus for sort-order suggestions (current: {current}):",
+                choices=["full — ~2700 names, all naming traditions",
+                         "minimal — ~230 names, English + classical only"],
+            )
+            if picked:
+                size = picked.split()[0]
+                config["name_corpus"] = size
+                import src.id3.name_corpus as _corpus_mod
+                _corpus_mod._load.cache_clear()
+                ui_utils.show_status(f"Name corpus set to {size!r}.")
 
         elif choice == "Update Music Directory":
             new_root = prompt.path("Music directory:")
@@ -310,6 +430,8 @@ def play_queue(paths: list, mode: str = "linear", library: list | None = None) -
             status = result.get("status", "")
             if status == "QUIT_ALL":
                 return "QUIT_ALL"
+            if status == "STOP":          # 'b' — stop the queue, back to browse (#41)
+                return None
             if status == "PREVIOUS":
                 idx = max(0, idx - 1)
                 continue
@@ -329,6 +451,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
     sorted_lib = sort_library_logic(library)
 
     NAV_STACK.append(cat_choice)
+    _group_cursor = 0
 
     try:
         while True:  # LEVEL 2: Group Selection
@@ -386,10 +509,12 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                 f"{cat_choice}:",
                 choices=_group_choices,
                 header=_menu_header(cat_choice),
+                index=_group_cursor,
             )
 
             if not selection:
                 break
+            _group_cursor = _idx_of(_group_choices, selection)
 
             if selection == "__play_all__":
                 paths = [s['path'] for name in group_names for s in grouped[name]]
@@ -407,6 +532,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
 
             NAV_STACK.append(selection)
             selected_songs = grouped[selection]
+            _album_cursor = 0
 
             while True:  # LEVEL 3: Album Selection
                 if cat_choice in ("Artists", "Genres"):
@@ -429,16 +555,24 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         _alb_choices.append(prompt.Choice(title=f"▶  Play all — {selection}", value="__play_all__"))
                         if _show_editor:
                             _alb_choices.append(prompt.Choice(title=f"Edit tags — {selection}", value="__bulk_edit__"))
-                    _alb_choices += album_list
+                    # Show the album artist (dimmed) when it differs from the
+                    # artist/genre we're browsing under (#33).
+                    for _a in album_list:
+                        _aa = (albums[_a][0].get('album_artist') or '').strip()
+                        _aa = _aa if (_aa and _aa.lower() != selection.lower()) else ""
+                        _alb_choices.append(prompt.Choice(title=_a, value=_a, cells=[_a, _aa]))
 
                     alb = prompt.select(
                         "Albums:",
                         choices=_alb_choices,
                         header=_menu_header(selection, cat_choice),
+                        columns=_ALBUM_COLUMNS,
+                        index=_album_cursor,
                     )
 
                     if not alb:
                         break
+                    _album_cursor = _idx_of(_alb_choices, alb)
 
                     if alb == "__play_all__":
                         res = play_queue([s['path'] for s in selected_songs], library=library)
@@ -455,6 +589,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                 else:
                     track_paths = [s['path'] for s in selected_songs]
 
+                _track_cursor = 0
                 while True:  # LEVEL 4: Track Selection
                     # Re-derive from library each iteration so tag edits show immediately
                     path_set     = set(track_paths)
@@ -482,18 +617,18 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         if work:
                             work_track_map.setdefault(work, []).append(t['path'])
 
-                        # Disc header
+                        # Disc header — left-bar section marker (#34)
                         if has_multiple_discs and disc_val != current_disc:
                             subtitle   = t.get('disc_subtitle', '')
                             disc_title = subtitle if subtitle else f"Disc {disc_val}"
-                            track_choices.append(prompt.Choice(title=f"── {disc_title} ──", value=f"__disc_{disc_val}"))
+                            track_choices.append(prompt.Choice(title=f"▌ {disc_title}", value=f"__disc_{disc_val}"))
                             current_disc = disc_val
                             current_work = None
 
-                        # Work header
+                        # Work header — thinner bar, indented under the disc (#34)
                         if work and work != current_work:
                             d_pad = "  " if has_multiple_discs else ""
-                            track_choices.append(prompt.Choice(title=f"{d_pad}── {work} ──", value=f"__work__{work}"))
+                            track_choices.append(prompt.Choice(title=f"{d_pad}▏ {work}", value=f"__work__{work}"))
                             current_work = work
 
                         # Track row
@@ -510,18 +645,18 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         else:
                             label = f"{indent}{str(t.get('track', '0')).zfill(2)} — {t.get('title', 'Unknown')}"
 
-                        # Extra context: featured-artist marker when the track
-                        # artist differs from the album artist, plus duration.
-                        # Kept as plain text — select() truncates by raw length.
+                        # Structured cells: [title, featured artist, duration].
+                        # The full artist is shown (only when it differs from the
+                        # album artist); no string parsing, so any characters are safe.
                         _aa = (t.get('album_artist') or '').strip()
                         _ar = (t.get('artist') or '').strip()
-                        if _ar and _aa and _ar.lower() != _aa.lower():
-                            label += f"  · {_ar}"
+                        _artist = _ar if (_ar and _ar.lower() != _aa.lower()) else ""
                         _dur = t.get('duration') or 0
-                        if _dur:
-                            label += f"  ({ui_utils.format_time(int(_dur))})"
+                        _dur_str = ui_utils.format_time(int(_dur)) if _dur else ""
 
-                        track_choices.append(prompt.Choice(title=label, value=t['path']))
+                        track_choices.append(prompt.Choice(
+                            title=label, value=t['path'],
+                            cells=[label, _artist, _dur_str]))
 
                     _track_context = NAV_STACK[-1] if NAV_STACK else selection
                     _show_editor   = _cfg.get("show_metadata_editor", True)
@@ -538,14 +673,24 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                                 prompt.Choice(title=f"Edit tags — {_track_context}", value="__bulk_edit__")
                             )
 
+                    # Album artist shown in the header subtitle (#33).
+                    _album_artist = next(
+                        (t.get('album_artist', '').strip() for t in final_tracks
+                         if t.get('album_artist', '').strip()), "")
+                    _subtitle = _album_artist or (selection if _track_context != selection else cat_choice)
+
+                    _all_track_choices = _track_header_choices + track_choices
                     path_choice_obj = prompt.select(
                         "Tracks:",
-                        choices=_track_header_choices + track_choices,
-                        header=_menu_header(_track_context, selection if _track_context != selection else cat_choice),
+                        choices=_all_track_choices,
+                        header=_menu_header(_track_context, _subtitle),
+                        columns=_TRACK_COLUMNS,
+                        index=_track_cursor,
                     )
 
                     if not path_choice_obj:
                         break
+                    _track_cursor = _idx_of(_all_track_choices, path_choice_obj)
 
                     if path_choice_obj == "__play_all__":
                         res = play_queue([t['path'] for t in final_tracks], library=library)
@@ -615,7 +760,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     _cfg_track = load_config()
                     while True:
                         _action_choices = ["Play"]
-                        if _cfg_track.get("show_lyrics_editor", True):
+                        if _cfg_track.get("show_lyrics_editor", True) and find_lyrics(path_choice_obj):
                             _action_choices.append("Edit Lyrics")
                         if _cfg_track.get("show_metadata_editor", True):
                             _action_choices.append("Edit Metadata")
@@ -667,14 +812,18 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
 
 
 def handle_browse(library_ref: list) -> str | None:
+    _cursor = 0
+    _opts = ["Artists", "Albums", "Genres"]
     while True:
         choice = prompt.select(
             "Browse by:",
-            choices=["Artists", "Albums", "Genres"],
+            choices=_opts,
             header=_menu_header("Browse"),
+            index=_cursor,
         )
         if not choice:
             break
+        _cursor = _idx_of(_opts, choice)
         res = browse_menu(library_ref, choice)
         if res == "QUIT_ALL":
             return "QUIT_ALL"
@@ -682,16 +831,21 @@ def handle_browse(library_ref: list) -> str | None:
 
 
 def main_menu(library_ref: list) -> None:
+    _cursor = 0
+    _opts = ["Browse", "Search", "Listening History", "Settings", "Exit"]
     while True:
         choice = prompt.select(
             "Main Menu:",
-            choices=["Browse", "Search", "Listening History", "Settings", "Exit"],
+            choices=_opts,
             header=_menu_header("Music Player"),
+            index=_cursor,
         )
 
         if not choice or choice == "Exit":
             break
-        elif choice == "Browse":
+        _cursor = _idx_of(_opts, choice)
+
+        if choice == "Browse":
             res = handle_browse(library_ref)
             if res == "QUIT_ALL":
                 break

@@ -1,3 +1,4 @@
+"""User configuration: load/save the JSON config in the platform config dir."""
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,9 @@ DEFAULT_CONFIG = {
     "show_metadata_editor": True,
     "show_lyrics_editor": True,
     "xml_db_path": "",
-    "tag_name_preferences" : {}
+    "tag_name_preferences": {},
+    "sort_list_delimiter": "/",
+    "name_corpus": "full",
 }
 
 def _default_config_dir() -> Path:

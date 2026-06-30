@@ -1,3 +1,4 @@
+"""ID3 frame creation, value prompts, and bulk-operation helpers."""
 from __future__ import annotations
 from typing import Any, Optional
 from mutagen.id3 import ID3
@@ -11,6 +12,7 @@ import mutagen.id3
 import os
 import time
 from src.utils import prompt, ui_utils
+
 
 
 _EXT_TO_MIME: dict[str, str] = {
@@ -67,7 +69,7 @@ def _prompt_for_image_metadata() -> tuple[int, str] | None:
     return pic_type, desc
 
 
-def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | None:
+def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | EQU2 | RVA2 | None:
     """Create the correct mutagen frame for tag_id from value, or None on failure."""
     if value is None:
         return None
@@ -91,11 +93,18 @@ def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | 
                 return RVA2(desc='', channel=1, gain=float(value['gain']), peak=0.0)
             return None
 
-        if info.frame_type == 'IMAGE':
+        # APIC is a BINARY frame but its UI category is 'image'. (The old
+        # `frame_type == 'IMAGE'` check never matched, so APICs never saved.)
+        if info.ui_category == 'image':
+            if isinstance(value, dict) and value.get('__image__'):
+                data = value.get('data') or b''
+                if not isinstance(data, bytes) or not data:
+                    return None
+                return APIC(encoding=3, mime=_get_mime_type(data),
+                            type=int(value.get('type', 3)), desc=str(value.get('desc', '')),
+                            data=data)
             if isinstance(value, bytes) and len(value) > 0:
-                mime = _get_mime_type(value)
-                pic_type = 3  # Default to front cover
-                return APIC(encoding=3, mime=mime, type=pic_type, desc='', data=value)
+                return APIC(encoding=3, mime=_get_mime_type(value), type=3, desc='', data=value)
             return None
 
         if info.frame_type == 'TEXT':
@@ -303,7 +312,6 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
             initial_people = list(current_value.people) if current_value.people else []
         default_val = ""
     elif hasattr(current_value, 'text'):
-        # Any other mutagen text/timestamp/fractional frame
         default_val = str(current_value.text[0]) if current_value.text else ""
     else:
         # Already a plain string (bulk edit summary)
@@ -319,7 +327,8 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         if not meta:
             ui_utils.show_status("Cancelled")
             return None
-        return img_data
+        pic_type, desc = meta
+        return {'__image__': True, 'data': img_data, 'type': pic_type, 'desc': desc}
 
     if ui_cat == 'lyrics':
         ui_utils.show_status("Use lyric sync tool for SYLT")
@@ -368,6 +377,12 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
 
     # Default: plain text (TEXT_UTF8, URL, LIST_STRING, etc.)
     return prompt.text(f"{label}:", default=default_val)
+
+
+def display_tag_id(tag_id: str) -> str:
+    """Human-facing form of a frame key: drop a trailing ':' from an empty
+    descriptor (e.g. mutagen's "APIC:" / "TXXX:" key → "APIC" / "TXXX")."""
+    return tag_id[:-1] if tag_id.endswith(':') else tag_id
 
 
 def summarize_tag_value(tag_id: str, raw_frame) -> str:

@@ -1,3 +1,4 @@
+"""Terminal helpers: ANSI colours, sizing, formatting, status bar, progress bar."""
 from __future__ import annotations
 import sys
 import shutil
@@ -27,6 +28,11 @@ def consume_resize() -> bool:
         return True
     return False
 
+# Global content margins.  All widgets and the playback UI read from here —
+# change these two values to tune the whole app at once.
+MARGIN_H = 2   # columns reserved on each horizontal side (left and right)
+MARGIN_V = 1   # rows reserved on each vertical side (top and bottom)
+
 class Colors:
     PRIMARY = "\033[1;37m" # White
     ACCENT = "\033[1;31m" # Red
@@ -44,14 +50,18 @@ class Colors:
 
 
 def enter_alt_screen() -> None:
-    """Switch to the terminal alternate screen buffer (no scrollback)."""
-    sys.stdout.write("\033[?1049h\033[H\033[3J\033[J")
+    """Switch to the terminal alternate screen buffer (no scrollback).
+
+    Also enables focus in/out reporting (\\033[?1004h) so editors can show a
+    hollow cursor when the window loses focus; unsupported terminals ignore it.
+    """
+    sys.stdout.write("\033[?1049h\033[?1004h\033[H\033[3J\033[J")
     sys.stdout.flush()
 
 
 def exit_alt_screen() -> None:
-    """Restore the main screen buffer and ensure the cursor is visible."""
-    sys.stdout.write("\033[?25h\033[?1049l")
+    """Restore the main screen buffer, disable focus reporting, show the cursor."""
+    sys.stdout.write("\033[?25h\033[?1004l\033[?1049l")
     sys.stdout.flush()
 
 

@@ -1,3 +1,4 @@
+"""Application entry point: config, cache, library build, and menu launch."""
 import os
 import threading
 import time
@@ -102,6 +103,13 @@ def _run(config: dict) -> None:
 
 
 def main() -> None:
+    # Enable ANSI escape processing on Windows consoles (no-op elsewhere).
+    try:
+        import colorama
+        colorama.just_fix_windows_console()
+    except Exception:
+        pass
+
     config = load_config()
     ui_utils.enter_alt_screen()
     try:

@@ -6,6 +6,6 @@ opencv-python>=4.13.0.92
 numpy>=2.0.2
 
 # Utilities
-pyperclip>=1.11.0
+pyperclip>=1.8.2
 python-vlc>=3.0.21203
 colorama>=0.4.6

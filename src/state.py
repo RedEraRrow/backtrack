@@ -1,3 +1,4 @@
+"""Shared global state: the navigation breadcrumb and the quit-to-terminal signal."""
 NAV_STACK = ["Home"]
 
 # Set by value editors when the user presses `q` (save-current-state-and-quit):

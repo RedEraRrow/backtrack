@@ -1,3 +1,4 @@
+"""Lyrics parsing, timing and on-screen rendering (SYLT / USLT / markdown dialogue)."""
 from __future__ import annotations
 import bisect
 import json
@@ -442,7 +443,8 @@ def draw_dialogue_window(
         sys.stdout.write(f"\033[{i};{col}H\033[K")
 
     out_row = row
-    sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{'─' * width}{C.RESET}")
+    rule_w = ui_utils.get_terminal_width() - col + 1
+    sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{'─' * rule_w}{C.RESET}")
     out_row += 2
 
     # Build window with global indices: (dl_idx, chunk, is_active)
@@ -584,7 +586,7 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
         sys.stdout.write(f"\033[{i};{col}H\033[K")
 
     out_row = row
-    rule = "─" * width
+    rule = "─" * (ui_utils.get_terminal_width() - col + 1)
     sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
     out_row += 2
 
@@ -642,7 +644,7 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
         sys.stdout.write(f"\033[{i};{col}H\033[K")
 
     out_row = row
-    rule = "─" * width
+    rule = "─" * (ui_utils.get_terminal_width() - col + 1)
     sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
     out_row += 2
 
@@ -674,7 +676,7 @@ def draw_lyric_initial(row: int, first_line: object, width: int | None = None,
         sys.stdout.write(f"\033[{i};{col}H\033[K")
 
     out_row = row
-    rule = "─" * (width - 1)
+    rule = "─" * (ui_utils.get_terminal_width() - col + 1)
     sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
     out_row += 3
 
@@ -699,6 +701,25 @@ def _parse_sylt(audio) -> list[tuple[str, int]]:
         sylt_data.extend(tag.text)
     sylt_data.sort(key=lambda x: x[1])
     return sylt_data
+
+
+def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]]) -> None:
+    """Write timestamped lyrics to the file's SYLT frame (replacing any existing)."""
+    from mutagen.id3 import ID3
+    from mutagen.id3._frames import SYLT
+    from mutagen.id3._util import ID3NoHeaderError
+
+    try:
+        try:
+            audio = ID3(file_path)
+        except ID3NoHeaderError:
+            audio = ID3()
+        audio.delall('SYLT')
+        audio.add(SYLT(encoding=3, lang='eng', format=2, type=1, text=sylt_entries))
+        audio.save(file_path, v2_version=3)
+    except Exception as exc:
+        ui_utils.show_status(f"Failed to save SYLT: {exc}", duration=4.0)
+        raise
 
 
 def _parse_uslt(audio) -> list[tuple[str, int]]:

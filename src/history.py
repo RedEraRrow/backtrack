@@ -1,3 +1,4 @@
+"""Listening-history log: append plays and read/clear recent entries."""
 from __future__ import annotations
 import os
 import datetime

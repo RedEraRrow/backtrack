@@ -20,7 +20,7 @@ from src.utils.ui_utils import Colors as C
 from src.utils.prompt import (
     _Widget, _read_key, _wait_for_keypress,
     _set_raw, _restore_term_attrs, _get_term_attrs,
-    _hint_lines, _rows, _cols,
+    _hint_lines, _rows, _cols, _clip_ansi,
 )
 
 _vlc = None
@@ -303,7 +303,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         pairs += [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
         if _HAS_VLC:                           pairs.append(('t', 'tap sync'))
         if source == SOURCE_TRANSCRIPT:         pairs.append(('w', 'words'))
-        pairs += [('j', 'join↓'), ('e', 'edit'), ('spc', 'mark'), ('s', 'save'), ('q', 'quit')]
+        pairs += [('j', 'join↓'), ('e', 'edit'), ('c', 'credits'), ('spc', 'mark'), ('s', 'save'), ('q', 'quit')]
         if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
         if selected:   pairs.append(('', f'{len(selected)} marked'))
         footer.extend(_hint_lines(*pairs))
@@ -445,7 +445,7 @@ def lyrics_editor(mp3_path: str) -> None:
             with open(jpath.replace('.json', '.srt'), 'w', encoding='utf-8') as f:
                 f.write(_rebuild_srt(segs))
         else:
-            from src.lyrics.lyric_timer import save_sylt_entries
+            from src.lyrics.lyrics import save_sylt_entries
             entries = [(s['text'], max(0, int((s['start'] or 0) * 1000)))
                        for s in segs if s.get('start') is not None]
             save_sylt_entries(aux['mp3'], entries)
@@ -489,6 +489,8 @@ def lyrics_editor(mp3_path: str) -> None:
 
     try:
         _set_raw(fd)
+        sys.stdout.write("\033[?1000h\033[?1006h")  # enable mouse (click + scroll)
+        sys.stdout.flush()
         need_redraw = True
 
         while True:
@@ -530,13 +532,34 @@ def lyrics_editor(mp3_path: str) -> None:
                     viewport, dirty, len(undo_stack), track_name,
                     playing, play_pos, edit_field, edit_buf, source, total_s,
                 )
-                w.render(lines)
+                # Clip every line to the terminal width so nothing soft-wraps —
+                # wrapping was what made the view duplicate/ghost each frame.
+                cols_now = _cols()
+                w.render([_clip_ansi(line, cols_now) for line in lines])
                 need_redraw = False
 
             if not _wait_for_keypress(0.05):
                 continue
             key = _read_key(fd)
             need_redraw = True
+
+            # Mouse: scroll navigates; a click positions the cursor on a row.
+            if key == 'SCROLL_UP':
+                key = 'UP'
+            elif key == 'SCROLL_DOWN':
+                key = 'DOWN'
+            elif key.startswith(('MOUSE_CLICK:', 'MOUSE_RELEASE:')):
+                if mode in (SEG, WORD):
+                    parts = key.split(':')
+                    r = int(parts[2]) if len(parts) > 2 else 0
+                    item_h = 3 if mode == SEG else 1
+                    base = (w.row or 1) + 4          # items begin 4 rows below the anchor
+                    slot = (r - base) // item_h
+                    cur_items = segs if mode == SEG else cur_words()
+                    target = viewport + slot
+                    if slot >= 0 and 0 <= target < len(cur_items):
+                        cursor = target
+                continue
 
             if mode == EDIT:
                 if key == 'ESC':
@@ -611,6 +634,27 @@ def lyrics_editor(mp3_path: str) -> None:
                 cursor = min(n_i - 1, max(0, cursor + 1))
             elif key == 'SPACE' and mode == SEG:
                 selected.symmetric_difference_update({cursor})
+            elif key == 'c' and mode == SEG:
+                try:
+                    from mutagen.id3 import ID3
+                    from mutagen.id3._util import ID3NoHeaderError
+                    _aud = ID3(mp3_path)
+                    _credits: list[str] = []
+                    _tcom = _aud.getall('TCOM')
+                    if _tcom:
+                        _credits.append("Music by: " + "; ".join(str(f) for f in _tcom))
+                    _text = _aud.getall('TEXT')
+                    if _text:
+                        _credits.append("Words by: " + "; ".join(str(f) for f in _text))
+                    if _credits:
+                        for _cl in _credits:
+                            segs.append({"text": _cl})
+                        cursor = len(segs) - 1
+                        dirty = True
+                    else:
+                        ui_utils.show_status("No composer or lyricist tags found.")
+                except Exception as _ce:
+                    ui_utils.show_status(f"Could not read tags: {_ce}")
             elif key == 't' and mode == SEG:
                 if _HAS_VLC:
                     mode = TAP
@@ -687,5 +731,7 @@ def lyrics_editor(mp3_path: str) -> None:
         if mp:
             try: mp.stop()
             except Exception: pass
+        sys.stdout.write("\033[?1000l\033[?1006l")  # disable mouse
+        sys.stdout.flush()
         _restore_term_attrs(fd, old)
         w.clear()

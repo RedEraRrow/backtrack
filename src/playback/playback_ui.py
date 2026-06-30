@@ -1,3 +1,4 @@
+"""Playback UI rendering: album art, metadata, credits, volume bar, lyric panes."""
 from __future__ import annotations
 import os
 import re
@@ -27,11 +28,17 @@ _ART_INNER_MARGIN = 8
 
 def _render_frame_buffer(buf: list, rows: int) -> None:
     parts = [buf[0]]  # clear sequence at row 1
-    for idx, item in enumerate(buf[1:], start=2):
+    # `row` counts only flow (relative) lines; absolute-positioned items (the
+    # volume bar, controls, lyrics) pass through WITHOUT consuming a row slot —
+    # otherwise everything after them (e.g. the metadata) is pushed off-place.
+    row = 0
+    for item in buf[1:]:
         if _ABS_ROW_RE.match(item):
-            parts.append(item)          # already absolute-positioned, pass through
-        elif idx <= rows:
-            parts.append(f"\033[{idx};1H\033[K{item}")
+            parts.append(item)
+        else:
+            row += 1
+            if row <= rows:
+                parts.append(f"\033[{row};1H\033[K{item}")
     sys.stdout.write("".join(parts))
 
 PLAYER_CREDITS_ROLES = [
@@ -342,6 +349,12 @@ def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
             out.append(f"{C.ACCENT}▶ {C.RESET}{C.BOLD}{num}{title}{C.RESET}")
         else:
             out.append(f"  {C.DIM}{num}{title}{C.RESET}")
+
+    # Centre the block horizontally within the pane so it sits balanced (#57).
+    content_w = max((ui_utils.visual_len(l) for l in out), default=0)
+    pad = max(0, (max_w - content_w) // 2)
+    if pad:
+        out = [(" " * pad) + l for l in out]
     return out
 
 
@@ -431,57 +444,92 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
         hint_args.append(('w', 'panel'))
     if is_uslt:
         hint_args.append(('↑↓', 'scroll'))
-    hint_args += [('i', 'hide help'), ('n', 'next'), ('q', 'quit')]
+    hint_args += [('i', 'hide help'), ('n', 'next'), ('b', 'back'), ('q', 'quit')]
 
     shortcuts = _hint(*hint_args)
     return status, shortcuts
+
+
+def _movement_roman(s: str) -> str:
+    """Convert an integer string to Roman numerals; pass non-numeric strings through."""
+    try:
+        n = int(s)
+        return ui_utils.roman(n) if n > 0 else s
+    except (ValueError, TypeError):
+        return s
 
 
 def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
     def _trim(text: str) -> str:
         return ui_utils.truncate_text(text, max(1, max_val_w), placeholder='…')
 
-    title = str(audio.get('TIT2') or os.path.splitext(os.path.basename(file_path))[0]).strip()
-    artist = str(audio.get('TPE1') or audio.get('TPE2') or '').strip()
-    album = str(audio.get('TALB') or '').strip()
-    disc_subtitle = str(audio.get('TSST') or '').strip()
+    def _txt(frame_id: str) -> str:
+        fr = audio.get(frame_id)
+        return str(fr.text[0]).strip() if (fr is not None and getattr(fr, 'text', None)) else ""
+
+    def _frac(frame_id: str) -> tuple[str, str]:
+        """Return (current, total) from a fractional frame like '3/12'."""
+        clean = re.sub(r'\s+', ' ', _txt(frame_id))
+        parts = [p.strip() for p in re.split(r'[/|∕⁄]|\bof\b', clean, flags=re.IGNORECASE) if p.strip()]
+        return (parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
+
+    title = _txt('TIT2') or os.path.splitext(os.path.basename(file_path))[0]
+    artist = _txt('TPE1') or _txt('TPE2')
+    album = _txt('TALB')
 
     lines: list[str] = []
     if title:
         lines.append(f"{C.BOLD}{_trim(title)}{C.RESET}")
-    if album:
-        artist_album_line = (f"{_trim(artist)} — " if artist else "") + album
-        if disc_subtitle:
-            artist_album_line = (f"{_trim(artist)} — " if artist else "") + f"{album} {disc_subtitle}"
-        lines.append(f"{C.DIM}{_trim(artist_album_line)}{C.RESET}")
-    elif disc_subtitle:
-        lines.append(f"{C.DIM}{_trim(disc_subtitle)}{C.RESET}")
+
+    # Album and artist ALWAYS show; the 'm' toggle only governs the extras below.
+    if artist and album:
+        second = f"{artist} — {album}"
+    else:
+        second = artist or album
+    if second:
+        lines.append(f"{C.DIM}{_trim(second)}{C.RESET}")
 
     if _ui_state['show_metadata']:
-        details = []
-        def parse_part(val):
-            clean = re.sub(r'\s+', ' ', str(val or '').strip())
-            parts = re.split(r'[/|-|∕|⁄]|\bof\b', clean, flags=re.IGNORECASE)
-            parts = [p.strip() for p in parts if p.strip()]
-            return f"{parts[0]} of {parts[1]}" if len(parts) == 2 else (parts[0] if parts else "")
+        details: list[str] = []
 
-        year_match = re.search(r'\b\d{4}\b', str(audio.get('TDRC') or ''))
-        year = year_match.group(0) if year_match else ""
+        # Year: v2.4 uses TDRC; v2.3 (which we save) uses TYER; fall back to
+        # original-release frames so the year never silently disappears.
+        year_src = _txt('TDRC') or _txt('TYER') or _txt('TDOR') or _txt('TORY')
+        year_match = re.search(r'\b\d{4}\b', year_src)
+        if year_match:
+            details.append(year_match.group(0))
+        genre = _txt('TCON')
+        if genre:
+            details.append(genre)
 
-        genre = str(audio.get('TCON') or '').strip()
-        disc = parse_part(audio.get('TPOS'))
-        movement = parse_part(audio.get('MVIN'))
-        track = (f"Track {parse_part(audio.get('TRCK'))}") if not bool(movement) else audio.get('TIT1')
+        work = _txt('TIT1')
+        movement, _ = _frac('MVIN')
+        disc, disc_total = _frac('TPOS')
+        disc_subtitle = _txt('TSST')
+        track, track_total = _frac('TRCK')
 
+        def _track_str(t: str, total: str) -> str:
+            return f"Track {t} of {total}" if (t and total) else f"Track {t}"
 
-        if year: details.append(year)
-        if genre: details.append(genre)
-        if disc: details.append(f"Disc {disc}")
-        if track: details.append(f"{track}")
-        if movement: details.append (f"Movement {movement}")
+        def _disc_str(d: str, total: str) -> str:
+            return f"Disc {d} of {total}" if (d and total) else f"Disc {d}"
+
+        if work or movement:
+            # Classical: work + movement (Roman numerals are conventional here).
+            if work:
+                details.append(work)
+            if movement:
+                details.append(f"Movement {_movement_roman(movement)}")
+        elif disc_subtitle or (disc_total.isdigit() and int(disc_total) > 1):
+            # Multi-disc / boxed set: disc (or its subtitle) + track.
+            details.append(disc_subtitle or _disc_str(disc, disc_total))
+            if track:
+                details.append(_track_str(track, track_total))
+        elif track:
+            # Plain single-disc track.
+            details.append(_track_str(track, track_total))
 
         if details:
-            lines.append("")
             lines.append(f"{C.DIM}{_trim(' · '.join(details))}{C.RESET}")
 
     if not lines:
@@ -550,21 +598,27 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         if not show_pane:
             # No right pane: centred single-column layout with breathing room on sides.
-            content_w_max = min(ART_MAX_WIDTH, max(54, cols // 2))
+            content_w_max = min(ART_MAX_WIDTH, max(54, cols // 2), cols - 2 * ui_utils.MARGIN_H)
             left_col = _meta_left_lines(audio, file_path, content_w_max - 4)
-            avail_h = max(3, rows - len(left_col) - 6)
+            avail_h = max(3, rows - len(left_col) - 6 - 2 * ui_utils.MARGIN_V)
 
             art_str, art_lines = _art_width_for_height(file_path, content_w_max, avail_h, pre_art)
             actual_art_w = max((_visible_len(l) for l in art_lines), default=content_w_max) if art_lines else content_w_max
-            left_margin = max(4, (cols - actual_art_w) // 2)
+            left_margin = max(ui_utils.MARGIN_H, (cols - actual_art_w) // 2)
 
             _last_art_left = left_margin
             _last_art_width = actual_art_w
-            _last_art_top = 1
             _last_art_height = len(art_lines)
-            _last_vol_bar_col = left_margin + actual_art_w + 3
+            _last_vol_bar_col = left_margin + actual_art_w + 2
             _last_right_left = None
             _last_right_width = None
+
+            if art_lines:
+                top_pad = max(ui_utils.MARGIN_V, (rows - len(art_lines) - 1 - len(left_col) - 6) // 2)
+                for _ in range(top_pad):
+                    log("")
+                row_cursor += top_pad
+            _last_art_top = row_cursor + 1
 
             for line in art_lines:
                 log(" " * left_margin + line)
@@ -584,15 +638,16 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
             status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
             shortcut_lines = shortcuts_ln.splitlines() or [""]
+            ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
 
             log(f"\033[{ctrl_row};1H\033[K{status_ln}")
             for offset, line in enumerate(shortcut_lines, start=1):
-                log(f"\033[{ctrl_row + offset};1H\033[K{line}")
+                log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
 
             lyric_row = ctrl_row + len(shortcut_lines) + 2
-            art_bottom_row = max(row_cursor + 6, rows)
+            art_bottom_row = max(row_cursor + 6, rows - ui_utils.MARGIN_V)
 
-            _render_frame_buffer(frame_buffer, rows)
+            _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
             sys.stdout.flush()
             return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
 
@@ -602,22 +657,27 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         meta_val_w = right_w - 10
 
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
-        avail_h = max(3, rows - len(left_col) - 5)
-        # Request art slightly narrower than the column to give breathing room.
-        art_inner_w = max(10, art_w - _ART_INNER_MARGIN)
+        avail_h = max(3, rows - len(left_col) - 5 - 2 * ui_utils.MARGIN_V)
+        # Art is inset from the panel edges so it floats with breathing room.
+        art_inner_w = max(10, art_w * 3 // 4)
         art_str, art_lines = _art_width_for_height(file_path, art_inner_w, avail_h, pre_art)
 
         art_vis_w = max((_visible_len(a) for a in art_lines), default=art_inner_w) if art_lines else art_inner_w
-        left_margin = max(2, (art_w - art_vis_w) // 2)
+        left_margin = max(ui_utils.MARGIN_H, (art_w - art_vis_w) // 2)
 
         _last_art_width = art_vis_w
         _last_art_left = left_margin
-        _last_art_top = 1
         _last_art_height = len(art_lines)
         _last_right_left = art_w + _WIDE_SPLIT_GUTTER
         _last_right_width = right_w
-        # Bar sits in the gutter between the art half and the right pane.
-        _last_vol_bar_col = art_w + 1
+        _last_vol_bar_col = left_margin + art_vis_w + 2
+
+        if art_lines:
+            top_pad = max(ui_utils.MARGIN_V, (rows - len(art_lines) - 1 - len(left_col) - 6) // 2)
+            for _ in range(top_pad):
+                log("")
+            row_cursor += top_pad
+        _last_art_top = row_cursor + 1
 
         for line in art_lines:
             log(" " * left_margin + line)
@@ -639,19 +699,22 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
+        ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
 
         log(f"\033[{ctrl_row};1H\033[K{status_ln}")
         for offset, line in enumerate(shortcut_lines, start=1):
-            log(f"\033[{ctrl_row + offset};1H\033[K{line}")
+            log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
+
+        _pane_top = _last_art_top  # right pane aligns with art top after any vertical centering
 
         # Queue view takes over the whole right pane when toggled on.
         if _ui_state['show_queue']:
-            pane_rows = max(3, (ctrl_row - 1) - 3)
+            pane_rows = max(3, (ctrl_row - 1) - _pane_top)
             for qi, line in enumerate(_build_queue_lines(right_w, pane_rows)):
-                log(f"\033[{3 + qi};{_last_right_left}H{line}")
+                log(f"\033[{_pane_top + qi};{_last_right_left}H{line}")
             lyric_row = ctrl_row  # suppress the lyric area while the queue shows
             art_bottom_row = ctrl_row - 1
-            _render_frame_buffer(frame_buffer, rows)
+            _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
             sys.stdout.flush()
             return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
 
@@ -676,14 +739,14 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
                 credits_lines.append(f"  {lft}{pad_c}{gap}{rgt}")
 
         for idx, line in enumerate(credits_lines):
-            log(f"\033[{3 + idx};{_last_right_left}H{line}")
+            log(f"\033[{_pane_top + idx};{_last_right_left}H{line}")
 
-        lyric_row = 3 + len(credits_lines) + (1 if credits_lines else 0)
+        lyric_row = _pane_top + len(credits_lines) + (1 if credits_lines else 0)
         # Cap the right pane at the row above the transport controls so the
         # lyric-window clearing loop never touches the controls/hints rows.
         art_bottom_row = max(lyric_row + 2, ctrl_row - 1)
 
-        _render_frame_buffer(frame_buffer, rows)
+        _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
         sys.stdout.flush()
         return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
 
@@ -701,7 +764,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         credits_est = 5 if (has_cast and _ui_state['show_credits']) else 0
         lyrics_est = 6 if _ui_state['show_lyrics'] else 0
         reserved_rows = len(left_col) + control_rows + credits_est + lyrics_est + 2
-        max_art_h = max(3, rows - reserved_rows)
+        max_art_h = max(3, rows - reserved_rows - 2 * ui_utils.MARGIN_V)
 
         art_str, art_lines = _art_width_for_height(file_path, cols, max_art_h, pre_art)
         actual_art_w = max((_visible_len(l) for l in art_lines), default=cols) if art_lines else cols
@@ -714,9 +777,15 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             _last_art_left = 0
             _last_art_width = cols if art_lines else 0
 
-        _last_art_top = 1
         _last_art_height = len(art_lines)
-        _last_vol_bar_col = (_last_art_left or 0) + (_last_art_width or 0) + 3
+        _last_vol_bar_col = (_last_art_left or 0) + (_last_art_width or 0) + 2
+
+        if art_lines and actual_art_w < cols:
+            top_pad = max(0, (rows - len(art_lines) - 1 - len(left_col) - control_rows - 1) // 2)
+            for _ in range(top_pad):
+                log("")
+            row_cursor += top_pad
+        _last_art_top = row_cursor + 1
 
         for line in art_lines: log(line)
         row_cursor += len(art_lines)
@@ -736,21 +805,22 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
+        ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
 
         log(f"\033[{ctrl_row};1H\033[K{status_ln}")
         for offset, line in enumerate(shortcut_lines, start=1):
-            log(f"\033[{ctrl_row + offset};1H\033[K{line}")
+            log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
 
         ctrl_row_end = ctrl_row + len(shortcut_lines)
 
         if _ui_state['show_queue']:
             q_start = ctrl_row_end + 2
-            q_rows = max(3, rows - q_start)
+            q_rows = max(3, rows - ui_utils.MARGIN_V - q_start)
             for qi, line in enumerate(_build_queue_lines(cols - 2, q_rows)):
                 log(f"\033[{q_start + qi};1H\033[K{line}")
-            lyric_row = rows  # no lyric area while the queue shows
-            art_bottom_row = rows
-            _render_frame_buffer(frame_buffer, rows)
+            lyric_row = rows - ui_utils.MARGIN_V
+            art_bottom_row = rows - ui_utils.MARGIN_V
+            _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
             sys.stdout.flush()
             return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
 
@@ -771,8 +841,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
                 log(f"\033[{ctrl_row_end + 2 + i};1H\033[K{lft}{pad}{gap}{rgt}")
 
         lyric_row = ctrl_row_end + 2 + max(len(c_lines), len(cr_lines)) + 1
-        art_bottom_row = rows
-        _render_frame_buffer(frame_buffer, rows)
+        art_bottom_row = rows - ui_utils.MARGIN_V
+        _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
         sys.stdout.flush()
         return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
 
@@ -786,11 +856,17 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         if cols >= 34:
             art_w = cols
-            max_art_h = max(3, rows - reserved_rows)
+            max_art_h = max(3, rows - reserved_rows - 2 * ui_utils.MARGIN_V)
             art_str, art_lines = _art_width_for_height(file_path, art_w, max_art_h, pre_art)
             actual_art_w = max((_visible_len(l) for l in art_lines), default=art_w) if art_lines else art_w
             _last_art_left = max(0, (cols - actual_art_w) // 2)
             _last_art_width = actual_art_w
+            if art_lines and actual_art_w < cols:
+                top_pad = max(0, (rows - len(art_lines) - 1 - len(left_col) - control_rows - 1) // 2)
+                for _ in range(top_pad):
+                    log("")
+                row_cursor += top_pad
+            _last_art_top = row_cursor + 1
             for line in art_lines: log(line)
             row_cursor += len(art_lines)
             log("")
@@ -812,11 +888,12 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         ctrl_row = prog_row + 1
         status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
+        ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
         log(f"\033[{ctrl_row};1H\033[K{status_ln}")
         for offset, line in enumerate(shortcut_lines, start=1):
-            log(f"\033[{ctrl_row + offset};1H\033[K{line}")
+            log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
         lyric_row = ctrl_row + len(shortcut_lines) + 2
-        art_bottom_row = rows
-        _render_frame_buffer(frame_buffer, rows)
+        art_bottom_row = rows - ui_utils.MARGIN_V
+        _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
         sys.stdout.flush()
         return prog_row, ctrl_row, lyric_row, cols, art_bottom_row

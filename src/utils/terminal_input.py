@@ -1,3 +1,4 @@
+"""Raw keyboard input and escape-sequence decoding."""
 from __future__ import annotations
 import os
 import sys
@@ -57,6 +58,14 @@ def clear_escape_buffer() -> None:
 def get_key_non_blocking() -> str | None:
     global _pending_escape, _escape_start_time
 
+    # Flush a stale escape buffer that was never completed (e.g. from a focus
+    # event like \033[O whose terminator isn't in 'ABCD').  Without this the
+    # buffer poisons every subsequent keypress indefinitely.
+    if _pending_escape and _escape_start_time is not None:
+        if time.time() - _escape_start_time > 0.1:
+            _pending_escape = None
+            _escape_start_time = None
+
     # If we have a complete escape sequence, return it
     if _pending_escape and len(_pending_escape) >= 3 and _pending_escape[-1] in 'ABCD':
         result = _pending_escape
@@ -93,6 +102,12 @@ def get_key_non_blocking() -> str | None:
         if len(full) >= 3 and full[-1] in 'ABCD':
             _pending_escape = None
             return full
+        # Recognize complete focus-reporting sequences (\033[I / \033[O) and
+        # other known 3-byte CSI sequences so they don't linger in the buffer.
+        if full in ('\x1b[I', '\x1b[O'):
+            _pending_escape = None
+            _escape_start_time = None
+            return 'FOCUS_IN' if full == '\x1b[I' else 'FOCUS_OUT'
         _pending_escape = full
         return None
 

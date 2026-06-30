@@ -1,3 +1,4 @@
+"""Single source of truth for ID3v2.4 frames: the tag registry and lookups."""
 from dataclasses import dataclass
 from typing import Dict, Type, Literal, Any, Optional
 
@@ -42,7 +43,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
 
     # TEXT FRAMES (T***)
 
-    'TIT1': TagInfo('TIT1', ['Work name (classical)', 'Work name', 'Work', 'Content group description', 'Content group'],
+    'TIT1': TagInfo('TIT1', ['Work name', 'Work', 'Work name (classical)', 'Content group description', 'Content group'],
                     'TEXT', 'TEXT_UTF8', 'IDENTIFICATION', 'text', False, TIT1),
     
     'TIT2': TagInfo('TIT2', ['Title', 'Songname', 'Song name', 'Song', 'Trackname', 'Track name', 'Track', 'Content description'],
@@ -57,25 +58,25 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
     'TOAL': TagInfo('TOAL', ['Original album', 'Original Movie', 'Original show title'],
                     'TEXT', 'TEXT_UTF8', 'IDENTIFICATION', 'text', False, TOAL),
     
-    'TPE1': TagInfo('TPE1', ['Lead performer(s)', 'Lead performer', 'Soloist(s)', 'Soloist'],
+    'TPE1': TagInfo('TPE1', ['Artist', 'Lead performer(s)', 'Lead performer', 'Soloist(s)', 'Soloist'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', True, TPE1),
-    
-    'TPE2': TagInfo('TPE2', ['Band', 'Orchestra', 'Accompaniment'],
+
+    'TPE2': TagInfo('TPE2', ['Album artist', 'Band', 'Orchestra', 'Accompaniment'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', True, TPE2),
-    
+
     'TPE3': TagInfo('TPE3', ['Conductor', 'Performer refinement'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', False, TPE3),
     
     'TPE4': TagInfo('TPE4', ['Interpreted by', 'Remixed by', 'Modified by'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', False, TPE4),
     
-    'TOPE': TagInfo('TOPE', ['Original artist(s)', 'Original artist', 'Original performer(s)', 'Original performer'],
+    'TOPE': TagInfo('TOPE', ['Original artist', 'Original performer', 'Original artist(s)', 'Original performer(s)'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', False, TOPE),
     
     'TEXT': TagInfo('TEXT', ['Lyricist', 'Text writer', 'Words'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', False, TEXT),
     
-    'TOLY': TagInfo('TOLY', ['Original lyricist(s)', 'Original lyricist', 'Original text writer(s)', 'Original text writer'],
+    'TOLY': TagInfo('TOLY', ['Original lyricist', 'Original text writer', 'Original lyricist(s)', 'Original text writer(s)'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', False, TOLY),
 
     'TCMP': TagInfo('TCMP', ['Compilation'],
@@ -87,16 +88,16 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
     'TENC': TagInfo('TENC', ['Encoded by'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', True, TENC),
     
-    'TBPM': TagInfo('TBPM', ['Beats per minute'],
+    'TBPM': TagInfo('TBPM', ['BPM', 'Beats per minute'],
                     'NUMERIC', 'INT_BIG', 'DERIVED_SUBJECTIVE', 'text', True, TBPM),
-    
+
     'TLEN': TagInfo('TLEN', ['Duration', 'Duration (ms)', 'Duration (milliseconds)', 'Length', 'Length (ms)', 'Length (milliseconds)'],
                     'NUMERIC', 'INT_BIG', 'DERIVED_SUBJECTIVE', 'duration', True, TLEN),
     
-    'TKEY': TagInfo('TKEY', ['Initial key'],
+    'TKEY': TagInfo('TKEY', ['Key', 'Initial key'],
                     'TEXT', 'TEXT_UTF8', 'DERIVED_SUBJECTIVE', 'text', False, TKEY),
     
-    'TLAN': TagInfo('TLAN', ['Language(s)', 'Language'],
+    'TLAN': TagInfo('TLAN', ['Language', 'Language(s)'],
                     'LIST', 'LIST_STRING', 'DERIVED_SUBJECTIVE', 'text', False, TLAN),
     
     'TCON': TagInfo('TCON', ['Genre', 'Content type'],
@@ -135,7 +136,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
     'TDLY': TagInfo('TDLY', ['Playlist delay', 'Playlist delay (ms)', 'Playlist delay (milliseconds)'],
                     'NUMERIC', 'INT_BIG', 'OTHER_TEXT', 'duration', False, TDLY),
     
-    'TSSE': TagInfo('TSSE', ['Software and settings used for encoding', 'Hardware and settings used for encoding'],
+    'TSSE': TagInfo('TSSE', ['Encoder', 'Encoding settings', 'Software and settings used for encoding', 'Hardware and settings used for encoding'],
                     'TEXT', 'TEXT_UTF8', 'OTHER_TEXT', 'text', True, TSSE),
     
     'TSOA': TagInfo('TSOA', ['Album sort order'],
@@ -153,7 +154,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
     'TSOC': TagInfo('TSOC', ['Composer sort order'],
                     'TEXT', 'TEXT_UTF8', 'SORT_ORDER', 'text', True, TSOC),
     
-    'TSRC': TagInfo('TSRC', ['ISRC (International Standard Recording Code)'],
+    'TSRC': TagInfo('TSRC', ['ISRC', 'ISRC (International Standard Recording Code)'],
                     'TEXT', 'TEXT_UTF8', 'OTHER_TEXT', 'text', True, TSRC),
     
     'TXXX': TagInfo('TXXX', ['Custom frame', 'User defined text information'],
@@ -162,7 +163,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
     'COMM': TagInfo('COMM', ['Comments'],
                     'TEXT', 'TEXT_UTF8_LANG', 'SPECIAL_TEXT', 'multiline text', False, COMM),
     
-    'USLT': TagInfo('USLT', ['Unsynced lyrics', 'Unsynchronised lyrics', 'Unsynced text transcription', 'Unsynchronised text transcription'],
+    'USLT': TagInfo('USLT', ['Lyrics', 'Unsynced lyrics', 'Unsynchronised lyrics', 'Unsynced text transcription', 'Unsynchronised text transcription'],
                     'TEXT', 'TEXT_UTF8_LANG', 'SPECIAL_TEXT', 'multiline text', False, USLT),
     
     'USER': TagInfo('USER', ['Terms of use'],
@@ -171,7 +172,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
     'OWNE': TagInfo('OWNE', ['Ownership frame'],
                     'TEXT', 'TEXT_UTF8', 'SPECIAL_TEXT', 'text', True, OWNE),
     
-    'MVNM': TagInfo('MVNM', ['Movement', 'Movement name', 'Movement name (classical)'],
+    'MVNM': TagInfo('MVNM', ['Movement name', 'Movement', 'Movement name (classical)'],
                     'TEXT', 'TEXT_UTF8', 'CLASSICAL', 'text', False, MVNM),
     
     'GRP1': TagInfo('GRP1', ['Grouping' ,'Grouping (iTunes)'],
@@ -182,19 +183,19 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
 
     # TIMESTAMP FRAMES (TD**)
 
-    'TDEN': TagInfo('TDEN', ['Encoding time'],
+    'TDEN': TagInfo('TDEN', ['Encoding date', 'Encoding time'],
                     'TIMESTAMP', 'ISO8601', 'TIMESTAMP', 'date', True, TDEN),
     
-    'TDOR': TagInfo('TDOR', ['Original release time'],
+    'TDOR': TagInfo('TDOR', ['Original release date', 'Original release time'],
                     'TIMESTAMP', 'ISO8601', 'TIMESTAMP', 'date', True, TDOR),
     
-    'TDRC': TagInfo('TDRC', ['Recording time'],
+    'TDRC': TagInfo('TDRC', ['Year', 'Recording date', 'Recording time'],
                     'TIMESTAMP', 'ISO8601', 'TIMESTAMP', 'date', True, TDRC),
     
-    'TDRL': TagInfo('TDRL', ['Release time'],
+    'TDRL': TagInfo('TDRL', ['Release date', 'Release time'],
                     'TIMESTAMP', 'ISO8601', 'TIMESTAMP', 'date', True, TDRL),
     
-    'TDTG': TagInfo('TDTG', ['Tagging time'],
+    'TDTG': TagInfo('TDTG', ['Tagging date', 'Tagging time'],
                     'TIMESTAMP', 'ISO8601', 'TIMESTAMP', 'date', True, TDTG),
 
     # LEGACY FRAMES (ID3v2.3)
@@ -219,7 +220,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
     'TPOS': TagInfo('TPOS', ['Disc number', 'Part of a set'],
                     'FRACTIONAL', 'FRACTIONAL', 'FRACTIONAL', 'fraction', True, TPOS),
     
-    'MVIN': TagInfo('MVIN', ['Movement number', 'Movement number (classical)'],
+    'MVIN': TagInfo('MVIN', ['Movement number', 'Movement #', 'Movement number (classical)'],
                     'FRACTIONAL', 'FRACTIONAL', 'FRACTIONAL', 'fraction', False, MVIN),
 
     # LIST FRAMES
@@ -241,7 +242,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
     'WOAF': TagInfo('WOAF', ['Official audio file webpage'],
                     'URL', 'URL', 'URL', 'text', True, WOAF),
     
-    'WOAR': TagInfo('WOAR', ['Official artist', 'Official performer webpage'],
+    'WOAR': TagInfo('WOAR', ['Artist URL', 'Official artist webpage', 'Official performer webpage'],
                     'URL', 'URL', 'URL', 'text', False, WOAR),
     
     'WOAS': TagInfo('WOAS', ['Official audio source webpage'],
@@ -267,7 +268,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
     'MCDI': TagInfo('MCDI', ['Music CD identifier'],
                     'BINARY', 'BINARY', 'IDENTIFICATION', 'text', True, MCDI),
     
-    'APIC': TagInfo('APIC', ['Attached picture'],
+    'APIC': TagInfo('APIC', ['Album art', 'Cover art', 'Attached picture'],
                     'BINARY', 'BINARY', 'PICTURE', 'image', False, APIC),
     
     'GEOB': TagInfo('GEOB', ['General encapsulated object'],
@@ -396,7 +397,11 @@ def tags_by_ui_category(category: UICategory) -> list[str]:
 
 
 def get_preferred_tag_name(tag_id: str) -> str:
-    """Get the user-defined preferred tag name from config."""
+    """Get the user-defined preferred tag name from config, falling back to the registry's first friendly name."""
     config = load_config()
-    base_id, desc_val, lang_val = parse_composite_tag_id(tag_id)
-    return dict(config.get('tag_name_preferences', {})).get(base_id, base_id)
+    base_id, _desc, _lang = parse_composite_tag_id(tag_id)
+    prefs: dict = dict(config.get('tag_name_preferences', {}))
+    if base_id in prefs:
+        return prefs[base_id]
+    info = TAG_REGISTRY.get(base_id)
+    return info.name[0] if info and info.name else base_id
