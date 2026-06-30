@@ -17,7 +17,7 @@ from mutagen.id3._frames import APIC, USLT
 
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C, get_terminal_height, get_terminal_width
-from src.art.album_art import render_with_viu
+from src.art.album_art import render_album_art
 from src.music_library import refresh_library_entry
 
 from src.id3.id3_tag_handler import (
@@ -351,7 +351,7 @@ def _convert_apic_to_viu(apic_frame: APIC, width: int = 80) -> str:
     img_bytes = getattr(apic_frame, 'data', None)
     if not img_bytes:
         return "Error: No image data."
-    return render_with_viu(img_bytes, width=width, is_bytes=True)
+    return render_album_art(img_bytes, width=width, is_bytes=True)
 
 
 def _open_apic_preview(apic_frame: APIC) -> bool:

@@ -16,7 +16,7 @@ _VLC_STATE_STOPPED = getattr(vlc.State, 'Stopped', None)
 from src.utils import ui_utils
 from src.history import log_listening_history
 from src.music_library import get_song_duration
-from src.art.album_art import get_viu_art_from_mp3
+from src.art.album_art import get_art_from_mp3
 from src.lyrics.lyrics import (
     _parse_sylt,
     _parse_uslt,
@@ -130,7 +130,7 @@ def _render_grouping_cover(file_path: str, cols: int) -> str:
         art_w = min(cols, ART_MAX_WIDTH)
     else:
         art_w = min(45, max(1, cols))
-    return get_viu_art_from_mp3(file_path, art_w, preferred_desc='Booklet', preferred_type=6)
+    return get_art_from_mp3(file_path, art_w, preferred_desc='Booklet', preferred_type=6)
 
 def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict | None = None,
                  queue_titles: list[str] | None = None, queue_index: int = 0) -> dict:

@@ -5,7 +5,7 @@ import re
 import sys
 
 from src.utils import ui_utils
-from src.art.album_art import get_viu_art
+from src.art.album_art import get_art
 from src.utils.prompt import _hint
 from src.state import NAV_STACK
 from src.utils.ui_utils import Colors as C
@@ -90,10 +90,10 @@ def _layout_mode(cols: int) -> str:
     return 'minimal'
 
 
-def _get_viu_art_cached(file_path: str, width: int) -> str:
+def _get_art_cached(file_path: str, width: int) -> str:
     key = (file_path, width)
     if key not in _art_cache:
-        _art_cache[key] = get_viu_art(file_path, width=width)
+        _art_cache[key] = get_art(file_path, width=width)
     return _art_cache[key]
 
 
@@ -123,7 +123,7 @@ def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
                           pre_art: str | None) -> tuple[str, list[str]]:
     """Fetch art at max_w; if the rendered output exceeds avail_h rows,
     compute a narrower width from the actual aspect ratio and re-fetch."""
-    art_str = pre_art if pre_art else _get_viu_art_cached(file_path, width=max_w)
+    art_str = pre_art if pre_art else _get_art_cached(file_path, width=max_w)
     lines = art_str.splitlines()
     if not lines or len(lines) <= avail_h:
         return art_str, lines
@@ -133,7 +133,7 @@ def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
     ratio = actual_w / actual_h if actual_h > 0 else 2.0
     fit_w = max(10, min(max_w - 1, int(avail_h * ratio)))
 
-    art_str2 = _get_viu_art_cached(file_path, width=fit_w)
+    art_str2 = _get_art_cached(file_path, width=fit_w)
     lines2 = art_str2.splitlines()
     return art_str2, lines2[:avail_h]  # safety cap in case ratio was off
 
