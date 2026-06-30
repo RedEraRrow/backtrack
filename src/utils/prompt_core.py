@@ -405,6 +405,8 @@ def _clip_ansi(s: str, width: int) -> str:
     while i < n:
         if s[i] == '\x1b':
             j = i + 1
+            if j < n and s[j] == '[':  # CSI sequence: skip '[' before scanning for final byte
+                j += 1
             while j < n and not ('@' <= s[j] <= '~'):
                 j += 1
             if j < n:
