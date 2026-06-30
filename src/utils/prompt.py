@@ -325,7 +325,8 @@ def select(message: str, choices: list, *,
                         selectable[:] = [i for i, x in enumerate(items) if not x.disabled or x.checked]
                     w.render(_lines())
                 elif not multi and clickable:
-                    if _sel_last_click == idx:
+                    if idx == cursor or _sel_last_click == idx:
+                        # Already on this item (keyboard or prior click) — confirm
                         cursor = idx
                         result = items[cursor].value
                         break
