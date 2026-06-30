@@ -235,6 +235,7 @@ def select(message: str, choices: list, *,
         return [_clip_ansi(line, ui_utils.get_terminal_width()) for line in out]
 
     result = None
+    _sel_last_click: int | None = None
     try:
         _set_raw(fd)
         if not _IS_WINDOWS:
@@ -256,12 +257,12 @@ def select(message: str, choices: list, *,
 
             key = _read_key(fd)
             if   key == 'CTRL_C':                break
-            elif key in ('UP',   'k'):           cursor = _step(cursor, -1);          w.render(_lines())
-            elif key in ('DOWN', 'j'):           cursor = _step(cursor, 1);           w.render(_lines())
-            elif key == 'HOME':                  cursor = selectable[0];              w.render(_lines())
-            elif key == 'END':                   cursor = selectable[-1];             w.render(_lines())
-            elif key == 'PGUP':                  cursor = _nearest_selectable(max(0, cursor - _visible_rows())); w.render(_lines())
-            elif key == 'PGDN':                  cursor = _nearest_selectable(min(len(items) - 1, cursor + _visible_rows())); w.render(_lines())
+            elif key in ('UP',   'k'):           cursor = _step(cursor, -1);          _sel_last_click = None; w.render(_lines())
+            elif key in ('DOWN', 'j'):           cursor = _step(cursor, 1);           _sel_last_click = None; w.render(_lines())
+            elif key == 'HOME':                  cursor = selectable[0];              _sel_last_click = None; w.render(_lines())
+            elif key == 'END':                   cursor = selectable[-1];             _sel_last_click = None; w.render(_lines())
+            elif key == 'PGUP':                  cursor = _nearest_selectable(max(0, cursor - _visible_rows())); _sel_last_click = None; w.render(_lines())
+            elif key == 'PGDN':                  cursor = _nearest_selectable(min(len(items) - 1, cursor + _visible_rows())); _sel_last_click = None; w.render(_lines())
             elif key == 'SPACE' and multi:
                 it = items[cursor]
                 if not it.disabled or it.checked:
@@ -281,8 +282,8 @@ def select(message: str, choices: list, *,
             elif key in ('LEFT', 'b', 'h', 'ESC'): result = None; break
             elif key in ('q', 'Q'):              raise QuitToTerminal()
             elif shortcuts and key in shortcuts:  result = shortcuts[key]; break
-            elif key == 'SCROLL_UP':             cursor = _step(cursor, -1); w.render(_lines())
-            elif key == 'SCROLL_DOWN':           cursor = _step(cursor, 1); w.render(_lines())
+            elif key == 'SCROLL_UP':             cursor = _step(cursor, -1); _sel_last_click = None; w.render(_lines())
+            elif key == 'SCROLL_DOWN':           cursor = _step(cursor, 1); _sel_last_click = None; w.render(_lines())
             elif key.startswith('MOUSE_CLICK:'):
                 parts = key.split(':')
                 r = int(parts[2])
@@ -306,11 +307,19 @@ def select(message: str, choices: list, *,
                         selectable[:] = [i for i, x in enumerate(items) if not x.disabled or x.checked]
                     w.render(_lines())
                 elif not multi and 0 <= idx < len(items) and clickable:
-                    cursor = idx
-                    result = items[cursor].value
-                    break
+                    if _sel_last_click == idx:
+                        # Second click on the same item — confirm selection
+                        cursor = idx
+                        result = items[cursor].value
+                        break
+                    else:
+                        # First click — move cursor only
+                        _sel_last_click = idx
+                        cursor = idx
+                        w.render(_lines())
                 elif not multi and 0 <= idx < len(items):
-                    # Clicked a disabled/heading row — just move cursor for visibility
+                    # Clicked a disabled/heading row — move cursor, reset click state
+                    _sel_last_click = None
                     cursor = idx
                     w.render(_lines())
 
