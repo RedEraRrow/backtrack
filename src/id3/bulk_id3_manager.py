@@ -112,7 +112,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         def _build():
             cols_now = get_terminal_width()
             mh = ui_utils.MARGIN_H
-            inner = max(12, cols_now - 2 * mh - 4)
+            inner = max(12, cols_now - mh - 4)
             title = "Bulk Edit"
             count = f"{len(album_tracks)} track" + ("" if len(album_tracks) == 1 else "s")
             gap = max(2, inner - len(title) - len(count))

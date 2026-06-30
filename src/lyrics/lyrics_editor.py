@@ -16,11 +16,11 @@ from __future__ import annotations
 import sys, os, json, time
 
 from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C
+from src.utils.ui_utils import Colors as C, MARGIN_V
 from src.utils.prompt import (
     _Widget, _read_key, _wait_for_keypress,
     _set_raw, _restore_term_attrs, _get_term_attrs,
-    _hint_lines, _rows, _cols, _clip_ansi,
+    _hint_lines, _rows, _cols,
 )
 
 _vlc = None
@@ -178,10 +178,10 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     out: list[str] = [
         "",
         f"  {C.BOLD}{label}{C.RESET}  {C.DIM}{track_name}{C.RESET}{ctx}{dot}{play}  {C.DIM}{pos_str}{C.RESET}",
-        f"{C.DIM}{'·' * cols}{C.RESET}",
+        f"{C.DIM}{'·' * ui_utils.get_terminal_width()}{C.RESET}",
     ]
 
-    sep = f"{C.DIM}{'─' * cols}{C.RESET}"
+    sep = f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}"
 
     if mode == TAP:
         prev_s = segs[cursor - 1] if cursor > 0     else None
@@ -197,9 +197,18 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             col = C.BOLD + C.PRIMARY if bold else C.DIM
             return f"{ptr}  {ts}{col}{txt}{C.RESET}"
 
-        FTR      = 2
+        # Build footer first so its actual height governs padding.
+        footer: list[str] = [sep]
+        pairs: list[tuple[str, str]] = [('spc/↵', 'mark')]
+        if cursor > 0: pairs += [('←→', '±0.25s'), (',/.', '±0.1s')]
+        pairs.append(('p', 'pause' if playing else 'play'))
+        pairs.append(('s', 'save'))
+        if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
+        pairs += [('esc', 'done'), ('q', 'quit')]
+        footer.extend(_hint_lines(*pairs))
+
         TAP_ROWS = 9  # 3 content lines + 4 blank spacers + progress + blank
-        n_body   = max(0, rows - 1 - 3 - FTR)
+        n_body   = max(0, rows - 1 - 2 * MARGIN_V - 3 - len(footer))
         pad_top  = max(0, (n_body - TAP_ROWS) // 2)
 
         out += [""] * pad_top
@@ -217,69 +226,17 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         else:
             out.append("")
 
-        footer: list[str] = [sep]
-        pairs: list[tuple[str, str]] = [('spc/↵', 'mark')]
-        if cursor > 0: pairs += [('←→', '±0.25s'), (',/.', '±0.1s')]
-        pairs.append(('p', 'pause' if playing else 'play'))
-        pairs.append(('s', 'save'))
-        if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
-        pairs += [('esc', 'done'), ('q', 'quit')]
-        footer.extend(_hint_lines(*pairs))
-
-        padding = max(0, (rows - 1) - len(out) - len(footer))
+        padding = max(0, (rows - 1 - 2 * MARGIN_V) - len(out) - len(footer))
         return out + [""] * padding + footer, vp
 
     if show_words:
         items  = segs[seg_cursor].get("words", []) if segs else []
         ITEM_H = 1
-        FTR    = 2 if mode != EDIT else 3
     else:
         items  = segs
         ITEM_H = 3
-        FTR    = 3 if mode == EDIT else 2
 
-    n_items = len(items)
-    vis     = max(1, (rows - 1 - 3 - 1 - 1 - FTR) // ITEM_H)
-
-    if cursor < vp:          vp = cursor
-    if cursor >= vp + vis:   vp = cursor - vis + 1
-    vp = max(0, min(vp, max(0, n_items - vis)))
-
-    out.append(f"  {C.DIM}↑  {vp} above{C.RESET}" if vp > 0 else "")
-
-    for slot in range(vis):
-        i = vp + slot
-        if i >= n_items: break
-
-        item   = items[i]
-        is_cur = (i == cursor)
-        is_sel = (mode == SEG and i in selected)
-        s_t    = item.get("start")
-        e_t    = item.get("end")
-
-        if show_words:
-            word = item.get("word", "").strip()
-            ts   = f"{_fmt(s_t)}  →  {_fmt(e_t)}"
-            ptr  = f"{C.ACCENT}›{C.RESET}" if is_cur else " "
-            ts_c = C.BOLD if is_cur else C.DIM
-            out.append(f"  {ptr}    {ts_c}{ts}   {word}{C.RESET}")
-        else:
-            ts_str = f"{_fmt(s_t)}  →  {_fmt(e_t)}"
-            text_r = item.get("text", "").strip()
-            text   = (text_r[:cols - 10] + "…") if len(text_r) > cols - 10 else text_r
-            ptr    = f"{C.ACCENT}›{C.RESET}" if is_cur else " "
-            chk    = f"{C.ACCENT}✔{C.RESET}" if is_sel else " "
-            ts_c   = C.BOLD    if is_cur else C.DIM
-            tx_c   = C.PRIMARY if is_cur else C.DIM
-            dur    = (f"  {C.DIM}{(e_t or 0) - (s_t or 0):.2f}s{C.RESET}"
-                      if is_cur and s_t is not None and e_t is not None else "")
-            out.append(f"  {ptr} {chk}  {ts_c}{ts_str}{C.RESET}{dur}")
-            out.append(f"       {tx_c}{text}{C.RESET}")
-            out.append("")
-
-    below = n_items - (vp + vis)
-    out.append(f"  {C.DIM}↓  {below} below{C.RESET}" if below > 0 else "")
-
+    # Build footer first so its actual height governs how many items we show.
     footer = [sep]
 
     if mode == EDIT:
@@ -297,8 +254,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
 
     elif mode == WORD:
         pairs: list[tuple[str, str]] = [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
-        pairs.append(('x', 'split'))
-        pairs.append(('e', 'edit'))
+        pairs += [('x', 'split'), ('e', 'edit')]
         if _HAS_VLC: pairs.append(('p', 'preview'))
         pairs.append(('s', 'save'))
         if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
@@ -317,7 +273,60 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         if selected: pairs.append(('', f'{len(selected)} marked'))
         footer.extend(_hint_lines(*pairs))
 
-    padding = max(0, (rows - 1) - len(out) - len(footer))
+    # HEADER = 3 lines (blank + title + dotted sep), INDICATORS = 2 lines (above/below)
+    HEADER = 3
+    n_items   = len(items)
+    available = rows - 1 - 2 * MARGIN_V - HEADER - 2 - len(footer)
+    vis       = max(1, available // ITEM_H)
+
+    if cursor < vp:          vp = cursor
+    if cursor >= vp + vis:   vp = cursor - vis + 1
+    vp = max(0, min(vp, max(0, n_items - vis)))
+
+    out.append(f"  {C.DIM}↑  {vp} above{C.RESET}" if vp > 0 else "")
+
+    for slot in range(vis):
+        i = vp + slot
+        if i >= n_items: break
+
+        item   = items[i]
+        is_cur = (i == cursor)
+        is_sel = (mode == SEG and i in selected)
+        s_t    = item.get("start")
+        e_t    = item.get("end")
+
+        prev_item = items[i - 1] if i > 0 else None
+        overlap   = (prev_item is not None
+                     and s_t is not None
+                     and prev_item.get("end") is not None
+                     and s_t < prev_item["end"])
+
+        if show_words:
+            word  = item.get("word", "").strip()
+            ts    = f"{_fmt(s_t)}  →  {_fmt(e_t)}"
+            ptr   = f"{C.ACCENT}›{C.RESET}" if is_cur else " "
+            ts_c  = C.BOLD if is_cur else C.DIM
+            warn  = f" {C.YELLOW}⚠{C.RESET}" if overlap else ""
+            out.append(f"  {ptr}    {ts_c}{ts}{C.RESET}{warn}   {word}")
+        else:
+            ts_str = f"{_fmt(s_t)}  →  {_fmt(e_t)}"
+            text_r = item.get("text", "").strip()
+            text   = (text_r[:cols - 10] + "…") if len(text_r) > cols - 10 else text_r
+            ptr    = f"{C.ACCENT}›{C.RESET}" if is_cur else " "
+            chk    = f"{C.ACCENT}✔{C.RESET}" if is_sel else " "
+            ts_c   = C.BOLD    if is_cur else C.DIM
+            tx_c   = C.PRIMARY if is_cur else C.DIM
+            dur    = (f"  {C.DIM}{(e_t or 0) - (s_t or 0):.2f}s{C.RESET}"
+                      if is_cur and s_t is not None and e_t is not None else "")
+            warn   = f"  {C.YELLOW}⚠ overlap{C.RESET}" if overlap else ""
+            out.append(f"  {ptr} {chk}  {ts_c}{ts_str}{C.RESET}{dur}{warn}")
+            out.append(f"       {tx_c}{text}{C.RESET}")
+            out.append("")
+
+    below = n_items - (vp + vis)
+    out.append(f"  {C.DIM}↓  {below} below{C.RESET}" if below > 0 else "")
+
+    padding = max(0, (rows - 1 - 2 * MARGIN_V) - len(out) - len(footer))
     return out + [""] * padding + footer, vp
 
 
@@ -458,8 +467,15 @@ def lyrics_editor(mp3_path: str) -> None:
             entries = [(s['text'], max(0, int((s['start'] or 0) * 1000)))
                        for s in segs if s.get('start') is not None]
             save_sylt_entries(aux['mp3'], entries)
-        n_timed = sum(1 for s in segs if s.get('start') is not None)
-        ui_utils.show_status(f"Saved — {n_timed} timed lines")
+        changed: set[int] = set()
+        for op in undo_stack:
+            if   op[0] == 'seg':      changed.update(op[1])
+            elif op[0] == 'seg_end':  changed.add(op[1])
+            elif op[0] in ('word', 'word_end'): changed.add(op[1])
+            elif op[0] == 'split':    changed.update([op[1], op[1] + 1])
+            elif op[0] == 'join':     changed.add(op[1])
+            elif op[0] == 'tap':      changed.add(op[1])
+        ui_utils.show_status(f"Saved — {len(changed)} line{'s' if len(changed) != 1 else ''} changed")
         dirty = False; undo_stack.clear()
 
     def commit_field(field: str, val: float) -> None:
@@ -541,10 +557,7 @@ def lyrics_editor(mp3_path: str) -> None:
                     viewport, dirty, len(undo_stack), track_name,
                     playing, play_pos, edit_field, edit_buf, source, total_s,
                 )
-                # Clip every line to the terminal width so nothing soft-wraps —
-                # wrapping was what made the view duplicate/ghost each frame.
-                cols_now = _cols()
-                w.render([_clip_ansi(line, cols_now) for line in lines])
+                w.render(lines)
                 need_redraw = False
 
             if not _wait_for_keypress(0.05):

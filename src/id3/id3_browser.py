@@ -611,7 +611,7 @@ def inspect_tag_loop(
 
         # Full-width rounded box: bold title (· dim artist) left, dim meta right.
         mh = ui_utils.MARGIN_H
-        inner = max(12, cols - 2 * mh - 4)
+        inner = max(12, cols - mh - 4)
         right = f"[{ext}]{dur_str}{size_str}"
         avail = max(4, inner - len(right) - 2)
 
