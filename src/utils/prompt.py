@@ -286,7 +286,7 @@ def select(message: str, choices: list, *,
             elif key == 'SCROLL_DOWN':           cursor = _step(cursor, 1); _sel_last_click = None; w.render(_lines())
             elif key.startswith('MOUSE_CLICK:'):
                 parts = key.split(':')
-                r = int(parts[2])
+                r, col = int(parts[2]), int(parts[3]) if len(parts) > 3 else 1
                 if w.row is None:
                     continue
                 # render() prepends MARGIN_V blank rows before lines[0].
@@ -295,8 +295,26 @@ def select(message: str, choices: list, *,
                 #   terminal row = w.row + MARGIN_V + H + 2
                 i = r - w.row - ui_utils.MARGIN_V - _last_hlen[0] - 2
                 idx = viewport + i
-                clickable = not items[idx].disabled if 0 <= idx < len(items) else False
-                if multi and 0 <= idx < len(items) and (clickable or items[idx].checked):
+                if not (0 <= idx < len(items)):
+                    continue
+                clickable = not items[idx].disabled
+
+                # Column guard: only register clicks that land on actual
+                # text, not the blank space to the right of short labels.
+                # Table rows fill the full width so any column is valid.
+                # Plain list rows: "  › label" (prefix=4) or
+                #                  "  › ✔ label" for multi (prefix=6).
+                is_table_row = bool(columns and items[idx].cells and not items[idx].disabled)
+                if not is_table_row:
+                    if multi:
+                        prefix, max_lbl = 6, _cols() - 9
+                    else:
+                        prefix, max_lbl = 4, _cols() - 6
+                    shown = min(len(str(items[idx].title)), max_lbl)
+                    if col > prefix + shown:
+                        continue
+
+                if multi and (clickable or items[idx].checked):
                     cursor = idx
                     it = items[cursor]
                     if not (interlock_category_callback and _locked_category[0]
@@ -306,19 +324,17 @@ def select(message: str, choices: list, *,
                         _update_interlock()
                         selectable[:] = [i for i, x in enumerate(items) if not x.disabled or x.checked]
                     w.render(_lines())
-                elif not multi and 0 <= idx < len(items) and clickable:
+                elif not multi and clickable:
                     if _sel_last_click == idx:
-                        # Second click on the same item — confirm selection
                         cursor = idx
                         result = items[cursor].value
                         break
                     else:
-                        # First click — move cursor only
                         _sel_last_click = idx
                         cursor = idx
                         w.render(_lines())
-                elif not multi and 0 <= idx < len(items):
-                    # Clicked a disabled/heading row — move cursor, reset click state
+                elif not multi:
+                    # Disabled/heading row — move cursor, reset click state
                     _sel_last_click = None
                     cursor = idx
                     w.render(_lines())
