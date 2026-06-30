@@ -286,10 +286,13 @@ def select(message: str, choices: list, *,
             elif key.startswith('MOUSE_CLICK:'):
                 parts = key.split(':')
                 r = int(parts[2])
-                col = int(parts[3]) if len(parts) > 3 else 1
                 if w.row is None:
                     continue
-                i = r - w.row - _last_hlen[0] - 2
+                # render() prepends MARGIN_V blank rows before lines[0].
+                # lines[] layout: H header lines, message, viewport-above
+                # indicator, then items. So item[viewport] is at:
+                #   terminal row = w.row + MARGIN_V + H + 2
+                i = r - w.row - ui_utils.MARGIN_V - _last_hlen[0] - 2
                 idx = viewport + i
                 clickable = not items[idx].disabled if 0 <= idx < len(items) else False
                 if multi and 0 <= idx < len(items) and (clickable or items[idx].checked):
@@ -303,16 +306,11 @@ def select(message: str, choices: list, *,
                         selectable[:] = [i for i, x in enumerate(items) if not x.disabled or x.checked]
                     w.render(_lines())
                 elif not multi and 0 <= idx < len(items) and clickable:
-                    # Only act when the click lands on the row's text, not the
-                    # empty space to its right. Rows render as 4 lead columns
-                    # ("  › " / "    ") followed by the (possibly truncated) label.
-                    label = str(items[idx].title)
-                    max_w = _cols() - 6
-                    shown_len = min(len(label), max_w)
-                    if 1 <= col <= 4 + shown_len:
-                        cursor = idx
-                        result = items[cursor].value
-                        break
+                    cursor = idx
+                    result = items[cursor].value
+                    break
+                elif not multi and 0 <= idx < len(items):
+                    # Clicked a disabled/heading row — just move cursor for visibility
                     cursor = idx
                     w.render(_lines())
 
@@ -701,7 +699,9 @@ def _build_list_edit_lines(
     hint_raw = hint_res[0] if isinstance(hint_res, tuple) else hint_res
     hint_lines = hint_raw.split("\n") if hint_raw else []
 
-    fixed_overhead = 6 + len(hint_lines)
+    _LEDIT_HEADER_ROWS = 4   # message + separator + col-headers + col-underline
+    _LEDIT_FOOTER_ROWS = 1   # bottom separator (hints follow immediately)
+    fixed_overhead = _LEDIT_HEADER_ROWS + _LEDIT_FOOTER_ROWS + len(hint_lines)
     vis = max(2, _visible_rows() - fixed_overhead)
     n = len(items)
 
@@ -807,7 +807,7 @@ def _build_list_edit_lines(
     out.append(f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}")
     out.extend(hint_lines)
 
-    return out, viewport
+    return out, viewport, vis, _LEDIT_HEADER_ROWS
 
 def list_edit(message: str, initial_items: list | None = None, headers: tuple[str, ...] = ("ROLE", "NAME"),
               fixed_rows: bool = False, locked_cols: set | None = None,
@@ -847,9 +847,12 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
         except Exception:
             return []
 
+    _le_vis: int = 2
+    _le_header_rows: int = 4
+
     def _render():
-        nonlocal viewport
-        lines, new_viewport = _build_list_edit_lines(
+        nonlocal viewport, _le_vis, _le_header_rows
+        lines, new_viewport, new_vis, new_hdr = _build_list_edit_lines(
             message, items, headers,
             cursor, viewport,
             edit_mode, edit_col, edit_buf, edit_pos,
@@ -857,6 +860,8 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
             col_ratios,
         )
         viewport = new_viewport
+        _le_vis = new_vis
+        _le_header_rows = new_hdr
         w.render(lines)
 
     def _commit_edit_buffer():
@@ -1042,13 +1047,10 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     _parts = key.split(':')
                     _btn, _mrow, _mcol = int(_parts[1]), int(_parts[2]), int(_parts[3])
                     if _btn == 0 and items:
-                        # Items start at out-line index 4 (message, divider, header, underline)
-                        # render() prepends MARGIN_V blank rows, so terminal row 1 = blank
-                        _header_lines_count = 4
-                        _line_idx = _mrow - 1 - ui_utils.MARGIN_V
-                        _item_offset = _line_idx - _header_lines_count
-                        _vis = max(2, _visible_rows() - 10)
-                        if 0 <= _item_offset < _vis:
+                        # render() prepends MARGIN_V blank rows before lines[0]
+                        _line_idx   = _mrow - 1 - ui_utils.MARGIN_V
+                        _item_offset = _line_idx - _le_header_rows
+                        if 0 <= _item_offset < _le_vis:
                             _clicked_idx = viewport + _item_offset
                             if 0 <= _clicked_idx < len(items):
                                 if _le_last_click == _clicked_idx:
