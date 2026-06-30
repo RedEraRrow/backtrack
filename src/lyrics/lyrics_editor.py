@@ -70,9 +70,14 @@ def _parse(s: str) -> float | None:
 
 
 def _find_transcript(mp3_path: str) -> str | None:
+    d    = os.path.dirname(mp3_path)
     base = os.path.splitext(os.path.basename(mp3_path))[0]
-    p = os.path.join(os.path.dirname(mp3_path), "Transcript", f"{base}.json")
-    return p if os.path.isfile(p) else None
+    for name in [f"{base}.json", f"{base}_timings.json", "transcript.json",
+                 os.path.join("Transcript", f"{base}.json")]:
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 def _rebuild_srt(segs: list) -> str:
@@ -214,10 +219,11 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
 
         footer: list[str] = [sep]
         pairs: list[tuple[str, str]] = [('spc/↵', 'mark')]
-        if cursor > 0: pairs.append(('←→', '±0.25s'))
+        if cursor > 0: pairs += [('←→', '±0.25s'), (',/.', '±0.1s')]
         pairs.append(('p', 'pause' if playing else 'play'))
-        pairs += [('esc', 'done'), ('q', 'quit')]
+        pairs.append(('s', 'save'))
         if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
+        pairs += [('esc', 'done'), ('q', 'quit')]
         footer.extend(_hint_lines(*pairs))
 
         padding = max(0, (rows - 1) - len(out) - len(footer))
@@ -290,22 +296,25 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         footer.extend(_hint_lines(('tab', 'switch field'), ('↵', 'apply'), ('esc', 'cancel')))
 
     elif mode == WORD:
-        pairs = []
+        pairs: list[tuple[str, str]] = [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
+        pairs.append(('x', 'split'))
+        pairs.append(('e', 'edit'))
         if _HAS_VLC: pairs.append(('p', 'preview'))
-        pairs += [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s'),
-                  ('x', 'split'), ('e', 'edit'), ('esc', 'back'), ('s', 'save'), ('q', 'quit')]
+        pairs.append(('s', 'save'))
         if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
+        pairs += [('esc', 'back'), ('q', 'quit')]
         footer.extend(_hint_lines(*pairs))
 
     else:  # SEG
-        pairs = []
+        pairs = [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
+        if source == SOURCE_TRANSCRIPT: pairs.append(('w', 'words'))
+        if _HAS_VLC:                    pairs.append(('t', 'tap sync'))
+        pairs += [('j', 'join↓'), ('e', 'edit'), ('c', 'credits'), ('spc', 'mark')]
         if _HAS_VLC: pairs.append(('p', 'preview'))
-        pairs += [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
-        if _HAS_VLC:                           pairs.append(('t', 'tap sync'))
-        if source == SOURCE_TRANSCRIPT:         pairs.append(('w', 'words'))
-        pairs += [('j', 'join↓'), ('e', 'edit'), ('c', 'credits'), ('spc', 'mark'), ('s', 'save'), ('q', 'quit')]
+        pairs.append(('s', 'save'))
         if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
-        if selected:   pairs.append(('', f'{len(selected)} marked'))
+        pairs.append(('q', 'quit'))
+        if selected: pairs.append(('', f'{len(selected)} marked'))
         footer.extend(_hint_lines(*pairs))
 
     padding = max(0, (rows - 1) - len(out) - len(footer))
