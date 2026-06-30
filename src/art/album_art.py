@@ -14,10 +14,11 @@ def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
     if img is None: return "Error decoding image."
 
     # 2. Resize maintaining aspect ratio
-    # Half-block characters are twice as tall as they are wide
+    # Terminal cells are ~2:1 (tall:wide); half-blocks give 2 pixel rows per char row,
+    # so those factors cancel — resize to full pixel height, step-by-2 does the rest.
     aspect_ratio = img.shape[0] / img.shape[1]
-    height = int(width * aspect_ratio * 0.5) 
-    img = cv2.resize(img, (width, height))
+    height = int(width * aspect_ratio) 
+    img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
 
     # 3. Convert to ANSI half-blocks
     # Standard approach: Top half = foreground, Bottom half = background

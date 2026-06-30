@@ -5,6 +5,7 @@ import json
 import re
 import textwrap
 import sys
+import unicodedata
 from pathlib import Path
 
 from src.utils import ui_utils
@@ -761,7 +762,7 @@ def _find_markdown_for_audio(audio_path: str) -> str | None:
     base = Path(audio_path).stem
     parent = Path(audio_path).parent
 
-    for pattern in [f"{base}.md", f"{base}.dialogue.md"]:
+    for pattern in [f"{base}.md", f"{base}.dialogue.md", "transcript.md"]:
         candidate = parent / pattern
         if candidate.exists():
             return str(candidate)
@@ -797,7 +798,7 @@ def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | Non
                 break
 
     # JSON: same dir first
-    for name in [f"{base}.json", f"{base}_timings.json"]:
+    for name in [f"{base}.json", f"{base}_timings.json", "transcript.json"]:
         candidate = parent / name
         if candidate.exists():
             json_path = str(candidate)
@@ -840,6 +841,19 @@ def _parse_word_timings_json(json_path: str) -> list[dict]:
     return flattened
 
 
+def _matchable(word: str) -> str:
+    """Reduce a word to bare lowercase letters and digits for fuzzy matching.
+
+    NFKD-decomposes the input so accented/modified letters shed their combining
+    marks, then keeps only characters whose Unicode category starts with ‘L’
+    (letter) or ‘N’ (number).  This handles apostrophes, okinas, curly quotes,
+    hyphens, diacritics, and any other punctuation-adjacent characters without
+    maintaining an explicit strip-list.
+    """
+    decomposed = unicodedata.normalize('NFKD', word.lower())
+    return ''.join(c for c in decomposed if unicodedata.category(c)[0] in ('L', 'N'))
+
+
 def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict]) -> None:
     word_idx = 0
     for line in md_lines:
@@ -847,7 +861,9 @@ def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict])
             continue
 
         clean_text = re.sub(r'\*.*?\*|\(.*?\)', '', line.text)
-        words_in_line = re.findall(r'\b\w+\b', clean_text.lower())
+        # Split on any run of non-letter/digit chars so Unicode word-internal
+        # punctuation (apostrophes, okinas, hyphens, …) doesn’t fragment tokens.
+        words_in_line = [t for t in re.split(r'[^\w]+', clean_text, flags=re.UNICODE) if t]
 
         if not words_in_line:
             continue
@@ -856,10 +872,13 @@ def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict])
         line_end: float | None = None
 
         for word_to_match in words_in_line:
+            match_key = _matchable(word_to_match)
+            if not match_key:
+                continue
             while word_idx < len(word_timings):
-                current_json_word = word_timings[word_idx].get('word', '').lower().strip().strip(".,!?;:\"'")
+                current_json_word = _matchable(word_timings[word_idx].get('word', ''))
 
-                if current_json_word == word_to_match:
+                if current_json_word == match_key:
                     if line_start is None:
                         line_start = float(word_timings[word_idx]['start'])
                     line_end = float(word_timings[word_idx]['end'])
