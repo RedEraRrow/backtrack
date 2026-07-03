@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Terminals",
 ]
 dependencies = [
-    "opencv-python>=4.13.0.92",
+    "opencv-python>=5.0.0.93",
     "mutagen>=1.47.0",
     "numpy>=2.0.2",
     "pyperclip>=1.8.2",
