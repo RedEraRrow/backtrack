@@ -499,10 +499,11 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
 
             # Section name at top acts as "play everything here"
             _show_editor = _cfg.get("show_metadata_editor", True)
-            _group_label = f"▶  Play all {cat_choice.lower()}"
+            _group_label = f"▸  Play all {cat_choice.lower()}"
             _group_choices = [prompt.Choice(title=_group_label, value="__play_all__")]
             if _show_editor:
                 _group_choices.append(prompt.Choice(title=f"Edit tags — all {cat_choice.lower()}", value="__bulk_edit__"))
+            _group_choices.append(prompt.separator())
             _group_choices += group_names
 
             selection = prompt.select(
@@ -552,9 +553,10 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     _single_album = len(album_list) <= 1
                     _alb_choices: list = []
                     if not _single_album:
-                        _alb_choices.append(prompt.Choice(title=f"▶  Play all — {selection}", value="__play_all__"))
+                        _alb_choices.append(prompt.Choice(title=f"▸  Play all — {selection}", value="__play_all__"))
                         if _show_editor:
                             _alb_choices.append(prompt.Choice(title=f"Edit tags — {selection}", value="__bulk_edit__"))
+                        _alb_choices.append(prompt.separator())
                     # Show the album artist (dimmed) when it differs from the
                     # artist/genre we're browsing under (#33).
                     for _a in album_list:
@@ -621,14 +623,14 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         if has_multiple_discs and disc_val != current_disc:
                             subtitle   = t.get('disc_subtitle', '')
                             disc_title = subtitle if subtitle else f"Disc {disc_val}"
-                            track_choices.append(prompt.Choice(title=f"▌ {disc_title}", value=f"__disc_{disc_val}"))
+                            track_choices.append(prompt.Choice(title=f"▎{disc_title}", value=f"__disc_{disc_val}", cursor_title=f"▍{disc_title}"))
                             current_disc = disc_val
                             current_work = None
 
                         # Work header — thinner bar, indented under the disc (#34)
                         if work and work != current_work:
                             d_pad = "  " if has_multiple_discs else ""
-                            track_choices.append(prompt.Choice(title=f"{d_pad}▏ {work}", value=f"__work__{work}"))
+                            track_choices.append(prompt.Choice(title=f"{d_pad}▎{work}", value=f"__work__{work}", cursor_title=f"{d_pad}▍{work}"))
                             current_work = work
 
                         # Track row
@@ -666,12 +668,13 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         _track_header_choices = []
                     else:
                         _track_header_choices = [
-                            prompt.Choice(title=f"▶  Play all — {_track_context}", value="__play_all__")
+                            prompt.Choice(title=f"▸  Play all — {_track_context}", value="__play_all__")
                         ]
                         if _show_editor:
                             _track_header_choices.append(
                                 prompt.Choice(title=f"Edit tags — {_track_context}", value="__bulk_edit__")
                             )
+                        _track_header_choices.append(prompt.separator())
 
                     # Album artist shown in the header subtitle (#33).
                     _album_artist = next(
@@ -712,7 +715,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         )
                         disc_label   = subtitle if subtitle else f"Disc {disc_val}"
                         _show_editor = _cfg.get("show_metadata_editor", True)
-                        _disc_choices = [prompt.Choice(title=f"▶  Play all — {disc_label}", value="__play_all__")]
+                        _disc_choices = [prompt.Choice(title=f"▸  Play all — {disc_label}", value="__play_all__")]
                         if _show_editor:
                             _disc_choices.append(prompt.Choice(title=f"Edit tags — {disc_label}", value="__bulk_edit__"))
 
@@ -734,7 +737,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         work_name    = path_choice_obj[len("__work__"):]
                         work_paths   = work_track_map.get(work_name, [])
                         _show_editor = _cfg.get("show_metadata_editor", True)
-                        _work_choices = [prompt.Choice(title=f"▶  Play all — {work_name}", value="__play_all__")]
+                        _work_choices = [prompt.Choice(title=f"▸  Play all — {work_name}", value="__play_all__")]
                         if _show_editor:
                             _work_choices.append(prompt.Choice(title=f"Edit tags — {work_name}", value="__bulk_edit__"))
 

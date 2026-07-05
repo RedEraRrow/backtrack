@@ -269,18 +269,10 @@ def _prompt_for_equalisation(current_value: Any) -> dict | None:
 
 
 def _prompt_for_rva2(current_value: Any) -> dict | None:
-    """Single master-channel volume adjustment (dB) for an RVA2 frame."""
-    cur = f"{current_value.gain:g}" if (current_value is not None and hasattr(current_value, 'gain')) else ""
-    val = prompt.text("Volume adjustment (dB, +boost / −cut, master channel):", default=cur)
-    if val is None:
-        return None
-    val = val.strip().lstrip('+')
-    if not val:
-        return None
-    try:
-        gain = float(val)
-    except ValueError:
-        ui_utils.show_status("Enter a number in decibels, e.g. 3 or -2.5")
+    """Interactive gain meter for a single-channel RVA2 frame."""
+    cur = float(current_value.gain) if (current_value is not None and hasattr(current_value, 'gain')) else 0.0
+    gain = prompt.rva2_edit("Volume adjustment (master channel):", gain=cur)
+    if gain is None:
         return None
     return {'__rva2__': True, 'gain': gain}
 
@@ -408,11 +400,14 @@ def summarize_tag_value(tag_id: str, raw_frame) -> str:
         return f"{len(sylt_data)} lines"
 
     # AUDIO ADJUSTMENT (EQU2 / RVA2)
-    if hasattr(raw_frame, 'adjustments'):
-        bands = getattr(raw_frame, 'adjustments', [])
-        return f"{len(bands)} band(s)"
-    if hasattr(raw_frame, 'gain') and hasattr(raw_frame, 'channel'):
-        return f"{getattr(raw_frame, 'gain', 0):+g} dB"
+    if info.official_category == 'AUDIO_ADJUSTMENT' or hasattr(raw_frame, 'adjustments') or (hasattr(raw_frame, 'gain') and hasattr(raw_frame, 'channel')):
+        if hasattr(raw_frame, 'adjustments'):
+            bands = getattr(raw_frame, 'adjustments', [])
+            n = len(bands)
+            return f"{n} band{'s' if n != 1 else ''}"
+        if hasattr(raw_frame, 'gain') and hasattr(raw_frame, 'channel'):
+            return f"{getattr(raw_frame, 'gain', 0):+g} dB"
+        return "—"
 
     # Generic text
     if hasattr(raw_frame, 'text'):

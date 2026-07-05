@@ -192,17 +192,20 @@ def select(message: str, choices: list, *,
         col_widths: list[int] = []
         if columns:
             eff = min(cols, _COLUMNS_MAX_WIDTH)
-            rows_cells = [it.cells for it in items if it.cells and not it.disabled]
+            rows_cells = [it.cells for it in items if it.cells]
             col_widths = _table_widths(rows_cells, columns, eff,
-                                       pointer_w=4, right_margin=_EDGE_MARGIN)
+                                       pointer_w=6 if multi else 4, right_margin=_EDGE_MARGIN)
 
         for i in range(viewport, min(viewport + vis, n)):
-            if columns and items[i].cells and not items[i].disabled:
+            if columns and items[i].cells:
                 out.append(_render_table_row(
-                    items[i].cells, columns, i == cursor, col_widths, eff, _EDGE_MARGIN))
+                    items[i].cells, columns, i == cursor, col_widths, eff, _EDGE_MARGIN,
+                    is_checked=items[i].checked if multi else None,
+                    disabled=items[i].disabled))
                 continue
 
-            label = str(items[i].title)
+            _ct = items[i].cursor_title
+            label = str(_ct if (_ct is not None and i == cursor) else items[i].title)
             if multi:
                 max_w = cols - 9
             else:
@@ -2187,6 +2190,120 @@ def _eq_render_lines(bands: list, cursor: int, message: str, status: str,
     out.append("")
     out.append(f"  {status}")
     return out
+
+
+_RVA2_GAIN_MAX = 12.0
+_RVA2_STEP     = 0.5
+_RVA2_COARSE   = 3.0
+
+
+def _rva2_render_lines(gain: float, message: str) -> list[str]:
+    """Narrow vertical gain meter: 1 row per dB, half-block for 0.5 dB precision.
+
+    Each row at integer `db` is centered on that dB value and spans ±0.5 dB:
+      Boost rows (db > 0): bar fills upward; ▄ lights first (bottom half, at gain ≥ db−0.5),
+                           then █ when gain ≥ db.
+      Cut rows  (db < 0): bar fills downward; ▀ lights first (top half, at gain ≤ db+0.5),
+                           then █ when gain ≤ db.
+    Every 0.5 dB step changes a visible half-block, so no increment is invisible.
+    """
+    out = [
+        f"  {C.DIM}{message}{C.RESET}",
+        f"{C.DIM}{'─' * 20}{C.RESET}",
+    ]
+
+    for db in range(int(_RVA2_GAIN_MAX), -int(_RVA2_GAIN_MAX) - 1, -1):
+        lbl = (f"{db:+d}" if db != 0 else " 0") if db % 6 == 0 else ""
+
+        if db == 0:
+            bar = f"{C.DIM}──{C.RESET}"
+        elif db > 0:
+            if gain >= db:
+                bar = f"{C.ACCENT}██{C.RESET}"
+            elif gain >= db - 0.5:
+                bar = f"{C.ACCENT}▄▄{C.RESET}"   # bottom half: bar just entered this row
+            else:
+                bar = "  "
+        else:  # db < 0
+            if gain <= db:
+                bar = f"{C.DIM}██{C.RESET}"
+            elif gain <= db + 0.5:
+                bar = f"{C.DIM}▀▀{C.RESET}"       # top half: bar just entered this row
+            else:
+                bar = "  "
+
+        out.append(f"  {C.DIM}{lbl:>3}{C.RESET} {bar}")
+
+    out.append("")
+    return out
+
+
+def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float | None:
+    """Interactive vertical gain meter for an RVA2 frame.
+    Returns the chosen gain in dB, or None if cancelled.
+    """
+    gain = max(-_RVA2_GAIN_MAX, min(_RVA2_GAIN_MAX, gain))
+    fd  = sys.stdin.fileno()
+    old = _get_term_attrs(fd)
+    w   = _Widget(fd)
+
+    def _clamp(g: float) -> float:
+        return max(-_RVA2_GAIN_MAX, min(_RVA2_GAIN_MAX, round(g * 2) / 2))
+
+    def _render():
+        lines = _rva2_render_lines(gain, message)
+        lines.append(f"  {C.ACCENT}▸{C.RESET} {C.BOLD}{gain:+.1f} dB{C.RESET}")
+        lines.extend(_hint(
+            ("↑↓", "adjust"), ("⇞⇟", "±3 dB"), ("0", "zero"), ("↵", "save"), ("q", "quit"),
+        ).splitlines())
+        w.render(lines)
+
+    result = None
+    try:
+        _set_raw(fd)
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000h\033[?1006h")
+        sys.stdout.write("\033[H\033[3J\033[J")
+        sys.stdout.flush()
+        _render()
+
+        while True:
+            if ui_utils.consume_resize():
+                sys.stdout.write("\033[H\033[3J\033[J")
+                sys.stdout.flush()
+                w.anchor_reset()
+                _render()
+                continue
+            if not _wait_for_keypress(0.05):
+                continue
+
+            key = _read_key(fd)
+
+            if key == 'ENTER':
+                result = gain; break
+            elif key == 'ESC':
+                result = None; break
+            elif key in ('q', 'Q'):
+                _state.QUIT_REQUESTED = True
+                result = gain; break
+            elif key in ('UP', 'k', 'SCROLL_UP'):
+                gain = _clamp(gain + _RVA2_STEP); _render()
+            elif key in ('DOWN', 'j', 'SCROLL_DOWN'):
+                gain = _clamp(gain - _RVA2_STEP); _render()
+            elif key == 'PGUP':
+                gain = _clamp(gain + _RVA2_COARSE); _render()
+            elif key == 'PGDN':
+                gain = _clamp(gain - _RVA2_COARSE); _render()
+            elif key == '0':
+                gain = 0.0; _render()
+
+    finally:
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000l\033[?1006l")
+        _restore_term_attrs(fd, old)
+        w.clear()
+
+    return result
 
 
 def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = None) -> list | None:

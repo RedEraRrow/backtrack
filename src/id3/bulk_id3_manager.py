@@ -95,6 +95,11 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                     val = k
                 elif k.startswith(('TMCL', 'TIPL')):
                     val = f"{len(raw.people)} people"
+                elif hasattr(raw, 'adjustments'):
+                    n = len(raw.adjustments)
+                    val = f"{n} band{'s' if n != 1 else ''}"
+                elif hasattr(raw, 'gain') and hasattr(raw, 'channel'):
+                    val = f"{raw.gain:+g} dB"
                 elif hasattr(raw, 'text'):
                     full_text = "".join(str(t) for t in raw.text)
                     lines = [line for line in full_text.replace("\r\n", "\n").split("\n")]

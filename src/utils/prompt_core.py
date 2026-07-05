@@ -221,15 +221,17 @@ def _render_status_bar():
 
 
 class Choice:
-    __slots__ = ('title', 'value', 'checked', 'disabled', 'cells')
+    __slots__ = ('title', 'value', 'checked', 'disabled', 'cells', 'cursor_title')
 
     def __init__(self, title: str, value: object = None, checked: bool = False,
-                 disabled: bool = False, cells: list | None = None) -> None:
-        self.title    = title
-        self.value    = value if value is not None else title
-        self.checked  = checked
-        self.disabled = disabled  # non-selectable separator / section heading
-        self.cells    = cells    # structured column data for columns= mode
+                 disabled: bool = False, cells: list | None = None,
+                 cursor_title: str | None = None) -> None:
+        self.title        = title
+        self.value        = value if value is not None else title
+        self.checked      = checked
+        self.disabled     = disabled  # non-selectable separator / section heading
+        self.cells        = cells    # structured column data for columns= mode
+        self.cursor_title = cursor_title  # alternate label shown when cursor is on this row
 
 
 class Column:
@@ -280,13 +282,22 @@ def _style_cell(text: str, style: str, is_current: bool) -> str:
     return text  # 'normal'
 
 
-def _render_cell_segments(cell, style: str, is_current: bool, width: int, align: str) -> str:
+def _render_cell_segments(cell, style: str, is_current: bool, width: int, align: str,
+                          force_dim: bool = False) -> str:
     if isinstance(cell, list):
         parts = []
         raw_len = 0
+        remaining = width
         for seg in cell:
             t, s = (str(seg[0]), seg[1]) if isinstance(seg, tuple) else (str(seg), style)
+            if force_dim:
+                s = 'dynamic-dim'
+            if remaining <= 0:
+                t = ""
+            elif len(t) > remaining:
+                t = t[:max(0, remaining - 1)] + "…"
             raw_len += len(t)
+            remaining -= len(t)
             parts.append(_style_cell(t, s, is_current))
         text = "".join(parts)
         pad = " " * max(0, width - raw_len)
@@ -329,10 +340,37 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
 
 
 def _render_table_row(cells: list, columns: list, is_current: bool,
-                      widths: list[int], eff: int, right_margin: int) -> str:
-    pointer = f"{C.ACCENT}›{C.RESET}" if is_current else " "
+                      widths: list[int], eff: int, right_margin: int,
+                      is_checked: bool | None = None,
+                      disabled: bool = False) -> str:
+    if disabled:
+        # Match enabled non-current prefix exactly so columns stay aligned.
+        if is_checked is not None:
+            left = f"    {C.DIM}•{C.RESET}"   # 4 spaces + dim bullet = same as "    •"
+        else:
+            left = "   "                        # 3 spaces, same as single-select non-current
+        for i, col in enumerate(columns):
+            if not col.pin:
+                left += " " * col.gap + _render_cell_segments(
+                    cells[i] if i < len(cells) else "", 'dynamic-dim', False, widths[i], col.align,
+                    force_dim=True)
+        right = ""
+        for i, col in enumerate(columns):
+            if col.pin:
+                right += " " * col.gap + _render_cell_segments(
+                    cells[i] if i < len(cells) else "", 'dynamic-dim', False, widths[i], col.align,
+                    force_dim=True)
+        if right:
+            gap = max(2, (eff - right_margin) - ui_utils.visual_len(left) - ui_utils.visual_len(right))
+            return left + " " * gap + right + " " * right_margin
+        return left
 
-    left = f"  {pointer}"
+    pointer = f"{C.ACCENT}›{C.RESET}" if is_current else " "
+    if is_checked is None:
+        left = f"  {pointer}"
+    else:
+        glyph = f"{C.GREEN}✔{C.RESET}" if is_checked else f"{C.DIM}•{C.RESET}"
+        left = f"  {pointer} {glyph}"
     for i, col in enumerate(columns):
         if not col.pin:
             left += " " * col.gap + _render_cell_segments(

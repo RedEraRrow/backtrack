@@ -19,6 +19,7 @@ UICategory = Literal[
     'people',            # List of (role/instrument, person) tuples (TMCL, TIPL)
     'image',             # APIC - album art
     'lyrics',            # SYLT - synchronized lyrics
+    'audio adjustment',  # EQU2, RVA2, RVRB
 ]
 
 
@@ -308,13 +309,13 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
                     'BINARY', 'BINARY', 'SYNCHRONIZED', 'text', True, POSS),
     
     'RVA2': TagInfo('RVA2', ['Relative volume adjustment'],
-                    'BINARY', 'BINARY', 'AUDIO_ADJUSTMENT', 'text', False, RVA2),
-    
+                    'BINARY', 'BINARY', 'AUDIO_ADJUSTMENT', 'audio adjustment', False, RVA2),
+
     'EQU2': TagInfo('EQU2', ['Equalisation'],
-                    'BINARY', 'BINARY', 'AUDIO_ADJUSTMENT', 'text', False, EQU2),
-    
+                    'BINARY', 'BINARY', 'AUDIO_ADJUSTMENT', 'audio adjustment', False, EQU2),
+
     'RVRB': TagInfo('RVRB', ['Reverb'],
-                    'BINARY', 'BINARY', 'AUDIO_ADJUSTMENT', 'text', True, RVRB),
+                    'BINARY', 'BINARY', 'AUDIO_ADJUSTMENT', 'audio adjustment', True, RVRB),
     
     'PCNT': TagInfo('PCNT', ['Play counter'],
                     'BINARY', 'BINARY', 'PLAYBACK', 'text', True, PCNT),

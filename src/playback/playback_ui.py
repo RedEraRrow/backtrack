@@ -369,12 +369,12 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
     seen_cast = set()
 
     for role, name in people:
-        name_l = name.lower()
+        name_l = name.title()
         if name_l in cast_name_lower and name_l not in seen_cast:
-            cast_matches.append((cast_name_lower.index(name_l), role, name))
+            cast_matches.append((cast_name_lower.index(name_l), role.title(), name))
             seen_cast.add(name_l)
         else:
-            others.append((role, name))
+            others.append((role.title(), name))
 
     cast_matches.sort(key=lambda x: x[0])
     cast_matches = [(role, name) for _, role, name in cast_matches]
@@ -397,7 +397,7 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
     lines = []
 
     for role, name in combined[:limit]:
-        label = f"{role.capitalize()}: {name}"
+        label = f"{role}: {name}"
         if len(label) > max_w - 3:
             label = label[:max_w - 5] + ".."
         lines.append(f" ⚙ {label}")
