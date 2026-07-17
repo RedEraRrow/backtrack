@@ -603,6 +603,7 @@ def _read_key_raw(fd: int) -> str:
                     'A': 'UP', 'B': 'DOWN', 'C': 'RIGHT', 'D': 'LEFT',
                     'H': 'HOME', 'F': 'END',
                     '5': 'PGUP', '6': 'PGDN',
+                    'Z': 'BACKTAB',                       # Shift+Tab
                     'I': 'FOCUS_IN', 'O': 'FOCUS_OUT',
                 }.get(seq, 'ESC')
             return 'ESC'

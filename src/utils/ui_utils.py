@@ -42,6 +42,8 @@ class Colors:
     GREEN = "\033[1;32m"
     DIM = "\033[2m"
     BOLD = "\033[1m"
+    ITALIC = "\033[3m"
+    UNDERLINE = "\033[4m"
     RESET = "\033[0m"
     BACK = "\x1b[47m"
     INVERT = "\033[7m"

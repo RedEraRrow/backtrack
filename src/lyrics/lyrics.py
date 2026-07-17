@@ -228,13 +228,25 @@ def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
 
     return dialogue_lines
 
-def _apply_markdown_formatting(text: str) -> str:
-    """Convert markdown formatting patterns into dynamic ANSI rendering escapes."""
+def _apply_markdown_formatting(text: str, base: str = "",
+                               strong: str | None = None,
+                               em: str | None = None) -> str:
+    """Convert markdown emphasis into dynamic ANSI rendering escapes.
+
+    `base` is the style the surrounding text is already drawn in (e.g. the colour
+    of a highlighted row).  Each emphasis span closes by resetting AND then
+    re-asserting `base`, so an emphasised word never leaves the rest of the line
+    stripped of the row's own styling.  `strong`/`em` override the styles used for
+    **strong** / *emphasis* when a caller wants them to stand out more.  The
+    defaults reproduce the previous behaviour exactly (both bold, plain reset)."""
     if not text:
         return ""
-    text = re.sub(r'\*+([^*]+)\*+', f'{C.BOLD}\\1{C.RESET}', text)
-    text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', f'{C.DIM}\\1{C.RESET}', text)
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', f'\\1 ({C.DIM}\\2{C.RESET})', text)
+    strong = C.BOLD if strong is None else strong
+    em     = C.BOLD if em     is None else em
+    close  = f"{C.RESET}{base}"
+    text = re.sub(r'\*\*([^*]+)\*\*', f'{strong}\\1{close}', text)
+    text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', f'{em}\\1{close}', text)
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', f'\\1 ({C.DIM}\\2{close})', text)
     return text
 
 
@@ -828,7 +840,13 @@ def parse_markdown_file(file_path: str) -> list[DialogueLine] | None:
 
 
 def _parse_word_timings_json(json_path: str) -> list[dict]:
-    """Prefers top-level word_segments when present; otherwise flattens from segments[].words."""
+    """Return the flat list of spoken word timings.
+
+    Prefers a top-level ``word_segments`` list (WhisperX / the lyrics-editor
+    export, already spoken-only); otherwise flattens ``segments[].words``.  The
+    editor's enriched transcripts add ``kind: stage_dir`` / ``dead_air`` segments
+    that carry no spoken words — those are skipped so the timing stream stays
+    purely the spoken words regardless of which format the file is in."""
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
@@ -837,8 +855,54 @@ def _parse_word_timings_json(json_path: str) -> list[dict]:
 
     flattened: list[dict] = []
     for segment in data.get('segments', []):
+        if segment.get('kind') in ('stage_dir', 'dead_air'):
+            continue
         flattened.extend(segment.get('words', []))
     return flattened
+
+
+def _find_enriched_transcript(audio_path: str) -> str | None:
+    """Find a transcript that still carries the editor's `kind` beats (dead air /
+    stage directions).  Prefers the editor's `.sync.json` sidecar — transcript.json
+    itself is kept as a clean Whisper export — falling back to any transcript that
+    happens to be enriched.  Returns None when no enriched transcript exists."""
+    _, json_path = _find_timing_files_for_audio(audio_path)
+    parent = Path(audio_path).parent
+    candidates: list[Path] = []
+    if json_path:
+        candidates.append(Path(json_path[:-5] + '.sync.json'))   # transcript.sync.json
+    candidates += sorted(parent.rglob('*.sync.json'))
+    if json_path:
+        candidates.append(Path(json_path))                       # last resort
+    seen: set[str] = set()
+    for c in candidates:
+        cs = str(c)
+        if cs in seen or not c.exists():
+            continue
+        seen.add(cs)
+        try:
+            with open(c, encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if any(s.get('kind') in ('dead_air', 'stage_dir') for s in data.get('segments', [])):
+            return cs
+    return None
+
+
+def _parse_air_beats(json_path: str) -> list[tuple[float, float]]:
+    """Timed silence windows (start, end) from an enriched transcript's `dead_air`
+    segments — the editor's explicit silences, in absolute track time."""
+    try:
+        with open(json_path, encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    beats: list[tuple[float, float]] = []
+    for s in data.get('segments', []):
+        if s.get('kind') == 'dead_air' and s.get('start') is not None and s.get('end') is not None:
+            beats.append((float(s['start']), float(s['end'])))
+    return beats
 
 
 def _matchable(word: str) -> str:
@@ -933,6 +997,26 @@ class DialoguePlaybackState:
                 word_timings=word_timings,
                 wrap_w=50
             )
+            self._merge_air_beats(audio_path)
+
+    def _merge_air_beats(self, audio_path: str) -> None:
+        """Fold the editor's explicit dead-air windows (from the enriched sidecar)
+        into the timeline as silence beats, wherever they land in a gap not already
+        covered by a spoken/stage/air chunk.  They render as the usual unlabelled
+        `⋯` silence indicator — we just place them where the editor marked them,
+        rather than only inferring silence from wide gaps."""
+        enriched = _find_enriched_transcript(audio_path)
+        if not enriched:
+            return
+        for a_s, a_e in _parse_air_beats(enriched):
+            if any(not (e <= a_s or s >= a_e) for (s, e) in self.line_times):
+                continue   # overlaps existing content — leave it be
+            pos = bisect.bisect_left([s for (s, _) in self.line_times], a_s)
+            self.line_times.insert(pos, (a_s, a_e))
+            self.expanded_chunks.insert(pos, {
+                'parent_idx': -1, 'speaker': '', 'stage_dir': '',
+                'text': '', 'is_stage': False, 'is_air': True,
+            })
 
     def is_active(self) -> bool:
         return bool(self.expanded_chunks)
