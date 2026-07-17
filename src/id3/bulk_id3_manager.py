@@ -20,6 +20,8 @@ from src.id3.id3_tag_handler import (
     _EXT_TO_MIME,
 )
 from src.id3.tag_registry import parse_composite_tag_id
+from src.id3 import filename_parser as fp
+from src.id3 import tag_writer as tw
 from src.utils import ui_utils
 from src.utils.ui_utils import get_terminal_width, Colors as C
 from src.music_library import refresh_library_entry
@@ -61,6 +63,164 @@ def prompt_for_image_payload() -> tuple[bytes, str, int, str] | None:
         return f.read(), mime, pic_type, desc
 
 
+# Preview table for "Derive from filename": file name + a summary of the writes.
+_DERIVE_COLUMNS = [
+    prompt.Column(style='primary', flex=True, max_frac=0.42),   # file name
+    prompt.Column(style='dynamic-dim', flex=True),              # planned changes
+]
+
+# Field → short label shown in the preview summary.
+_DERIVE_LABELS = {'title': 'title', 'track': 'trk', 'disc': 'disc',
+                  'album': 'album', 'artist': 'artist'}
+
+
+def _num_pair(num, total) -> str:
+    return f"{num}/{total}" if total else f"{num}"
+
+
+def _plan_write(derived, apply_fields: set, overwrite: bool,
+                present: dict) -> dict:
+    """Fields that would actually be written for one file: {field: value_str}.
+
+    Honours fill-blanks (skip fields already present unless overwrite) and only
+    includes fields with a derived value. Pure — used for the preview and tests.
+    """
+    d = derived.as_dict()
+    planned: dict = {}
+    for f in tw.FIELDS:
+        if f not in apply_fields:
+            continue
+        val = d.get(f)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            continue
+        if present.get(f) and not overwrite:
+            continue
+        if f == 'track':
+            planned[f] = _num_pair(d['track'], d.get('total_tracks'))
+        elif f == 'disc':
+            planned[f] = _num_pair(d['disc'], d.get('total_discs'))
+        else:
+            planned[f] = str(val)
+    return planned
+
+
+def derive_from_filename(paths: list, library: list, header) -> None:
+    """Bulk-derive title/track/disc/album/artist from file names & folders.
+
+    Title is pre-selected (the blank-file baseline); the rest are opt-in. Shows a
+    preview the user confirms (and can deselect files from) before writing.
+    Writes MP3 (fresh header if blank) and MP4 natively; other formats are skipped.
+    """
+    writable = [p for p in paths if tw.is_writable(p)]
+    skipped_fmt = len(paths) - len(writable)
+    if not writable:
+        ui_utils.show_status("No MP3/MP4 files here to derive from.")
+        return
+
+    # 1) Which fields to write (Title on by default — the automatic baseline).
+    field_choices = [
+        prompt.Choice(title="Title  — from file name", value="title", checked=True),
+        prompt.Choice(title="Track number (+ total)", value="track"),
+        prompt.Choice(title="Disc number (+ total)", value="disc"),
+        prompt.Choice(title="Album — from folder", value="album"),
+        prompt.Choice(title="Artist — from parent folder", value="artist"),
+    ]
+    chosen = prompt.select("Fields to derive & write:", choices=field_choices,
+                           header=header(), multi=True)
+    if not chosen:
+        return
+    apply_fields = set(chosen)
+
+    # 2) Conflict policy.
+    mode = prompt.select("When a tag already has a value:",
+                         choices=["Fill blanks only", "Overwrite existing"],
+                         header=header())
+    if not mode:
+        return
+    overwrite = (mode == "Overwrite existing")
+
+    # 3) Auto-detect vs a naming template.
+    template = None
+    detect = prompt.select("Detection:",
+                           choices=["Auto-detect", "Use a naming template"],
+                           header=header())
+    if not detect:
+        return
+    if detect == "Use a naming template":
+        raw = prompt.text("Template (e.g. %disc%-%track% %title%; "
+                          "tokens: %track% %disc% %title% %artist% %album% %season% %episode%):")
+        if not raw:
+            return
+        try:
+            fp.compile_template(raw)
+        except fp.TemplateError as e:
+            ui_utils.show_status(f"Invalid template: {e}")
+            return
+        template = raw
+
+    # Derive + plan.
+    derived = fp.derive_all(writable, template=template)
+    present_cache = {p: tw.present_fields(p) for p in writable}
+    plans = {p: _plan_write(derived[p], apply_fields, overwrite, present_cache[p])
+             for p in writable}
+    to_write = [p for p in writable if plans[p]]
+
+    if not to_write:
+        ui_utils.show_status("Nothing to write — selected fields are already set "
+                             "(try Overwrite).")
+        return
+
+    # 4) Preview — every writable-with-changes file pre-checked; uncheck to skip.
+    preview_choices = []
+    for p in to_write:
+        summary = " · ".join(f"{_DERIVE_LABELS[f]}={v}" for f, v in plans[p].items())
+        preview_choices.append(prompt.Choice(
+            title=os.path.basename(p), value=p, checked=True,
+            cells=[os.path.basename(p), summary]))
+
+    n_skip_existing = sum(
+        1 for p in writable for f in apply_fields
+        if present_cache[p].get(f) and not overwrite
+        and derived[p].as_dict().get(f) not in (None, ""))
+    sub = f"{len(to_write)} file(s) to change" + (
+        f" · {skipped_fmt} non-MP3/MP4 skipped" if skipped_fmt else "")
+
+    selected = prompt.select(
+        "Preview — Space to deselect a file, Enter to apply:",
+        choices=preview_choices, columns=_DERIVE_COLUMNS,
+        header=header(sub), multi=True)
+    if selected is None:
+        return
+    apply_paths = set(selected)
+    if not apply_paths:
+        ui_utils.show_status("No files selected.")
+        return
+
+    # 5) Apply.
+    count = 0
+    errors = 0
+    for p in to_write:
+        if p not in apply_paths:
+            continue
+        r = tw.write_fields(p, derived[p].as_dict(), apply_fields, overwrite=overwrite)
+        if r.error:
+            errors += 1
+            continue
+        if r.written:
+            count += 1
+            try:
+                refresh_library_entry(library, p)
+            except Exception:
+                pass
+
+    msg = f"Derived tags for {count} file(s)."
+    if skipped_fmt:
+        msg += f" {skipped_fmt} non-MP3/MP4 skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
 def bulk_id3_manager(library: list, album_name: str | None = None, paths: list | None = None) -> None:
     """
     Bulk tag operations across a set of tracks.
@@ -86,8 +246,18 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     tag_values: dict = {}
 
     for path in album_tracks:
+        # The ID3-based operations below are MP3-only; non-MP3s are skipped
+        # quietly rather than raising (use "Derive from filename" for
+        # cross-format writes).
+        if not path.lower().endswith('.mp3'):
+            continue
         try:
             audio = ID3(path)
+        except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
+            continue                          # untagged MP3 — simply has no tags yet
+        except (OSError, IOError):
+            continue
+        try:
             all_tag_counts.update(audio.keys())
             for k in audio.keys():
                 raw = audio[k]
@@ -137,7 +307,8 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
     operation = prompt.select(
         "Operation:",
-        choices=["Set value", "Copy from first track", "Delete tags", "Rename tags", "Add new tag"],
+        choices=["Derive from filename", "Set value", "Copy from first track",
+                 "Delete tags", "Rename tags", "Add new tag"],
         header=_bulk_header()
     )
 
@@ -146,6 +317,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
     op_display = operation.lower()
     op_map = {
+        "Derive from filename": "Derive From Filename",
         "Set value": "Set Common Value",
         "Copy from first track": "Copy From First Track",
         "Delete tags": "Delete Tags",
@@ -153,6 +325,12 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         "Add new tag": "Add New Tag",
     }
     operation = str(op_map.get(operation, operation))
+
+    # Derivation works on files with no tags at all, so it runs before the
+    # "no tags found" guard and manages its own preview/confirm/apply flow.
+    if operation == "Derive From Filename":
+        derive_from_filename(album_tracks, library, _bulk_header)
+        return
 
     if not all_tag_counts and operation not in ("Add New Tag",):
         ui_utils.show_status("No tags found.")
@@ -302,8 +480,18 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
     count_modified = 0
     for path in album_tracks:
+        # These operations are ID3/MP3-only; skip other formats without erroring.
+        if not path.lower().endswith('.mp3'):
+            continue
         try:
-            audio = ID3(path)
+            try:
+                audio = ID3(path)
+            except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
+                # Untagged MP3: only "Add New Tag" can create tags from nothing;
+                # for the other operations there is nothing to change.
+                if operation != "Add New Tag":
+                    continue
+                audio = ID3()
             changed = False
 
             if operation == "Add New Tag":
@@ -366,7 +554,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                             pass
 
             if changed:
-                audio.save(v2_version=3)
+                audio.save(path, v2_version=3)   # explicit path: works for a fresh ID3 too
                 count_modified += 1
                 try:
                     refresh_library_entry(library, path)
