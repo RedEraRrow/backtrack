@@ -150,6 +150,12 @@ def select(message: str, choices: list, *,
         combined_hints = base_hints
 
     _last_hlen = [0]
+    # Maps a visible item index → its ANSI-stripped rendered text, so a mouse
+    # click can tell whether it landed on a printed character or blank space.
+    _row_plain: dict[int, str] = {}
+
+    def _plain(s: str) -> str:
+        return re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s)
 
     def _header_lines() -> list[str]:
         if header is None:
@@ -161,6 +167,7 @@ def select(message: str, choices: list, *,
         cols    = _cols()
         h_lines = _header_lines()
         _last_hlen[0] = len(h_lines)
+        _row_plain.clear()
 
         max_header_w = 0
         for hl in h_lines:
@@ -202,6 +209,7 @@ def select(message: str, choices: list, *,
                     items[i].cells, columns, i == cursor, col_widths, eff, _EDGE_MARGIN,
                     is_checked=items[i].checked if multi else None,
                     disabled=items[i].disabled))
+                _row_plain[i] = _plain(out[-1])
                 continue
 
             _ct = items[i].cursor_title
@@ -229,6 +237,7 @@ def select(message: str, choices: list, *,
                 out.append(f"  {C.ACCENT}›{C.RESET} {C.PRIMARY}{C.BOLD}{label}{C.RESET}")
             else:
                 out.append(f"    {C.DIM}{label}{C.RESET}")
+            _row_plain[i] = _plain(out[-1])
 
         remaining = n - viewport - vis
         out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
@@ -302,20 +311,18 @@ def select(message: str, choices: list, *,
                     continue
                 clickable = not items[idx].disabled
 
-                # Column guard: only register clicks that land on actual
-                # text, not the blank space to the right of short labels.
-                # Table rows fill the full width so any column is valid.
-                # Plain list rows: "  › label" (prefix=4) or
-                #                  "  › ✔ label" for multi (prefix=6).
-                is_table_row = bool(columns and items[idx].cells and not items[idx].disabled)
-                if not is_table_row:
-                    if multi:
-                        prefix, max_lbl = 6, _cols() - 9
-                    else:
-                        prefix, max_lbl = 4, _cols() - 6
-                    shown = min(len(str(items[idx].title)), max_lbl)
-                    if col > prefix + shown:
-                        continue
+                # A click only confirms/toggles when it lands on a printed
+                # character; clicking the blank space anywhere in a row (trailing
+                # padding, gaps between table columns, the empty left margin) just
+                # moves the highlight — it never enters.
+                row_plain = _row_plain.get(idx, "")
+                on_char = 0 < col <= len(row_plain) and row_plain[col - 1] != ' '
+                if not on_char:
+                    if clickable or (multi and items[idx].checked):
+                        cursor = idx
+                    _sel_last_click = None
+                    w.render(_lines())
+                    continue
 
                 if multi and (clickable or items[idx].checked):
                     cursor = idx

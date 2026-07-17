@@ -609,6 +609,17 @@ def _read_key_raw(fd: int) -> str:
             return 'ESC'
         except (OSError, EOFError):
             return 'ESC'
+    # A non-ASCII character (e.g. an accented letter) is 2-4 bytes in UTF-8, but
+    # os.read(fd, 1) only grabbed the lead byte. Pull the continuation bytes so
+    # the whole codepoint decodes to one character instead of several U+FFFD.
+    b0 = ch[0]
+    if b0 >= 0x80:
+        if   b0 >= 0xF0: n_cont = 3
+        elif b0 >= 0xE0: n_cont = 2
+        elif b0 >= 0xC0: n_cont = 1
+        else:            n_cont = 0   # stray continuation byte; nothing to gather
+        for _ in range(n_cont):
+            ch += os.read(fd, 1)
     decoded = ch.decode('utf-8', errors='replace')
     if decoded in ('\r', '\n'): return 'ENTER'
     if decoded in ('\x7f', '\x08'): return 'BACKSPACE'

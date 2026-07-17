@@ -4,7 +4,6 @@ import os
 import random
 import string
 
-_LETTER_FILTER_THRESHOLD = 52  # show A-Z letter filter when a browse group exceeds this count
 from src.utils.ui_utils import roman, Colors as C
 
 from src.utils import prompt
@@ -60,6 +59,74 @@ def _menu_header(title: str, subtitle: str | None = None):
         return lines
 
     return _build
+
+
+# --- Browse sort options -------------------------------------------------
+# Each context offers a list of (mode, label) pairs; the first entry is the
+# default and is always alphabetical by name.
+_GROUP_SORTS = {
+    "Artists": [("name", "Name (A–Z)"), ("name_desc", "Name (Z–A)"), ("tracks", "Most tracks")],
+    "Genres":  [("name", "Name (A–Z)"), ("name_desc", "Name (Z–A)"), ("tracks", "Most tracks")],
+    "Albums":  [("name", "Name (A–Z)"), ("artist", "Album artist"),
+                ("year_new", "Year (newest)"), ("year_old", "Year (oldest)")],
+}
+_ALBUM_SORTS = [("name", "Name (A–Z)"), ("year_new", "Year (newest)"), ("year_old", "Year (oldest)")]
+
+
+def _year_of(songs: list) -> int:
+    """First usable release year among a group's songs, else 0."""
+    for s in songs:
+        try:
+            y = int(str(s.get('year')))
+        except (ValueError, TypeError):
+            continue
+        if y:
+            return y
+    return 0
+
+
+def _album_artist_of(songs: list) -> str:
+    """First non-empty album artist (falling back to artist) among a group's songs."""
+    for s in songs:
+        aa = (s.get('album_artist') or s.get('artist') or '').strip()
+        if aa:
+            return aa
+    return ''
+
+
+def _sort_groups(names: list, grouped: dict, cat_key: str, mode: str) -> list:
+    """Order group names by the chosen sort mode; ties fall back to name order."""
+    def nk(n: str) -> str:
+        return get_group_sort_key(n, grouped[n], cat_key)
+    if mode == "name_desc":
+        return sorted(names, key=nk, reverse=True)
+    if mode == "artist":
+        return sorted(names, key=lambda n: (_album_artist_of(grouped[n]).lower(), nk(n)))
+    if mode == "year_new":
+        return sorted(names, key=lambda n: (-_year_of(grouped[n]), nk(n)))
+    if mode == "year_old":
+        return sorted(names, key=lambda n: (_year_of(grouped[n]) or 99999, nk(n)))
+    if mode == "tracks":
+        return sorted(names, key=lambda n: (-len(grouped[n]), nk(n)))
+    return sorted(names, key=nk)  # "name" (default, alphabetical)
+
+
+def _sort_label(options: list, mode: str) -> str:
+    for v, lbl in options:
+        if v == mode:
+            return lbl
+    return options[0][1]
+
+
+def _pick_sort(current: str, options: list, header) -> str:
+    """Show a sort picker; return the chosen mode (unchanged if cancelled)."""
+    choices = [
+        prompt.Choice(title=f"{'✔ ' if v == current else '  '}{lbl}", value=v)
+        for v, lbl in options
+    ]
+    sel = prompt.select("Sort by:", choices=choices, header=header,
+                        index=_idx_of(choices, current))
+    return sel or current
 
 
 def handle_search(library: list) -> str | None:
@@ -451,74 +518,113 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
     sorted_lib = sort_library_logic(library)
 
     NAV_STACK.append(cat_choice)
-    _group_cursor = 0
+    _group_cursor  = None            # None → land on the first real row
+    _group_sorts   = _GROUP_SORTS.get(cat_choice, _GROUP_SORTS["Artists"])
+    _group_sort    = _group_sorts[0][0]   # default: alphabetical by name
+    _letter_mode   = None            # None → decide dynamically on first render
+    _letter_filter = None            # active letter, or None = show everything
 
     try:
         while True:  # LEVEL 2: Group Selection
             key_map = {"Artists": "artist", "Albums": "album", "Genres": "genre"}
             grouped  = get_grouped_data(sorted_lib, key_map[cat_choice])
             _cat_key = key_map.get(cat_choice, cat_choice)
-            group_names = sorted(grouped.keys(), key=lambda n: get_group_sort_key(n, grouped[n], _cat_key))
-
             _cfg = load_config()
-
-            if cat_choice in ("Artists", "Albums") and len(group_names) > _LETTER_FILTER_THRESHOLD:
-                _sort_keys = {n: get_group_sort_key(n, grouped[n], _cat_key) for n in group_names}
-
-                def _letter(name: str) -> str:
-                    ch = _sort_keys[name][0].upper() if _sort_keys.get(name) else "#"
-                    return ch if ch in string.ascii_uppercase else "#"
-
-                letters_found = sorted({_letter(n) for n in group_names})
-                if "#" in letters_found:
-                    letters_found.remove("#")
-                    letters_found.append("#")
-
-                _show_editor = _cfg.get("show_metadata_editor", True)
-                _letter_choices: list = ["All"]
-                if _show_editor:
-                    _letter_choices.append(prompt.Choice(title=f"Edit tags — all {cat_choice.lower()}", value="__bulk_edit__"))
-                _letter_choices += letters_found
-
-                letter_sel = prompt.select(
-                    "Filter by letter:",
-                    choices=_letter_choices,
-                    header=_menu_header(cat_choice),
-                )
-
-                if not letter_sel:
-                    break
-
-                if letter_sel == "__bulk_edit__":
-                    all_paths = [s['path'] for name in group_names for s in grouped[name]]
-                    bulk_id3_manager(library, paths=all_paths)
-                    continue
-
-                if letter_sel != "All":
-                    group_names = [n for n in group_names if _letter(n) == letter_sel]
-
-            # Section name at top acts as "play everything here"
             _show_editor = _cfg.get("show_metadata_editor", True)
-            _group_label = f"▸  Play all {cat_choice.lower()}"
-            _group_choices = [prompt.Choice(title=_group_label, value="__play_all__")]
+
+            # Name-sorted first so the letter index groups correctly.
+            group_names = sorted(grouped.keys(),
+                                 key=lambda n: get_group_sort_key(n, grouped[n], _cat_key))
+            _sort_keys = {n: get_group_sort_key(n, grouped[n], _cat_key) for n in group_names}
+
+            def _letter(name: str) -> str:
+                ch = _sort_keys[name][0].upper() if _sort_keys.get(name) else "#"
+                return ch if ch in string.ascii_uppercase else "#"
+
+            letters_found = sorted({_letter(n) for n in group_names})
+            if "#" in letters_found:
+                letters_found.remove("#")
+                letters_found.append("#")
+
+            # A letter index is offered for alphabetical categories with more than
+            # one distinct letter; it defaults on when the full list would overflow
+            # the screen, and can be toggled with "/".
+            _can_letter = cat_choice in ("Artists", "Albums") and len(letters_found) > 1
+            _vis = max(4, ui_utils.get_terminal_height() - 9)
+            if _letter_mode is None:
+                _letter_mode = _can_letter and len(group_names) > _vis
+            if not _can_letter:
+                _letter_mode = False
+
+            # Hybrid header: Play all stays visible (also `p`); secondary actions
+            # live in the hint bar (`s` sort, `e` edit, `/` toggle view).
+            _play_label = f"▸  Play all {cat_choice.lower()}"
+            _sc: dict = {"p": "__play_all__"}
+            _eh: dict = {"p": "play all"}
             if _show_editor:
-                _group_choices.append(prompt.Choice(title=f"Edit tags — all {cat_choice.lower()}", value="__bulk_edit__"))
-            _group_choices.append(prompt.separator())
-            _group_choices += group_names
+                _sc["e"] = "__bulk_edit__"
+                _eh["e"] = "edit tags"
+            if _can_letter:
+                _sc["/"] = "__toggle__"
+                _eh["/"] = "full list" if _letter_mode else "by letter"
+
+            if _letter_mode:
+                # LETTER VIEW: compact A–Z index. Play all / Edit act on everything.
+                names = group_names
+                _choices = [prompt.Choice(title=_play_label, value="__play_all__")]
+                _choices += letters_found
+                _group_cols = None
+                _header = _menu_header(cat_choice, "by letter")
+            else:
+                # FULL LIST VIEW: every item, optionally filtered to one letter.
+                names = ([n for n in group_names if _letter(n) == _letter_filter]
+                         if _letter_filter else list(group_names))
+                names = _sort_groups(names, grouped, _cat_key, _group_sort)
+                if len(_group_sorts) > 1:
+                    _sc["s"] = "__sort__"
+                    _eh["s"] = "sort"
+                _choices = [prompt.Choice(title=_play_label, value="__play_all__")]
+                # In album browse, show the album artist beside each album (dimmed),
+                # matching the artist/genre → album sublist.
+                if cat_choice == "Albums":
+                    for _a in names:
+                        _choices.append(prompt.Choice(
+                            title=_a, value=_a, cells=[_a, _album_artist_of(grouped[_a])]))
+                    _group_cols = _ALBUM_COLUMNS
+                else:
+                    _choices += names
+                    _group_cols = None
+                _sub = f"letter: {_letter_filter}" if _letter_filter else None
+                _header = _menu_header(cat_choice, _sub)
+
+            if _group_cursor is None:                 # start on the first real row
+                _group_cursor = 1 if len(_choices) > 1 else 0
 
             selection = prompt.select(
                 f"{cat_choice}:",
-                choices=_group_choices,
-                header=_menu_header(cat_choice),
+                choices=_choices,
+                header=_header,
+                columns=_group_cols,
+                shortcuts=_sc,
+                extra_hints=_eh,
                 index=_group_cursor,
             )
 
             if not selection:
                 break
-            _group_cursor = _idx_of(_group_choices, selection)
+
+            if selection == "__toggle__":
+                _letter_mode   = not _letter_mode
+                _letter_filter = None
+                _group_cursor  = None
+                continue
+
+            if selection == "__sort__":
+                _group_sort = _pick_sort(_group_sort, _group_sorts, _header)
+                continue
 
             if selection == "__play_all__":
-                paths = [s['path'] for name in group_names for s in grouped[name]]
+                paths = [s['path'] for name in names for s in grouped[name]]
                 res = play_queue(paths, library=library)
                 if res == "QUIT_ALL":
                     NAV_STACK.clear()
@@ -527,13 +633,21 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                 continue
 
             if selection == "__bulk_edit__":
-                paths = [s['path'] for name in group_names for s in grouped[name]]
+                paths = [s['path'] for name in names for s in grouped[name]]
                 bulk_id3_manager(library, paths=paths)
                 continue
 
+            if _letter_mode and selection in letters_found:
+                _letter_filter = selection    # drill into that letter's full list
+                _letter_mode   = False
+                _group_cursor  = None
+                continue
+
+            _group_cursor = _idx_of(_choices, selection)
             NAV_STACK.append(selection)
             selected_songs = grouped[selection]
-            _album_cursor = 0
+            _album_cursor = None                 # None → land on the first real row
+            _album_sort   = _ALBUM_SORTS[0][0]   # default: alphabetical by name
 
             while True:  # LEVEL 3: Album Selection
                 if cat_choice in ("Artists", "Genres"):
@@ -541,22 +655,23 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     for s in selected_songs:
                         albums.setdefault(s['album'], []).append(s)
 
-                    album_list = sorted(
-                        albums.keys(),
-                        key=lambda a: (albums[a][0].get('year') or 0, a),
-                        reverse=True,
-                    )
+                    album_list = _sort_groups(list(albums.keys()), albums, 'album', _album_sort)
 
                     # Always present the album list — even a single album is worth
                     # showing as its own entry (albums are distinct from the artist).
+                    # Hybrid header: Play all visible (also `p`); sort/edit → hints.
                     _show_editor = _cfg.get("show_metadata_editor", True)
                     _single_album = len(album_list) <= 1
                     _alb_choices: list = []
+                    _asc: dict = {}
+                    _aeh: dict = {}
                     if not _single_album:
                         _alb_choices.append(prompt.Choice(title=f"▸  Play all — {selection}", value="__play_all__"))
+                        _asc["p"] = "__play_all__"; _aeh["p"] = "play all"
+                        if len(_ALBUM_SORTS) > 1:
+                            _asc["s"] = "__sort__"; _aeh["s"] = "sort"
                         if _show_editor:
-                            _alb_choices.append(prompt.Choice(title=f"Edit tags — {selection}", value="__bulk_edit__"))
-                        _alb_choices.append(prompt.separator())
+                            _asc["e"] = "__bulk_edit__"; _aeh["e"] = "edit tags"
                     # Show the album artist (dimmed) when it differs from the
                     # artist/genre we're browsing under (#33).
                     for _a in album_list:
@@ -564,17 +679,26 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         _aa = _aa if (_aa and _aa.lower() != selection.lower()) else ""
                         _alb_choices.append(prompt.Choice(title=_a, value=_a, cells=[_a, _aa]))
 
+                    if _album_cursor is None:        # start on the first real album
+                        _album_cursor = 0 if _single_album else 1
+
                     alb = prompt.select(
                         "Albums:",
                         choices=_alb_choices,
                         header=_menu_header(selection, cat_choice),
                         columns=_ALBUM_COLUMNS,
+                        shortcuts=_asc,
+                        extra_hints=_aeh,
                         index=_album_cursor,
                     )
 
                     if not alb:
                         break
-                    _album_cursor = _idx_of(_alb_choices, alb)
+
+                    if alb == "__sort__":
+                        _album_sort = _pick_sort(_album_sort, _ALBUM_SORTS,
+                                                 _menu_header(selection, cat_choice))
+                        continue
 
                     if alb == "__play_all__":
                         res = play_queue([s['path'] for s in selected_songs], library=library)
@@ -586,12 +710,13 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         bulk_id3_manager(library, paths=[s['path'] for s in selected_songs])
                         continue
 
+                    _album_cursor = _idx_of(_alb_choices, alb)
                     NAV_STACK.append(alb)
                     track_paths = [s['path'] for s in albums[alb]]
                 else:
                     track_paths = [s['path'] for s in selected_songs]
 
-                _track_cursor = 0
+                _track_cursor = None   # None → land on the first real row
                 while True:  # LEVEL 4: Track Selection
                     # Re-derive from library each iteration so tag edits show immediately
                     path_set     = set(track_paths)
@@ -662,19 +787,20 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
 
                     _track_context = NAV_STACK[-1] if NAV_STACK else selection
                     _show_editor   = _cfg.get("show_metadata_editor", True)
-                    # With a single track, "Play all" / "Edit tags — all" are just
-                    # noise — the lone track row already does both jobs.
+                    # Hybrid header: Play all visible (also `p`); edit → `e` hint.
+                    # With a single track, even Play all is noise — the lone track
+                    # row already does both jobs.
+                    _tsc: dict = {}
+                    _teh: dict = {}
                     if len(final_tracks) <= 1:
                         _track_header_choices = []
                     else:
                         _track_header_choices = [
                             prompt.Choice(title=f"▸  Play all — {_track_context}", value="__play_all__")
                         ]
+                        _tsc["p"] = "__play_all__"; _teh["p"] = "play all"
                         if _show_editor:
-                            _track_header_choices.append(
-                                prompt.Choice(title=f"Edit tags — {_track_context}", value="__bulk_edit__")
-                            )
-                        _track_header_choices.append(prompt.separator())
+                            _tsc["e"] = "__bulk_edit__"; _teh["e"] = "edit tags"
 
                     # Album artist shown in the header subtitle (#33).
                     _album_artist = next(
@@ -683,17 +809,21 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     _subtitle = _album_artist or (selection if _track_context != selection else cat_choice)
 
                     _all_track_choices = _track_header_choices + track_choices
+                    if _track_cursor is None:        # start on the first real row
+                        _track_cursor = len(_track_header_choices) if track_choices else 0
+
                     path_choice_obj = prompt.select(
                         "Tracks:",
                         choices=_all_track_choices,
                         header=_menu_header(_track_context, _subtitle),
                         columns=_TRACK_COLUMNS,
+                        shortcuts=_tsc,
+                        extra_hints=_teh,
                         index=_track_cursor,
                     )
 
                     if not path_choice_obj:
                         break
-                    _track_cursor = _idx_of(_all_track_choices, path_choice_obj)
 
                     if path_choice_obj == "__play_all__":
                         res = play_queue([t['path'] for t in final_tracks], library=library)
@@ -704,6 +834,8 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     if path_choice_obj == "__bulk_edit__":
                         bulk_id3_manager(library, paths=[t['path'] for t in final_tracks])
                         continue
+
+                    _track_cursor = _idx_of(_all_track_choices, path_choice_obj)
 
                     # Disc header selected — offer play or bulk edit for that disc
                     if isinstance(path_choice_obj, str) and path_choice_obj.startswith("__disc_"):
