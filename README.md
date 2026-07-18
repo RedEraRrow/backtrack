@@ -25,7 +25,7 @@ Then follow the prompt to select your music folder and return to the main menu.
 - Play audio using VLC with playback controls
 - View synced lyrics from `SYLT`/`USLT` tags
 - Sync un-timed lyrics interactively
-- View and edit track metadata
+- View and edit track metadata, including bulk edits and deriving tags from file names & folders (see [Library layout & naming](docs/library-layout.md))
 - Render album art in the terminal via `viu`
 - Track listening history
 
@@ -144,6 +144,12 @@ If a track contains unsynchronized lyrics (`USLT`), use Sync Lyrics to mark each
 Search results may offer metadata editing options for title, artist, album art, lyrics, and other tags.
 
 - `USLT`/`SYLT` lyrics can now be imported from an `.lrc` file from the metadata editor.
+
+#### Bulk editing & deriving from filenames
+
+From **Browse**, choose *Edit tags* on an album (or press `e`) to edit many tracks at once — set, copy, delete, or rename tags. The **Derive from filename** operation fills in title, track/disc numbers (and totals), disc subtitle, album, album artist, year, the compilation flag, and sort-order tags from your file and folder names, for both MP3 and MP4 files. It previews every change before writing and, by default, only fills blank tags.
+
+To get the most out of it, structure your library so the parser can recognise it — see **[Library layout & naming](docs/library-layout.md)** for the conventions (folder layout, disc/series folders, compilations, track-number formats, and the template override for irregular names).
 
 ## Configuration
 

@@ -269,25 +269,35 @@ def _album_key(path: str) -> str:
 
 
 def derive_all(paths: list[str], known_artist: str | None = None,
-               template: str | None = None, root: str | None = None) -> dict[str, Derived]:
+               template: str | None = None, root: str | None = None,
+               regex: str | None = None, regex_base: str | None = None) -> dict[str, Derived]:
     """Derive fields for every path, then fill totals across each album group.
 
     ``total_tracks`` is the size of the file's (album, disc) group (or the highest
     track number seen in it). ``total_discs`` is the count of distinct discs in the
     album group — set only when disc information exists.
 
-    With ``template`` set, its tokens override auto-detected fields for matching
-    files (folder-derived values are kept unless the template sets them).
+    With ``template`` (``%token%``) or ``regex`` (raw named groups) set — mutually
+    exclusive — matched files have those fields override auto-detection; folder-
+    derived values are kept for fields the override doesn't capture.
     """
-    compiled = compile_template(template) if template else None
+    override = None
+    label = ''
+    if template:
+        _t = compile_template(template)
+        override, label = (lambda p, ka: apply_template(p, _t, ka)), 'template'
+    elif regex:
+        _r = compile_regex(regex)
+        override, label = (lambda p, ka: apply_regex(p, _r, ka, regex_base)), 'regex'
+
     result = {p: parse_one(p, known_artist=known_artist, root=root) for p in paths}
 
-    if compiled is not None:
+    if override is not None:
         for p in paths:
             base = result[p]
-            t = apply_template(p, compiled, known_artist=known_artist or base.artist)
+            t = override(p, known_artist or base.artist)
             if t is None:
-                base.notes.append('template no match')
+                base.notes.append(f'{label} no match')
                 continue
             for fld in ('title', 'track', 'disc', 'total_tracks', 'total_discs',
                         'album', 'album_artist', 'artist', 'year'):
@@ -348,6 +358,94 @@ class TemplateError(ValueError):
     """Raised when a template string is malformed."""
 
 
+# Named regex/template group → Derived field, with aliases users may write in a
+# raw regex (season→disc, episode→track, date→year, etc.). Groups not listed here
+# are ignored.
+_GROUP_FIELD = {
+    'track': 'track', 'episode': 'track',
+    'disc': 'disc', 'season': 'disc',
+    'total_tracks': 'total_tracks', 'totaltracks': 'total_tracks',
+    'total_discs': 'total_discs', 'totaldiscs': 'total_discs',
+    'year': 'year', 'date': 'year',
+    'title': 'title', 'artist': 'artist',
+    'album_artist': 'album_artist', 'albumartist': 'album_artist',
+    'album': 'album',
+}
+_NUMERIC_FIELDS = ('track', 'disc', 'total_tracks', 'total_discs')
+
+
+def _fields_from_groups(groups: dict, known_artist: str | None = None) -> Derived:
+    """Map a regex match's named groups → a Derived (shared by template + regex).
+
+    Numeric fields are int-parsed, text fields cleaned; unrecognised group names
+    are ignored. Captured titles are taken literally (no artist-prefix stripping).
+    """
+    d = Derived()
+    for name, val in groups.items():
+        if val is None or val == '':
+            continue
+        field = _GROUP_FIELD.get(name)
+        if field is None:
+            continue
+        if field in _NUMERIC_FIELDS:
+            try:
+                setattr(d, field, int(val))
+            except (TypeError, ValueError):
+                pass
+        elif field == 'year':
+            d.year = val
+        else:                                   # title / artist / album_artist / album
+            cleaned = _clean_text(val)
+            if cleaned:
+                setattr(d, field, cleaned)
+    return d
+
+
+def compile_regex(pattern: str) -> re.Pattern:
+    """Compile a raw regex for the derive operation.
+
+    Must contain at least one recognised named group (``(?P<track>…)`` etc.);
+    raises TemplateError on bad syntax or no usable group."""
+    try:
+        compiled = re.compile(pattern)
+    except re.error as e:
+        raise TemplateError(f"Invalid regex: {e}")
+    if not (set(compiled.groupindex) & set(_GROUP_FIELD)):
+        raise TemplateError(
+            "No recognised named group — use e.g. (?P<track>\\d+), (?P<title>.+)")
+    return compiled
+
+
+def unrecognised_regex_groups(compiled: re.Pattern) -> list[str]:
+    """Named groups the parser will ignore (for a heads-up in the UI)."""
+    return [n for n in compiled.groupindex if n not in _GROUP_FIELD]
+
+
+def _regex_target(path: str, base: str | None = None) -> str:
+    """The string a regex runs against: the file stem, or — when ``base`` is
+    given — the path relative to ``base`` (``/``-separated, extension dropped),
+    so a regex can capture folder levels like Artist/Album."""
+    if base:
+        try:
+            rel = os.path.relpath(path, base)
+        except ValueError:                      # different drive on Windows
+            rel = path
+        rel = rel.replace(os.sep, '/')
+    else:
+        rel = os.path.basename(path)
+    return os.path.splitext(rel)[0]
+
+
+def apply_regex(path: str, compiled: re.Pattern, known_artist: str | None = None,
+                base: str | None = None) -> Derived | None:
+    """Apply a raw regex (search, not anchored) to a file's stem, or to its path
+    relative to ``base`` when given. Returns None on no match."""
+    m = compiled.search(_regex_target(path, base))
+    if not m:
+        return None
+    return _fields_from_groups(m.groupdict(), known_artist)
+
+
 def compile_template(template: str) -> re.Pattern:
     """Compile a ``%token%`` template into an anchored regex over the file stem.
 
@@ -388,24 +486,9 @@ def compile_template(template: str) -> re.Pattern:
 
 
 def apply_template(path: str, compiled: re.Pattern, known_artist: str | None = None) -> Derived | None:
-    """Apply a compiled template to one file's stem. Returns None on no match."""
+    """Apply a compiled ``%token%`` template to one file's stem (anchored match)."""
     stem = os.path.splitext(os.path.basename(path))[0]
     m = compiled.match(stem)
     if not m:
         return None
-    g = m.groupdict()
-    d = Derived()
-    for key in ('track', 'disc', 'total_tracks', 'total_discs'):
-        if g.get(key):
-            setattr(d, key, int(g[key]))
-    if g.get('year'):
-        d.year = g['year']
-    if g.get('album_artist'):
-        d.album_artist = _clean_text(g['album_artist']) or None
-    if g.get('artist'):
-        d.artist = _clean_text(g['artist']) or None
-    if g.get('album'):
-        d.album = _clean_text(g['album']) or None
-    if g.get('title'):
-        d.title = _clean_text(g['title']) or None
-    return d
+    return _fields_from_groups(m.groupdict(), known_artist)

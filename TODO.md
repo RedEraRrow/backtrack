@@ -89,6 +89,7 @@ IDs (`#N`) are stable so cross-references keep working; items are grouped by are
 - ⬜ **#60 — Multi-value tags.** Many text frames support multiple values (à la Picard); offer that here.
 - ✅ **#61 — Copy tag across tracks.** "Copy from first track" bulk operation reads source frames from track 1 and deep-copies them to all other tracks.
 - ✅ **#63 — Logical default friendly-name order.** Reordered: `TOPE`/`TOLY` drop `(s)` suffix first; `TKEY`→"Key"; `TLAN`→"Language"; `TDRC`→"Year"; date timestamps say "date" not "time"; `TSSE`→"Encoder"; `WOAR`→"Artist URL".
+- ✅ **#83 — Derive tags from filename & folder structure.** New bulk operation "Derive from filename" (first slice of the pattern-based idea below). **Parsing** (`src/id3/filename_parser.py`, pure + unit-tested): track/disc + totals from `01` / `1-05` / `SxxExx` / `1x05` / vinyl `A1` / `Track N` (4-digit years guarded out); title → TIT2 (`_`→space, whitespace collapsed, a leading `Artist - ` stripped/extracted **only** when it's a compilation or the album artist appears in the prefix — so `Interlude - Reprise` stays a title); album + album-artist from the `Artist/Album` chain, where `CD/Disc/Disk/Series/Season` subfolders collapse into the album and set the disc (filename `2-05` wins on conflict); disc **subtitle** → TSST from `Disc 2 - The Extras`, and a bare `Series 1`/`Season 2` becomes the subtitle itself (so playback shows "Series 1"); **Various-Artists compilation** detection → TPE2 = "Various Artists" + TCMP/`cpil`; **year/date** → TDRC from `Album (1997)` / `1997 - Album` folders or a filename `1952-02-20`; `Artist - Album (Year)` single-folder fallback; **smart sort orders** (TSOP/TSO2/TSOA/TSOT) via the #42 engine. **Writing** (`src/id3/tag_writer.py`): MP3 (creates a fresh ID3 for blank files) **and** MP4 atoms natively (`©nam`/`aART`/`trkn`/`disk`/`cpil`/`soar`…); fill-blanks default with overwrite opt-in; MP4 disc-subtitle has no atom so it's skipped and *said so* (not silent). **UI**: field toggles (title pre-ticked), auto-detect **or** a Picard-style `%token%` template override (`%track% %disc% %title% %artist% %albumartist% %album% %year% %date% %season% %episode% %ignore%`), and an overflow-safe preview — fields identical across all files lift into the header, only *varying* fields become columns, and `d` opens a full untruncated per-file detail view (new additive `select(on_inspect=, inspect_key=)`). Hardened the existing bulk ops too: non-MP3s skip quietly, untagged MP3s no longer raise (Add New Tag creates a header).
 
 ## Dates & equaliser editors
 
@@ -130,7 +131,7 @@ IDs (`#N`) are stable so cross-references keep working; items are grouped by are
 
 - ✅ **#45 — Pyright/Pylance clean.** `pyright src` reports 0 errors / 0 warnings (was 51); cascade fixed by re-annotating `select() -> Any` plus targeted fixes and library `# type: ignore` markers. Re-run before commits.
 - ✅ **#46 — Better non-mp3 error handling.** The tag editor no longer `print()`/`input()`s on failure: untagged MP3s open a fresh ID3 (so tags can be added), non-MP3s show "tag editing is MP3-only", and OS errors show a clean status.
-- ⬜ **#48 — Comprehensive READMEs** + a filesystem-advice doc (to maximise auto-detection) + a tag-etiquette doc.
+- 🟡 **#48 — Comprehensive READMEs** + a filesystem-advice doc (to maximise auto-detection) + a tag-etiquette doc. ✅ **Filesystem-advice doc done** — `docs/library-layout.md` documents every folder/naming convention #83's parser recognises (`Artist/Album/`, `Disc N - Subtitle`, `Series N`, `Various Artists`, `Album (YYYY)`, `NN - Title`, `D-TT`, `SxxExx`, template tokens), with worked examples generated from the parser's real output, and is linked from `README.md` (feature list + a "Bulk editing & deriving from filenames" subsection). Still open: broader README polish and a tag-etiquette doc.
 - ⬜ **#65 — Keep this TODO current** (add anything discussed/fixed, with correct marks) — ongoing.
 - 🟡 **#70 — Up-to-date docs everywhere** — ongoing. All 16 source modules now have a module docstring; per-function docstring coverage still being filled in.
 - ✅ **#72 — Dependencies synced.** `pyperclip` bound aligned across both files; `colorama` is now actually used (`just_fix_windows_console()` in `main`); used imports all match the declared deps.
@@ -143,16 +144,16 @@ IDs (`#N`) are stable so cross-references keep working; items are grouped by are
 
 ## IDEA — pattern-based bulk editing
 
-A richer bulk-edit mode driven by patterns:
+A richer bulk-edit mode driven by patterns. **First slice shipped as #83** (derive from filename/folders + `%token%` template override + smart sort in the derive pass). Remaining:
 
-- **Periodic dates** — set original release dates on a schedule (e.g. weekly from a start date); support per-range rules (first 8 tracks one date, last 2 another), and per-series times (series 1 at 18:30, series 2 at 11:30).
-- **Periodic / ranged text** — set disc subtitles or work names by range (every 6 episodes → `TSST = Series N`; tracks 1–6 → `TIT1 = … Act I`, 7–13 → `Act II`).
-- **Movement ↔ disc track-numbering converter** — switch track numbers between album-relative (movement systems) and disc-relative (disc systems).
-- **Regex support** throughout.
-- **Smart sort orders in bulk** — apply the parsed sort order to each, or a chosen pattern. e.g. `Jeff Goldblum & The Mildred Snitzer Orchestra Feat. dodie` → `Goldblum, Jeff/Mildred Snitzer Orchestra, The/dodie`, with user-verifiable pattern matching and a chosen output pattern.
-- **Per-file album art** — when files share a naming pattern relating tracks to covers, auto-apply the file-specific cover.
+- 🟡 **Smart sort orders in bulk** — DONE within #83 for the derive pass (top candidate applied silently, VA left as-is). Still open: a standalone "apply sort orders to selection" op and a user-verifiable/chosen output pattern for multi-artist (`Jeff Goldblum & The Mildred Snitzer Orchestra Feat. dodie` → `Goldblum, Jeff/Mildred Snitzer Orchestra, The/dodie`).
+- ⬜ **Periodic dates** — set original release dates on a schedule (e.g. weekly from a start date); support per-range rules (first 8 tracks one date, last 2 another), and per-series times (series 1 at 18:30, series 2 at 11:30).
+- ⬜ **Periodic / ranged text** — set disc subtitles or work names by range (every 6 episodes → `TSST = Series N`; tracks 1–6 → `TIT1 = … Act I`, 7–13 → `Act II`).
+- ⬜ **Movement ↔ disc track-numbering converter** — switch track numbers between album-relative (movement systems) and disc-relative (disc systems).
+- 🟡 **Regex support** — DONE for the derive op (both A & B): a "Use a regex" detection mode takes a raw Python regex with named groups (`track`/`disc`/`title`/`artist`/`albumartist`/`album`/`year`/`date` + `season`→disc, `episode`→track aliases). Matches either the **file name** (A) or the **folder path from the library root** (B) — chosen via a "Match regex against" sub-prompt that shows a live sample; `/`-separated, extension dropped, so one regex can capture `Artist/Album/…` folder levels. Overrides auto-detection (folder-derived fields still fill uncaptured ones); non-match → auto fallback + note; unrecognised groups reported. Documented in `docs/library-layout.md`. Still open: regex in the *other* bulk ops (set/rename).
+- ⬜ **Per-file album art** — when files share a naming pattern relating tracks to covers, auto-apply the file-specific cover.
 
-(Depends partly on the tag/filesystem-etiquette docs, #48.)
+(Depends partly on the tag/filesystem-etiquette docs, #48 — which should now document exactly the naming conventions #83's parser understands.)
 
 ---
 

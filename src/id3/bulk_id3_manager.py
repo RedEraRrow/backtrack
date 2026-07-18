@@ -197,6 +197,23 @@ def _plan_write(derived, apply_fields: set, overwrite: bool,
     return planned
 
 
+def _derive_regex_base(paths: list) -> str:
+    """Base directory for folder-path regex matching: the configured library
+    root when every file is under it, otherwise the files' common ancestor."""
+    abspaths = [os.path.abspath(p) for p in paths]
+    try:
+        from src.config import load_config
+        music_dir = os.path.abspath(load_config().get('music_directory', '') or '')
+    except Exception:
+        music_dir = ''
+    if music_dir and all(p.startswith(music_dir + os.sep) for p in abspaths):
+        return music_dir
+    try:
+        return os.path.commonpath(abspaths)
+    except ValueError:
+        return ''
+
+
 def derive_from_filename(paths: list, library: list, header) -> None:
     """Bulk-derive title/track/disc/album/artist from file names & folders.
 
@@ -236,10 +253,12 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         return
     overwrite = (mode == "Overwrite existing")
 
-    # 3) Auto-detect vs a naming template.
+    # 3) Auto-detect, a naming template, or a raw regex.
     template = None
+    regex = None
+    regex_base = None
     detect = prompt.select("Detection:",
-                           choices=["Auto-detect", "Use a naming template"],
+                           choices=["Auto-detect", "Use a naming template", "Use a regex"],
                            header=header())
     if not detect:
         return
@@ -255,9 +274,33 @@ def derive_from_filename(paths: list, library: list, header) -> None:
             ui_utils.show_status(f"Invalid template: {e}")
             return
         template = raw
+    elif detect == "Use a regex":
+        # A vs B: match the file name, or the path from the library root so the
+        # regex can capture folder levels (Artist/Album/…).
+        target = prompt.select("Match regex against:",
+                               choices=["File name", "Folder path"], header=header())
+        if not target:
+            return
+        if target == "Folder path":
+            regex_base = _derive_regex_base(writable)
+        sample = fp._regex_target(writable[0], regex_base)
+        raw = prompt.text(
+            rf"Regex, named groups (matches e.g. '{sample}'; use / between folders); "
+            "groups: track disc title artist albumartist album year date season episode:")
+        if not raw:
+            return
+        try:
+            compiled = fp.compile_regex(raw)
+        except fp.TemplateError as e:
+            ui_utils.show_status(f"Invalid regex: {e}")
+            return
+        unknown = fp.unrecognised_regex_groups(compiled)
+        if unknown:
+            ui_utils.show_status(f"Ignoring unrecognised group(s): {', '.join(unknown)}")
+        regex = raw
 
     # Derive + plan.
-    derived = fp.derive_all(writable, template=template)
+    derived = fp.derive_all(writable, template=template, regex=regex, regex_base=regex_base)
     present_cache = {p: tw.present_fields(p) for p in writable}
     plans = {p: _plan_write(derived[p], apply_fields, overwrite, present_cache[p], p)
              for p in writable}
