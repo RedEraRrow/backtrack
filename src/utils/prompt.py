@@ -50,6 +50,8 @@ def select(message: str, choices: list, *,
            columns: list | None = ...,
            multi: Literal[False] = ...,
            interlock_category_callback: Callable[[Any], str] | None = ...,
+           on_inspect: Callable[[Any], None] | None = ...,
+           inspect_key: str = ...,
            ) -> str | None: ...
 @overload
 def select(message: str, choices: list, *,
@@ -60,6 +62,8 @@ def select(message: str, choices: list, *,
            columns: list | None = ...,
            multi: Literal[True],
            interlock_category_callback: Callable[[Any], str] | None = ...,
+           on_inspect: Callable[[Any], None] | None = ...,
+           inspect_key: str = ...,
            ) -> list[Any] | None: ...
 def select(message: str, choices: list, *,
            header: list | None | Callable[[], list[str]] = None,
@@ -69,6 +73,8 @@ def select(message: str, choices: list, *,
            columns: list | None = None,
            multi: bool = False,
            interlock_category_callback: Callable[[Any], str] | None = None,
+           on_inspect: Callable[[Any], None] | None = None,
+           inspect_key: str = 'd',
            ) -> str | list[Any] | None:
     """Arrow keys / jk to navigate; Enter / → to confirm; ← / b / Esc / q → None.
 
@@ -87,6 +93,10 @@ def select(message: str, choices: list, *,
         multi:      Enable multi-select mode (Space to toggle, Enter returns list).
         interlock_category_callback: When set, only one category can be checked
             at a time (multi=True only).
+        on_inspect: Called with the current row's value when `inspect_key` is
+            pressed; runs its own view and returns, leaving selection/checkbox
+            state intact (the list redraws afterwards).
+        inspect_key: Key that triggers `on_inspect` (default 'd').
     """
     _check_deferred_quit()
     items = _norm(choices)
@@ -293,6 +303,18 @@ def select(message: str, choices: list, *,
                     result = items[cursor].value; break
             elif key in ('LEFT', 'b', 'h', 'ESC'): result = None; break
             elif key in ('q', 'Q'):              raise QuitToTerminal()
+            elif on_inspect is not None and key == inspect_key and not items[cursor].disabled:
+                # Inspect the current row (e.g. a full detail view) without
+                # ending selection or losing checkbox state. The callback runs
+                # its own full-screen prompt, so re-arm mouse reporting and force
+                # a full redraw when it returns.
+                on_inspect(items[cursor].value)
+                if not _IS_WINDOWS:
+                    sys.stdout.write("\033[?1000h\033[?1006h")
+                sys.stdout.flush()
+                _sel_last_click = None
+                w.anchor_reset()
+                w.render(_lines())
             elif shortcuts and key in shortcuts:  result = shortcuts[key]; break
             elif key == 'SCROLL_UP':             cursor = _step(cursor, -1); _sel_last_click = None; w.render(_lines())
             elif key == 'SCROLL_DOWN':           cursor = _step(cursor, 1); _sel_last_click = None; w.render(_lines())

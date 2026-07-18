@@ -63,32 +63,125 @@ def prompt_for_image_payload() -> tuple[bytes, str, int, str] | None:
         return f.read(), mime, pic_type, desc
 
 
-# Preview table for "Derive from filename": file name + a summary of the writes.
-_DERIVE_COLUMNS = [
-    prompt.Column(style='primary', flex=True, max_frac=0.42),   # file name
-    prompt.Column(style='dynamic-dim', flex=True),              # planned changes
+# Field → short label shown in the preview / detail view.
+_DERIVE_LABELS = {'title': 'title', 'artist': 'artist', 'album_artist': 'albumartist',
+                  'album': 'album', 'track': 'trk', 'disc': 'disc',
+                  'disc_subtitle': 'discsub', 'year': 'year'}
+
+# Per-field column spec for the preview (only *varying* fields get a column;
+# `title` flexes to absorb leftover width, the rest are bounded and truncate).
+_DERIVE_FIELD_COL = {
+    'title':        {'style': 'primary', 'flex': True},
+    'artist':       {'style': 'dynamic-dim', 'max_frac': 0.30},
+    'album':        {'style': 'dynamic-dim', 'max_frac': 0.30},
+    'album_artist': {'style': 'dynamic-dim', 'max_frac': 0.30},
+    'disc_subtitle': {'style': 'dynamic-dim', 'max_frac': 0.25},
+    # Short numeric fields pin to the right edge so they stay visible when the
+    # row is squeezed (the flexible title column absorbs the truncation instead).
+    'track':        {'style': 'dynamic-dim', 'align': 'right', 'pin': True, 'max_width': 8, 'gap': 2},
+    'disc':         {'style': 'dynamic-dim', 'align': 'right', 'pin': True, 'max_width': 8, 'gap': 2},
+    'year':         {'style': 'dynamic-dim', 'align': 'right', 'pin': True, 'max_width': 11, 'gap': 2},
+}
+
+# Detail view (per file): field · full value · action.
+_DETAIL_COLUMNS = [
+    prompt.Column(style='primary'),                              # field label
+    prompt.Column(style='normal', flex=True),                   # full value
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # write / kept
 ]
 
-# Field → short label shown in the preview summary.
-_DERIVE_LABELS = {'title': 'title', 'track': 'trk', 'disc': 'disc',
-                  'album': 'album', 'artist': 'artist'}
+
+def _detail_view(path, derived, plan: dict, present: dict, apply_fields: set,
+                 overwrite: bool, header) -> None:
+    """Full, untruncated breakdown of one file's derivation (write vs kept)."""
+    d = derived.as_dict()
+    supported = tw.writable_fields(path)
+    rows: list = []
+    for f in tw.FIELDS:
+        if f not in apply_fields:
+            continue
+        val = d.get(f)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            continue
+        if f == 'track':
+            val = _num_pair(d['track'], d.get('total_tracks'))
+        elif f == 'disc':
+            val = _num_pair(d['disc'], d.get('total_discs'))
+        if f not in supported:
+            action = 'n/a (MP4)'
+        elif f in plan:
+            action = 'write'
+        else:
+            action = 'kept' if present.get(f) else '—'
+        rows.append(prompt.Choice(title=_DERIVE_LABELS[f], value=f, disabled=True,
+                                  cells=[_DERIVE_LABELS[f], str(val), action]))
+    if derived.compilation and 'album_artist' in apply_fields:
+        act = 'write' if not present.get('compilation') or overwrite else 'kept'
+        rows.append(prompt.Choice(title='compilation', value='__c__', disabled=True,
+                                  cells=['compilation', 'Various Artists flag', act]))
+    # Sort-order tags: only written for a base field that itself writes.
+    if 'sort' in apply_fields:
+        for base, base_id in _SORT_BASE:
+            if base not in apply_fields:
+                continue
+            sv = _sort_value(base_id, str(d.get(base) or ''))
+            if not sv:
+                continue
+            act = 'write' if base in plan else '(with ' + base + ')'
+            rows.append(prompt.Choice(title=f'{base} sort', value=f'{base}_sort',
+                                      disabled=True,
+                                      cells=[f'{_DERIVE_LABELS[base]} sort', sv, act]))
+    rows.append(prompt.separator())
+    rows.append(prompt.Choice(title='Back', value='__back__'))
+    prompt.select(os.path.basename(path), choices=rows, columns=_DETAIL_COLUMNS,
+                  header=header('Full derivation'))
 
 
 def _num_pair(num, total) -> str:
     return f"{num}/{total}" if total else f"{num}"
 
 
+# base field → sort frame id, used to compute sort-order strings via the #42 engine.
+_SORT_BASE = [('artist', 'TSOP'), ('album_artist', 'TSO2'),
+              ('album', 'TSOA'), ('title', 'TSOT')]
+
+
+def _sort_value(base_id: str, raw: str) -> str | None:
+    """Top smart sort-order candidate for a value, or None when none is needed.
+
+    Reuses the #42 engine (name-inversion for artists, article-move for
+    album/title). "Various Artists" sorts as itself, so no tag is generated."""
+    if not raw or raw.strip().lower() in ('various artists', 'various'):
+        return None
+    from src.id3.id3_browser import _sort_candidates
+    cands = _sort_candidates(base_id, str(raw))
+    return cands[0] if cands else None
+
+
+def _augment_sort(vals: dict, apply_fields: set) -> dict:
+    """Add '<base>_sort' entries for the derived fields being written."""
+    for base, base_id in _SORT_BASE:
+        if base in apply_fields and vals.get(base):
+            sv = _sort_value(base_id, str(vals[base]))
+            if sv:
+                vals[f'{base}_sort'] = sv
+    return vals
+
+
 def _plan_write(derived, apply_fields: set, overwrite: bool,
-                present: dict) -> dict:
+                present: dict, path: str) -> dict:
     """Fields that would actually be written for one file: {field: value_str}.
 
-    Honours fill-blanks (skip fields already present unless overwrite) and only
-    includes fields with a derived value. Pure — used for the preview and tests.
+    Honours fill-blanks (skip fields already present unless overwrite), only
+    includes fields with a derived value, and — crucially — only fields the
+    file's *format* can store (so the preview never claims a write it can't
+    perform, e.g. disc subtitle on MP4). Pure — used for the preview and tests.
     """
+    supported = tw.writable_fields(path)
     d = derived.as_dict()
     planned: dict = {}
     for f in tw.FIELDS:
-        if f not in apply_fields:
+        if f not in apply_fields or f not in supported:
             continue
         val = d.get(f)
         if val is None or (isinstance(val, str) and not val.strip()):
@@ -122,8 +215,12 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         prompt.Choice(title="Title  — from file name", value="title", checked=True),
         prompt.Choice(title="Track number (+ total)", value="track"),
         prompt.Choice(title="Disc number (+ total)", value="disc"),
+        prompt.Choice(title="Disc subtitle — from folder (MP3 only)", value="disc_subtitle"),
         prompt.Choice(title="Album — from folder", value="album"),
-        prompt.Choice(title="Artist — from parent folder", value="artist"),
+        prompt.Choice(title="Album artist — from parent folder", value="album_artist"),
+        prompt.Choice(title="Track artist — from file name / folder", value="artist"),
+        prompt.Choice(title="Year / date — from folder or file name", value="year"),
+        prompt.Choice(title="Sort-order tags — for the fields ticked above", value="sort"),
     ]
     chosen = prompt.select("Fields to derive & write:", choices=field_choices,
                            header=header(), multi=True)
@@ -147,8 +244,9 @@ def derive_from_filename(paths: list, library: list, header) -> None:
     if not detect:
         return
     if detect == "Use a naming template":
-        raw = prompt.text("Template (e.g. %disc%-%track% %title%; "
-                          "tokens: %track% %disc% %title% %artist% %album% %season% %episode%):")
+        raw = prompt.text("Template (e.g. %disc%-%track% %title%; tokens: %track% "
+                          "%disc% %title% %artist% %albumartist% %album% %year% %date% "
+                          "%season% %episode% %ignore%):")
         if not raw:
             return
         try:
@@ -161,7 +259,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
     # Derive + plan.
     derived = fp.derive_all(writable, template=template)
     present_cache = {p: tw.present_fields(p) for p in writable}
-    plans = {p: _plan_write(derived[p], apply_fields, overwrite, present_cache[p])
+    plans = {p: _plan_write(derived[p], apply_fields, overwrite, present_cache[p], p)
              for p in writable}
     to_write = [p for p in writable if plans[p]]
 
@@ -170,25 +268,62 @@ def derive_from_filename(paths: list, library: list, header) -> None:
                              "(try Overwrite).")
         return
 
-    # 4) Preview — every writable-with-changes file pre-checked; uncheck to skip.
-    preview_choices = []
+    # 4) Preview. Fields whose value is identical across every changed file are
+    # lifted into the header (shown once); only the *varying* fields become
+    # per-row columns, so wide rows don't overflow. `d` opens a full detail view.
+    field_vals: dict = {}
     for p in to_write:
-        summary = " · ".join(f"{_DERIVE_LABELS[f]}={v}" for f, v in plans[p].items())
-        preview_choices.append(prompt.Choice(
-            title=os.path.basename(p), value=p, checked=True,
-            cells=[os.path.basename(p), summary]))
+        for f, v in plans[p].items():
+            field_vals.setdefault(f, set()).add(v)
+    any_comp = any(derived[p].compilation for p in to_write) and 'album_artist' in apply_fields
+    uniform = {f for f, vals in field_vals.items() if len(vals) == 1}
+    varying = [f for f in tw.FIELDS if f in field_vals and f not in uniform]
 
+    # Header: uniform fields + counts.
+    header_bits = [f"{len(to_write)} file(s)"]
+    for f in tw.FIELDS:
+        if f in uniform:
+            header_bits.append(f"{_DERIVE_LABELS[f]}: {next(iter(field_vals[f]))}")
+    if any_comp:
+        header_bits.append("compilation")
     n_skip_existing = sum(
         1 for p in writable for f in apply_fields
         if present_cache[p].get(f) and not overwrite
         and derived[p].as_dict().get(f) not in (None, ""))
-    sub = f"{len(to_write)} file(s) to change" + (
-        f" · {skipped_fmt} non-MP3/MP4 skipped" if skipped_fmt else "")
+    if n_skip_existing and not overwrite:
+        header_bits.append(f"{n_skip_existing} existing kept")
+    if skipped_fmt:
+        header_bits.append(f"{skipped_fmt} non-MP3/MP4 skipped")
+    # Called out explicitly (not silent): disc subtitle can't be stored on MP4.
+    if 'disc_subtitle' in apply_fields:
+        n_mp4 = sum(1 for p in writable if tw.format_kind(p) == 'mp4')
+        if n_mp4:
+            header_bits.append(f"disc subtitle N/A on {n_mp4} MP4 file(s)")
+    if 'sort' in apply_fields:
+        header_bits.append("+ sort orders")
+    sub = " · ".join(header_bits)
+
+    # Columns: file name + one truncating column per varying field.
+    prev_cols = [prompt.Column(style='primary', max_frac=0.35)]
+    for f in varying:
+        prev_cols.append(prompt.Column(**_DERIVE_FIELD_COL.get(
+            f, {'style': 'dynamic-dim', 'max_frac': 0.3})))
+
+    preview_choices = []
+    for p in to_write:
+        cells = [os.path.basename(p)] + [plans[p].get(f, "") for f in varying]
+        preview_choices.append(prompt.Choice(
+            title=os.path.basename(p), value=p, checked=True, cells=cells))
+
+    def _show_detail(path) -> None:
+        _detail_view(path, derived[path], plans[path], present_cache[path],
+                     apply_fields, overwrite, header)
 
     selected = prompt.select(
-        "Preview — Space to deselect a file, Enter to apply:",
-        choices=preview_choices, columns=_DERIVE_COLUMNS,
-        header=header(sub), multi=True)
+        "Preview — Space to deselect, d for details, Enter to apply:",
+        choices=preview_choices, columns=prev_cols,
+        header=header(sub), multi=True,
+        extra_hints={'d': 'details'}, on_inspect=_show_detail)
     if selected is None:
         return
     apply_paths = set(selected)
@@ -202,7 +337,10 @@ def derive_from_filename(paths: list, library: list, header) -> None:
     for p in to_write:
         if p not in apply_paths:
             continue
-        r = tw.write_fields(p, derived[p].as_dict(), apply_fields, overwrite=overwrite)
+        vw = derived[p].as_dict()
+        if 'sort' in apply_fields:
+            _augment_sort(vw, apply_fields)
+        r = tw.write_fields(p, vw, apply_fields, overwrite=overwrite)
         if r.error:
             errors += 1
             continue

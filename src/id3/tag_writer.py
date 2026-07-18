@@ -18,11 +18,25 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TALB, TRCK, TPOS  # type: ignore[reportPrivateImportUsage]
+from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TSST, TDRC, TCMP, TSOT, TSOP, TSO2, TSOA  # type: ignore[reportPrivateImportUsage]  # noqa: E501
 from mutagen.mp4 import MP4  # type: ignore[reportPrivateImportUsage]
 
-# The fields this writer understands (track/disc carry their totals).
-FIELDS = ('title', 'track', 'disc', 'album', 'artist')
+# The fields this writer understands (track/disc carry their totals). The
+# compilation flag is not a user field — it rides along when a compilation is
+# detected and the album artist is written.
+FIELDS = ('title', 'artist', 'album_artist', 'album', 'track', 'disc',
+          'disc_subtitle', 'year')
+
+# Sort-order tags ride with their base field when the 'sort' pseudo-field is
+# applied. The sort *string* is supplied by the caller as values['<base>_sort']
+# (computed by the smart sort engine); the writer just stores it.
+# base field → (ID3 frame class, MP4 sort atom).
+_SORT_MAP = {
+    'title':        (TSOT, 'sonm'),
+    'artist':       (TSOP, 'soar'),
+    'album_artist': (TSO2, 'soaa'),
+    'album':        (TSOA, 'soal'),
+}
 
 _MP3_EXTS = ('.mp3',)
 _MP4_EXTS = ('.m4a', '.mp4', '.m4p', '.aac')
@@ -54,6 +68,21 @@ def is_writable(path: str) -> bool:
     return format_kind(path) != 'unsupported'
 
 
+def writable_fields(path: str) -> set:
+    """Fields that can actually be written for this file's format.
+
+    MP4 has no standard disc-subtitle atom, so ``disc_subtitle`` is dropped for
+    the MP4 family — the plan/preview must not claim a write it can't perform.
+    """
+    kind = format_kind(path)
+    if kind == 'unsupported':
+        return set()
+    fields = set(FIELDS)
+    if kind == 'mp4':
+        fields.discard('disc_subtitle')
+    return fields
+
+
 def _fmt_pair(num, total) -> str:
     """ID3 numeric-pair text: 'n/total' when a total is present, else 'n'."""
     return f"{int(num)}/{int(total)}" if total else f"{int(num)}"
@@ -76,8 +105,10 @@ def _id3_present(audio: ID3) -> dict[str, bool]:
         return bool(head) and head != '0'
 
     return {
-        'title': _txt('TIT2'), 'artist': _txt('TPE1'), 'album': _txt('TALB'),
-        'track': _num('TRCK'), 'disc': _num('TPOS'),
+        'title': _txt('TIT2'), 'artist': _txt('TPE1'), 'album_artist': _txt('TPE2'),
+        'album': _txt('TALB'), 'track': _num('TRCK'), 'disc': _num('TPOS'),
+        'disc_subtitle': _txt('TSST'), 'year': _txt('TDRC'),
+        'compilation': bool(audio.get('TCMP') and str(audio['TCMP'].text[0]) not in ('', '0')),
     }
 
 
@@ -96,8 +127,11 @@ def _mp4_present(audio: MP4) -> dict[str, bool]:
             return False
 
     return {
-        'title': _txt('\xa9nam'), 'artist': _txt('\xa9ART'), 'album': _txt('\xa9alb'),
-        'track': _pair('trkn'), 'disc': _pair('disk'),
+        'title': _txt('\xa9nam'), 'artist': _txt('\xa9ART'), 'album_artist': _txt('aART'),
+        'album': _txt('\xa9alb'), 'track': _pair('trkn'), 'disc': _pair('disk'),
+        'disc_subtitle': False,           # no standard MP4 atom — never written
+        'year': _txt('\xa9day'),
+        'compilation': bool(tags.get('cpil')),
     }
 
 
@@ -156,6 +190,8 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
         for f in FIELDS:
             if f not in apply_fields:
                 continue
+            if f == 'disc_subtitle' and kind == 'mp4':
+                continue                    # no standard MP4 disc-subtitle atom
             val = values.get(f)
             if val is None or (isinstance(val, str) and not val.strip()):
                 continue                    # nothing derived for this field
@@ -164,6 +200,25 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
                 continue
             _set_field(audio, kind, f, values)
             res.written.append(f)
+
+        # Compilation flag rides along with the album artist when detected.
+        if values.get('compilation') and 'album_artist' in apply_fields:
+            if overwrite or not present.get('compilation'):
+                _set_compilation(audio, kind)
+                res.written.append('compilation')
+
+        # Sort-order tags ride with a base field *actually written* this run, so
+        # the sort string always matches the value we wrote (not a skipped one).
+        if 'sort' in apply_fields:
+            written_now = set(res.written)
+            for base, (frame_cls, atom) in _SORT_MAP.items():
+                if base not in written_now:
+                    continue
+                sval = values.get(f'{base}_sort')
+                if not sval:
+                    continue                    # no sort needed (e.g. "Radiohead")
+                _set_sort(audio, kind, frame_cls, atom, str(sval))
+                res.written.append(f'{base}_sort')
 
         if res.written:
             if kind == 'mp3':
@@ -176,27 +231,51 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
     return res
 
 
+def _set_compilation(audio, kind: str) -> None:
+    if kind == 'mp3':
+        audio.setall('TCMP', [TCMP(encoding=3, text=['1'])])
+    else:
+        audio.tags['cpil'] = True
+
+
+def _set_sort(audio, kind: str, frame_cls, atom: str, val: str) -> None:
+    if kind == 'mp3':
+        audio.setall(frame_cls.__name__, [frame_cls(encoding=3, text=[val])])
+    else:
+        audio.tags[atom] = [val]
+
+
 def _set_field(audio, kind: str, f: str, values: dict) -> None:
     if kind == 'mp3':
         if f == 'title':
             audio.setall('TIT2', [TIT2(encoding=3, text=[str(values['title'])])])
         elif f == 'artist':
             audio.setall('TPE1', [TPE1(encoding=3, text=[str(values['artist'])])])
+        elif f == 'album_artist':
+            audio.setall('TPE2', [TPE2(encoding=3, text=[str(values['album_artist'])])])
         elif f == 'album':
             audio.setall('TALB', [TALB(encoding=3, text=[str(values['album'])])])
         elif f == 'track':
             audio.setall('TRCK', [TRCK(encoding=3, text=[_fmt_pair(values['track'], values.get('total_tracks'))])])
         elif f == 'disc':
             audio.setall('TPOS', [TPOS(encoding=3, text=[_fmt_pair(values['disc'], values.get('total_discs'))])])
+        elif f == 'disc_subtitle':
+            audio.setall('TSST', [TSST(encoding=3, text=[str(values['disc_subtitle'])])])
+        elif f == 'year':
+            audio.setall('TDRC', [TDRC(encoding=3, text=[str(values['year'])])])
     else:  # mp4
         tags = audio.tags
         if f == 'title':
             tags['\xa9nam'] = [str(values['title'])]
         elif f == 'artist':
             tags['\xa9ART'] = [str(values['artist'])]
+        elif f == 'album_artist':
+            tags['aART'] = [str(values['album_artist'])]
         elif f == 'album':
             tags['\xa9alb'] = [str(values['album'])]
         elif f == 'track':
             tags['trkn'] = [(int(values['track']), int(values.get('total_tracks') or 0))]
         elif f == 'disc':
             tags['disk'] = [(int(values['disc']), int(values.get('total_discs') or 0))]
+        elif f == 'year':
+            tags['\xa9day'] = [str(values['year'])]
