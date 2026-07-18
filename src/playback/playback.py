@@ -71,7 +71,7 @@ def _make_player(file_path: str) -> vlc.MediaPlayer:
     return mp
 
 
-def _handle_seek(mp, elapsed: float, duration: float, seek_amount: int) -> None:
+def _handle_seek(mp, elapsed: float, duration: float, seek_amount: float) -> None:
     target = max(0.0, min(elapsed + seek_amount, max(duration - 0.5, 0.0)))
     mp.set_time(int(target * 1000))
 
@@ -387,6 +387,12 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
                     elif key == '.':
                         _handle_seek(mp, elapsed, duration, 30)
                         toast_text = 'Seek Forward +30s'
+                        toast_expiry = time.time() + 1.0
+                        update_ctrl_ui()
+
+                    elif key.lower() == 'e':          # TEMP: jump to last 35 seconds
+                        _handle_seek(mp, elapsed, duration, (duration - 35) - elapsed)
+                        toast_text = 'Skip to last 35s'
                         toast_expiry = time.time() + 1.0
                         update_ctrl_ui()
 

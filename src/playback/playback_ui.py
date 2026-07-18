@@ -437,6 +437,7 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
         ('←→', '±5s'),
         ('j/l', '±1s'),
         (',/.', '±30s'),
+        ('e', 'last 35s'),          # TEMP shortcut
         ('+/-', 'volume'),
         ('m', 'meta'),
     ]

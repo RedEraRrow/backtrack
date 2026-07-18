@@ -197,6 +197,167 @@ def _plan_write(derived, apply_fields: set, overwrite: bool,
     return planned
 
 
+# Columns for the bulk people editor: role · name · coverage/state.
+_PEOPLE_COLUMNS = [
+    prompt.Column(style='primary', flex=True, max_frac=0.45),           # role / character
+    prompt.Column(style='normal', flex=True),                           # name / actor
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # N/total or state
+]
+
+
+def _people_apply(current: list, edits: dict, deletes: set, adds: list) -> list:
+    """One file's new people list: apply edits (replace in place), deletes, and
+    adds (appended if absent), preserving order and de-duplicating. Pure."""
+    out: list = []
+    for e in current:
+        if e in deletes:
+            continue
+        out.append(edits.get(e, e))
+    for a in adds:
+        if a not in out:
+            out.append(a)
+    seen: set = set()
+    return [e for e in out if not (e in seen or seen.add(e))]
+
+
+def _read_people(path: str, tag_id: str) -> list | None:
+    """The (role, name) pairs for a people tag on one MP3, or None if unreadable."""
+    try:
+        audio = ID3(path)
+    except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
+        return []
+    except (OSError, IOError):
+        return None
+    fr = audio.get(tag_id)
+    if fr is None or not hasattr(fr, 'people'):
+        return []
+    return [(str(r).strip(), str(n).strip()) for r, n in fr.people]
+
+
+def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
+    """Edit a people list (TMCL/TIPL) across many files by *entry*.
+
+    Aggregates the tag's distinct ``role → name`` entries across the selected
+    MP3s with an ``N/total`` coverage count. Editing or removing an entry acts on
+    every file that has that exact pair; adding puts it in every file that lacks
+    it. Per-file ordering is preserved (edits replace in place)."""
+    info = get_tag_info(tag_id)
+    label = info.name[0] if info else tag_id
+
+    mp3s = [p for p in paths if p.lower().endswith('.mp3')]
+    per_file: dict = {}
+    for p in mp3s:
+        pl = _read_people(p, tag_id)
+        if pl is not None:
+            per_file[p] = pl
+    if not per_file:
+        ui_utils.show_status(f"No writable MP3s for {label}.")
+        return
+    total = len(per_file)
+
+    # Distinct entries in first-seen order, with coverage counts.
+    counts: dict = {}
+    order: list = []
+    for pl in per_file.values():
+        for e in pl:
+            if e not in counts:
+                counts[e] = 0
+                order.append(e)
+            counts[e] += 1
+    rows = [{'orig': e, 'role': e[0], 'name': e[1], 'deleted': False} for e in order]
+
+    while True:
+        choices: list = []
+        for i, r in enumerate(rows):
+            if r['deleted']:
+                state = 'removing'
+            elif r['orig'] is None:
+                state = 'add all'
+            else:
+                state = f"{counts[r['orig']]}/{total}"
+            choices.append(prompt.Choice(title=f"{r['role']} → {r['name']}", value=i,
+                                         cells=[r['role'] or '—', r['name'] or '—', state]))
+        choices.append(prompt.separator())
+        choices.append(prompt.Choice(title="＋ Add person (to all files)", value="__add__"))
+        choices.append(prompt.Choice(title="✔ Save changes", value="__save__"))
+
+        sub = f"{total} file(s) · Enter a row to edit/remove"
+        sel = prompt.select(f"Bulk edit {label}:", choices=choices,
+                            columns=_PEOPLE_COLUMNS, header=header(sub),
+                            shortcuts={'a': '__add__'}, extra_hints={'a': 'add'})
+        if sel is None:
+            return                                          # cancel — no writes
+        if sel == '__add__':
+            role = prompt.text(f"{label} — role / character:")
+            if role is None:
+                continue
+            name = prompt.text(f"{label} — name / person:")
+            if name is None:
+                continue
+            if role.strip() or name.strip():
+                rows.append({'orig': None, 'role': role.strip(), 'name': name.strip(),
+                             'deleted': False})
+            continue
+        if sel == '__save__':
+            break
+        # A row was chosen (its value is the int index) → edit / remove submenu.
+        r = rows[int(sel)]
+        act = prompt.select(f"{r['role']} → {r['name']}:",
+                            choices=["Edit", ("Keep" if r['deleted'] else "Remove"), "Cancel"])
+        if act == "Edit":
+            nrole = prompt.text("Role / character:", default=r['role'])
+            if nrole is None:
+                continue
+            nname = prompt.text("Name / person:", default=r['name'])
+            if nname is None:
+                continue
+            r['role'], r['name'] = nrole.strip(), nname.strip()
+        elif act in ("Remove", "Keep"):
+            r['deleted'] = not r['deleted']
+
+    # --- Build the change set, then apply per file (order preserved) ---
+    edits: dict = {}      # orig pair → new pair
+    deletes: set = set()
+    adds: list = []
+    for r in rows:
+        new = (r['role'], r['name'])
+        if r['orig'] is None:
+            if not r['deleted'] and (r['role'] or r['name']):
+                adds.append(new)
+        elif r['deleted']:
+            deletes.add(r['orig'])
+        elif new != r['orig']:
+            edits[r['orig']] = new
+
+    if not (edits or deletes or adds):
+        ui_utils.show_status("No changes.")
+        return
+
+    changed = 0
+    for p, current in per_file.items():
+        deduped = _people_apply(current, edits, deletes, adds)
+        if deduped == current:
+            continue
+        try:
+            audio = ID3(p)
+        except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
+            audio = ID3()
+        except (OSError, IOError):
+            continue
+        audio.delall(tag_id)
+        frame = create_frame(tag_id, deduped) if deduped else None
+        if frame is not None:
+            audio.add(frame)
+        try:
+            audio.save(p, v2_version=3)
+            changed += 1
+            refresh_library_entry(library, p)
+        except Exception:
+            pass
+
+    ui_utils.show_status(f"Updated {label} in {changed} file(s).")
+
+
 def _derive_regex_base(paths: list) -> str:
     """Base directory for folder-path regex matching: the configured library
     root when every file is under it, otherwise the files' common ancestor."""
@@ -605,6 +766,16 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             if target_val:
                 target_val = target_val.upper()
         elif operation == "Set Common Value":
+            # People lists (TMCL/TIPL) get the common-entry editor (edit/add/remove
+            # across files by coverage) instead of a blind whole-list replace.
+            people_sel = [t for t in selected_tags
+                          if getattr(get_tag_info(t), 'ui_category', None) == 'people']
+            if people_sel:
+                for pt in people_sel:
+                    bulk_people_editor(album_tracks, pt, library, _bulk_header)
+                selected_tags = [t for t in selected_tags if t not in people_sel]
+                if not selected_tags:
+                    return
             first_tag = selected_tags[0]
             existing_vals = tag_values.get(first_tag, [])
             fallback_val = existing_vals[0] if existing_vals else ""

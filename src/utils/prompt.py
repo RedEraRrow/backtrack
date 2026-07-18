@@ -722,7 +722,7 @@ def _build_list_edit_lines(
     if fixed_rows:
         base_hints = {"↑↓": "move", "e": "edit", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit"}
     else:
-        base_hints = {"↑↓": "move", "a": "add", "e": "edit", "d": "delete", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit"}
+        base_hints = {"↑↓": "move", "a": "add", "e": "edit", "d": "delete", "K/J": "reorder", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit"}
     edit_hints = {"tab": "next col", "esc": "cancel", "↵": "apply"}
 
     out.append(f"  {C.DIM}{message}{C.RESET}")
@@ -866,6 +866,54 @@ def _build_list_edit_lines(
     out.extend(hint_lines)
 
     return out, viewport, vis, _LEDIT_HEADER_ROWS
+
+def _parse_import_rows(text: str, headers: tuple[str, ...]) -> list:
+    """Parse pasted/imported text into list_edit rows, auto-detecting the layout.
+
+    Handles CSV, TSV, and other separators (``;`` ``|`` ``:`` `` - ``) plus
+    run-of-2+-spaces columns. Comment (`#`) and blank lines are skipped, and a
+    leading header row that just repeats the column names is dropped."""
+    num_cols = len(headers)
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln and not ln.startswith('#')]
+    if not lines:
+        return []
+    if num_cols <= 1:
+        return list(lines)
+
+    # Delimiter present in a majority of lines wins (tab/comma preferred).
+    delim = None
+    for cand in ('\t', ',', ';', '|', ' - ', ':'):
+        if sum(1 for ln in lines if cand in ln) >= max(1, (len(lines) + 1) // 2):
+            delim = cand
+            break
+
+    def _fit(fields: list) -> tuple:
+        fields = [f.strip() for f in fields]
+        if len(fields) > num_cols:                  # overflow → last column keeps the rest
+            tail = (delim or ' ').join(fields[num_cols - 1:]).strip()
+            fields = fields[:num_cols - 1] + [tail]
+        fields += [''] * (num_cols - len(fields))
+        return tuple(fields[:num_cols])
+
+    rows: list = []
+    if delim == ',':
+        import csv
+        import io
+        for fields in csv.reader(io.StringIO('\n'.join(lines))):
+            rows.append(_fit(fields))
+    elif delim:
+        for ln in lines:
+            rows.append(_fit(ln.split(delim, num_cols - 1)))
+    else:
+        for ln in lines:                            # no delimiter → split on runs of spaces
+            parts = re.split(r'\s{2,}', ln)
+            rows.append(_fit(parts if len(parts) >= num_cols else [ln]))
+
+    if rows and tuple(str(c).lower() for c in rows[0]) == tuple(h.lower() for h in headers):
+        rows = rows[1:]                             # drop a repeated-header row
+    return rows
+
 
 def list_edit(message: str, initial_items: list | None = None, headers: tuple[str, ...] = ("ROLE", "NAME"),
               fixed_rows: bool = False, locked_cols: set | None = None,
@@ -1178,6 +1226,18 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                         cursor = 0
                     _render()
 
+                elif key == 'K' and items and not fixed_rows and cursor > 0:
+                    items[cursor - 1], items[cursor] = items[cursor], items[cursor - 1]
+                    cursor -= 1
+                    _le_last_click = None
+                    _render()
+
+                elif key == 'J' and items and not fixed_rows and cursor < len(items) - 1:
+                    items[cursor + 1], items[cursor] = items[cursor], items[cursor + 1]
+                    cursor += 1
+                    _le_last_click = None
+                    _render()
+
                 elif key == 'ENTER':
                     result = items
                     break
@@ -1198,31 +1258,29 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                         text_input = system_editor_edit(initial_text=template)
                         _set_raw(fd)
                     else:
+                        # Path prompt (with completion), then auto-detect the format.
+                        # Clear to a fresh screen first — path() renders inline from
+                        # the cursor, so without this it draws over the list and spills.
                         _restore_term_attrs(fd, old)
                         sys.stdout.write("\033[H\033[3J\033[J")
                         sys.stdout.flush()
-                        file_path = input("Import from file path: ").strip()
+                        file_path = path("Import from file:")
                         _set_raw(fd)
                         text_input = None
                         if file_path:
                             try:
                                 with open(os.path.expanduser(file_path), encoding='utf-8') as _fp:
                                     text_input = _fp.read()
-                            except OSError as _e:
+                            except OSError:
+                                ui_utils.show_status(f"Couldn't read {file_path}")
                                 text_input = None
+                    if not _IS_WINDOWS:
+                        sys.stdout.write("\033[?1000h\033[?1006h")   # re-arm mouse
                     sys.stdout.write("\033[H\033[3J\033[J")
                     sys.stdout.flush()
                     w.anchor_reset()
                     if text_input:
-                        for _line in text_input.splitlines():
-                            _line = _line.strip()
-                            if not _line or _line.startswith('#'):
-                                continue
-                            if num_cols > 1:
-                                _role, _, _name = _line.partition(':')
-                                items.append((_role.strip(), _name.strip()))
-                            else:
-                                items.append(_line)
+                        items.extend(_parse_import_rows(text_input, headers))
                         cursor = len(items) - 1 if items else 0
                     _render()
 

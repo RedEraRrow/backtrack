@@ -1,4 +1,4 @@
-"""Album-art extraction and terminal rendering (via the viu CLI)."""
+"""Album-art extraction and terminal rendering."""
 import os
 import subprocess
 import mutagen.id3
