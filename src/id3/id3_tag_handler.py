@@ -69,6 +69,44 @@ def _prompt_for_image_metadata() -> tuple[int, str] | None:
     return pic_type, desc
 
 
+def _as_value_list(value: Any) -> list[str]:
+    """Normalise a text-frame value into a list of non-empty strings.
+
+    A plain string becomes a one-element list; a list (multi-value, #60) is
+    stripped of blank entries. Order is preserved."""
+    if isinstance(value, (list, tuple)):
+        return [s for s in (str(v).strip() for v in value) if s]
+    s = str(value).strip()
+    return [s] if s else []
+
+
+def _has_multivalue(audio: ID3) -> bool:
+    """True if any text frame in `audio` holds more than one value.
+
+    People frames (TMCL/TIPL) are skipped — their `.text` is a flat role/name
+    pair list, not a multi-value text field."""
+    for frame in audio.values():
+        if getattr(frame, 'people', None) is not None:
+            continue
+        txt = getattr(frame, 'text', None)
+        if isinstance(txt, list) and len(txt) > 1:
+            return True
+    return False
+
+
+def save_id3(audio: ID3, path: str | None = None) -> None:
+    """Save an ID3 tag, choosing the version by content.
+
+    ID3v2.3 collapses multi-value text into one '/'-joined string (corrupting
+    values that contain '/'), so files carrying any multi-value frame are saved
+    as v2.4. Single-value files stay v2.3 for maximum player compatibility."""
+    ver = 4 if _has_multivalue(audio) else 3
+    if path is None:
+        audio.save(v2_version=ver)
+    else:
+        audio.save(path, v2_version=ver)
+
+
 def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | EQU2 | RVA2 | None:
     """Create the correct mutagen frame for tag_id from value, or None on failure."""
     if value is None:
@@ -108,22 +146,28 @@ def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | 
             return None
 
         if info.frame_type == 'TEXT':
-            text_val = str(value).strip()
-            if not text_val:
-                return None
-
             frame_class = info.mutagen_class
 
-            if frame_class in [TXXX, WXXX]:
-                return frame_class(encoding=3, desc=parsed_desc, text=text_val)
-
+            # COMM/USLT carry a single (possibly multi-line) body from the
+            # system-editor path — keep them scalar.
             if frame_class in [COMM, USLT]:
+                text_val = str(value).strip()
+                if not text_val:
+                    return None
                 clean_lang = str(parsed_lang).strip() if parsed_lang else 'eng'
                 if len(clean_lang) != 3:
                     clean_lang = 'eng'
                 return frame_class(encoding=3, lang=clean_lang, desc=parsed_desc, text=text_val)
 
-            return frame_class(encoding=3, text=[text_val])
+            # Multi-value text frames (#60): value may be a list of strings.
+            vals = _as_value_list(value)
+            if not vals:
+                return None
+
+            if frame_class in [TXXX, WXXX]:
+                return frame_class(encoding=3, desc=parsed_desc, text=vals)
+
+            return frame_class(encoding=3, text=vals)
 
         elif info.format_spec == 'ISO8601':
             date_val = str(value).strip()
@@ -144,20 +188,22 @@ def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | 
             return info.mutagen_class(encoding=3, text=[num_val])
 
         elif info.frame_type == 'LIST':
-            if isinstance(value, str):
-                # Plain string (e.g. genre, language) — wrap in a text list frame.
-                return info.mutagen_class(encoding=3, text=[value])
-            if isinstance(value, list) and value:
-                people_list = []
-                for item in value:
-                    if isinstance(item, (tuple, list)) and len(item) == 2:
-                        people_list.append((str(item[0]).strip(), str(item[1]).strip()))
-
-                if not people_list:
-                    return None
-
-                return info.mutagen_class(encoding=3, people=people_list)
-            return None
+            # People frames (TMCL/TIPL): a list of (role, name) pairs.
+            if info.ui_category == 'people':
+                if isinstance(value, list) and value:
+                    people_list = [(str(item[0]).strip(), str(item[1]).strip())
+                                   for item in value
+                                   if isinstance(item, (tuple, list)) and len(item) == 2]
+                    if not people_list:
+                        return None
+                    return info.mutagen_class(encoding=3, people=people_list)
+                return None
+            # Text-list frames (genre TCON, language TLAN): a plain string or,
+            # for multi-value (#60), a list of strings.
+            vals = _as_value_list(value)
+            if not vals:
+                return None
+            return info.mutagen_class(encoding=3, text=vals)
 
         elif info.frame_type == 'DATE':
             val = str(value).strip()
@@ -297,6 +343,12 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     # Extract editor-ready defaults from whatever current_value is.
     # It may be a raw mutagen frame (single-file edit), a summary string
     # (bulk edit path), or None (new tag).
+    # Multi-value candidates (#60): plain text frames the registry doesn't flag
+    # single-only (e.g. genre, artist, composer, conductor, mood, language).
+    multivalue = (ui_cat == 'text' and info.frame_type in ('TEXT', 'LIST')
+                  and not info.single_only)
+
+    default_vals: list[str] = []
     if current_value is None:
         default_val = ""
     elif hasattr(current_value, 'people'):
@@ -305,10 +357,12 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
             initial_people = list(current_value.people) if current_value.people else []
         default_val = ""
     elif hasattr(current_value, 'text'):
-        default_val = str(current_value.text[0]) if current_value.text else ""
+        default_vals = [str(t) for t in current_value.text] if current_value.text else []
+        default_val = default_vals[0] if default_vals else ""
     else:
-        # Already a plain string (bulk edit summary)
+        # Already a plain string (bulk edit summary — multi-values joined by '; ').
         default_val = str(current_value)
+        default_vals = [s for s in (p.strip() for p in default_val.split('; ')) if s]
 
     # Power-user option (#62): edit values as raw text instead of the smart
     # widget — via the config default, or flipped per-edit with Ctrl-T. Binary/
@@ -351,6 +405,15 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
                 return prompt._parse_import_rows(txt, ("ROLE", "NAME"))
             return prompt.list_edit(f"{label}:", initial_people or [], ("ROLE", "NAME"))
 
+        # Multi-value text frames (#60): a simple single-line field by default,
+        # with Ctrl-T expanding to the structured list editor (#60 avenue A).
+        # `as_plain` is the text field; the list is the "widget" side. mv_vals
+        # carries the current values across a toggle (see the run loop below).
+        if multivalue:
+            if as_plain:
+                return prompt.text(f"{label}:", default=(mv_vals[0] if mv_vals else ""))
+            return prompt.list_edit(f"{label} — values:", list(mv_vals), ("VALUE",))
+
         if as_plain:
             hints = {'FRACTIONAL': ' (n/total)', 'ISO8601': ' (ISO 8601)',
                      'DDMM': ' (DD-MM or ISO)', 'YYYY': ' (year)', 'HHMM': ' (HH:MM)'}
@@ -392,17 +455,41 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         # Default: plain text (TEXT_UTF8, URL, LIST_STRING, etc.)
         return prompt.text(f"{label}:", default=default_val)
 
+    # The raw↔widget toggle (#62) is only meaningful when the smart editor
+    # actually differs from a plain text field. For plain-text/URL/INT_BIG
+    # frames the "smart widget" IS prompt.text(), so a toggle would be a no-op —
+    # don't advertise (or enable) Ctrl-T there.
+    has_widget_toggle = (multivalue or ui_cat == 'people'
+                         or fmt in ('ISO8601', 'DDMM', 'YYYY', 'HHMM', 'FRACTIONAL'))
+
+    # Multi-value frames (#60 avenue A): edit as a simple text field by default,
+    # Ctrl-T expands to the list editor. Open straight into the list when the
+    # frame already holds 2+ values (a single field can't show them). mv_vals is
+    # the working set carried across toggles.
+    mv_vals = list(default_vals)
+    if multivalue and force_plain is None:
+        plain = len(mv_vals) < 2
+
     # Run the editor, flipping raw↔widget whenever Ctrl-T returns MODE_TOGGLE.
-    prompt._value_toggle_enabled = True
+    prompt._value_toggle_enabled = has_widget_toggle
+    prompt._toggle_hint_label = 'values' if multivalue else 'widget'
+    prompt._toggle_carry = None
     try:
         while True:
             res = _edit_once(plain)
             if res is prompt.MODE_TOGGLE:
+                # Carry a half-typed text value into the list editor so it isn't
+                # lost when expanding from the field.
+                if multivalue and prompt._toggle_carry is not None:
+                    carry = prompt._toggle_carry.strip()
+                    mv_vals = [carry] if carry else []
+                prompt._toggle_carry = None
                 plain = not plain
                 continue
             return res
     finally:
         prompt._value_toggle_enabled = False
+        prompt._toggle_hint_label = 'widget'
 
 
 def display_tag_id(tag_id: str) -> str:
@@ -443,9 +530,9 @@ def summarize_tag_value(tag_id: str, raw_frame) -> str:
             return f"{getattr(raw_frame, 'gain', 0):+g} dB"
         return "—"
 
-    # Generic text
+    # Generic text (multi-value frames are joined with '; ' for display)
     if hasattr(raw_frame, 'text'):
-        text = "".join(str(t).replace("\n", "\\") for t in raw_frame.text)
+        text = "; ".join(str(t).replace("\n", "\\") for t in raw_frame.text)
         return text[:100]
 
     return str(raw_frame)[:100]
@@ -569,7 +656,7 @@ def apply_bulk_operation_to_files(
                         fail_count += 1
 
             if changed:
-                audio.save(v2_version=3)
+                save_id3(audio)
                 if library is not None:
                     try:
                         refresh_library_entry(library, path)

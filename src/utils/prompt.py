@@ -46,6 +46,8 @@ C = ui_utils.Colors
 MODE_TOGGLE = object()
 _MODE_TOGGLE_KEY = '\x14'          # Ctrl-T
 _value_toggle_enabled = False
+_toggle_hint_label = 'widget'      # what text()'s ^t hint calls the alternate mode
+_toggle_carry: str | None = None   # in-progress text buffer handed across a Ctrl-T toggle
 
 
 def _toggle_hint() -> dict:
@@ -640,7 +642,7 @@ def text(message: str, default: str = "") -> str | None:
             sys.stdout.write(f"\r\033[{prev_lines}A")
         sys.stdout.write(f"\r\033[J{C.HIDE}")
 
-        _tog = f"  {C.DIM}(^t widget){C.RESET}" if _value_toggle_enabled else ""
+        _tog = f"  {C.DIM}(^t {_toggle_hint_label}){C.RESET}" if _value_toggle_enabled else ""
         sys.stdout.write(f"\r  {C.DIM}{message}{C.RESET}{_tog}\r\n")
 
         for i, line in enumerate(wrapped_lines):
@@ -678,6 +680,8 @@ def text(message: str, default: str = "") -> str | None:
             key = _read_key(fd)
 
             if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
+                global _toggle_carry
+                _toggle_carry = "".join(buf)
                 return MODE_TOGGLE  # type: ignore[return-value]
             if   key == 'CTRL_C':             result = None;         break
             elif key == 'ENTER':              result = "".join(buf); break
@@ -912,7 +916,7 @@ def _build_list_edit_lines(
     fixed_rows: bool = False,
     barrel_mode: bool = False, barrel_hints: list[str] | None = None, barrel_idx: int = 0,
     col_ratios: tuple | None = None,
-) -> tuple[list[str], int]:
+) -> tuple[list[str], int, int, int]:
     num_cols = len(headers)
     cols = _cols()
     c = cols - 4
@@ -1895,6 +1899,7 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
 
         lines.append(f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}")
 
+        h = ""
         if section == 'date':
             if not day_mode:
                 h = _hint(("←→", "month"), ("↑↓", "year"), ("tab", "day mode"), ("↵", "save"), ("esc", "back"), ("q", "quit"))

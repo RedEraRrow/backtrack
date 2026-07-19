@@ -222,7 +222,8 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
 
         if res.written:
             if kind == 'mp3':
-                audio.save(path, v2_version=3)
+                from src.id3.id3_tag_handler import save_id3
+                save_id3(audio, path)   # type: ignore[arg-type]  # ID3 in this branch; v2.4 iff multi-value present
             else:
                 audio.save()
     except Exception as e:                  # never let one bad file abort a bulk run

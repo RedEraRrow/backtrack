@@ -872,7 +872,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
                 else:
                     _mq     = (md_quality or {}).get(si)
                     _use_md = bool(_mq and _mq.get('md_text'))
-                    raw     = (_mq['md_text'] if _use_md else seg.get('text', '')).strip()
+                    raw     = (_mq['md_text'] if (_use_md and _mq) else seg.get('text', '')).strip()
                     # Words are the anchor: bright/bold on the current row, normal
                     # elsewhere.  Markdown emphasis renders as styling, not literal *.
                     out.append(_compose(prefix, raw, C.PRIMARY if is_cur else "",

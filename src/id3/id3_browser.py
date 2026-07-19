@@ -28,6 +28,7 @@ from src.id3.id3_tag_handler import (
     prompt_for_value,
     create_frame,
     rename_frame,
+    save_id3,
     create_apic_frame,
     TAG_REGISTRY,
     _EXT_TO_MIME,
@@ -446,7 +447,7 @@ def _import_from_lrc(file_path: str, audio: ID3, tag_id: str) -> None:
     if uslt_text.strip():
         audio.delall('USLT')
         audio.add(USLT(encoding=3, lang='eng', desc='', text=uslt_text))
-        audio.save(v2_version=3)
+        save_id3(audio)
         ui_utils.show_status("Imported to USLT.")
 
 
@@ -537,7 +538,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
                 apic_frame.desc = new_desc
                 ui_utils.show_status("Updated.")
         elif not action:
-            audio_obj.save(v2_version=3)
+            save_id3(audio_obj)
             return True
 
 
@@ -566,7 +567,7 @@ def inspect_tag_loop(
             _cached_dur = 0.0
 
     def _save(audio_obj):
-        audio_obj.save(v2_version=3)
+        save_id3(audio_obj)
         if library is not None:
             try:
                 fresh = refresh_library_entry(library, file_path)

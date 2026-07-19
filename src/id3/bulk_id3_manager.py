@@ -1,6 +1,7 @@
 """Bulk ID3 tag operations across multiple files."""
 from __future__ import annotations
 import os
+import re
 import mutagen.id3
 from mutagen.id3 import ID3
 from src.utils import prompt
@@ -15,6 +16,7 @@ from src.id3.id3_tag_handler import (
     create_apic_frame,
     create_frame,
     rename_frame,
+    save_id3,
     apply_bulk_operation_to_files,
     _prompt_for_image_metadata,
     _EXT_TO_MIME,
@@ -350,7 +352,7 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
         if frame is not None:
             audio.add(frame)
         try:
-            audio.save(p, v2_version=3)
+            save_id3(audio, p)
             changed += 1
             refresh_library_entry(library, p)
         except Exception:
@@ -374,6 +376,34 @@ def _derive_regex_base(paths: list) -> str:
         return os.path.commonpath(abspaths)
     except ValueError:
         return ''
+
+
+def _compute_set_value(spec: dict, frame, path: str):
+    """Per-file value for a regex-driven "Set Common Value", or None to skip.
+
+    'replace' mode runs re.sub over each existing text value of the frame (so
+    multi-value frames transform value-by-value). 'filename' mode matches the
+    file name (or library-relative folder path) and expands the template with
+    the captured groups (``\\1`` / ``\\g<name>``). Returns a list[str] (replace)
+    or str (filename); None means leave the frame untouched."""
+    if spec['mode'] == 'replace':
+        if frame is None or not hasattr(frame, 'text'):
+            return None
+        try:
+            out = [spec['rx'].sub(spec['repl'], str(t)) for t in frame.text]
+        except re.error:
+            return None
+        out = [s for s in (v.strip() for v in out) if s]
+        return out or None
+    # 'filename' mode
+    m = spec['rx'].search(fp._regex_target(path, spec.get('base')))
+    if not m:
+        return None
+    try:
+        val = m.expand(spec['tmpl']).strip()
+    except (re.error, IndexError):
+        return None
+    return val or None
 
 
 def derive_from_filename(paths: list, library: list, header) -> None:
@@ -738,7 +768,7 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
                     audio.add(frame)
                     changed = True
             if changed:
-                audio.save(p, v2_version=3)
+                save_id3(audio, p)
                 count += 1
                 try:
                     refresh_library_entry(library, p)
@@ -908,7 +938,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             if frame is None:
                 continue
             audio.add(frame)
-            audio.save(p, v2_version=3)
+            save_id3(audio, p)
             count += 1
             try:
                 refresh_library_entry(library, p)
@@ -1009,17 +1039,40 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             return lines
         return _build
 
-    operation = prompt.select(
-        "Operation:",
-        choices=["Derive from filename", "Assign by range / schedule",
-                 "Apply sort orders", "Renumber tracks (disc ↔ continuous)",
-                 "Set value", "Copy from first track",
-                 "Delete tags", "Rename tags", "Add new tag"],
-        header=_bulk_header()
-    )
-
-    if not operation:
-        return
+    # Main screen: the basic per-tag ops, plus one entry into the automation
+    # submenu (derive/pattern/propagate ops that compute or copy values rather
+    # than setting them directly).
+    while True:
+        operation = prompt.select(
+            "Operation:",
+            choices=[
+                "Add new tag",
+                "Set value",
+                "Rename tags",
+                "Delete tags",
+                prompt.separator(),
+                "Automation…",
+            ],
+            header=_bulk_header()
+        )
+        if not operation:
+            return
+        if operation != "Automation…":
+            break
+        operation = prompt.select(
+            "Automation:",
+            choices=[
+                "Derive from filename",
+                "Assign by range / schedule",
+                "Apply sort orders",
+                "Renumber tracks (disc ↔ continuous)",
+                "Copy from first track",
+            ],
+            header=_bulk_header()
+        )
+        if operation:
+            break
+        # Backed out of the submenu — fall through to re-show the main menu.
 
     op_display = operation.lower()
     op_map = {
@@ -1101,6 +1154,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     selected_tags = []
     target_tag_id = None
     target_val = None
+    set_spec = None   # regex spec for "Set Common Value" (per-file value computation)
 
     if operation == "Add New Tag":
         raw_id = prompt.text("New Tag ID (e.g. TSO2, COMM[eng], TXXX:Mood):")
@@ -1154,7 +1208,55 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             first_tag = selected_tags[0]
             existing_vals = tag_values.get(first_tag, [])
             fallback_val = existing_vals[0] if existing_vals else ""
-            target_val = prompt_for_value(first_tag, current_value=fallback_val)
+
+            source = prompt.select(
+                "Value source:",
+                choices=["Enter a value", "Find & replace (regex)",
+                         "From file name / folder (regex)"],
+                header=_bulk_header())
+            if not source:
+                return
+
+            if source == "Enter a value":
+                target_val = prompt_for_value(first_tag, current_value=fallback_val)
+            elif source == "Find & replace (regex)":
+                pat = prompt.text("Find (regex) — applied to each existing value:")
+                if not pat:
+                    return
+                try:
+                    rx = re.compile(pat)
+                except re.error as e:
+                    ui_utils.show_status(f"Invalid regex: {e}")
+                    return
+                repl = prompt.text(r"Replace with (\1 / \g<name> for capture groups):",
+                                   default="")
+                if repl is None:
+                    return
+                set_spec = {'mode': 'replace', 'rx': rx, 'repl': repl}
+                target_val = "_regex_"   # sentinel so the None-guard below doesn't bail
+            else:  # From file name / folder (regex)
+                against = prompt.select("Match regex against:",
+                                        choices=["File name", "Folder path"],
+                                        header=_bulk_header())
+                if not against:
+                    return
+                base = _derive_regex_base(album_tracks) if against == "Folder path" else None
+                sample = fp._regex_target(album_tracks[0], base) if album_tracks else ''
+                pat = prompt.text(
+                    rf"Regex with capture groups (matches e.g. '{sample}'; "
+                    "use / between folders):")
+                if not pat:
+                    return
+                try:
+                    rx = re.compile(pat)
+                except re.error as e:
+                    ui_utils.show_status(f"Invalid regex: {e}")
+                    return
+                tmpl = prompt.text(r"Value template (\1, \2 or \g<name> for groups):")
+                if not tmpl:
+                    return
+                set_spec = {'mode': 'filename', 'rx': rx, 'tmpl': tmpl, 'base': base}
+                target_val = "_regex_"
         elif operation == "Copy From First Track":
             # Values come directly from the first track; no extra prompt needed.
             target_val = "_copy_from_first_"
@@ -1269,11 +1371,18 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                         else:
                             audio.add(old_frame)
                     elif operation == "Set Common Value":
+                        # Literal value, or a per-file value from the regex spec.
+                        if set_spec is None:
+                            new_val = target_val
+                        else:
+                            new_val = _compute_set_value(set_spec, audio.get(tag), path)
+                            if new_val is None:
+                                continue   # no match / not applicable — leave frame as-is
+                        if new_val is None:
+                            continue
                         audio.delall(tag)
                         try:
-                            if target_val is None:
-                                continue
-                            new_frame = create_frame(tag, target_val)
+                            new_frame = create_frame(tag, new_val)
                             if new_frame:
                                 audio.add(new_frame)
                                 changed = True
@@ -1281,7 +1390,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                             pass
 
             if changed:
-                audio.save(path, v2_version=3)   # explicit path: works for a fresh ID3 too
+                save_id3(audio, path)   # explicit path: works for a fresh ID3 too
                 count_modified += 1
                 try:
                     refresh_library_entry(library, path)
@@ -1444,7 +1553,7 @@ def bulk_replace_apic(file_paths: list[str], library: list) -> None:
             new_frame = create_apic_frame(img_data, mime, pic_type_int, '')
             if new_frame:
                 audio.add(new_frame)
-                audio.save(v2_version=3)
+                save_id3(audio)
                 refresh_library_entry(library, file_path)
                 success_count += 1
             else:

@@ -60,7 +60,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
                     'TEXT', 'TEXT_UTF8', 'IDENTIFICATION', 'text', False, TOAL),
     
     'TPE1': TagInfo('TPE1', ['Artist', 'Lead performer(s)', 'Lead performer', 'Soloist(s)', 'Soloist'],
-                    'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', True, TPE1),
+                    'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', False, TPE1),
 
     'TPE2': TagInfo('TPE2', ['Album artist', 'Band', 'Orchestra', 'Accompaniment'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', True, TPE2),
@@ -84,7 +84,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
                     'TEXT', 'TEXT_UTF8', 'IDENTIFICATION', 'text', False, TCMP),
     
     'TCOM': TagInfo('TCOM', ['Composer'],
-                    'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', True, TCOM),
+                    'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', False, TCOM),
     
     'TENC': TagInfo('TENC', ['Encoded by'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', True, TENC),
@@ -102,7 +102,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
                     'LIST', 'LIST_STRING', 'DERIVED_SUBJECTIVE', 'text', False, TLAN),
     
     'TCON': TagInfo('TCON', ['Genre', 'Content type'],
-                    'LIST', 'LIST_STRING', 'DERIVED_SUBJECTIVE', 'text', True, TCON),
+                    'LIST', 'LIST_STRING', 'DERIVED_SUBJECTIVE', 'text', False, TCON),
     
     'TFLT': TagInfo('TFLT', ['File type'],
                     'TEXT', 'TEXT_UTF8', 'DERIVED_SUBJECTIVE', 'text', False, TFLT),

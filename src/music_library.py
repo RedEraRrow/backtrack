@@ -328,7 +328,10 @@ def _extract_id3_metadata(tags: ID3) -> dict:
 
     for frame_id, field in frame_map.items():
         if frame_id in tags:
-            result[field] = str(tags[frame_id].text[0]) if tags[frame_id].text else ""
+            # Multi-value frames (#60, e.g. artist/genre) join with '; ' so every
+            # value is searchable and shown; single-value frames are unaffected.
+            vals = [str(t) for t in tags[frame_id].text] if tags[frame_id].text else []
+            result[field] = "; ".join(vals)
 
     # Track and disc numbers
     if 'TRCK' in tags:

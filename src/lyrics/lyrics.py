@@ -729,7 +729,8 @@ def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]]) -> No
             audio = ID3()
         audio.delall('SYLT')
         audio.add(SYLT(encoding=3, lang='eng', format=2, type=1, text=sylt_entries))
-        audio.save(file_path, v2_version=3)
+        from src.id3.id3_tag_handler import save_id3
+        save_id3(audio, file_path)   # v2.4 iff a multi-value frame is present
     except Exception as exc:
         ui_utils.show_status(f"Failed to save SYLT: {exc}", duration=4.0)
         raise
