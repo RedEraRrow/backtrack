@@ -40,6 +40,17 @@ from src import state as _state
 from src.state import QuitToTerminal
 C = ui_utils.Colors
 
+# Per-edit "raw text ↔ smart widget" toggle (#62). prompt_for_value enables the
+# flag around a value edit; the value widgets then treat Ctrl-T as a request to
+# switch modes by returning MODE_TOGGLE, and advertise it in their hint bar.
+MODE_TOGGLE = object()
+_MODE_TOGGLE_KEY = '\x14'          # Ctrl-T
+_value_toggle_enabled = False
+
+
+def _toggle_hint() -> dict:
+    return {"^t": "text/widget"} if _value_toggle_enabled else {}
+
 
 @overload
 def select(message: str, choices: list, *,
@@ -629,7 +640,8 @@ def text(message: str, default: str = "") -> str | None:
             sys.stdout.write(f"\r\033[{prev_lines}A")
         sys.stdout.write(f"\r\033[J{C.HIDE}")
 
-        sys.stdout.write(f"\r  {C.DIM}{message}{C.RESET}\r\n")
+        _tog = f"  {C.DIM}(^t widget){C.RESET}" if _value_toggle_enabled else ""
+        sys.stdout.write(f"\r  {C.DIM}{message}{C.RESET}{_tog}\r\n")
 
         for i, line in enumerate(wrapped_lines):
             sys.stdout.write(f"\r  {C.DIM}│{C.RESET} {line:<{content_width}} {C.DIM}│{C.RESET}")
@@ -665,6 +677,8 @@ def text(message: str, default: str = "") -> str | None:
             if not _wait_for_keypress(0.05): continue
             key = _read_key(fd)
 
+            if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
+                return MODE_TOGGLE  # type: ignore[return-value]
             if   key == 'CTRL_C':             result = None;         break
             elif key == 'ENTER':              result = "".join(buf); break
             elif key == 'BACKSPACE' and pos > 0:
@@ -909,6 +923,8 @@ def _build_list_edit_lines(
         base_hints = {"↑↓": "move", "e": "edit", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit"}
     else:
         base_hints = {"↑↓": "move", "a": "add", "e": "edit", "d": "delete", "K/J": "reorder", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit"}
+        if _value_toggle_enabled:
+            base_hints["^t"] = "raw text"
     edit_hints = {"tab": "next col", "esc": "cancel", "↵": "apply"}
 
     out.append(f"  {C.DIM}{message}{C.RESET}")
@@ -1189,6 +1205,9 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                 continue
 
             key = _read_key(fd)
+
+            if _value_toggle_enabled and key == _MODE_TOGGLE_KEY and not edit_mode:
+                return MODE_TOGGLE  # type: ignore[return-value]
 
             if edit_mode and barrel_mode:
                 if key == 'ESC':
@@ -1673,6 +1692,8 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
 
             key = _read_key(fd)
 
+            if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
+                return MODE_TOGGLE  # type: ignore[return-value]
             if key == 'ENTER':
                 result = f"{y:04d}-{m:02d}-{cursor_day:02d}"
                 break
@@ -1918,6 +1939,8 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
 
             key = _read_key(fd)
 
+            if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
+                return MODE_TOGGLE  # type: ignore[return-value]
             if key in ('ESC', 'CTRL_C'):
                 break
             if key in ('q', 'Q'):
@@ -2117,6 +2140,8 @@ def fraction_edit(message: str = "Edit metadata pair:",
                 continue
 
             key = _read_key(fd)
+            if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
+                return MODE_TOGGLE  # type: ignore[return-value]
             current_field = field_order[cursor_field]
             buf = edit_buffers[current_field]
             pos = edit_positions[current_field]
@@ -2272,6 +2297,8 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
                 continue
 
             key = _read_key(fd)
+            if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
+                return MODE_TOGGLE  # type: ignore[return-value]
             current_field = field_order[cursor_field]
             buf = fields[current_field]
             pos = positions[current_field]

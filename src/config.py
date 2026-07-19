@@ -22,6 +22,8 @@ DEFAULT_CONFIG = {
     "tag_name_preferences": {},
     "sort_list_delimiter": "/",
     "name_corpus": "full",
+    "plain_text_editing": False,
+    "autoplay_on_select": False,
 }
 
 def _default_config_dir() -> Path:

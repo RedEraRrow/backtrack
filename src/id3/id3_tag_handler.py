@@ -277,7 +277,8 @@ def _prompt_for_rva2(current_value: Any) -> dict | None:
     return {'__rva2__': True, 'gain': gain}
 
 
-def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: list | None = None) -> Any | None:
+def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: list | None = None,
+                     force_plain: bool | None = None) -> Any | None:
     info = get_tag_info(tag_id)
     if not info:
         return None
@@ -309,7 +310,19 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         # Already a plain string (bulk edit summary)
         default_val = str(current_value)
 
-    # Structural types dispatched on ui_category
+    # Power-user option (#62): edit values as raw text instead of the smart
+    # widget — via the config default, or flipped per-edit with Ctrl-T. Binary/
+    # asset frames (image, SYLT, EQU2, RVA2) have no raw-text form, so no toggle.
+    if force_plain is not None:
+        plain = force_plain
+    else:
+        try:
+            from src.config import load_config
+            plain = bool(load_config().get('plain_text_editing', False))
+        except Exception:
+            plain = False
+
+    # Single-mode structural editors (no raw-text equivalent).
     if ui_cat == 'image':
         img_data = _prompt_for_image_file()
         if not img_data:
@@ -321,54 +334,75 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
             return None
         pic_type, desc = meta
         return {'__image__': True, 'data': img_data, 'type': pic_type, 'desc': desc}
-
     if ui_cat == 'lyrics':
         ui_utils.show_status("Use lyric sync tool for SYLT")
         return None
-
     if ui_cat == 'multiline text':
         return prompt.system_editor_edit(initial_text=default_val)
 
-    if ui_cat == 'people':
-        return prompt.list_edit(f"{label}:", initial_people or [], ("ROLE", "NAME"))
+    def _edit_once(as_plain: bool):
+        if ui_cat == 'people':
+            if as_plain:
+                lines = "\n".join(f"{r}: {n}" for r, n in (initial_people or []))
+                template = "# One 'role: name' per line\n" + (f"{lines}\n" if lines else "")
+                txt = prompt.system_editor_edit(initial_text=template)
+                if txt is None:
+                    return None
+                return prompt._parse_import_rows(txt, ("ROLE", "NAME"))
+            return prompt.list_edit(f"{label}:", initial_people or [], ("ROLE", "NAME"))
 
-    # Format-spec-driven dispatch for all data types
-    if fmt == 'ISO8601':
-        return prompt.datetime_edit(f"{label}:", initial=default_val)
+        if as_plain:
+            hints = {'FRACTIONAL': ' (n/total)', 'ISO8601': ' (ISO 8601)',
+                     'DDMM': ' (DD-MM or ISO)', 'YYYY': ' (year)', 'HHMM': ' (HH:MM)'}
+            hint = hints.get(fmt or '', '')
+            if fmt == 'INT_BIG' and ui_cat == 'duration':
+                hint = ' (milliseconds)'
+            return prompt.text(f"{label}{hint}:", default=default_val)
 
-    if fmt == 'DDMM':
-        cal_init = default_val
-        if len(default_val) == 4 and default_val.isdigit():
-            year = time.localtime().tm_year
-            cal_init = f"{year}-{default_val[2:]}-{default_val[:2]}"
-        return prompt.calendar_select(f"{label}:", initial=cal_init)
+        if fmt == 'ISO8601':
+            return prompt.datetime_edit(f"{label}:", initial=default_val)
+        if fmt == 'DDMM':
+            cal_init = default_val
+            if len(default_val) == 4 and default_val.isdigit():
+                year = time.localtime().tm_year
+                cal_init = f"{year}-{default_val[2:]}-{default_val[:2]}"
+            return prompt.calendar_select(f"{label}:", initial=cal_init)
+        if fmt == 'YYYY':
+            cal_init = f"{default_val}-01-01" if len(default_val) == 4 and default_val.isdigit() else default_val
+            result = prompt.calendar_select(f"{label}:", initial=cal_init)
+            if result is prompt.MODE_TOGGLE or result is None:
+                return result
+            return result[:4]
+        if fmt == 'HHMM':
+            init = f"{default_val[:2]}:{default_val[2:]}:00" if len(default_val) == 4 and default_val.isdigit() else default_val
+            return prompt.time_edit(f"{label}:", initial=init or "00:00:00")
+        if fmt == 'FRACTIONAL':
+            b_id, _, _ = parse_composite_tag_id(tag_id)
+            result = prompt.fraction_edit(f"Edit {label}:", tag=b_id, value=default_val)
+            if result is prompt.MODE_TOGGLE or result is None:
+                return result
+            curr = result.get('current', '').strip()
+            tot = result.get('total', '').strip()
+            if curr and tot:
+                return f"{curr}/{tot}"
+            return curr or None
+        if fmt == 'INT_BIG':
+            hint = " (milliseconds)" if ui_cat == 'duration' else ""
+            return prompt.text(f"{label}{hint}:", default=default_val)
+        # Default: plain text (TEXT_UTF8, URL, LIST_STRING, etc.)
+        return prompt.text(f"{label}:", default=default_val)
 
-    if fmt == 'YYYY':
-        cal_init = f"{default_val}-01-01" if len(default_val) == 4 and default_val.isdigit() else default_val
-        result = prompt.calendar_select(f"{label}:", initial=cal_init)
-        return result[:4] if result else None
-
-    if fmt == 'HHMM':
-        init = f"{default_val[:2]}:{default_val[2:]}:00" if len(default_val) == 4 and default_val.isdigit() else default_val
-        return prompt.time_edit(f"{label}:", initial=init or "00:00:00")
-
-    if fmt == 'FRACTIONAL':
-        base_id, _, _ = parse_composite_tag_id(tag_id)
-        result = prompt.fraction_edit(f"Edit {label}:", tag=base_id, value=default_val)
-        if result is None:
-            return None
-        curr = result.get('current', '').strip()
-        tot = result.get('total', '').strip()
-        if curr and tot:
-            return f"{curr}/{tot}"
-        return curr or None
-
-    if fmt == 'INT_BIG':
-        hint = " (milliseconds)" if ui_cat == 'duration' else ""
-        return prompt.text(f"{label}{hint}:", default=default_val)
-
-    # Default: plain text (TEXT_UTF8, URL, LIST_STRING, etc.)
-    return prompt.text(f"{label}:", default=default_val)
+    # Run the editor, flipping raw↔widget whenever Ctrl-T returns MODE_TOGGLE.
+    prompt._value_toggle_enabled = True
+    try:
+        while True:
+            res = _edit_once(plain)
+            if res is prompt.MODE_TOGGLE:
+                plain = not plain
+                continue
+            return res
+    finally:
+        prompt._value_toggle_enabled = False
 
 
 def display_tag_id(tag_id: str) -> str:

@@ -280,7 +280,7 @@ def handle_search(library: list) -> str | None:
     if _show_editor:
         _action_choices.append("Edit Metadata")
 
-    if len(_action_choices) == 1:
+    if len(_action_choices) == 1 or _autoplay():
         action = "Play"
     else:
         action = prompt.select(
@@ -315,6 +315,11 @@ _HISTORY_COLUMNS = [
     prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
     prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
 ]
+
+
+def _autoplay() -> bool:
+    """Whether selecting a track should play immediately, skipping the action menu."""
+    return bool(load_config().get('autoplay_on_select', False))
 
 
 def _relative_time(ts: str, now: "datetime.datetime | None" = None) -> str:
@@ -401,7 +406,7 @@ def handle_history(library: list) -> str | None:
     if _cfg.get("show_lyrics_editor", True) and find_lyrics(selected):
         _action_choices.append("Edit Lyrics")
 
-    if len(_action_choices) == 1:
+    if len(_action_choices) == 1 or _autoplay():
         action = "Play"
     else:
         action = prompt.select(
@@ -473,6 +478,7 @@ def handle_settings(library_ref: list) -> None:
         _choices: list = [
             prompt.separator("PLAYBACK"),
             "Adjust Lyric Lead-in Time",
+            "Toggle Auto-play on Select",
             prompt.separator("LIBRARY"),
             "Update Music Directory",
             "Update iTunes Library XML Path",
@@ -484,6 +490,7 @@ def handle_settings(library_ref: list) -> None:
             prompt.separator("EDITORS"),
             "Toggle Metadata Editor",
             "Toggle Lyrics Editor",
+            "Toggle Plain-text Editing",
             "Tag Name Preferences",
             "Sort List Delimiter",
             "Name Corpus Size",
@@ -517,6 +524,13 @@ def handle_settings(library_ref: list) -> None:
             elif prompt.confirm(f"Delete all {entry_count} history entries? Cannot be undone."):
                 ui_utils.show_status("History cleared." if clear_history() else "Failed to clear history.")
 
+        elif choice == "Toggle Auto-play on Select":
+            config["autoplay_on_select"] = not config.get("autoplay_on_select", False)
+            if config["autoplay_on_select"]:
+                ui_utils.show_status("Auto-play: ON — selecting a track plays it immediately.")
+            else:
+                ui_utils.show_status("Auto-play: OFF — selecting shows the Play / Edit menu.")
+
         elif choice == "Adjust Lyric Lead-in Time":
             val = prompt.text("Lead-in seconds:", default=str(config["lyric_lead_in"]))
             if val is not None:
@@ -536,6 +550,13 @@ def handle_settings(library_ref: list) -> None:
             config["show_lyrics_editor"] = not config.get("show_lyrics_editor", True)
             state = "VISIBLE" if config["show_lyrics_editor"] else "HIDDEN"
             ui_utils.show_status(f"Lyrics editor: {state}")
+
+        elif choice == "Toggle Plain-text Editing":
+            config["plain_text_editing"] = not config.get("plain_text_editing", False)
+            if config["plain_text_editing"]:
+                ui_utils.show_status("Plain-text editing: ON — raw text instead of the smart widgets.")
+            else:
+                ui_utils.show_status("Plain-text editing: OFF — smart date/fraction/people widgets.")
 
         elif choice == "Tag Name Preferences":
             _handle_tag_name_preferences()
@@ -1035,7 +1056,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         if _cfg_track.get("show_metadata_editor", True):
                             _action_choices.append("Edit Metadata")
 
-                        if len(_action_choices) == 1:
+                        if len(_action_choices) == 1 or _autoplay():
                             action = "Play"
                         else:
                             action = prompt.select(
@@ -1053,7 +1074,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                             ui_utils.clear_screen()
                             if res and res.get("status") == "QUIT_ALL":
                                 return "QUIT_ALL"
-                            if len(_action_choices) == 1:
+                            if len(_action_choices) == 1 or _autoplay():
                                 break
 
                         elif action == "Edit Lyrics":
