@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import random
 import string
+import datetime
 
 from src.utils.ui_utils import roman, Colors as C
 
@@ -11,10 +12,11 @@ from src.utils import ui_utils
 from src.music_library import (
     build_library, save_library_cache,
     load_xml_database, start_background_sync,
-    get_grouped_data, get_group_sort_key, search_library, sort_library_logic,
+    get_grouped_data, get_group_sort_key, sort_library_logic,
     to_num
 )
-from src.history import get_history, clear_history
+from src.history import get_history, clear_history, get_recent_paths
+from src import search as _search
 from src.playback.playback import music_player
 from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
 from src.config import load_config, save_config
@@ -129,54 +131,144 @@ def _pick_sort(current: str, options: list, header) -> str:
     return sel or current
 
 
+# Search scope cycled with Tab in the live search screen (default: all fields).
+_ALL_SEARCH_FIELDS = ['title', 'artist', 'album', 'genre', 'people']
+_SCOPE_CYCLE = ['all', 'title', 'artist', 'album', 'genre', 'people']
+
+# Columns for live search results: title (matched chars accented) · artist ·
+# album · people (whoever matched) · disc/track · duration. `title` flexes;
+# the rest are width-capped so the layout stays aligned across queries.
+_SEARCH_COLUMNS = [
+    prompt.Column(style='primary', flex=True),
+    prompt.Column(style='dynamic-dim', max_frac=0.20),
+    prompt.Column(style='dynamic-dim', max_frac=0.20),
+    prompt.Column(style='dynamic-dim', max_frac=0.22),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
+]
+
+
+def _hl_segments(value: str, tokens: list, base_style: str) -> list:
+    """Split `value` into styled segments, accenting the fuzzy-matched spans."""
+    value = str(value or "")
+    if not value:
+        return [("", base_style)]
+    spans = _search.highlight_spans(value, tokens) if tokens else []
+    if not spans:
+        return [(value, base_style)]
+    segs: list = []
+    i = 0
+    for a, b in spans:
+        if a > i:
+            segs.append((value[i:a], base_style))
+        segs.append((value[a:b], 'accent'))
+        i = b
+    if i < len(value):
+        segs.append((value[i:], base_style))
+    return segs
+
+
+def _disc_track_cell(song: dict) -> str:
+    """Compact disc/track indicator: '1·05' when multi-disc, else '05' (or '')."""
+    trk = str(song.get('track', '') or '').strip()
+    disc = str(song.get('disc', '') or '').strip()
+    total_discs = str(song.get('total_discs', '') or '').strip()
+    if not trk or trk == '0':
+        return ""
+    trk = trk.zfill(2)
+    multi = (disc and disc not in ('0', '1')) or (total_discs and total_discs not in ('0', '1'))
+    return f"{disc}·{trk}" if multi and disc else trk
+
+
+def _people_cell(value: str, tokens: list):
+    """People column: the matched person(s), highlighted — empty when no person
+    in this track's cast matched (so the column reads as 'who matched')."""
+    if not value or not tokens:
+        return ""
+    parts = value.replace(';', ',').replace('/', ',').split(',')
+    entries = [e.strip() for e in parts if e.strip()]
+    matched = [e for e in entries if _search.highlight_spans(e, tokens)]
+    if not matched:
+        return ""
+    segs: list = []
+    for i, e in enumerate(matched):
+        if i:
+            segs.append((", ", 'dim'))
+        segs += _hl_segments(e, tokens, 'dynamic-dim')
+    return segs
+
+
+def _search_result_cells(result, tokens: list) -> list:
+    """Build the columned, highlighted cells for one search result row."""
+    s = result.song
+    title = _hl_segments(s.get('title', ''), tokens, 'primary')
+    artist = _hl_segments(s.get('artist', ''), tokens, 'dynamic-dim')
+    album = _hl_segments(s.get('album', ''), tokens, 'dynamic-dim')
+    # Only fill the people column when people was the field that actually matched
+    # (avoids weak subsequence hits populating it on a title/artist search).
+    people = (_people_cell(str(s.get('people', '') or ''), tokens)
+              if 'people' in result.matched_fields else "")
+    # A genre hit has no column of its own; tag it onto the album when nothing
+    # else in the row is highlighted, so it's still clear why the row matched.
+    if 'genre' in result.matched_fields and not people and not any(
+            _search.highlight_spans(str(s.get(f, '') or ''), tokens)
+            for f in ('title', 'artist', 'album')):
+        album = album + [("  · ", 'dim')] + _hl_segments(str(s.get('genre', '') or ''), tokens, 'dynamic-dim')
+    dur = s.get('duration') or 0
+    dur_str = ui_utils.format_time(int(dur)) if dur else ""
+    return [title, artist, album, people, _disc_track_cell(s), dur_str]
+
+
 def handle_search(library: list) -> str | None:
     if not library:
         ui_utils.show_status("Library is empty. Scan a directory first.")
         return None
 
-    search_targets = prompt.select(
-        "Search within:",
-        choices=[
-            {"name": "Title",         "value": "title",         "checked": True},
-            {"name": "Artist",        "value": "artist",        "checked": True},
-            {"name": "Album",         "value": "album",         "checked": True},
-            {"name": "Genre",         "value": "genre",         "checked": False},
-            {"name": "People",         "value": "people",         "checked": False},
-        ],
-        multi=True,
-    )
-    if not search_targets:
-        return None
-
-    query = prompt.text("Search:")
-    if not query:
-        return None
-
-    matches = search_library(library, query, search_targets)
-    if not matches:
-        ui_utils.show_status("No matching tracks found.")
-        return None
-
-    choices = [
-        prompt.Choice(title=f"{s['title']} — {s['artist']} ({s['album']})", value=s['path'])
-        for s in matches
-    ]
     _cfg = load_config()
     _show_editor = _cfg.get("show_metadata_editor", True)
     _show_lyrics = _cfg.get("show_lyrics_editor", True)
-    _header_choices = []
-    if _show_editor:
-        _header_choices.append(prompt.Choice(title=f"Edit tags — all {len(matches)} results", value="__bulk_edit__"))
-    selected = prompt.select(
-        f"{len(matches)} result(s):",
-        choices=_header_choices + choices,
-        header=_menu_header("Search Results", query),
-    )
+    recent = get_recent_paths()
+
+    # Search scope, cycled in-screen with Tab (default: all fields).
+    scope = {'i': 0}   # index into _SCOPE_CYCLE
+
+    def _fields() -> list:
+        mode = _SCOPE_CYCLE[scope['i']]
+        return _ALL_SEARCH_FIELDS if mode == 'all' else [mode]
+
+    def _cycle() -> None:
+        scope['i'] = (scope['i'] + 1) % len(_SCOPE_CYCLE)
+
+    # Live fuzzy search: results re-rank on every keystroke, matched characters
+    # highlighted, richer rows (title · artist · album · people · disc/track · dur).
+    _last: dict = {'results': []}
+
+    def _provider(query: str) -> list:
+        results = _search.search(library, query, _fields(), recent=recent, limit=200)
+        _last['results'] = [r.song for r in results]
+        tokens = _search.tokenize(query)
+        choices: list = []
+        if _show_editor and results:
+            choices.append(prompt.Choice(
+                title=f"Edit tags — all {len(results)} results", value="__bulk_edit__"))
+        for r in results:
+            choices.append(prompt.Choice(title=r.song.get('title', ''), value=r.song['path'],
+                                         cells=_search_result_cells(r, tokens)))
+        return choices
+
+    def _hdr() -> list:
+        mode = _SCOPE_CYCLE[scope['i']]
+        label = "all fields" if mode == 'all' else mode
+        return _menu_header("Search", f"scope: {label} · Tab to change")()
+
+    selected = prompt.live_select(
+        "Search:", _provider, columns=_SEARCH_COLUMNS,
+        header=_hdr, on_cycle=_cycle)
     if not selected:
         return None
 
     if selected == "__bulk_edit__":
-        bulk_id3_manager(library, paths=[s['path'] for s in matches])
+        bulk_id3_manager(library, paths=[s['path'] for s in _last['results']])
         return None
 
     song_meta = next((s for s in library if s['path'] == selected), None)
@@ -215,6 +307,59 @@ def handle_search(library: list) -> str | None:
     return None
 
 
+# Listening-history columns: title · artist · album · when (relative) · listened.
+_HISTORY_COLUMNS = [
+    prompt.Column(style='primary', flex=True),
+    prompt.Column(style='dynamic-dim', max_frac=0.24),
+    prompt.Column(style='dynamic-dim', max_frac=0.24),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
+]
+
+
+def _relative_time(ts: str, now: "datetime.datetime | None" = None) -> str:
+    """Human 'x ago' for a history timestamp; falls back to the raw date."""
+    try:
+        dt = datetime.datetime.fromisoformat(ts.strip()[:19])
+    except (ValueError, AttributeError):
+        return (ts or '')[:16]
+    now = now or datetime.datetime.now()
+    secs = (now - dt).total_seconds()
+    if secs < 60:
+        return "just now"
+    mins = secs / 60
+    if mins < 60:
+        return f"{int(mins)}m ago"
+    hrs = mins / 60
+    if hrs < 24:
+        return f"{int(hrs)}h ago"
+    days = hrs / 24
+    if days < 2:
+        return "yesterday"
+    if days < 7:
+        return f"{int(days)}d ago"
+    if days < 28:
+        return f"{int(days / 7)}w ago"
+    return dt.strftime("%d %b %Y")
+
+
+def _nice_dur(raw: str) -> str:
+    try:
+        secs = int(str(raw).rstrip('s'))
+    except ValueError:
+        return str(raw)
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if h:
+        parts.append(f"{h}h")
+    if m:
+        parts.append(f"{m}m")
+    if s or not parts:
+        parts.append(f"{s}s")
+    return " ".join(parts)
+
+
 def handle_history(library: list) -> str | None:
     history_entries = get_history(limit=30)
 
@@ -222,38 +367,28 @@ def handle_history(library: list) -> str | None:
         ui_utils.show_status("No listening history available.")
         return None
 
-    def _nice_dur(raw: str) -> str:
-        try:
-            secs = int(str(raw).rstrip('s'))
-        except ValueError:
-            return str(raw)
-        h, rem = divmod(secs, 3600)
-        m, s = divmod(rem, 60)
-        parts = []
-        if h:
-            parts.append(f"{h}h")
-        if m:
-            parts.append(f"{m}m")
-        if s or not parts:
-            parts.append(f"{s}s")
-        return " ".join(parts)
-
+    now = datetime.datetime.now()
     choices = []
     for ts, dur, path in history_entries:
         song = next((s for s in library if s['path'] == path), None)
         if song:
             title = song.get('title') or os.path.splitext(os.path.basename(path))[0]
             artist = (song.get('artist') or '').strip()
-            label = f"{title} — {artist}" if artist and artist != 'Unknown Artist' else title
+            album = (song.get('album') or '').strip()
+            artist = '' if artist == 'Unknown Artist' else artist
+            album = '' if album == 'Unknown Album' else album
         else:
-            label = os.path.splitext(os.path.basename(path))[0]
-        ts_short = ts[:16] if len(ts) >= 16 else ts  # drop seconds
-        choices.append(prompt.Choice(title=f"{label}   ({_nice_dur(dur)} · {ts_short})", value=path))
+            title = os.path.splitext(os.path.basename(path))[0]
+            artist = album = ''
+        choices.append(prompt.Choice(
+            title=title, value=path,
+            cells=[title, artist, album, _relative_time(ts, now), _nice_dur(dur)]))
 
     selected = prompt.select(
         "History:",
         choices=choices,
-        header=_menu_header("Listening History"),
+        columns=_HISTORY_COLUMNS,
+        header=_menu_header("Listening History", f"{len(history_entries)} recent"),
     )
     if not selected:
         return None

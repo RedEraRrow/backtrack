@@ -381,6 +381,192 @@ def select(message: str, choices: list, *,
     return result
 
 
+def live_select(message: str, provider: Callable[[str], list], *,
+                header: list | None | Callable[[], list[str]] = None,
+                columns: list | None = None,
+                extra_hints: dict[str, str] | None = None,
+                on_cycle: Callable[[], None] | None = None,
+                initial_query: str = "") -> Any:
+    """Incremental "search box + live results" widget.
+
+    `provider(query)` is called on each query change and returns the ranked list
+    of Choice to display (cells already built, including any highlight segments).
+    Letters/digits type into the query; ← → move the query caret; ↑ ↓ (and the
+    scroll wheel) move through results; Enter selects the highlighted row; Esc
+    cancels. Returns the chosen Choice.value, or None.
+    """
+    _check_deferred_quit()
+    fd  = sys.stdin.fileno()
+    old = _get_term_attrs(fd)
+    w   = _Widget(fd)
+
+    query: list[str] = list(initial_query)
+    qpos             = len(query)
+    items: list      = list(provider("".join(query))) if query else []
+    cursor           = 0
+    viewport         = 0
+
+    base_hints = {"type": "search", "↑↓": "results", "esc": "back", "↵": "open"}
+    if on_cycle is not None:
+        base_hints["tab"] = "scope"
+    hints = {**(extra_hints or {}), **base_hints}
+
+    def _header_lines() -> list[str]:
+        if header is None:
+            return []
+        return header() if callable(header) else list(header)
+
+    def _selectable() -> list[int]:
+        return [i for i, it in enumerate(items) if not it.disabled]
+
+    def _step(cur: int, direction: int) -> int:
+        sel = _selectable()
+        if not sel:
+            return cur
+        if cur in sel:
+            idx = sel.index(cur)
+            return sel[(idx + direction) % len(sel)]
+        return sel[0] if direction > 0 else sel[-1]
+
+    def _recompute() -> None:
+        nonlocal items, cursor, viewport
+        try:
+            items = list(provider("".join(query))) if query else []
+        except Exception:
+            items = []
+        cursor = _step(-1, 1) if items else 0
+        viewport = 0
+
+    def _lines() -> list:
+        nonlocal viewport
+        width = ui_utils.get_terminal_width()
+        cols  = _cols()
+        out = _header_lines()
+
+        qtext = "".join(query)
+        b, a = qtext[:qpos], qtext[qpos:]
+        out.append(f"  {C.DIM}{message}{C.RESET} {b}{C.ACCENT}▏{C.RESET}{a}")
+        count = "type to search…" if not qtext else f"{len(items)} result(s)"
+        out.append(f"  {C.DIM}{count}{C.RESET}")
+
+        hint_lines = _hint(*list(hints.items())).splitlines()
+        overhead = len(out) + len(hint_lines) + 3
+        vis = max(2, _visible_rows() - overhead)
+
+        n = len(items)
+        if cursor < viewport:
+            viewport = cursor
+        elif cursor >= viewport + vis:
+            viewport = cursor - vis + 1
+        out.append(f"  {C.DIM}╵ {viewport} above{C.RESET}" if viewport > 0 else "")
+
+        eff = min(cols, _COLUMNS_MAX_WIDTH)
+        col_widths: list = []
+        if columns:
+            rows_cells = [it.cells for it in items if it.cells]
+            if rows_cells:
+                col_widths = _table_widths(rows_cells, columns, eff,
+                                           pointer_w=4, right_margin=_EDGE_MARGIN)
+
+        for i in range(viewport, min(viewport + vis, n)):
+            it = items[i]
+            if columns and it.cells:
+                out.append(_render_table_row(it.cells, columns, i == cursor,
+                                             col_widths, eff, _EDGE_MARGIN))
+            elif it.disabled:
+                out.append(f"  {C.DIM}{C.BOLD}{it.title}{C.RESET}" if it.title else "")
+            elif i == cursor:
+                out.append(f"  {C.ACCENT}›{C.RESET} {C.PRIMARY}{C.BOLD}{it.title}{C.RESET}")
+            else:
+                out.append(f"    {C.DIM}{it.title}{C.RESET}")
+
+        remaining = n - viewport - vis
+        out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
+        out.extend(hint_lines)
+        return [_clip_ansi(line, width) for line in out]
+
+    result = None
+    try:
+        _set_raw(fd)
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000h\033[?1006h")
+        sys.stdout.write("\033[H\033[3J\033[J")
+        sys.stdout.flush()
+        w.render(_lines())
+
+        while True:
+            if ui_utils.consume_resize():
+                sys.stdout.write("\033[H\033[3J\033[J")
+                sys.stdout.flush()
+                w.anchor_reset()
+                w.render(_lines())
+                continue
+            if not _wait_for_keypress(0.05):
+                continue
+            key = _read_key(fd)
+
+            if key == 'CTRL_C':
+                raise QuitToTerminal()
+            elif key == 'ESC':
+                result = None
+                break
+            elif key == 'TAB' and on_cycle is not None:
+                on_cycle()
+                _recompute()
+                w.render(_lines())
+            elif key == 'ENTER':
+                if items and not items[cursor].disabled:
+                    result = items[cursor].value
+                    break
+            elif key in ('UP',):
+                cursor = _step(cursor, -1); w.render(_lines())
+            elif key in ('DOWN',):
+                cursor = _step(cursor, 1); w.render(_lines())
+            elif key == 'SCROLL_UP':
+                cursor = _step(cursor, -1); w.render(_lines())
+            elif key == 'SCROLL_DOWN':
+                cursor = _step(cursor, 1); w.render(_lines())
+            elif key == 'PGUP':
+                sel = _selectable()
+                if sel:
+                    cursor = max(sel[0], cursor - 5)
+                    if items[cursor].disabled:
+                        cursor = _step(cursor, -1)
+                w.render(_lines())
+            elif key == 'PGDN':
+                sel = _selectable()
+                if sel:
+                    cursor = min(sel[-1], cursor + 5)
+                    if items[cursor].disabled:
+                        cursor = _step(cursor, 1)
+                w.render(_lines())
+            elif key == 'LEFT':
+                qpos = max(0, qpos - 1); w.render(_lines())
+            elif key == 'RIGHT':
+                qpos = min(len(query), qpos + 1); w.render(_lines())
+            elif key == 'HOME':
+                qpos = 0; w.render(_lines())
+            elif key == 'END':
+                qpos = len(query); w.render(_lines())
+            elif key == 'BACKSPACE':
+                if qpos > 0:
+                    query.pop(qpos - 1); qpos -= 1
+                    _recompute(); w.render(_lines())
+            elif key == 'SPACE':
+                query.insert(qpos, ' '); qpos += 1
+                _recompute(); w.render(_lines())
+            elif len(key) == 1 and key.isprintable():
+                query.insert(qpos, key); qpos += 1
+                _recompute(); w.render(_lines())
+    finally:
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000l\033[?1006l")
+        _restore_term_attrs(fd, old)
+        w.clear()
+
+    return result
+
+
 def confirm(message: str, default: bool = False) -> bool:
     fd     = sys.stdin.fileno()
     old    = _get_term_attrs(fd)

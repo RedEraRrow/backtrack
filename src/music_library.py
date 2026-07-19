@@ -367,17 +367,19 @@ def _extract_id3_metadata(tags: ID3) -> dict:
     if not result.get('work') and result.get('grouping'):
         result['work'] = result['grouping']
 
-    # People: collect all names from TMCL (performers) and TIPL (involved people)
-    people_names = []
+    # People from TMCL (performers) / TIPL (involved people). Store each as
+    # "Name (Role)" when a role is present so search matches — and the results
+    # people column can show — both the person and their role/character.
+    people_entries = []
     for frame_id in ('TMCL', 'TIPL'):
         frame = tags.get(frame_id)
         if frame and hasattr(frame, 'people'):
-            for _role, name in frame.people:
-                n = name.strip()
+            for role, name in frame.people:
+                n, r = name.strip(), role.strip()
                 if n:
-                    people_names.append(n)
-    if people_names:
-        result['people'] = ', '.join(people_names)
+                    people_entries.append(f"{n} ({r})" if r else n)
+    if people_entries:
+        result['people'] = ', '.join(people_entries)
 
     return result
 

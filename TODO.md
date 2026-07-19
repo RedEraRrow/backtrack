@@ -19,7 +19,7 @@ IDs (`#N`) are stable so cross-references keep working; items are grouped by are
 
 **Verify before coding:** `pyright src` (currently 0/0) and a quick `python3 -c "import src.main, src.menus, src.playback.playback, ..."`. Python does NOT hot-reload — the app must be relaunched to see code changes (this bit us on #20/#82 below).
 
-**Highest-value next steps:** confirm the live-pass items (bottom of file), especially **#82** (metadata-on-screen) after a fresh relaunch; then continue the chosen batches (Tag power-user #43/#62/#63, Search+EQ #8/#59, or remaining hygiene #48/#70).
+**Highest-value next steps:** live-pass the new interactive work (bottom of file) — the live search widget (#8), derive preview + `d` detail (#83), bulk people editor (#84), and the playback input/hint/volume fixes (#85/#86/#21). Then: pattern-based bulk follow-ups (periodic/ranged dates & text, per-file art — see the IDEA section), regex in the other bulk ops, the tag-etiquette doc + README polish (#48), multi-value tags (#60), and power-user plain-text editing (#62).
 
 ---
 
@@ -37,6 +37,7 @@ IDs (`#N`) are stable so cross-references keep working; items are grouped by are
 - ✅ **#52 — Esc backs out of text fields.** `Esc` cancels (→ None) in `text()` and `path()` (where `←`/`b` are literal/cursor); `Enter` still confirms.
 - ✅ **#55 — Restore cursor on back.** `select(index=)` threaded through main menu, browse-by, and the group/album/track levels via `_idx_of`, so backing out lands on the item you came from. (Search/history results still one-shot.)
 - ✅ **#58 — Two-step mouse select.** First click moves the cursor, second click confirms. Column rows act on any click; plain rows only act over the text itself.
+- ✅ **#85 — Arrow keys respond to a single tap in playback.** `get_key_non_blocking` (`terminal_input.py`) was reading one byte per loop iteration, so a 3-byte arrow escape took multiple iterations and the stale-escape flush often dropped a single tap (you had to hold the key). Now it assembles the whole escape in one call, and reads via `os.read(fd, …)` instead of the buffered `sys.stdin.read` so `select()` and the reads see the same OS buffer (the buffered reader had hidden the continuation bytes from `select`). Single arrow taps register in ~0.1 ms, matching the letter seek keys.
 
 ## Browse & library
 
@@ -47,19 +48,19 @@ IDs (`#N`) are stable so cross-references keep working; items are grouped by are
 - ✅ **#28 — Absolute library paths.** `build_library` + config resolve via `abspath`/`expanduser`.
 - ✅ **#33 — Prettier browse metadata.** Built on structured columns (#53). Track rows: bright title (truncates), the **full** featured artist in a dimmed left-aligned column, and a dimmed duration pinned further right with an edge margin. Album rows: album name + dimmed album artist. The album artist also shows in the header subtitle.
 - ✅ **#34 — Cleaner disc/work separators.** Left-bar section markers (`▌ Disc 1`, indented `▏ Work`) instead of dashed rules.
-- ✅ **#44 — Nicer listening history.** Shows `title — artist` (filename only as fallback), a readable duration (`3m 5s`) and a trimmed timestamp.
+- ✅ **#44 — Nicer listening history.** Modernised into aligned structured columns (title · artist · album · when · listened) matching browse/search. `when` is a relative time (`just now`/`40m ago`/`3d ago`/`2w ago`, falling back to a date for old entries); `listened` is a readable duration (`4m 19s`); filename is the title fallback, and `Unknown Artist`/`Unknown Album` are blanked. Header shows the recent count.
 - ⬜ **#68 — Revisit XML / m4p logic** (noted as not working in recent memory and skipped — verify).
 
 ## Search
 
-- ⬜ **#8 — Clearer search results.** Make matches obvious by showing what was matched, in a pretty way.
+- ✅ **#8 — Clearer search results + fuzzy live search.** New `src/search.py` fuzzy matcher/ranker: tiered exact → prefix → word-boundary → substring → subsequence (fzf-style) → typo (bounded Levenshtein), scored by field weight × match geometry, with recent-play & play-count boosts; returns match spans. New `prompt.live_select` incremental widget: results re-rank on every keystroke (letters type into the query, ←→ edit, ↑↓/scroll pick, Enter opens, Esc backs out). `handle_search` rewired to it — richer rows (title · artist · album · disc/track · duration) with the **matched characters accented** in each field, and the "Edit tags — all N results" row preserved as a selectable entry. Columns: title · artist · album · **people** (its own aligned column — shows who/which role matched) · disc/track · duration. Scope is cycled in-screen with **Tab** (all → title → artist → album → genre → people; default all) — the pre-search "Search within" screen was removed. Ranking: contiguous ("solid") matches get a large band so **exact substrings always sort above fuzzy**; a relative floor (`min_ratio` 0.15) **prunes the weak tail** when a strong match exists but keeps fuzzy-only queries. People are stored as `Name (Role)` (`_extract_id3_metadata`) so roles are searchable and shown (truncating when the column is narrow) — **populates on re-scan/refresh** for existing libraries. Matcher unit-tested; row/render verified headlessly. Live widget wants a TUI pass.
 
 ## Playback
 
 - ✅ **#13 — Queue view.** A single `w` cycles the right column: off → lyrics → queue → lyrics+credits; unavailable views are skipped.
 - ✅ **#19 — Audio-general language** (not radio-specific). Player credits: CAST → PERFORMERS / PRODUCTION TEAM; `c` hint = credits.
 - ✅ **#20 — Album & artist always display;** the `m` toggle governs only the extras: year, genre, and one of {work + movement | disc-or-subtitle + track | just track}. Single-disc (`x/1`) shows no disc; disc subtitle replaces "Disc N" when present.
-- ✅ **#21 — Visual volume indicator.** Full-height vertical bar right of the album art (incl. split view); dim fill with a hollow "tube" for the unused section; 5% steps; live updates. Progress bar is white.
+- ✅ **#21 — Visual volume indicator.** Full-height vertical bar right of the album art (incl. split view); dim fill with a hollow "tube" for the unused section; live updates. Progress bar is white. *Gap fix:* the boundary cell used a bottom-aligned partial block whose empty top read as a gap at non-100% levels — now whole-cell fill (rounded), every cell solid `█` or tube `░`, no gaps.
 - ✅ **#31 — `w` does nothing when there's no queue/lyrics/credits** (the cycle only includes available views).
 - ✅ **#51 — Metadata show/hide fixed.** Artist shows even with no album (and vice-versa); extras built robustly from frame text so they appear whenever present and the toggle is on.
 - ⬜ **#14 — Playback pop-out** so you can keep browsing/editing. *PARKED — needs design discussion; leaning towards in-app background audio + a "now playing" bar.*
@@ -69,6 +70,8 @@ IDs (`#N`) are stable so cross-references keep working; items are grouped by are
 - ✅ **#80 — Hints must never be cut off.** `ctrl_row` clamped to `rows - len(shortcut_lines) - 1` in all four playback rendering branches so hints always stay within the terminal.
 - ✅ **#81 — Volume bar placement + stability.** Fixed.
 - ✅ **#82 — Metadata reliably on-screen in playback.** Fixed.
+- ✅ **#86 — Help hints toggle only on `i` and persist.** `update_ctrl_ui` was rewriting the hint line(s) on every play/pause/seek/volume action, so they flickered/reappeared. It now redraws only the transport/status line; the hint lines are owned solely by the full-UI draw (start, `i`, resize, focus, panel/meta toggles), so they stay put and change only when `i` is pressed.
+- 🟡 **#87 — TEMP: `e` skips to the last 35 s** of the track (marked `# TEMP` in `playback.py`/`playback_ui.py`; remove the `elif key.lower() == 'e'` block + the one hint tuple to revert).
 
 ## Metadata & tag editor
 
@@ -172,3 +175,9 @@ A richer bulk-edit mode driven by patterns. **First slice shipped as #83** (deri
 - **#82** — playback metadata: relaunch the player, press `m`, confirm `year · genre · …` appears (verified headlessly + fixed TYER/frame-buffer bugs this session). If still wrong, add the frame-dump debug.
 - **#81** — confirm the transport controls don't shift when pressing `+`/`-`.
 - **APIC add (fixed this session):** adding an APIC via "Add Tag" now saves (was a dead `frame_type=='IMAGE'` check; now dispatches on `ui_category=='image'`, and the chosen picture type/description are applied). Worth a quick live confirm that art shows after adding.
+- **#8 — live search widget (`prompt.live_select`):** confirm typing responsiveness on a real library, matched-char highlighting, arrow/scroll navigation, `Tab` scope cycling, and the 6-column layout on a narrow terminal. Re-runs the matcher per keystroke (200-result cap) — if it lags on a large library, add debouncing. Ranking/highlight/rows verified headlessly.
+- **#83 — derive preview + `d` detail view:** confirm the multi-select preview, the `d` full-detail nested prompt (mouse re-arm + redraw on return), and that writes land (MP3 + MP4). Parser/writer verified headlessly.
+- **#84 — bulk people editor + `K`/`J` reorder + `f` import:** confirm the aggregate/edit/add/remove flow across files, reorder in the list editor, and the path-prompt import (fresh screen). Pure logic + round-trips verified headlessly.
+- **#85 — arrow-key latency:** confirm single `←`/`→` taps in playback now respond like the letter keys.
+- **#86 — help hints persist:** confirm the hint bar only toggles on `i` and doesn't flicker on play/pause/seek/volume.
+- **#21 (volume gaps) — confirm the bar is gap-free at non-100 % levels** after the whole-cell-fill change.
