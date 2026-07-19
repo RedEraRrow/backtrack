@@ -19,7 +19,7 @@ IDs (`#N`) are stable so cross-references keep working; items are grouped by are
 
 **Verify before coding:** `pyright src` (currently 0/0) and a quick `python3 -c "import src.main, src.menus, src.playback.playback, ..."`. Python does NOT hot-reload — the app must be relaunched to see code changes (this bit us on #20/#82 below).
 
-**Highest-value next steps:** live-pass the new interactive work (bottom of file) — the live search widget (#8), derive preview + `d` detail (#83), bulk people editor (#84), and the playback input/hint/volume fixes (#85/#86/#21). Then: pattern-based bulk follow-ups (periodic/ranged dates & text, per-file art — see the IDEA section), regex in the other bulk ops, the tag-etiquette doc + README polish (#48), multi-value tags (#60), and power-user plain-text editing (#62).
+**Highest-value next steps:** live-pass the growing pile of new interactive work (see the bottom-of-file checklist) — live search (#8), the bulk-pattern ops (assign/sort/renumber), derive preview + `d` detail (#83), people editor (#84), plain-text/Ctrl-T/auto-play (#62/#48), history columns (#44), and the playback input/hint/volume fixes (#85/#86/#21). Then remaining buildable threads: **multi-value tags (#60)**, **per-file album art** + **regex in set/rename ops** (IDEA section), the **tag-etiquette doc + README polish (#48)**, and **#16** (numeric/rating input audit).
 
 ---
 
@@ -148,7 +148,7 @@ IDs (`#N`) are stable so cross-references keep working; items are grouped by are
 
 ## IDEA — pattern-based bulk editing
 
-A richer bulk-edit mode driven by patterns. **First slice shipped as #83** (derive from filename/folders + `%token%` template override + smart sort in the derive pass). Remaining:
+A richer bulk-edit mode driven by patterns. **Mostly shipped** — derive from filename/folders (#83), the `%token%`/regex template overrides, standalone sort orders, ranged/periodic/date-schedule assignment, and the disc↔continuous renumberer all landed. Only **per-file album art** remains open. Bulk ops now live under *Edit tags → Operation*: Derive · Assign by range/schedule · Apply sort orders · Renumber tracks · Set/Copy/Delete/Rename/Add.
 
 - ✅ **Smart sort orders in bulk** — DONE within #83 for the derive pass, and now a standalone **"Apply sort orders"** bulk op (`apply_sort_orders`): pick which of TSOP/TSO2/TSOA/TSOT to (re)generate from each file's existing artist/album-artist/album/title via the #42 engine (name-inversion for artists, article-move for album/title, nothing when the value sorts as itself, VA/mononyms left alone), fill-blanks/overwrite + preview; MP3/ID3 only. End-to-end write/read verified. Still nice-to-have: a user-verifiable/chosen output *pattern* for multi-artist (`Jeff Goldblum & The Mildred Snitzer Orchestra Feat. dodie` → `Goldblum, Jeff/Mildred Snitzer Orchestra, The/dodie`).
 - ✅ **Ranged / periodic assignment** — new bulk op **"Assign by range / schedule"** (`assign_by_pattern` + pure `src/bulk_pattern.py`). Tracks are ordered by (disc, track, filename); then a chosen tag is assigned by: **Ranges** (from/to grid → value, with `{n}` = range index), **Every-N** (group every N → template with `{n}`, e.g. `Series {n}`), or a **Date schedule** for ISO8601 tags (start date + interval, stepping **per-track / per-disc / per-group-of-N**, with an optional **time of day** — a single time for all or a **per-group/per-series time**, e.g. Series 1 at 18:30 & Series 2 at 11:30 → full ISO timestamps). Preview (position · file · value) + fill-blanks/overwrite + confirm; MP3/ID3 only (writes any text/date frame via `create_frame`). Pure assignment logic unit-tested; end-to-end write/read verified (TSST ranges, TDRC per-disc dates + times). *Covers the old "periodic dates" incl. per-series times, and "periodic/ranged text".* Still nice-to-have: non-positional per-metadata rules.
@@ -180,3 +180,7 @@ A richer bulk-edit mode driven by patterns. **First slice shipped as #83** (deri
 - **#85 — arrow-key latency:** confirm single `←`/`→` taps in playback now respond like the letter keys.
 - **#86 — help hints persist:** confirm the hint bar only toggles on `i` and doesn't flicker on play/pause/seek/volume.
 - **#21 (volume gaps) — confirm the bar is gap-free at non-100 % levels** after the whole-cell-fill change.
+- **Bulk pattern ops** — walk the four new operations end-to-end on a real album/box set: *Assign by range/schedule* (ranges grid, every-N, date schedule + times), *Apply sort orders*, *Renumber tracks* (disc↔continuous), and confirm the previews/writes land. All pure logic + end-to-end writes verified headlessly; the prompts/list_edit grid/date pickers want eyes.
+- **#62 — Ctrl-T value toggle + auto-play:** confirm `Ctrl-T` flips a value edit between the smart widget and raw text (dates/people especially), and that *Toggle Auto-play on Select* skips the action menu without looping on multi-action tracks.
+- **#44 — history columns:** confirm the aligned columns + relative timestamps render cleanly.
+- **#48 — plain-text editing:** confirm the Settings toggle routes date/fraction/people edits to raw text (system editor for people).
