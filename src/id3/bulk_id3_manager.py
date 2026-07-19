@@ -22,6 +22,7 @@ from src.id3.id3_tag_handler import (
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import filename_parser as fp
 from src.id3 import tag_writer as tw
+from src import bulk_pattern as bp
 from src.utils import ui_utils
 from src.utils.ui_utils import get_terminal_width, Colors as C
 from src.music_library import refresh_library_entry
@@ -563,6 +564,367 @@ def derive_from_filename(paths: list, library: list, header) -> None:
     ui_utils.show_status(msg)
 
 
+# Preview columns for the pattern assignment: position · file · assigned value.
+_PATTERN_COLUMNS = [
+    prompt.Column(style='dynamic-dim', align='right', max_width=4),
+    prompt.Column(style='primary', flex=True),
+    prompt.Column(style='normal', max_frac=0.42),
+]
+
+
+# source text frame → sort frame, for the standalone "apply sort orders" op.
+_SORT_SRC = [
+    ('artist',       'TPE1', 'TSOP'),
+    ('album_artist', 'TPE2', 'TSO2'),
+    ('album',        'TALB', 'TSOA'),
+    ('title',        'TIT2', 'TSOT'),
+]
+
+_SORT_APPLY_COLUMNS = [
+    prompt.Column(style='primary', flex=True, max_frac=0.45),
+    prompt.Column(style='dynamic-dim', flex=True),
+]
+
+
+_RENUMBER_COLUMNS = [
+    prompt.Column(style='dynamic-dim', align='right', max_width=4),   # position
+    prompt.Column(style='primary', flex=True),                       # file
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # old → new
+]
+
+
+def renumber_tracks_op(paths: list, library: list, header) -> None:
+    """Renumber track numbers per-disc (disc-relative) ↔ continuous (album-
+    relative / movement systems). Works for MP3 and MP4 via tag_writer."""
+    by_path = {s['path']: s for s in library}
+    ordered = bp.order_tracks([by_path.get(p, {'path': p}) for p in paths])
+    writable = [s for s in ordered if tw.is_writable(s['path'])]
+    skipped_fmt = len(ordered) - len(writable)
+    if not writable:
+        ui_utils.show_status("No MP3/MP4 tracks to renumber.")
+        return
+
+    mode_sel = prompt.select(
+        "Renumber to:",
+        choices=["Continuous (album-relative) — 1…N across all discs",
+                 "Per-disc (disc-relative) — restart at 1 each disc"],
+        header=header(f"{len(writable)} tracks in disc/track order"))
+    if not mode_sel:
+        return
+    mode = 'continuous' if mode_sel.startswith("Continuous") else 'per_disc'
+    plan = bp.renumber_tracks(writable, mode)        # {path: (track, total)}
+
+    pos = {s['path']: i + 1 for i, s in enumerate(writable)}
+    choices = []
+    for s in writable:
+        trk, total = plan[s['path']]
+        old = str(s.get('track', '') or '?')
+        choices.append(prompt.Choice(
+            title=os.path.basename(s['path']), value=s['path'], checked=True,
+            cells=[str(pos[s['path']]), os.path.basename(s['path']), f"{old} → {trk}/{total}"]))
+    sub = f"{len(choices)} file(s)" + (f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
+    sel = prompt.select("Preview — Space to deselect, Enter to apply:", choices=choices,
+                        columns=_RENUMBER_COLUMNS, header=header(sub), multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel)
+    if not apply_set:
+        ui_utils.show_status("No files selected.")
+        return
+
+    count = errors = 0
+    for s in writable:
+        p = s['path']
+        if p not in apply_set:
+            continue
+        trk, total = plan[p]
+        r = tw.write_fields(p, {'track': trk, 'total_tracks': total}, {'track'}, overwrite=True)
+        if r.error:
+            errors += 1
+        elif r.written:
+            count += 1
+            try:
+                refresh_library_entry(library, p)
+            except Exception:
+                pass
+
+    msg = f"Renumbered {count} file(s)."
+    if skipped_fmt:
+        msg += f" {skipped_fmt} unsupported skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
+def apply_sort_orders(paths: list, library: list, header) -> None:
+    """Generate smart sort-order tags (TSOP/TSO2/TSOA/TSOT) from each file's
+    existing artist/album-artist/album/title, via the #42 engine. MP3/ID3 only."""
+    field_choices = [
+        prompt.Choice(title="Artist sort (TSOP)", value='artist', checked=True),
+        prompt.Choice(title="Album-artist sort (TSO2)", value='album_artist', checked=True),
+        prompt.Choice(title="Album sort (TSOA)", value='album', checked=True),
+        prompt.Choice(title="Title sort (TSOT)", value='title'),
+    ]
+    chosen = prompt.select("Sort tags to generate:", choices=field_choices,
+                           header=header(), multi=True)
+    if not chosen:
+        return
+    chosen = set(chosen)
+    mode = prompt.select("When a sort tag already has a value:",
+                         choices=["Fill blanks only", "Overwrite existing"], header=header())
+    if not mode:
+        return
+    overwrite = (mode == "Overwrite existing")
+
+    mp3s = [p for p in paths if p.lower().endswith('.mp3')]
+    skipped_fmt = len(paths) - len(mp3s)
+
+    plan: dict = {}                                  # path → [(sort_tag, sort_value)]
+    for p in mp3s:
+        try:
+            audio = ID3(p)
+        except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
+            continue
+        entries = []
+        for field, src, sort_tag in _SORT_SRC:
+            if field not in chosen:
+                continue
+            fr = audio.get(src)
+            raw = str(fr.text[0]).strip() if (fr and getattr(fr, 'text', None)) else ""
+            if not raw:
+                continue
+            sv = _sort_value(sort_tag, raw)          # top candidate, or None if none needed
+            if not sv:
+                continue
+            ex = audio.get(sort_tag)
+            if not overwrite and ex is not None and getattr(ex, 'text', None) and str(ex.text[0]).strip():
+                continue
+            entries.append((sort_tag, sv))
+        if entries:
+            plan[p] = entries
+
+    if not plan:
+        ui_utils.show_status("No sort orders to write — already set, or none needed.")
+        return
+
+    choices = []
+    for p in mp3s:
+        if p not in plan:
+            continue
+        summary = " · ".join(f"{t}={v}" for t, v in plan[p])
+        choices.append(prompt.Choice(title=os.path.basename(p), value=p, checked=True,
+                                     cells=[os.path.basename(p), summary]))
+    sub = f"{len(choices)} file(s)" + (f" · {skipped_fmt} non-MP3 skipped" if skipped_fmt else "")
+    sel = prompt.select("Preview — Space to deselect, Enter to apply:", choices=choices,
+                        columns=_SORT_APPLY_COLUMNS, header=header(sub), multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel)
+    if not apply_set:
+        ui_utils.show_status("No files selected.")
+        return
+
+    count = errors = 0
+    for p in mp3s:
+        if p not in plan or p not in apply_set:
+            continue
+        try:
+            audio = ID3(p)
+            changed = False
+            for sort_tag, sv in plan[p]:
+                audio.delall(sort_tag)
+                frame = create_frame(sort_tag, sv)
+                if frame is not None:
+                    audio.add(frame)
+                    changed = True
+            if changed:
+                audio.save(p, v2_version=3)
+                count += 1
+                try:
+                    refresh_library_entry(library, p)
+                except Exception:
+                    pass
+        except Exception:
+            errors += 1
+
+    msg = f"Wrote sort orders for {count} file(s)."
+    if skipped_fmt:
+        msg += f" {skipped_fmt} non-MP3 skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
+def assign_by_pattern(paths: list, library: list, header) -> None:
+    """Assign one tag across an ordered selection by ranges, an every-N grouping,
+    or a date schedule (#IDEA: pattern-based bulk editing). MP3/ID3 only."""
+    by_path = {s['path']: s for s in library}
+    ordered = bp.order_tracks([by_path.get(p, {'path': p}) for p in paths])
+    if not ordered:
+        ui_utils.show_status("No tracks.")
+        return
+    n = len(ordered)
+
+    raw = prompt.text("Tag to assign (e.g. TSST, TIT1, TDRC):")
+    if not raw:
+        return
+    tag_id = raw.strip().upper()
+    info = get_tag_info(tag_id)
+    if not info:
+        ui_utils.show_status(f"Unknown tag: {tag_id}")
+        return
+    is_date = info.format_spec == 'ISO8601'
+
+    modes = ["Ranges (from–to → value)", "Every N tracks → value"]
+    if is_date:
+        modes.append("Date schedule")
+    mode = prompt.select("Assignment mode:", choices=modes,
+                         header=header(f"{tag_id} · {n} tracks in disc/track order"))
+    if not mode:
+        return
+
+    def _int(s, what):
+        try:
+            return int(str(s).strip())
+        except (TypeError, ValueError):
+            ui_utils.show_status(f"{what} must be a number.")
+            return None
+
+    assignments: dict = {}
+    if mode.startswith("Ranges"):
+        rows = prompt.list_edit(f"Ranges for {tag_id} (positions 1–{n}; {{n}} = range no.):",
+                                [], ("FROM", "TO", "VALUE"))
+        if not rows:
+            return
+        ranges = []
+        for r in rows:
+            cells = list(r) if isinstance(r, (list, tuple)) else [r]
+            if len(cells) < 3:
+                continue
+            lo, hi = _int(cells[0], "FROM"), _int(cells[1], "TO")
+            if lo is None or hi is None:
+                return
+            ranges.append((lo, hi, str(cells[2]).strip()))
+        assignments = bp.assign_ranges(ordered, ranges)
+    elif mode.startswith("Every"):
+        gs = _int(prompt.text("Group size (N tracks per group):"), "Group size")
+        if gs is None:
+            return
+        tmpl = prompt.text("Value (use {n} for the group number, e.g. Series {n}):")
+        if tmpl is None:
+            return
+        assignments = bp.assign_periodic(ordered, gs, tmpl)
+    else:                                            # Date schedule (ISO8601 tags)
+        start = prompt.calendar_select("Start date:")
+        if not start:
+            return
+        iv = _int(prompt.text("Interval in days (7 = weekly):", default="7"), "Interval")
+        if iv is None:
+            return
+        gsel = prompt.select("Step the date:",
+                             choices=["Per track", "Per disc", "Per group of N"])
+        if not gsel:
+            return
+        gran, gsize = 'track', 1
+        if gsel.startswith("Per disc"):
+            gran = 'disc'
+        elif gsel.startswith("Per group"):
+            gsize = _int(prompt.text("Group size (N):"), "Group size")
+            if gsize is None:
+                return
+            gran = 'group'
+
+        # Optional time of day → full ISO timestamps. Per-group times (e.g. each
+        # series at a different time) are offered when the groups are few.
+        times = None
+        tmode_choices = ["No time", "Same time for all"]
+        groups = bp.date_groups(ordered, gran, gsize)
+        if gran != 'track' and 1 < len(groups) <= 12:
+            tmode_choices.append("Per group")
+        tmode = prompt.select("Time of day:", choices=tmode_choices, header=header())
+        if not tmode:
+            return
+        if tmode == "Same time for all":
+            times = prompt.text("Time (HH:MM, 24-hour):")
+            if not times:
+                return
+        elif tmode == "Per group":
+            times = {}
+            for g in groups:
+                t = prompt.text(f"Time for group {g} (HH:MM, blank = none):")
+                if t:
+                    times[g] = t
+        assignments = bp.assign_dates(ordered, start, iv, gran, gsize, times=times)
+
+    assignments = {p: v for p, v in assignments.items() if v}
+    if not assignments:
+        ui_utils.show_status("Nothing to assign — check the ranges/positions.")
+        return
+
+    mode2 = prompt.select("When the tag already has a value:",
+                          choices=["Fill blanks only", "Overwrite existing"], header=header())
+    if not mode2:
+        return
+    overwrite = (mode2 == "Overwrite existing")
+
+    pos = {s['path']: i + 1 for i, s in enumerate(ordered)}
+    targets = [s for s in ordered if s['path'] in assignments]
+    n_mp4 = sum(1 for s in targets if not s['path'].lower().endswith('.mp3'))
+    choices = [
+        prompt.Choice(title=os.path.basename(s['path']), value=s['path'], checked=True,
+                      cells=[str(pos[s['path']]), os.path.basename(s['path']), assignments[s['path']]])
+        for s in targets if s['path'].lower().endswith('.mp3')
+    ]
+    if not choices:
+        ui_utils.show_status("No MP3s to assign (this operation is MP3-only).")
+        return
+    sub = f"{tag_id} · {len(choices)} file(s)" + (f" · {n_mp4} non-MP3 skipped" if n_mp4 else "")
+    sel = prompt.select("Preview — Space to deselect, Enter to apply:", choices=choices,
+                        columns=_PATTERN_COLUMNS, header=header(sub), multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel)
+    if not apply_set:
+        ui_utils.show_status("No files selected.")
+        return
+
+    count = errors = 0
+    for s in targets:
+        p = s['path']
+        if p not in apply_set:
+            continue
+        val = assignments[p]
+        try:
+            try:
+                audio = ID3(p)
+            except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
+                audio = ID3()
+            if not overwrite:
+                fr = audio.get(tag_id)
+                if fr is not None and getattr(fr, 'text', None) and str(fr.text[0]).strip():
+                    continue
+            audio.delall(tag_id)
+            frame = create_frame(tag_id, val)
+            if frame is None:
+                continue
+            audio.add(frame)
+            audio.save(p, v2_version=3)
+            count += 1
+            try:
+                refresh_library_entry(library, p)
+            except Exception:
+                pass
+        except Exception:
+            errors += 1
+
+    msg = f"Assigned {tag_id} to {count} file(s)."
+    if n_mp4:
+        msg += f" {n_mp4} non-MP3 skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
 def bulk_id3_manager(library: list, album_name: str | None = None, paths: list | None = None) -> None:
     """
     Bulk tag operations across a set of tracks.
@@ -649,7 +1011,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
     operation = prompt.select(
         "Operation:",
-        choices=["Derive from filename", "Set value", "Copy from first track",
+        choices=["Derive from filename", "Assign by range / schedule",
+                 "Apply sort orders", "Renumber tracks (disc ↔ continuous)",
+                 "Set value", "Copy from first track",
                  "Delete tags", "Rename tags", "Add new tag"],
         header=_bulk_header()
     )
@@ -660,6 +1024,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     op_display = operation.lower()
     op_map = {
         "Derive from filename": "Derive From Filename",
+        "Assign by range / schedule": "Assign By Pattern",
+        "Apply sort orders": "Apply Sort Orders",
+        "Renumber tracks (disc ↔ continuous)": "Renumber Tracks",
         "Set value": "Set Common Value",
         "Copy from first track": "Copy From First Track",
         "Delete tags": "Delete Tags",
@@ -668,10 +1035,18 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     }
     operation = str(op_map.get(operation, operation))
 
-    # Derivation works on files with no tags at all, so it runs before the
-    # "no tags found" guard and manages its own preview/confirm/apply flow.
+    # These manage their own preview/confirm/apply flow.
     if operation == "Derive From Filename":
         derive_from_filename(album_tracks, library, _bulk_header)
+        return
+    if operation == "Assign By Pattern":
+        assign_by_pattern(album_tracks, library, _bulk_header)
+        return
+    if operation == "Apply Sort Orders":
+        apply_sort_orders(album_tracks, library, _bulk_header)
+        return
+    if operation == "Renumber Tracks":
+        renumber_tracks_op(album_tracks, library, _bulk_header)
         return
 
     if not all_tag_counts and operation not in ("Add New Tag",):
