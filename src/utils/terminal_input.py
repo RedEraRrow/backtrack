@@ -90,20 +90,35 @@ def get_key_non_blocking() -> str | None:
         return c
 
     assert select is not None
-    if not select.select([sys.stdin], [], [], 0)[0]:
+    # Read from the raw fd via os.read, NOT sys.stdin.read: the buffered reader
+    # can slurp the rest of an escape sequence into Python's buffer where select
+    # (which polls the OS fd) can't see it — making the greedy loop below wait
+    # out its timeout on every arrow. os.read keeps select and reads consistent.
+    fd = sys.stdin.fileno()
+    if not select.select([fd], [], [], 0)[0]:
         return None
 
-    c = sys.stdin.read(1)
+    c = os.read(fd, 1).decode('utf-8', 'replace')
     full = (_pending_escape or "") + c
 
     if full.startswith('\x1b'):
         if _escape_start_time is None:
             _escape_start_time = time.time()
+        # The bytes of an arrow/CSI key arrive together, so finish the sequence
+        # in THIS call rather than one byte per loop iteration — otherwise a
+        # single tap is slow and can be dropped by the stale-flush, forcing you
+        # to hold the key. A short per-byte wait keeps it non-blocking.
+        while not (len(full) >= 3 and full[-1] in 'ABCD~') and full not in ('\x1b[I', '\x1b[O'):
+            if len(full) >= 8:                       # safety cap (e.g. mouse seq)
+                break
+            if not select.select([fd], [], [], 0.02)[0]:
+                break
+            full += os.read(fd, 1).decode('utf-8', 'replace')
         if len(full) >= 3 and full[-1] in 'ABCD':
             _pending_escape = None
+            _escape_start_time = None
             return full
-        # Recognize complete focus-reporting sequences (\033[I / \033[O) and
-        # other known 3-byte CSI sequences so they don't linger in the buffer.
+        # Complete focus-reporting sequences (\033[I / \033[O) shouldn't linger.
         if full in ('\x1b[I', '\x1b[O'):
             _pending_escape = None
             _escape_start_time = None

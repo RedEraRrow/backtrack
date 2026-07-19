@@ -202,9 +202,6 @@ def _volume_slider(volume: int, width: int = 20) -> str:
     return line
 
 
-# Eighth-block glyphs that fill a cell from the bottom up — used for the
-# fractional top cell of the vertical volume bar.
-_V_BLOCKS = " ▁▂▃▄▅▆▇█"
 
 
 def _volume_bar_geometry() -> tuple[int, int, int] | None:
@@ -230,17 +227,16 @@ def _volume_bar_cells(volume: int) -> list[str]:
     bar_col, top, height = geo
 
     pct = max(0.0, min(100.0, float(volume))) / 100.0
-    exact = pct * height
-    full = int(exact)
-    rem = exact - full
+    # Whole-cell fill (rounded to the nearest row). A sub-cell partial block left
+    # the top of the boundary cell as empty background — reading as a gap between
+    # the fill and the tube — so every cell is now either solid fill or tube.
+    filled = int(round(pct * height))
 
     cells: list[str] = []
     for d in range(height):  # d = distance from the bottom (0 = bottom row)
         row = top + (height - 1 - d)
-        if d < full:
+        if d < filled:
             glyph = f"{C.DIM}█{C.RESET}"            # filled level — dim, not bright
-        elif d == full and rem > 0.01:
-            glyph = f"{C.DIM}{_V_BLOCKS[max(1, round(rem * 8))]}{C.RESET}"
         else:
             glyph = f"{C.DIM}░{C.RESET}"            # unused section — hollow "tube"
         cells.append(f"\033[{row};{bar_col}H{glyph}")

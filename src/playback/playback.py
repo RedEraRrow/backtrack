@@ -267,25 +267,22 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
 
             has_lyrics = bool(sylt_data) or has_uslt or dialogue_state.is_active()
 
-            _prev_ctrl_lines = [0]
-
             def update_ctrl_ui():
                 state = mp.get_state()
                 is_paused = (state == _VLC_STATE_PAUSED)
                 vol = mp.audio_get_volume()
                 active_toast = toast_text if time.time() < toast_expiry else ""
                 if state != _VLC_STATE_ERROR:
-                    status_ln, shortcuts_ln = _controls_line(
+                    status_ln, _ = _controls_line(
                         is_uslt or in_uslt_tail, is_paused, vol, active_toast,
                         has_lyrics=has_lyrics, has_credits=has_credits,
                     )
-                    shortcut_lines = shortcuts_ln.splitlines() or [""]
-                    sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}\n")
-                    for offset, line in enumerate(shortcut_lines, start=1):
-                        sys.stdout.write(f"\033[{ctrl_row + offset};1H\033[K{line}\n")
-                    for offset in range(len(shortcut_lines) + 1, _prev_ctrl_lines[0] + 1):
-                        sys.stdout.write(f"\033[{ctrl_row + offset};1H\033[K")
-                    _prev_ctrl_lines[0] = len(shortcut_lines)
+                    # Only the transport/status line changes on play-pause / seek /
+                    # volume. The hint line(s) below it are owned by the full-UI
+                    # draw (start, `i` toggle, resize, focus, panel/meta toggles);
+                    # rewriting them here made them flicker and reappear on every
+                    # action — they must change only when `i` is pressed.
+                    sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}")
                     sys.stdout.flush()
 
             while True:
