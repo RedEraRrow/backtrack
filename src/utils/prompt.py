@@ -630,7 +630,9 @@ def text(message: str, default: str = "") -> str | None:
         nonlocal prev_lines
         cols = _cols()
         content = "".join(buf)
-        content_width = max(1, cols - 6)
+        # Frame = '  '(mh) + '│ ' + content + ' │'; content = cols-4 makes the
+        # frame span exactly the inter-margin width for an even 2/2 margin.
+        content_width = max(1, cols - 4)
 
         wrapped_lines = _wrap_bordered_input_lines(content, content_width)
         pre_lines = _wrap_bordered_input_lines(content[:pos], content_width)
@@ -743,7 +745,8 @@ def path(message: str, default: str = "") -> str | None:
         cols    = _cols()
         content = "".join(buf)
         prefix  = "  │ "
-        max_w   = max(1, cols - 6)
+        # cols-4 makes the '  │ … │' frame span the inter-margin width (even 2/2).
+        max_w   = max(1, cols - 4)
 
         if pos > max_w:
             display  = content[pos - max_w: pos]

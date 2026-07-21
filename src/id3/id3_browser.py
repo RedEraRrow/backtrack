@@ -547,6 +547,13 @@ def inspect_tag_loop(
     library_metadata: dict | None = None,
     library: list | None = None
 ) -> None:
+    # Tag editing is ID3/MP3-only. Refuse other containers up front (including an
+    # mp4/m4a that happens to carry a stray ID3 header, which would otherwise slip
+    # past the per-load check and crash downstream) — one clean, early message.
+    if not file_path.lower().endswith('.mp3'):
+        ui_utils.show_status("Tag editing is only supported for MP3 files.", duration=4.0)
+        return
+
     show_xml = False
 
     # Duration is constant for the file — compute it ONCE here, not per render.
@@ -610,9 +617,10 @@ def inspect_tag_loop(
         if not title:
             title = os.path.splitext(os.path.basename(file_path))[0]
 
-        # Full-width rounded box: bold title (· dim artist) left, dim meta right.
+        # Rounded box within the global margins: reserve mh on BOTH sides (the
+        # ' '*mh prefix is the left margin), so subtract 2*mh for an even right one.
         mh = ui_utils.MARGIN_H
-        inner = max(12, cols - mh - 4)
+        inner = max(12, cols - 2 * mh - 4)
         right = f"[{ext}]{dur_str}{size_str}"
         avail = max(4, inner - len(right) - 2)
 
@@ -649,11 +657,7 @@ def inspect_tag_loop(
         try:
             audio = ID3(file_path)
         except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-            if file_path.lower().endswith('.mp3'):
-                audio = ID3()  # untagged MP3 — start fresh so tags can be added
-            else:
-                ui_utils.show_status("Tag editing is only supported for MP3 files.", duration=4.0)
-                break
+            audio = ID3()  # untagged MP3 (guaranteed .mp3 above) — start fresh so tags can be added
         except OSError as e:
             ui_utils.show_status(f"Could not open file: {e}", duration=4.0)
             break
