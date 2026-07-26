@@ -50,12 +50,15 @@ def raw_mode(file):
 
 
 def clear_escape_buffer() -> None:
+    """Discard any partially-buffered escape sequence."""
     global _pending_escape, _escape_start_time
     _pending_escape = None
     _escape_start_time = None
 
 
 def get_key_non_blocking() -> str | None:
+    """Return one decoded key or escape sequence if available, without
+    blocking; buffers partial CSI sequences across calls."""
     global _pending_escape, _escape_start_time
 
     # Flush a stale escape buffer that was never completed (e.g. from a focus
@@ -131,6 +134,8 @@ def get_key_non_blocking() -> str | None:
 
 
 def is_arrow_key(key: str | None) -> str | None:
+    """Return the arrow letter ('A'/'B'/'C'/'D') if `key` is an arrow escape
+    sequence, else None."""
     if key and len(key) >= 3 and key[-1] in 'ABCD':
         return key[-1]
     return None

@@ -37,6 +37,7 @@ class TagInfo:
     description: str = ""
     
     def create_frame(self, *args, **kwargs) -> Any:
+        """Instantiate this tag's mutagen frame class with the given args."""
         return self.mutagen_class(*args, **kwargs)
 
 
@@ -339,6 +340,8 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
 
 # Supports colon notation (TXXX:desc:lang) and bracket notation (COMM[eng])
 def parse_composite_tag_id(tag_id: str) -> tuple[str, str, str]:
+    """Split a composite tag id into (base_id, desc, lang), supporting both
+    'TXXX:desc:lang' colon notation and 'COMM[eng]' bracket notation."""
     base_id = tag_id.split('[')[0].split(':')[0].upper()
     desc_val = ''
     lang_val = ''

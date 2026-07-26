@@ -136,6 +136,7 @@ def match_token(token: str, value: str) -> Match | None:
 # ---------------------------------------------------------------------------
 
 def _merge_spans(spans: list) -> list:
+    """Sort and coalesce overlapping/adjacent (start, end) spans into disjoint ranges."""
     if not spans:
         return []
     spans = sorted(spans)
@@ -159,6 +160,7 @@ def highlight_spans(value: str, tokens: list) -> list:
 
 
 def tokenize(query: str) -> list:
+    """Split a query into lowercase whitespace-delimited search tokens."""
     return [t for t in query.lower().split() if t]
 
 

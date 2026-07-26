@@ -14,6 +14,7 @@ from src.state import NAV_STACK
 _resize_flag = False
 
 def _sigwinch_handler(signum: int, frame: Any) -> None:
+    """Mark that the terminal was resized; consume_resize() picks this up."""
     global _resize_flag
     _resize_flag = True
 
@@ -130,6 +131,7 @@ def get_status_line() -> str:
     return ""
 
 def get_terminal_size(default: tuple = (80, 24)) -> tuple:
+    """Terminal (columns, rows), falling back to `default` if the query fails."""
     try:
         size = shutil.get_terminal_size()
         return size.columns, size.lines
@@ -137,16 +139,20 @@ def get_terminal_size(default: tuple = (80, 24)) -> tuple:
         return default
 
 def get_terminal_width(default: int = 80) -> int:
+    """Terminal width in columns."""
     cols, _ = get_terminal_size((default, default))
     return cols
 
 
 def get_terminal_height(default: int = 24) -> int:
+    """Terminal height in rows."""
     _, rows = get_terminal_size((default, default))
     return rows
 
 
 def truncate_text(text: str, max_width: int, placeholder: str = "…", front: bool = False) -> str:
+    """Truncate `text` to `max_width`, replacing the cut end (or start, if
+    `front`) with `placeholder`."""
     # front=True keeps the end of the string instead of the start
     if text is None:
         return ""
@@ -162,18 +168,22 @@ def truncate_text(text: str, max_width: int, placeholder: str = "…", front: bo
 
 
 def strip_ansi(s: str) -> str:
+    """Remove ANSI escape sequences from a string."""
     return re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s)
 
 def visual_len(s: str) -> int:
+    """Length of `s` as displayed, ignoring ANSI escape sequences."""
     return len(strip_ansi(s))
 
 
 def divider(width: int | None = None, char: str = "─") -> str:
+    """A horizontal rule of `char` spanning `width` (or the terminal width)."""
     width = width or get_terminal_width()
     return char * width
 
 
 def wrap_text(text: str, max_width: int = 80, margin: int = 6) -> list:
+    """Word-wrap text to `max_width` minus `margin`, preserving blank lines."""
     wrap_width = max(20, max_width - margin)
     lines = []
     for line in text.split('\n'):
@@ -220,6 +230,8 @@ def format_time(seconds: int | float) -> str:
 
 
 def _get_breadcrumb_str(width: int) -> str:
+    """Render NAV_STACK as a '>'-joined breadcrumb, truncated with a leading
+    ellipsis to fit `width`."""
     sep = " > "
     full_path = sep.join(NAV_STACK)
 
@@ -235,6 +247,7 @@ def _get_breadcrumb_str(width: int) -> str:
     return full_path
 
 def roman(num):
+    """Convert an integer to a Roman numeral."""
 
     _roman_map = OrderedDict()
     _roman_map[1000] = "M"
@@ -252,6 +265,7 @@ def roman(num):
     _roman_map[1] = "I"
 
     def _to_roman(num):
+        """Yield Roman-numeral symbols for `num`, largest value first."""
         for r in _roman_map.keys():
             x, y = divmod(num, r)
             yield _roman_map[r] * x

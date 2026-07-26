@@ -20,6 +20,7 @@ SYNC_INTERVAL_SECONDS = 30
 
 
 def _default_cache_dir() -> Path:
+    """The platform-conventional cache directory when no override is set."""
     if os.name == "nt":
         appdata = os.getenv("APPDATA")
         if appdata:
@@ -58,6 +59,8 @@ def to_num(v: Any) -> float:
 
 
 def start_background_sync(library: list) -> None:
+    """Start (or wake) the daemon thread that periodically reconciles the library
+    against disk. Safe to call repeatedly — a live thread is just re-triggered."""
     global _sync_thread
 
     with _sync_lock:
@@ -261,6 +264,7 @@ def get_metadata(file_path: str) -> dict:
 
 
 def _extract_id3_metadata(tags: ID3) -> dict:
+    """Map an ID3 tag object's frames to the library's metadata field names."""
     result = {}
 
     # Standard text frames
@@ -337,6 +341,7 @@ def _extract_id3_metadata(tags: ID3) -> dict:
 
 
 def _extract_mp4_metadata(tags: MP4) -> dict:
+    """Map an MP4 tag object's atoms to the library's metadata field names."""
     result = {}
 
     if not tags:
@@ -450,6 +455,7 @@ def save_library_cache(library: list, _async: bool = False) -> None:
         _async: If True, save in background thread
     """
     def _write():
+        """Write to a temp file in the cache dir, then atomically replace the cache."""
         dir_name = CACHE_PATH.parent
         fd, temp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
         try:
@@ -473,6 +479,7 @@ def save_library_cache(library: list, _async: bool = False) -> None:
 
 
 def load_library_cache() -> list:
+    """Load the cached library from disk, or [] if missing/corrupt."""
     global _cache_mtime
     if not os.path.exists(CACHE_PATH):
         _cache_mtime = 0
@@ -571,6 +578,7 @@ def get_group_sort_key(display_name: str, songs: list, category: str) -> str:
 def sort_library_logic(tracks: list) -> list:
     """Sort tracks by artist, year, album, disc, and track number."""
     def get_sortable_name(display_name: str, sort_order: str | None) -> str:
+        """Prefer an explicit sort-order tag; else the display name with leading "The " dropped."""
         if sort_order and str(sort_order).strip():
             return str(sort_order).lower()
         if not display_name:
@@ -581,6 +589,7 @@ def sort_library_logic(tracks: list) -> list:
         return name
 
     def sort_key(track: dict):
+        """Artist, year (descending), album, disc, track, movement — in sort order."""
         artist = track.get('album_artist') or track.get('artist', 'Unknown Artist')
         artist_sort = track.get('Album Artist Sort Order') or track.get('Performer Sort Order')
         album = track.get('album', 'Unknown Album')
@@ -612,6 +621,7 @@ def sort_album_tracks(tracks: list) -> list:
     Does not consider artist or album — callers have already scoped to one album.
     """
     def key(track: dict) -> tuple:
+        """(disc, track, movement) numbers for within-album ordering."""
         disc = to_num(track.get('disc', 0))
         trk  = to_num(track.get('track', 0))
         mv   = to_num(track.get('movement_number', 0))

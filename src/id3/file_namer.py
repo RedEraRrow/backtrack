@@ -108,6 +108,7 @@ def _finalize(raw: dict[str, str]) -> dict[str, str]:
 
 
 def _read_id3(path: str) -> dict[str, str]:
+    """Read renaming tokens from an ID3 (MP3) file's tags."""
     try:
         audio = ID3(path)
     except (ID3NoHeaderError, OSError, Exception):
@@ -145,6 +146,7 @@ def _read_id3(path: str) -> dict[str, str]:
 
 
 def _read_mp4(path: str) -> dict[str, str]:
+    """Read renaming tokens from an MP4/M4A file's atoms."""
     try:
         audio = MP4(path)
     except (OSError, Exception):
@@ -186,6 +188,7 @@ def read_tokens(path: str) -> dict[str, str]:
 
 
 def is_supported(path: str) -> bool:
+    """True if the file's extension is a renamable MP3 or MP4 type."""
     return os.path.splitext(path)[1].lower() in _MP3_EXTS + _MP4_EXTS
 
 
@@ -209,6 +212,7 @@ def sanitize(name: str) -> str:
 def render(pattern: str, tokens: dict[str, str]) -> str:
     """Expand a %token% pattern with `tokens` and sanitise → a base name (no ext)."""
     def _sub(m: re.Match) -> str:
+        """Look up one %token% match's value, blank if absent."""
         return tokens.get(m.group(1).lower(), '')
     return sanitize(_cleanup(_TOKEN_RE.sub(_sub, pattern)))
 

@@ -50,6 +50,7 @@ _YEAR_LEAD_RE = re.compile(r'^\s*(\d{4})\s*[-_]\s*(.+)$')
 
 
 def _is_year(s: str) -> bool:
+    """True if ``s`` parses as an integer in the plausible album-year range."""
     try:
         return 1900 <= int(s) <= 2099
     except (TypeError, ValueError):
@@ -73,6 +74,7 @@ class Derived:
     notes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
+        """This derivation's fields as a plain dict (excludes ``notes``)."""
         return {
             'title': self.title, 'track': self.track, 'total_tracks': self.total_tracks,
             'disc': self.disc, 'total_discs': self.total_discs,
@@ -83,6 +85,7 @@ class Derived:
 
 
 def _clean_text(s: str) -> str:
+    """Normalize underscores to spaces, collapse whitespace, trim stray dashes."""
     s = s.replace('_', ' ')
     s = re.sub(r'\s+', ' ', s)
     return s.strip(" -\t")
@@ -114,6 +117,7 @@ def _match_numbering(stem: str) -> dict | None:
 
 
 def _is_various(folder_name: str) -> bool:
+    """True if the folder name matches a known Various-Artists spelling."""
     return _clean_text(folder_name).lower() in _VARIOUS
 
 
@@ -145,6 +149,7 @@ def _split_artist_title(text: str) -> tuple[str | None, str]:
 
 
 def _norm_artist(s: str) -> str:
+    """Lowercase and drop a leading "the " so artist names compare equal."""
     s = _clean_text(s).lower()
     return s[4:] if s.startswith('the ') else s
 
@@ -262,6 +267,7 @@ def parse_one(path: str, known_artist: str | None = None, root: str | None = Non
 
 
 def _album_key(path: str) -> str:
+    """The folder identifying this file's album group, skipping a disc/series level."""
     parent = os.path.dirname(path)
     if _folder_disc_sub(os.path.basename(parent))[0] is not None:
         return os.path.dirname(parent)

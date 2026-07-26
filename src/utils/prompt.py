@@ -51,6 +51,7 @@ _toggle_carry: str | None = None   # in-progress text buffer handed across a Ctr
 
 
 def _toggle_hint() -> dict:
+    """Hint-bar fragment advertising the Ctrl-T text/widget toggle, when enabled."""
     return {"^t": "text/widget"} if _value_toggle_enabled else {}
 
 
@@ -146,6 +147,7 @@ def select(message: str, choices: list, *,
     _locked_category: list[str | None] = [None]
 
     def _update_interlock() -> None:
+        """Lock selection to the category of the first checked item, disabling every non-matching row."""
         if not multi or interlock_category_callback is None:
             return
         checked = [it for it in items if it.checked]
@@ -462,6 +464,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
         return sel[0] if direction > 0 else sel[-1]
 
     def _recompute() -> None:
+        """Re-run the provider for the current query and reset cursor/viewport onto the new results."""
         nonlocal items, cursor, viewport
         try:
             items = list(provider("".join(query))) if query else []
@@ -604,6 +607,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
 
 
 def confirm(message: str, default: bool = False) -> bool:
+    """Yes/no prompt; y/n or Enter (accepting `default`) answers, Ctrl-C answers no."""
     fd     = sys.stdin.fileno()
     old    = _get_term_attrs(fd)
     w      = _Widget(fd)
@@ -640,6 +644,7 @@ def confirm(message: str, default: bool = False) -> bool:
 
 
 def text(message: str, default: str = "") -> str | None:
+    """Free-text line editor with cursor movement and wrapping; Enter returns the buffer, Ctrl-C cancels."""
     buf    = list(default)
     pos    = len(buf)
     fd     = sys.stdin.fileno()
@@ -737,6 +742,7 @@ def text(message: str, default: str = "") -> str | None:
 
 
 def path(message: str, default: str = "") -> str | None:
+    """Filesystem-path editor with Tab-cycling autocomplete against the current directory listing."""
     buf          = list(default)
     pos          = len(buf)
     fd           = sys.stdin.fileno()
@@ -750,6 +756,7 @@ def path(message: str, default: str = "") -> str | None:
     _last_rendered_lines = 1
 
     def _completions(current: str) -> list:
+        """List non-hidden entries in `current`'s directory matching its basename stub, for Tab completion."""
         try:
             expanded = os.path.expanduser(current)
             # Find the root lookup folder depending on whether the path target is a valid directory
@@ -920,6 +927,7 @@ def path(message: str, default: str = "") -> str | None:
     return result
 
 def _render_list_edit_cell(text: str, width: int, is_editing: bool, is_active_col: bool, edit_buf: list[str], edit_pos: int) -> str:
+    """Render one table cell, showing the live edit buffer with a cursor block when this is the active editing column."""
     if not is_editing or not is_active_col:
         return ui_utils.truncate_text(text, width)
 
@@ -943,6 +951,8 @@ def _build_list_edit_lines(
     barrel_mode: bool = False, barrel_hints: list[str] | None = None, barrel_idx: int = 0,
     col_ratios: tuple | None = None,
 ) -> tuple[list[str], int, int, int]:
+    """Lay out the full list_edit screen — header, column-aligned rows (or barrel-mode cell), hints —
+    and report the resulting viewport/visible-row/header-row counts."""
     num_cols = len(headers)
     cols = _cols()
     c = cols - 4
@@ -1023,6 +1033,7 @@ def _build_list_edit_lines(
 
                 if row_is_editing and barrel_mode:
                     def _barrel_above(w: int, is_barrel_col: bool) -> str:
+                        """Preview line for the barrel-mode value one step before the current one."""
                         if not is_barrel_col:
                             return " " * w
                         if prev_text:
@@ -1030,11 +1041,13 @@ def _build_list_edit_lines(
                         return " " * w
 
                     def _barrel_mid(w: int, is_barrel_col: bool, val: str) -> str:
+                        """Current barrel-mode value (or the plain cell) for this column."""
                         if not is_barrel_col:
                             return f"{val:<{w}}"
                         return f"{C.PRIMARY}{C.BOLD}{ui_utils.truncate_text(cur_text, w)}{C.RESET}"
 
                     def _barrel_below(w: int, is_barrel_col: bool) -> str:
+                        """Preview line for the barrel-mode value one step after the current one."""
                         if not is_barrel_col:
                             return " " * w
                         if next_text:
@@ -1121,6 +1134,7 @@ def _parse_import_rows(text: str, headers: tuple[str, ...]) -> list:
             break
 
     def _fit(fields: list) -> tuple:
+        """Pad/collapse a split row to exactly num_cols fields, folding overflow into the last column."""
         fields = [f.strip() for f in fields]
         if len(fields) > num_cols:                  # overflow → last column keeps the rest
             tail = (delim or ' ').join(fields[num_cols - 1:]).strip()
@@ -1174,6 +1188,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
     barrel_hints: list[str] = []
 
     def _get_cell_hints() -> list[str]:
+        """Candidate values for the current cell from `col_hints`, or [] if unavailable."""
         if col_hints is None:
             return []
         curr = items[cursor] if items else None
@@ -1203,6 +1218,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
         w.render(lines)
 
     def _commit_edit_buffer():
+        """Write the in-progress edit buffer back into the current row, padding short rows to num_cols."""
         val = "".join(edit_buf)
         if num_cols > 1:
             curr = list(items[cursor]) if isinstance(items[cursor], (list, tuple)) else [str(items[cursor])]
@@ -1540,10 +1556,12 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
 
 
 def _is_leap_year(year: int) -> bool:
+    """Gregorian leap-year rule."""
     return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
 
 
 def _days_in_month(year: int, month: int) -> int:
+    """Number of days in `month` of `year` (Feb accounts for leap years)."""
     if month in (1, 3, 5, 7, 8, 10, 12):
         return 31
     elif month in (4, 6, 9, 11):
@@ -1554,6 +1572,7 @@ def _days_in_month(year: int, month: int) -> int:
 
 
 def _validate_date(year: int, month: int, day: int) -> bool:
+    """True if (year, month, day) is a real calendar date."""
     if not (1 <= month <= 12):
         return False
     if not (1 <= day <= _days_in_month(year, month)):
@@ -1846,6 +1865,7 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
     day_mode = False
 
     def _digits_only(s: str) -> str:
+        """Strip everything from the first non-digit onward, keeping just the leading digit run."""
         return re.sub(r'\D.*', '', s)   # keep only leading digit run
 
     t_parts = time_str.split(':') if time_str else []
@@ -1938,6 +1958,7 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
         w.render(lines)
 
     def _build_result() -> str:
+        """Assemble the ISO datetime string from date + time fields, omitting a zero time-of-day or trailing zero millis."""
         h  = "".join(tfields['hours']).zfill(2)
         mi = "".join(tfields['minutes']).zfill(2)
         s  = "".join(tfields['seconds']).zfill(2)
@@ -2264,6 +2285,7 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
     w = _Widget(fd)
 
     def _validate_time() -> bool:
+        """True if the current H/M/S fields form a valid time."""
         try:
             h = int("".join(fields['hours']) or "0")
             m = int("".join(fields['minutes']) or "0")
@@ -2418,6 +2440,7 @@ _EQ_UP_BLOCKS = ' ▁▂▃▄▅▆▇'
 
 
 def _eq_fmt_freq(freq: float) -> str:
+    """Format a band frequency compactly, e.g. 1000 -> '1k', 1500 -> '1.5k'."""
     f = int(round(freq))
     if f >= 1000:
         k = f / 1000.0
@@ -2461,6 +2484,7 @@ def _eq_render_lines(bands: list, cursor: int, message: str, status: str,
                         break
 
     def _band_char(i: int, r: int):
+        """Glyph for band `i` at plot row `r`: full/partial block for the bar, or None outside it."""
         g = bands[i][1]
         if g >= 0:
             cells = g / db_per_row
@@ -2631,6 +2655,215 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
     finally:
         if not _IS_WINDOWS:
             sys.stdout.write("\033[?1000l\033[?1006l")
+        _restore_term_attrs(fd, old)
+        w.clear()
+
+    return result
+
+
+def number_edit(message: str = "Edit number:", *, value: int = 0,
+                minimum: int = 0, maximum: int | None = None, unit: str = ""):
+    """Bounded-integer spinner (TBPM / TLEN / TDLY / play counts, …).
+
+    ↑/↓ step ±1, PgUp/PgDn ±10, type digits to enter a value directly,
+    Backspace deletes a digit, Home clamps to the minimum. Returns the chosen
+    int, ``None`` on cancel, or :data:`MODE_TOGGLE` when Ctrl-T flips to the raw
+    text field (only when the caller enabled the toggle).
+    """
+    def _clamp(n: int) -> int:
+        n = max(minimum, n)
+        if maximum is not None:
+            n = min(maximum, n)
+        return n
+
+    try:
+        value = _clamp(int(str(value).strip() or minimum))
+    except ValueError:
+        value = minimum
+    buf: list[str] = []                 # typed digits; empty → show `value`
+
+    fd = sys.stdin.fileno()
+    old = _get_term_attrs(fd)
+    w = _Widget(fd)
+
+    def _cur() -> int:
+        return _clamp(int("".join(buf))) if buf else value
+
+    def _render():
+        shown = "".join(buf) if buf else str(value)
+        unit_s = f" {unit}" if unit else ""
+        bounds = f"min {minimum}" + ("" if maximum is None else f", max {maximum}")
+        lines = [
+            f"  {C.DIM}{message}{C.RESET}",
+            "",
+            f"  {C.ACCENT}▸{C.RESET} {C.BOLD}{shown}{C.RESET}{C.DIM}{unit_s}{C.RESET}   {C.DIM}({bounds}){C.RESET}",
+        ]
+        lines.extend(_hint(
+            ("↑↓", "±1"), ("⇞⇟", "±10"), ("0-9", "type"),
+            ("↵", "save"), ("esc", "cancel"), ("q", "quit"),
+        ).splitlines())
+        w.render(lines)
+
+    result = None
+    try:
+        _set_raw(fd)
+        sys.stdout.write("\033[H\033[3J\033[J")
+        sys.stdout.flush()
+        _render()
+        while True:
+            if ui_utils.consume_resize():
+                sys.stdout.write("\033[H\033[3J\033[J")
+                sys.stdout.flush()
+                w.anchor_reset()
+                _render()
+                continue
+            if not _wait_for_keypress(0.05):
+                continue
+
+            key = _read_key(fd)
+            if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
+                return MODE_TOGGLE
+            if key == 'CTRL_C':
+                result = None; break
+            elif key == 'ENTER':
+                result = _cur(); break
+            elif key == 'ESC':
+                result = None; break
+            elif key in ('q', 'Q'):
+                _state.QUIT_REQUESTED = True; result = _cur(); break
+            elif key.isdigit():
+                if len("".join(buf)) < 12:
+                    buf.append(key); _render()
+            elif key == 'BACKSPACE':
+                if buf:
+                    buf.pop(); _render()
+            elif key in ('UP', 'k'):
+                value = _clamp(_cur() + 1); buf.clear(); _render()
+            elif key in ('DOWN', 'j'):
+                value = _clamp(_cur() - 1); buf.clear(); _render()
+            elif key == 'PGUP':
+                value = _clamp(_cur() + 10); buf.clear(); _render()
+            elif key == 'PGDN':
+                value = _clamp(_cur() - 10); buf.clear(); _render()
+            elif key == 'HOME':
+                value = minimum; buf.clear(); _render()
+    finally:
+        _restore_term_attrs(fd, old)
+        w.clear()
+
+    return result
+
+
+# POPM rating 0-5 stars → 0-255 byte, Windows Media Player convention.
+_RATING_STAR_BYTES = (0, 1, 64, 128, 196, 255)
+
+
+def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
+                email: str = "") -> dict | None:
+    """POPM rating form: a 0-5 star rating, a play count, and the rater email.
+
+    Tab moves between the three fields. On Rating: ←/→ (or 0-5) set the stars.
+    On Plays: ↑/↓ ±1, PgUp/PgDn ±10, or type digits. On Rater: type the
+    identifier text. Returns ``{'stars', 'count', 'email'}`` or ``None`` on
+    cancel. A binary/asset frame, so there is no raw-text toggle.
+    """
+    stars = max(0, min(5, int(stars)))
+    count = max(0, int(count))
+    email = str(email or "")
+    field = 0                            # 0 = rating, 1 = plays, 2 = rater
+    cbuf: list[str] = []                 # typed play-count digits
+
+    fd = sys.stdin.fileno()
+    old = _get_term_attrs(fd)
+    w = _Widget(fd)
+
+    def _count() -> int:
+        return int("".join(cbuf)) if cbuf else count
+
+    def _render():
+        nonlocal count
+        filled = f"{C.ACCENT}{'★' * stars}{C.RESET}"
+        empty = f"{C.DIM}{'☆' * (5 - stars)}{C.RESET}"
+        rlabel = "unrated" if stars == 0 else f"{stars}/5"
+        cshown = "".join(cbuf) if cbuf else str(count)
+        rater = email if email else f"{C.DIM}(default){C.RESET}"
+
+        def _mark(i: int) -> str:
+            return f"{C.ACCENT}▸{C.RESET}" if field == i else " "
+
+        def _lab(i: int, text: str) -> str:
+            return f"{C.BOLD}{text}{C.RESET}" if field == i else f"{C.DIM}{text}{C.RESET}"
+
+        lines = [
+            f"  {C.DIM}{message}{C.RESET}",
+            "",
+            f"  {_mark(0)} {_lab(0, 'Rating')}   {filled}{empty}  {C.DIM}{rlabel}{C.RESET}",
+            f"  {_mark(1)} {_lab(1, 'Plays ')}   {cshown}",
+            f"  {_mark(2)} {_lab(2, 'Rater ')}   {rater}",
+        ]
+        lines.extend(_hint(
+            ("tab", "field"), ("←→", "adjust"), ("0-5", "stars"),
+            ("↵", "save"), ("esc", "cancel"), ("q", "quit"),
+        ).splitlines())
+        w.render(lines)
+
+    result = None
+    try:
+        _set_raw(fd)
+        sys.stdout.write("\033[H\033[3J\033[J")
+        sys.stdout.flush()
+        _render()
+        while True:
+            if ui_utils.consume_resize():
+                sys.stdout.write("\033[H\033[3J\033[J")
+                sys.stdout.flush()
+                w.anchor_reset()
+                _render()
+                continue
+            if not _wait_for_keypress(0.05):
+                continue
+
+            key = _read_key(fd)
+            if key == 'CTRL_C':
+                result = None; break
+            elif key == 'ENTER':
+                result = {'stars': stars, 'count': _count(), 'email': email}; break
+            elif key == 'ESC':
+                result = None; break
+            elif key == 'TAB':
+                count = _count(); cbuf.clear(); field = (field + 1) % 3; _render()
+            # 'q' quits only outside the free-text Rater field (an email may contain 'q').
+            elif key in ('q', 'Q') and field != 2:
+                _state.QUIT_REQUESTED = True
+                result = {'stars': stars, 'count': _count(), 'email': email}; break
+            elif field == 0:
+                if key in ('LEFT', 'DOWN', 'j', 'h'):
+                    stars = max(0, stars - 1); _render()
+                elif key in ('RIGHT', 'UP', 'k', 'l'):
+                    stars = min(5, stars + 1); _render()
+                elif key.isdigit() and 0 <= int(key) <= 5:
+                    stars = int(key); _render()
+            elif field == 1:
+                if key in ('UP', 'k', 'RIGHT'):
+                    count = _count() + 1; cbuf.clear(); _render()
+                elif key in ('DOWN', 'j', 'LEFT'):
+                    count = max(0, _count() - 1); cbuf.clear(); _render()
+                elif key == 'PGUP':
+                    count = _count() + 10; cbuf.clear(); _render()
+                elif key == 'PGDN':
+                    count = max(0, _count() - 10); cbuf.clear(); _render()
+                elif key.isdigit():
+                    if len("".join(cbuf)) < 12:
+                        cbuf.append(key); _render()
+                elif key == 'BACKSPACE':
+                    if cbuf:
+                        cbuf.pop(); _render()
+            elif field == 2:
+                if key == 'BACKSPACE':
+                    email = email[:-1]; _render()
+                elif len(key) == 1 and key.isprintable():
+                    email += key; _render()
+    finally:
         _restore_term_attrs(fd, old)
         w.clear()
 

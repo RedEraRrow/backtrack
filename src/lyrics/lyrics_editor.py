@@ -45,6 +45,7 @@ _AUD_COARSE = 0.25   # audition: coarser whole-line move per , / . press
 
 
 def _srt(t: float) -> str:
+    """Format seconds as an SRT timestamp (HH:MM:SS,mmm)."""
     t = max(0.0, float(t))
     h, r = divmod(t, 3600); m, s = divmod(r, 60)
     ms = round((s % 1) * 1000); s = int(s)
@@ -53,6 +54,7 @@ def _srt(t: float) -> str:
 
 
 def _fmt(t: float | None) -> str:
+    """Format seconds as MM:SS.mmm, or a dashed placeholder when t is None."""
     if t is None:
         return "──:──.───"
     t = max(0.0, float(t))
@@ -159,6 +161,7 @@ def _clip(s: str, width: int, ell: str = "…") -> str:
 
 
 def _parse(s: str) -> float | None:
+    """Parse a 'MM:SS' or plain-seconds string into float seconds; None if invalid."""
     s = s.strip()
     try:
         if ':' in s:
@@ -188,6 +191,7 @@ def _ts_parts(v: float | None) -> tuple[str, str, str]:
 
 
 def _is_ms(fk: str) -> bool:
+    """True if fk is a milliseconds field (start or end)."""
     return fk in ('sms', 'ems')
 
 
@@ -213,6 +217,7 @@ def _render_edit_fields(edit: dict) -> tuple[str, str]:
     epos   = edit['pos']
 
     def _fld(fk: str) -> str:
+        """Render one segmented field's fixed-width cells, with a caret on the active field."""
         val = "".join(flds.get(fk, []))
         w   = _EDIT_MAXLEN[fk]
         if fk == active:
@@ -237,6 +242,7 @@ def _render_edit_fields(edit: dict) -> tuple[str, str]:
         return f"{C.DIM}{val.zfill(w)}{C.RESET}"             # right-aligned count → 05
 
     def _sep(c: str) -> str:
+        """Dim separator character (':' or '.') between fields."""
         return f"{C.DIM}{c}{C.RESET}"
 
     return (f"{_fld('sm')}{_sep(':')}{_fld('ss')}{_sep('.')}{_fld('sms')}",
@@ -244,6 +250,7 @@ def _render_edit_fields(edit: dict) -> tuple[str, str]:
 
 
 def _find_transcript(mp3_path: str) -> str | None:
+    """Locate a transcript JSON file near mp3_path by common naming conventions."""
     d    = os.path.dirname(mp3_path)
     base = os.path.splitext(os.path.basename(mp3_path))[0]
     for name in [f"{base}.json", f"{base}_timings.json", "transcript.json",
@@ -311,6 +318,8 @@ def _clean_seg(seg: dict) -> dict:
 
 
 def _make_stage_dir(text: str, start: float | None = None, end: float | None = None) -> dict:
+    """Build a stage-direction segment, tagging `_md_text` so it stays reconciled
+    against the MD overlay even after the visible `text` is relabelled."""
     # `_md_text` is the immutable MD-derived text used to reconcile this seg
     # against the overlay.  It survives relabelling the visible `text` (via 'l'),
     # so a committed direction keeps claiming its MD event and never re-appears as
@@ -322,6 +331,7 @@ def _make_stage_dir(text: str, start: float | None = None, end: float | None = N
 
 
 def _rebuild_srt(segs: list) -> str:
+    """Render segs as SRT text, wrapping stage-direction lines in *(...)* and skipping untexted dead-air blocks."""
     blocks = []
     for i, seg in enumerate(segs, 1):
         _kind = seg.get("kind")
@@ -414,6 +424,7 @@ def _load(mp3_path: str) -> tuple[list, str, dict] | None:
 
 
 def _shift_seg(seg: dict, delta: float) -> None:
+    """Shift a segment's start/end and all its word timings by delta seconds, in place."""
     if seg.get("start") is not None: seg["start"] = round(seg["start"] + delta, 3)
     if seg.get("end")   is not None: seg["end"]   = round(seg["end"]   + delta, 3)
     for w in seg.get("words", []):
@@ -422,6 +433,7 @@ def _shift_seg(seg: dict, delta: float) -> None:
 
 
 def _shift_word(word: dict, delta: float) -> None:
+    """Shift a single word's start/end by delta seconds, in place."""
     if word.get("start") is not None: word["start"] = round(word["start"] + delta, 3)
     if word.get("end")   is not None: word["end"]   = round(word["end"]   + delta, 3)
 
@@ -430,6 +442,9 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
           dirty, undo_depth, track_name, playing, play_pos,
           edit, source, total_s, show_hints=False, md_overlay=None,
           md_quality=None, aud_now=None, aud_editing=False) -> tuple[list[str], int, dict]:
+    """Render the full editor screen for the current mode (TAP/AUDITION/SEG/WORD),
+    returning the display lines, the updated viewport, and a row→item hit-map for
+    mouse clicks."""
     cols = _cols()
     rows = _rows()
     n    = len(segs)
@@ -490,6 +505,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         next_s = segs[cursor + 1] if cursor < n - 1  else None
 
         def _tap_line(seg, bold: bool = False, arrow: bool = False) -> str:
+            """Render one prev/current/next line of the TAP-mode readout."""
             ptr = f"{indent}{C.ACCENT}▶{C.RESET} " if arrow else indent + "  "
             if seg is None:
                 return f"{ptr} {C.DIM}──{C.RESET}"
@@ -542,6 +558,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         e_t = curr_s.get("end")   if curr_s else None
 
         def _line(seg, bold=False) -> str:
+            """Render one prev/current/next line of the AUDITION-mode readout."""
             if seg is None:
                 return f"{indent}"
             col = C.BOLD + C.PRIMARY if bold else C.DIM
@@ -555,6 +572,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             marks = f"{C.ACCENT}✎{C.RESET}  start {s_d}    end {e_d}"
         else:
             def _mark(lbl, val, on) -> str:
+                """Render one 'label value' marker, accented when `on` (the clip currently playing)."""
                 v = _fmt(val) if val is not None else "──:──.───"
                 c = C.ACCENT + C.BOLD if on else C.DIM
                 return f"{c}{lbl} {v}{C.RESET}"
@@ -755,6 +773,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         # Isolated stage directions (floating ✦ overlays) get a blank line before
         # and after so they hover as a separate beat, not glued to the dialogue.
         def _is_float_sd(it: dict) -> bool:
+            """True if display item is a floating (uncommitted) stage-direction overlay."""
             return it['type'] == 'overlay' and it['data']['kind'] == 'stage_dir'
         spaced: list[dict] = []
         _n = len(display_items); _i = 0
@@ -937,6 +956,7 @@ def _build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]
         lid += 1
 
     def _score(a: str, b: str) -> float:
+        """Jaccard-like word-overlap score between two normalized strings."""
         wa, wb = set(a.split()), set(b.split())
         return len(wa & wb) / max(len(wa), len(wb)) if wa and wb else 0.0
 
@@ -1190,6 +1210,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
     js_toks, md_toks, sm = _word_streams(segs, md_path)
 
     def _near_time(i: int) -> float | None:
+        """Timestamp at/near js_toks[i], falling back to the nearest preceding timed token."""
         if i < len(js_toks) and js_toks[i][3] is not None:
             return js_toks[i][3]
         for j in range(min(i, len(js_toks)) - 1, -1, -1):
@@ -1198,6 +1219,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
         return None
 
     def _row(t, sym, label, col, loc, detail):
+        """One aligned, colour-coded verification-report row: timestamp, badge, location, detail."""
         # Aligned, colour-coded row: dim timestamp · coloured badge · dim location
         # · the actual WORDS bright, so the eye lands on what differs.
         ts    = _fmt(t) if t is not None else "  --:--  "
@@ -1270,6 +1292,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
 
 
 def _make_dead_air(start: float, end: float, label: str = "") -> dict:
+    """Build a dead-air segment dict spanning start-end, optionally labelled."""
     return {"kind": "dead_air", "text": label,
             "start": round(start, 3), "end": round(end, 3), "words": []}
 
@@ -1296,6 +1319,7 @@ def _split_seg_at(seg: dict, boundaries: list, line_refs: list) -> list[dict]:
 
 
 def lyrics_editor(mp3_path: str) -> None:
+    """Run the interactive lyrics/transcript sync editor for mp3_path until the user quits."""
     result = _load(mp3_path)
     if result is None:
         ui_utils.show_status("No lyrics or transcript found for this track.")
@@ -1362,9 +1386,11 @@ def lyrics_editor(mp3_path: str) -> None:
     w = _Widget(fd)
 
     def cur_words() -> list:
+        """Words of the segment currently open in WORD mode."""
         return segs[seg_cursor].get("words", []) if segs else []
 
     def _sync_seg_bounds(si: int) -> None:
+        """Recompute segment si's start/end from its first/last word timing after a word edit."""
         words = segs[si].get("words", [])
         if not words: return
         first = words[0].get("start")
@@ -1386,6 +1412,7 @@ def lyrics_editor(mp3_path: str) -> None:
         play_pos   = start_s
 
     def do_stop() -> None:
+        """Pause playback and clear the playing flag."""
         nonlocal playing
         if mp and mp.is_playing(): mp.pause()
         playing = False
@@ -1448,17 +1475,20 @@ def lyrics_editor(mp3_path: str) -> None:
             md_overlay = md_quality = None
 
     def apply_segs(idxs: list[int], delta: float) -> None:
+        """Shift the given segments by delta seconds, marking dirty and recording an undo entry."""
         nonlocal dirty
         for i in idxs: _shift_seg(segs[i], delta)
         dirty = True; undo_stack.append(('seg', list(idxs), delta))
 
     def apply_word(si: int, wi: int, delta: float) -> None:
+        """Shift one word by delta seconds, resync its segment's bounds, and record an undo entry."""
         nonlocal dirty
         _shift_word(segs[si]["words"][wi], delta)
         _sync_seg_bounds(si)
         dirty = True; undo_stack.append(('word', si, wi, delta))
 
     def do_undo() -> None:
+        """Pop and reverse the most recent undo-stack entry, restoring segs/cursor/mode as needed."""
         nonlocal dirty, cursor, mode
         if not undo_stack: return
         op = undo_stack.pop()
@@ -1499,6 +1529,8 @@ def lyrics_editor(mp3_path: str) -> None:
             refresh_overlay()
 
     def do_save() -> None:
+        """Persist current edits: transcript source writes the working sidecar JSON;
+        SYLT/USLT sources write the SYLT tag directly."""
         nonlocal dirty
         if source == SOURCE_TRANSCRIPT:
             # Save to the WORKING document (sidecar) — never touches the original
@@ -1595,6 +1627,7 @@ def lyrics_editor(mp3_path: str) -> None:
             elif k == 'END':                  vp = len(body)
 
     def do_verify() -> None:
+        """Run the JSON<->MD verification report, write it alongside the transcript, and page through it."""
         from src.lyrics.lyrics import _find_markdown_for_audio
         _mdp = md_path or _find_markdown_for_audio(mp3_path)
         if not _mdp:
@@ -1688,6 +1721,8 @@ def lyrics_editor(mp3_path: str) -> None:
             f"{'stage direction' if _new_kind == 'stage_dir' else 'dead air'}.")
 
     def commit_field(field: str, val: float) -> None:
+        """Apply an edited timestamp field to the current seg or word: 'start' shifts
+        (undoable via apply_segs/apply_word), 'end' is set absolutely."""
         nonlocal dirty
         if prev_mode == SEG:
             old_val = segs[cursor].get(field)
@@ -1719,6 +1754,7 @@ def lyrics_editor(mp3_path: str) -> None:
                     dirty = True
 
     def _edit_target() -> dict | None:
+        """The seg or word dict the EDIT-mode fields currently apply to."""
         if prev_mode == SEG:
             return segs[cursor] if (segs and cursor < len(segs)) else None
         ws = cur_words()
@@ -1779,6 +1815,7 @@ def lyrics_editor(mp3_path: str) -> None:
         """Commit only the bound(s) whose digits changed, reusing commit_field so
         start keeps its shift semantics and end is set absolutely."""
         def _val(keys) -> float:
+            """Combine a (minutes, seconds, ms) field triple into seconds."""
             m  = _field_value(keys[0], "".join(edit_fields[keys[0]]))
             s  = _field_value(keys[1], "".join(edit_fields[keys[1]]))
             ms = _field_value(keys[2], "".join(edit_fields[keys[2]]))

@@ -44,8 +44,6 @@ _TAG_COLUMNS = [
 ]
 
 
-import src.id3.name_corpus as _nc
-
 _SORT_SOURCES: dict[str, str] = {
     'TSOT': 'TIT2',
     'TSOA': 'TALB',
@@ -87,6 +85,22 @@ _SPACING_PREFIXES: frozenset[str] = frozenset({
 # "O' Connor" → "O'Connor",  "Mc Gregor" → "McGregor".
 _JOINING_PREFIXES: frozenset[str] = frozenset({"o'", "ó'", 'mc', 'mac', "m'"})
 
+# Leading honorifics/titles moved to the end of the sort name ("Dr. Dre" → "Dre,
+# Dr.", "MC Solaar" → "Solaar, MC"). A small fixed pattern set — no data corpus.
+_HONORIFICS: frozenset[str] = frozenset({
+    'dr', 'prof', 'sir', 'dame', 'mr', 'mrs', 'ms', 'miss', 'mx', 'rev', 'fr',
+    'st', 'maestro', 'dj', 'mc', 'lady', 'lord', 'master', 'madam', 'madame',
+    'herr', 'frau', 'signor', 'signora', 'don', 'doña', 'sri', 'sheikh', 'imam',
+    'rabbi', 'capt', 'col', 'gen', 'sgt', 'lt', 'hon',
+})
+
+# Trailing generational/ordinal suffixes kept with the surname ("James Brown Jr."
+# → "Brown, James Jr."). Also a fixed pattern set.
+_NAME_SUFFIXES: frozenset[str] = frozenset({
+    'jr', 'sr', 'jnr', 'snr', 'ii', 'iii', 'iv', 'v', 'vi', 'vii',
+    'phd', 'md', 'esq',
+})
+
 # Single-letter initial pattern: "J." or "J" alone.
 _INITIAL_RE = re.compile(r'^[A-Za-zÀ-ÖØ-öø-ÿ]\.$')
 
@@ -114,6 +128,7 @@ _ORDINAL_RE = re.compile(r'(?<!\d)([1-9]\d?)(?!\d)')
 def _pad_ordinals(s: str) -> str:
     """'Series 1' → 'Series 01'; leaves two-digit numbers unchanged."""
     def _pad(m: re.Match) -> str:
+        """Zero-pad a single-digit match; leave two-digit numbers as-is."""
         n = int(m.group(1))
         return str(n).zfill(2) if n < 10 else m.group(1)
     return _ORDINAL_RE.sub(_pad, s)
@@ -167,27 +182,23 @@ def _sort_single_name(name: str) -> list[str]:
     """
     Return sort-order candidates for a single name string, ordered by confidence.
 
+    Pure heuristics — no name corpus. A simple name (one/two words, or a leading
+    article) resolves to a single candidate; an ambiguous multi-word name yields
+    several (the positional "last word = surname" split first) that the user
+    picks from — or overrides with "type custom".
+
     Pipeline:
     1. Merge space-separated initials ('J. S.' → 'J.S.')
-    2. Merge Celtic joining prefixes ('O' Connor' → 'O'Connor')
+    2. Merge Celtic joining prefixes ("O' Connor" → "O'Connor")
     3. Leading article → move to end ('The Beatles' → 'Beatles, The')
-    4. Strip leading honorific ('Dr. Dre' → honorific saved, name is 'Dre')
-    5. Strip trailing ordinal suffix ('James Brown Jr.' → suffix saved)
-    6. Check known compound surnames (corpus)
-    7. Use given-name corpus to weight the most likely split point
-    8. Check spacing surname prefixes (von/van/de/…)
-    9. All remaining right-splits as fallback
+    4. Strip a leading honorific ('Dr. Dre' → 'Dre, Dr.')
+    5. Strip a trailing ordinal suffix ('James Brown Jr.' → suffix kept on surname)
+    6. Spacing surname prefixes (von/van/de/…) start the surname
+    7. All right-splits, last-word-as-surname first (the positional default)
     """
     words = _merge_joining_prefixes(_merge_initials(name.split()))
     if len(words) <= 1:
-        # Check mononyms: known single-name artists are returned as-is.
-        if name.strip().lower() in _nc.mononyms():
-            return [name.strip()]
         return [name]
-
-    # Multi-word mononym check (e.g. "Daft Punk", "Aphex Twin", "Flying Lotus")
-    if name.strip().lower() in _nc.mononyms():
-        return [name.strip()]
 
     # ── Article ────────────────────────────────────────────────────────────
     if words[0].lower() in _ARTICLE_MAP:
@@ -199,6 +210,7 @@ def _sort_single_name(name: str) -> list[str]:
     seen: set[str] = set()
 
     def _add(firstname: str, surname: str) -> None:
+        """Append a "Surname, Firstname" candidate (with honorific/suffix folded in) if new."""
         nonlocal honorific, suffix
         fn = ' '.join(filter(None, [honorific, firstname]))
         sn = ' '.join(filter(None, [surname, suffix]))
@@ -209,48 +221,33 @@ def _sort_single_name(name: str) -> list[str]:
 
     # ── Honorific ──────────────────────────────────────────────────────────
     honorific = ''
-    if words[0].rstrip('.').lower() in _nc.honorifics():
+    if words[0].rstrip('.').lower() in _HONORIFICS:
         honorific = words[0]
         words = words[1:]
         if len(words) == 1:
-            # e.g. "Dr. Dre" → "Dre, Dr." / "MC Raptor" → "Raptor, MC"
+            # e.g. "Dr. Dre" → "Dre, Dr." / "MC Solaar" → "Solaar, MC"
             return [f"{words[0]}, {honorific}"]
         if not words:
             return [name]
 
     # ── Trailing suffix ────────────────────────────────────────────────────
     suffix = ''
-    if words[-1].rstrip('.').lower() in _nc.ordinal_suffixes():
+    if words[-1].rstrip('.').lower() in _NAME_SUFFIXES:
         suffix = words[-1]
         words = words[:-1]
         if len(words) <= 1:
             return [name]
 
-    # ── Known compound surnames ────────────────────────────────────────────
-    for compound in _nc.compound_surnames():
-        n = len(compound)
-        if len(words) > n and tuple(words[-n:]) == compound:
-            _add(' '.join(words[:-n]), ' '.join(compound))
-
-    # ── Corpus-weighted split ──────────────────────────────────────────────
-    # Walk from right to left; the first word that is NOT a known given name
-    # is treated as the start of the surname.
-    corpus_split: int | None = None
-    for i in range(len(words) - 1, 0, -1):
-        if words[i].lower().rstrip('.') not in _nc.given_names():
-            corpus_split = i
-            break
-    if corpus_split is not None:
-        _add(' '.join(words[:corpus_split]), ' '.join(words[corpus_split:]))
-
-    # ── Spacing surname prefixes ────────────────────────────────────────────
+    # ── Spacing surname prefixes (von/van/de/…) ─────────────────────────────
+    # A prefix mid-name starts the surname ("Ludwig van Beethoven" →
+    # "van Beethoven, Ludwig"), offered before the plain right-splits.
     for i, w in enumerate(words):
         if i == 0:
             continue
         if w.lower() in _SPACING_PREFIXES and i < len(words) - 1:
             _add(' '.join(words[:i]), ' '.join(words[i:]))
 
-    # ── All right-splits (fallback, most-specific first) ──────────────────
+    # ── All right-splits (last word as surname first = the positional default) ─
     for n in range(1, len(words)):
         _add(' '.join(words[:len(words) - n]), ' '.join(words[len(words) - n:]))
 
@@ -266,6 +263,7 @@ def _sort_candidates(base_id: str, raw: str) -> list[str]:
     seen: set[str] = {raw}
 
     def _add(c: str) -> None:
+        """Append a candidate if non-empty and not already seen."""
         if c and c not in seen:
             seen.add(c)
             candidates.append(c)
@@ -336,6 +334,7 @@ def _prompt_sort_order(base_id: str, audio: ID3) -> str | None:
 
 
 def _get_image_from_apic(apic_frame: APIC) -> tuple:
+    """Decode an APIC frame's embedded image data via cv2; returns (image, mime, raw_bytes)."""
     try:
         img_data = getattr(apic_frame, 'data', b"")
         mime_type = getattr(apic_frame, 'mime', "image/jpeg")
@@ -349,6 +348,7 @@ def _get_image_from_apic(apic_frame: APIC) -> tuple:
 
 
 def _convert_apic_to_viu(apic_frame: APIC, width: int = 80) -> str:
+    """Render an APIC frame's image data as terminal art at the given width."""
     img_bytes = getattr(apic_frame, 'data', None)
     if not img_bytes:
         return "Error: No image data."
@@ -356,6 +356,7 @@ def _convert_apic_to_viu(apic_frame: APIC, width: int = 80) -> str:
 
 
 def _open_apic_preview(apic_frame: APIC) -> bool:
+    """Write the APIC image to a temp file and open it in the OS's default viewer."""
     image, mime_type, img_bytes = _get_image_from_apic(apic_frame)
 
     if not img_bytes or (hasattr(img_bytes, 'size') and img_bytes.size == 0) or not len(img_bytes):
@@ -391,6 +392,7 @@ _LRC_TIMESTAMP_RE = re.compile(r'\[(\d+):(\d+)(?:[.:](\d{1,3}))?\]')
 _LRC_META_RE = re.compile(r'^\s*\[(ti|ar|al|by|offset|re|ve)\s*:.+\]\s*$', re.I)
 
 def _parse_lrc_file(lrc_path: str) -> list[tuple[str, int | None]]:
+    """Parse an LRC file into (text, timestamp_ms) lines, skipping metadata tags like [ti:...]."""
     with open(lrc_path, "r", encoding="utf-8") as f:
         raw = f.read()
 
@@ -415,6 +417,7 @@ def _parse_lrc_file(lrc_path: str) -> list[tuple[str, int | None]]:
 
 
 def _import_from_lrc(file_path: str, audio: ID3, tag_id: str) -> None:
+    """Import an LRC file's lyrics, writing timed lines to SYLT and/or plain text to USLT."""
     default_lrc = os.path.splitext(file_path)[0] + ".lrc"
     lrc_path = prompt.text("LRC file path:", default=default_lrc)
     if not lrc_path or not os.path.exists(lrc_path):
@@ -452,10 +455,12 @@ def _import_from_lrc(file_path: str, audio: ID3, tag_id: str) -> None:
 
 
 def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
+    """Interactive loop to view, preview, replace, or re-describe a single APIC (cover art) frame."""
     view_mode = "viu"
     cols = get_terminal_width()
 
     def _apic_header() -> list[str]:
+        """Build the header lines: title/size line plus rendered art or info block."""
         art_width = min(round(get_terminal_height()*1.5),get_terminal_width())
         art = _convert_apic_to_viu(apic_frame, width=art_width)
         image, mime, img_data = _get_image_from_apic(apic_frame)
@@ -547,6 +552,7 @@ def inspect_tag_loop(
     library_metadata: dict | None = None,
     library: list | None = None
 ) -> None:
+    """Interactive top-level loop for browsing and editing all ID3 tags on an MP3 file."""
     # Tag editing is ID3/MP3-only. Refuse other containers up front (including an
     # mp4/m4a that happens to carry a stray ID3 header, which would otherwise slip
     # past the per-load check and crash downstream) — one clean, early message.
@@ -572,6 +578,7 @@ def inspect_tag_loop(
             _cached_dur = 0.0
 
     def _save(audio_obj):
+        """Persist tags and refresh the in-memory library cache entry for this file."""
         save_id3(audio_obj)
         if library is not None:
             try:
@@ -582,6 +589,7 @@ def inspect_tag_loop(
                 ui_utils.show_status(f"Warning: cache update failed: {e}")
 
     def _main_header() -> list[str]:
+        """Build the boxed title/artist/format/duration/size header for the tag list screen."""
         cols = ui_utils.get_terminal_width()
         ext = os.path.splitext(file_path)[1].upper().lstrip('.')
 
@@ -599,6 +607,7 @@ def inspect_tag_loop(
         _PLACEHOLDERS = {"", "Unknown Artist", "Unknown Album", "Unknown Genre", "Unknown Year"}
 
         def _from_tags(frame: str, meta_key: str) -> str:
+            """Read a live tag value, falling back to cached library metadata (placeholders excluded)."""
             try:
                 fr = audio.get(frame)
                 if fr is not None and getattr(fr, "text", None):
@@ -659,6 +668,7 @@ def inspect_tag_loop(
         cols = ui_utils.get_terminal_width()
 
         def _tag_cells(tag_id: str) -> list:
+            """Build the [id+name, category, value] row cells for one tag in the list."""
             # Column 1 = TAG (bright) + friendly name (dim) as two segments.
             info = get_tag_info(tag_id)
             friendly = f" ({info.name[0]})" if info else ""
@@ -743,6 +753,7 @@ def inspect_tag_loop(
             category = get_tag_category(choice)
 
             def _tag_header() -> list[str]:
+                """Build the header for the single-tag edit screen: id/label plus art or people table."""
                 cols = ui_utils.get_terminal_width()
                 info = get_tag_info(choice) if choice else None
                 label = info.name[0] if info else choice or "Unknown"

@@ -14,6 +14,7 @@ from src.utils import prompt, ui_utils
 
 
 def _init_tag_preferences(config: dict) -> dict:
+    """Seed tag_name_preferences from the tag registry's default names on first run."""
     if not config.get('tag_name_preferences'):
         config['tag_name_preferences'] = {
             tag_id: info.name[0]
@@ -23,6 +24,8 @@ def _init_tag_preferences(config: dict) -> dict:
 
 
 def _run(config: dict) -> None:
+    """Load or build the library and hand off to the main menu; first run prompts
+    for a music directory and builds the cache from scratch."""
     config = _init_tag_preferences(config)
     # Persist immediately so first-run tag preferences survive an instant quit;
     # the settings menu also autosaves, so "save & quit" (q) needs nothing more.
@@ -68,6 +71,7 @@ def _run(config: dict) -> None:
 
 
 def main() -> None:
+    """Program entry point: set up the terminal, load config, and run the app."""
     # Enable ANSI escape processing on Windows consoles (no-op elsewhere).
     try:
         import colorama

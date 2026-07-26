@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
+    """Render image bytes as ANSI half-block characters for terminal display."""
     # 1. Decode bytes to image
     nparr = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -59,11 +60,14 @@ def render_album_art(image_source: str | bytes, width: int = 100, is_bytes: bool
 
 
 def get_art_from_image_file(file_path: str, width: int) -> str:
+    """Render a standalone image file (not embedded in a tag) to terminal text."""
     return render_album_art(file_path, width=width, is_bytes=False)
 
 
 def _select_apic_frame(audio: ID3, preferred_desc: str | None = None,
                        preferred_type: int | None = None):
+    """Pick an MP3's cover APIC frame: by description, then by picture type,
+    else the first embedded picture found."""
     apic_keys = [k for k in audio.keys() if k.startswith('APIC')]
     if not apic_keys:
         return None
@@ -86,6 +90,7 @@ def _select_apic_frame(audio: ID3, preferred_desc: str | None = None,
 def get_art_from_mp3(file_path: str, width: int,
                        preferred_desc: str | None = None,
                        preferred_type: int | None = None) -> str:
+    """Extract and render an MP3's embedded cover art."""
     try:
         audio = ID3(file_path)
         apic_frame = _select_apic_frame(audio, preferred_desc=preferred_desc, preferred_type=preferred_type)
@@ -99,6 +104,8 @@ def get_art_from_mp3(file_path: str, width: int,
 
 
 def get_art(file_path: str, width: int = 100) -> str:
+    """Render a file's album art, dispatching to the MP3 tag reader or plain
+    image loader by extension."""
     if not os.path.isfile(file_path):
         return "Error: Invalid file path."
 

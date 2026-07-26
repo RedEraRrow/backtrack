@@ -52,6 +52,7 @@ class WriteResult:
 
     @property
     def changed(self) -> bool:
+        """True if any field was actually written."""
         return bool(self.written)
 
 
@@ -66,6 +67,7 @@ def format_kind(path: str) -> str:
 
 
 def is_writable(path: str) -> bool:
+    """True if the path's format (MP3 or MP4 family) is one this writer supports."""
     return format_kind(path) != 'unsupported'
 
 
@@ -94,11 +96,14 @@ def _fmt_pair(num, total) -> str:
 # ---------------------------------------------------------------------------
 
 def _id3_present(audio: ID3) -> dict[str, bool]:
+    """Which fields already have a non-empty value in this ID3 object, keyed by field name."""
     def _txt(fid: str) -> bool:
+        """True if the text frame exists and its first value is non-blank."""
         fr = audio.get(fid)
         return bool(fr and fr.text and str(fr.text[0]).strip())
 
     def _num(fid: str) -> bool:
+        """True if the numeric-pair frame's leading number is present and non-zero."""
         fr = audio.get(fid)
         if not (fr and fr.text):
             return False
@@ -114,13 +119,16 @@ def _id3_present(audio: ID3) -> dict[str, bool]:
 
 
 def _mp4_present(audio: MP4) -> dict[str, bool]:
+    """Which fields already have a non-empty value in this MP4 tag object, keyed by field name."""
     tags = audio.tags or {}
 
     def _txt(atom: str) -> bool:
+        """True if the atom exists and its first value is non-blank."""
         v = tags.get(atom)
         return bool(v and str(v[0]).strip())
 
     def _pair(atom: str) -> bool:
+        """True if the (num, total) atom is present with a truthy leading number."""
         v = tags.get(atom)
         try:
             return bool(v and v[0][0])
@@ -234,6 +242,7 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
 
 
 def _set_compilation(audio, kind: str) -> None:
+    """Write the compilation flag (TCMP or 'cpil') on the given tag object."""
     if kind == 'mp3':
         audio.setall('TCMP', [TCMP(encoding=3, text=['1'])])
     else:
@@ -241,6 +250,7 @@ def _set_compilation(audio, kind: str) -> None:
 
 
 def _set_sort(audio, kind: str, frame_cls, atom: str, val: str) -> None:
+    """Write a sort-order string to its ID3 frame or MP4 sort atom."""
     if kind == 'mp3':
         audio.setall(frame_cls.__name__, [frame_cls(encoding=3, text=[val])])
     else:
@@ -248,6 +258,7 @@ def _set_sort(audio, kind: str, frame_cls, atom: str, val: str) -> None:
 
 
 def _set_field(audio, kind: str, f: str, values: dict) -> None:
+    """Write one derived field (title/artist/track/etc.) to its ID3 frame or MP4 atom."""
     if kind == 'mp3':
         if f == 'title':
             audio.setall('TIT2', [TIT2(encoding=3, text=[str(values['title'])])])

@@ -61,6 +61,7 @@ _LOOP_TICK_S = 0.02
 
 
 def _make_player(file_path: str) -> vlc.MediaPlayer:
+    """Create a VLC media player instance loaded with file_path."""
     instance = vlc.Instance('--no-video', '--quiet')
     assert instance is not None
     media = instance.media_new(file_path)
@@ -72,6 +73,7 @@ def _make_player(file_path: str) -> vlc.MediaPlayer:
 
 
 def _handle_seek(mp, elapsed: float, duration: float, seek_amount: float) -> None:
+    """Seek the player by seek_amount seconds, clamped to the track bounds."""
     target = max(0.0, min(elapsed + seek_amount, max(duration - 0.5, 0.0)))
     mp.set_time(int(target * 1000))
 
@@ -100,6 +102,7 @@ def _apply_equalizer(mp, audio) -> bool:
                 continue
             # Nearest band by frequency ratio (log-ish distance).
             def _ratio(k: int) -> float:
+                """Distance of band k from freq as a >=1 ratio, for nearest-band matching."""
                 r = band_freqs[k] / freq
                 return r if r >= 1.0 else 1.0 / r
             idx = min(range(count), key=_ratio)
@@ -110,6 +113,8 @@ def _apply_equalizer(mp, audio) -> bool:
 
 
 def _set_stderr_to_null() -> tuple[int, int]:
+    """Redirect fd 2 to /dev/null to silence VLC's native stderr spam; returns the
+    saved original fd (for _restore_stderr) and the now-closed devnull fd."""
     devnull = os.open(os.devnull, os.O_WRONLY)
     old_stderr = os.dup(2)
     os.dup2(devnull, 2)
@@ -118,11 +123,13 @@ def _set_stderr_to_null() -> tuple[int, int]:
 
 
 def _restore_stderr(old_stderr: int) -> None:
+    """Restore fd 2 from the value saved by _set_stderr_to_null."""
     os.dup2(old_stderr, 2)
     os.close(old_stderr)
 
 
 def _render_grouping_cover(file_path: str, cols: int) -> str:
+    """Render the booklet/cover image for a grouping (audiobook-style) file, sized to the layout mode."""
     mode = _layout_mode(cols)
     if mode == 'wide':
         art_w = min(cols // 2, ART_MAX_WIDTH)
@@ -134,6 +141,9 @@ def _render_grouping_cover(file_path: str, cols: int) -> str:
 
 def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict | None = None,
                  queue_titles: list[str] | None = None, queue_index: int = 0) -> dict:
+    """Run the interactive playback loop for file_path: draws the UI, handles
+    keyboard controls (seek/pause/volume/panes), drives lyric/dialogue sync, and
+    logs listening history. Returns a status dict once playback ends or the user exits."""
     # Register up-next context so the queue view ('u') can render it.
     playback_ui.set_queue_context(queue_titles or [], queue_index)
     manual_line_index = None
@@ -268,6 +278,8 @@ def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict
             has_lyrics = bool(sylt_data) or has_uslt or dialogue_state.is_active()
 
             def update_ctrl_ui():
+                """Redraw just the transport/status line (play state, volume, toast) in place,
+                leaving the hint line(s) below it untouched to avoid flicker."""
                 state = mp.get_state()
                 is_paused = (state == _VLC_STATE_PAUSED)
                 vol = mp.audio_get_volume()

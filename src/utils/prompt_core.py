@@ -43,20 +43,24 @@ else:
 
 
 def _get_term_attrs(fd: int):
+    """Current termios attributes for fd, or None on Windows."""
     return None if _IS_WINDOWS else termios.tcgetattr(fd)
 
 
 def _set_raw(fd: int) -> None:
+    """Put the terminal into raw mode (no-op on Windows)."""
     if not _IS_WINDOWS:
         tty.setraw(fd)
 
 
 def _restore_term_attrs(fd: int, old):
+    """Restore terminal attributes captured before raw mode."""
     if not _IS_WINDOWS and old is not None:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def _wait_for_keypress(timeout: float = 0.05) -> bool:
+    """Block up to `timeout` seconds for a keypress; return whether one arrived."""
     if _IS_WINDOWS:
         end = time.time() + timeout
         while time.time() < end:
@@ -67,12 +71,19 @@ def _wait_for_keypress(timeout: float = 0.05) -> bool:
     return bool(_sel.select([sys.stdin], [], [], timeout)[0])
 
 
-def _clrline():        return "\033[2K\r"
-def _goto(row, col=1): return f"\033[{row};{col}H"
-def _col(n):           return f"\033[{n}G"
+def _clrline():
+    """Clear the current line and return the cursor to column 1."""
+    return "\033[2K\r"
+def _goto(row, col=1):
+    """Move the cursor to `row`, `col` (1-based)."""
+    return f"\033[{row};{col}H"
+def _col(n):
+    """Move the cursor to column `n` on the current row."""
+    return f"\033[{n}G"
 
 
 def _cols() -> int:
+    """Usable terminal width after subtracting the horizontal margins."""
     return max(1, ui_utils.get_terminal_width() - 2 * ui_utils.MARGIN_H)
 
 
@@ -104,6 +115,7 @@ def _hint(*pairs, extra="") -> str:
     total_items = len(parsed_items)
 
     def render_inline(k, v):
+        """Render one [key] value pair inline, dimmed with a bold key."""
         if not k: return f"{C.DIM}{v}{C.RESET}"
         return f"{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}{k}{C.RESET}{C.DIM}] {v}{C.RESET}"
 
@@ -119,6 +131,8 @@ def _hint(*pairs, extra="") -> str:
 
     # LAYOUT 2: Upside-Down Pyramid
     def get_pyramid_distribution(n):
+        """Row sizes for an upside-down pyramid: start near sqrt(2n) and shrink
+        by one each row until all n items are placed."""
         rows = []
         current_row_size = math.ceil(math.sqrt(2 * n))
         while n > 0:
@@ -212,6 +226,8 @@ def _hint(*pairs, extra="") -> str:
     return "\n".join(split_lines)
 
 def _render_status_bar():
+    """Redraw the bottom status bar in place, saving/restoring the cursor so
+    the text input caret doesn't move."""
     rows = ui_utils.get_terminal_height()
     status = ui_utils.get_status_line()
     # \0337 / \0338 save and restore cursor position (DEC) so the cursor
@@ -226,6 +242,7 @@ class Choice:
     def __init__(self, title: str, value: object = None, checked: bool = False,
                  disabled: bool = False, cells: list | None = None,
                  cursor_title: str | None = None) -> None:
+        """Build a selectable/checkable row for select(), defaulting value to title."""
         self.title        = title
         self.value        = value if value is not None else title
         self.checked      = checked
@@ -249,6 +266,7 @@ class Column:
     def __init__(self, style: str = 'normal', align: str = 'left', flex: bool = False,
                  pin: bool = False, min_width: int = 0, max_width: int | None = None,
                  max_frac: float | None = None, gap: int = 2) -> None:
+        """Build a column spec for a structured select() table."""
         self.style     = style
         self.align     = align
         self.flex      = flex
@@ -269,6 +287,7 @@ def _cell_text(cell) -> tuple[str, str | None]:
 
 
 def _style_cell(text: str, style: str, is_current: bool) -> str:
+    """Apply a named cell style (dim/dynamic-dim/accent/primary/normal) to text."""
     if not text:
         return ""
     if style in ('dim', 'static-dim'):
@@ -284,6 +303,8 @@ def _style_cell(text: str, style: str, is_current: bool) -> str:
 
 def _render_cell_segments(cell, style: str, is_current: bool, width: int, align: str,
                           force_dim: bool = False) -> str:
+    """Render a cell (plain text or list of styled segments), truncated/padded
+    to `width` and aligned."""
     if isinstance(cell, list):
         parts = []
         raw_len = 0
@@ -313,6 +334,8 @@ def _render_cell_segments(cell, style: str, is_current: bool, width: int, align:
 
 def _table_widths(rows_cells: list, columns: list, eff: int,
                   pointer_w: int, right_margin: int) -> list[int]:
+    """Compute per-column widths from content, honoring min/max/frac
+    constraints and letting the flex column absorb remaining space."""
     ncol = len(columns)
     content = [0] * ncol
     for cells in rows_cells:
@@ -343,6 +366,8 @@ def _render_table_row(cells: list, columns: list, is_current: bool,
                       widths: list[int], eff: int, right_margin: int,
                       is_checked: bool | None = None,
                       disabled: bool = False) -> str:
+    """Render one table row, laying out left-aligned and right-pinned columns
+    and applying pointer/check/disabled styling."""
     if disabled:
         # Match enabled non-current prefix exactly so columns stay aligned.
         if is_checked is not None:
@@ -523,6 +548,7 @@ def _style_checkbox_label(label_text: str, is_current: bool, is_dimmed: bool) ->
 
 
 def _norm(choices: list) -> list:
+    """Normalize a mixed list of Choice/str/dict/choice-like objects into Choice instances."""
     out = []
     for c in choices:
         if isinstance(c, Choice):
@@ -546,6 +572,7 @@ def _norm(choices: list) -> list:
 
 
 def _read_key(fd: int) -> str:
+    """Read one key, transparently discarding focus in/out events."""
     while True:
         key = _read_key_raw(fd)
         if key not in ('FOCUS_IN', 'FOCUS_OUT'):
@@ -553,6 +580,8 @@ def _read_key(fd: int) -> str:
 
 
 def _read_key_raw(fd: int) -> str:
+    """Read and decode one raw keypress, including escape sequences and mouse
+    events, into a named key string."""
     if _IS_WINDOWS:
         ch = msvcrt.getwch()
         if ch in ('\x00', '\xe0'):
@@ -638,14 +667,17 @@ def _visible_rows() -> int:
 
 
 def _rows() -> int:
+    """Terminal height in rows."""
     return ui_utils.get_terminal_height()
 
 
 def _hint_lines(*pairs, extra="") -> list[str]:
+    """The hint bar rendered as a list of lines rather than one newline-joined string."""
     return _hint(*pairs, extra=extra).splitlines()
 
 
 def _wrap_bordered_input_lines(text: str, content_width: int) -> list[str]:
+    """Word-wrap text to `content_width`, preserving blank lines as empty entries."""
     lines: list[str] = []
     for raw_line in text.split("\n"):
         if raw_line == "":
@@ -667,6 +699,7 @@ class _Widget:
     """
 
     def __init__(self, fd: int) -> None:
+        """No anchor row yet — it's queried and fixed on the first render."""
         self.fd      = fd
         self.row     = None   # anchor row, 1-based
         self.last_h  = 0
@@ -678,6 +711,8 @@ class _Widget:
         self._full = True
 
     def render(self, lines: list) -> None:
+        """Draw `lines` at the anchor row, clearing stale content from a
+        previous taller render and restamping the status bar in the same flush."""
         mv   = ui_utils.MARGIN_V
         rows = ui_utils.get_terminal_height()
 
@@ -711,6 +746,7 @@ class _Widget:
         sys.stdout.flush()
 
     def clear(self) -> None:
+        """Clear the screen, show the cursor, and reset anchor state."""
         sys.stdout.write("\033[H\033[3J\033[J" + C.SHOW)
         sys.stdout.flush()
         self.last_h = 0

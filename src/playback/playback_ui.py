@@ -32,6 +32,8 @@ _ART_INNER_MARGIN = 8
 
 
 def _render_frame_buffer(buf: list, rows: int) -> None:
+    """Flush the assembled frame in one write, positioning relative lines by row
+    while letting absolute-positioned items (volume bar, controls, lyrics) pass through untouched."""
     parts = [buf[0]]  # clear sequence at row 1
     # `row` counts only flow (relative) lines; absolute-positioned items (the
     # volume bar, controls, lyrics) pass through WITHOUT consuming a row slot —
@@ -88,6 +90,7 @@ _last_right_width: int | None = None
 
 
 def _layout_mode(cols: int) -> str:
+    """Classify terminal width into a layout mode: wide, standard, or minimal."""
     if cols >= 120:
         return 'wide'
     if cols >= 60:
@@ -96,6 +99,7 @@ def _layout_mode(cols: int) -> str:
 
 
 def _get_art_cached(file_path: str, width: int) -> str:
+    """Return the rendered album art for file_path at width, cached by (path, width, mtime)."""
     # Key on the file's mtime so editing the file (e.g. adding album art)
     # invalidates the cached render — otherwise a "No album art found." result
     # would stick until the program restarts.
@@ -114,6 +118,7 @@ def _get_art_cached(file_path: str, width: int) -> str:
 
 
 def _clip_ansi_to_width(text: str, max_cols: int) -> str:
+    """Truncate text to max_cols visible columns, preserving embedded ANSI escapes intact."""
     visible = 0
     result: list[str] = []
     i = 0
@@ -179,12 +184,14 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
 
 
 def _visible_len(text: str) -> int:
+    """Return the length of text ignoring ANSI escape sequences."""
     if not text:
         return 0
     return len(_ANSI_RE.sub('', text))
 
 
 def _get_people(audio, tag_key: str) -> list[tuple[str, str]]:
+    """Flatten an ID3 involved-people-list frame (e.g. TMCL/TIPL) into (role, name) pairs."""
     return [
         (role.strip().lower(), name.strip())
         for frame in audio.getall(tag_key)
@@ -193,6 +200,7 @@ def _get_people(audio, tag_key: str) -> list[tuple[str, str]]:
 
 
 def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4) -> list[str]:
+    """Build display lines for cast/performer credits, truncating long labels and summarizing overflow past the limit."""
     total = len(people)
     cap = limit * 2
     lines = []
@@ -212,6 +220,7 @@ def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4)
 
 
 def _volume_slider(volume: int, width: int = 20) -> str:
+    """Render volume as a horizontal bar with a position marker."""
     percent = max(0.0, min(100.0, volume)) / 100.0
     pos = int(round(percent * (width - 1)))
     line = "━" * pos + "●" + "━" * (width - pos - 1)
@@ -274,26 +283,32 @@ def draw_volume_bar(volume: int) -> None:
 
 
 def toggle_metadata() -> None:
+    """Toggle display of the extended metadata details line."""
     _ui_state['show_metadata'] = not _ui_state['show_metadata']
 
 
 def toggle_credits() -> None:
+    """Toggle display of the cast/crew credits pane."""
     _ui_state['show_credits'] = not _ui_state['show_credits']
 
 
 def toggle_lyrics() -> None:
+    """Toggle display of the lyrics pane."""
     _ui_state['show_lyrics'] = not _ui_state['show_lyrics']
 
 
 def toggle_help() -> None:
+    """Toggle display of the full keyboard-shortcut help line."""
     _ui_state['show_help'] = not _ui_state['show_help']
 
 
 def toggle_queue() -> None:
+    """Toggle display of the up-next queue pane."""
     _ui_state['show_queue'] = not _ui_state['show_queue']
 
 
 def _set_pane_mode(mode: str) -> None:
+    """Set the right-pane mode and sync the show_lyrics/show_credits/show_queue flags to match it."""
     _ui_state['pane_mode'] = mode
     _ui_state['show_lyrics'] = mode in ('lyrics', 'lyrics+credits')
     _ui_state['show_credits'] = mode in ('credits', 'lyrics+credits')
@@ -327,10 +342,12 @@ def set_queue_context(titles: list[str], index: int) -> None:
 
 
 def has_queue() -> bool:
+    """Return whether there's more than one track in the queue worth showing."""
     return len(_queue_ctx['titles']) > 1
 
 
 def get_ui_state() -> dict:
+    """Return a copy of the current UI state (pane visibility/mode flags)."""
     return _ui_state.copy()
 
 
@@ -373,6 +390,8 @@ def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
 def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
                      cast_names: list[str] | None = None,
                      limit: int = 4) -> list[str]:
+    """Build production-team credit lines: names matching cast_names surface first
+    (in cast order), then priority roles, then the rest, truncated to limit with an overflow summary."""
     cast_names = cast_names or []
     cast_name_lower = [n.lower() for n in cast_names]
 
@@ -423,6 +442,7 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
 def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
                    width: int | None = None,
                    has_lyrics: bool = True, has_credits: bool = True) -> tuple[str, str]:
+    """Build the centered transport-controls line and the shortcuts/help hint line below it."""
     pp_icon = "⏵" if is_paused else "⏸"
     transport_icons = ["⏮ ", pp_icon, "⏭"]
     controls = "  ".join(transport_icons)
@@ -473,10 +493,14 @@ def _movement_roman(s: str) -> str:
 
 
 def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
+    """Build the left-column metadata lines (title, artist/album, and optional
+    extras like year/genre/track/disc) shown beside the album art."""
     def _trim(text: str) -> str:
+        """Truncate text to max_val_w with an ellipsis."""
         return ui_utils.truncate_text(text, max(1, max_val_w), placeholder='…')
 
     def _txt(frame_id: str) -> str:
+        """Return a text frame's stripped value, or empty string if absent."""
         fr = audio.get(frame_id)
         return str(fr.text[0]).strip() if (fr is not None and getattr(fr, 'text', None)) else ""
 
@@ -522,9 +546,11 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
         track, track_total = _frac('TRCK')
 
         def _track_str(t: str, total: str) -> str:
+            """Format a track number, appending the total when known."""
             return f"Track {t} of {total}" if (t and total) else f"Track {t}"
 
         def _disc_str(d: str, total: str) -> str:
+            """Format a disc number, appending the total when known."""
             return f"Disc {d} of {total}" if (d and total) else f"Disc {d}"
 
         if work or movement:
@@ -553,6 +579,7 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
 
 
 def _align_art_lines(art_lines: list[str], cols: int) -> list[str]:
+    """Center art_lines horizontally within cols, padding every line to a uniform width."""
     if not art_lines:
         return []
     art_width = max(_visible_len(line) for line in art_lines)
@@ -565,6 +592,7 @@ def _align_art_lines(art_lines: list[str], cols: int) -> list[str]:
 
 
 def _center_lines(lines: list[str], cols: int) -> list[str]:
+    """Center each line horizontally within cols based on its visible length."""
     if not lines:
         return []
     centered: list[str] = []
@@ -577,12 +605,15 @@ def _center_lines(lines: list[str], cols: int) -> list[str]:
 
 def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
                  is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple[int, int, int, int, int]:
+    """Hide the cursor and draw the default playback UI layout."""
     sys.stdout.write(f"{C.HIDE}")
     return _draw_default_ui(file_path, audio, pre_art, size, is_paused, volume, toast)
 
 
 def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
                      is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple[int, int, int, int, int]:
+    """Render the full playback screen (art, metadata, controls, and any active pane)
+    for the current layout mode, returning the progress/control/lyric row positions and art bottom row."""
     cols, rows = size
     global _last_art_width, _last_art_left, _last_right_left, _last_right_width
     global _last_art_top, _last_art_height, _last_vol_bar_col

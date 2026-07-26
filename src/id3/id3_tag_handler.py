@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from mutagen.id3 import ID3
 from mutagen.id3._frames import SYLT, USLT, TMCL, TIPL, TXXX, WXXX, COMM  # type: ignore[reportPrivateImportUsage]
-from mutagen.id3._frames import APIC, EQU2, RVA2
+from mutagen.id3._frames import APIC, EQU2, RVA2, POPM, PCNT
 
 from src.id3.tag_registry import (TAG_REGISTRY, TagInfo, parse_composite_tag_id, get_tag_info, get_tag_category, get_preferred_tag_name)
 from src.music_library import refresh_library_entry
@@ -23,6 +23,7 @@ _EXT_TO_MIME: dict[str, str] = {
 
 
 def _prompt_for_image_file() -> bytes | None:
+    """Prompt for an image path and return its raw bytes, or None if cancelled/unreadable."""
     img_path = prompt.path("Path to image:")
     if not img_path or not os.path.isfile(img_path):
         return None
@@ -35,6 +36,7 @@ def _prompt_for_image_file() -> bytes | None:
 
 
 def _get_mime_type(data: bytes) -> str:
+    """Sniff an image's MIME type from its magic bytes; defaults to JPEG."""
     if data.startswith(b'\xFF\xD8\xFF'):
         return 'image/jpeg'
     elif data.startswith(b'\x89PNG'):
@@ -59,6 +61,7 @@ _COVER_PICK_COLUMNS = [
 
 
 def _cover_size(path: str) -> str:
+    """Human-readable file size ("N KB"/"N.N MB") for a cover image, or '' on error."""
     try:
         kb = os.path.getsize(path) / 1024
     except OSError:
@@ -97,6 +100,7 @@ def pick_nearby_cover(file_path: str, *, tokens: dict | None = None,
         images = cm.find_images_for_track(file_path)
 
     def _manual() -> str | None:
+        """Fall back to a free-typed image path when no candidates are shown/chosen."""
         p = prompt.path("Path to image:")
         if p and os.path.isfile(p):
             return p
@@ -197,7 +201,7 @@ def save_id3(audio: ID3, path: str | None = None) -> None:
         audio.save(path, v2_version=ver)
 
 
-def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | EQU2 | RVA2 | None:
+def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | EQU2 | RVA2 | POPM | PCNT | None:
     """Create the correct mutagen frame for tag_id from value, or None on failure."""
     if value is None:
         return None
@@ -219,6 +223,20 @@ def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | 
         if parsed_base == 'RVA2':
             if isinstance(value, dict) and value.get('__rva2__'):
                 return RVA2(desc='', channel=1, gain=float(value['gain']), peak=0.0)
+            return None
+
+        # POPM (rating 0-255 + play count) and PCNT (play counter) carry structured
+        # payloads from their editors; a bare int is also accepted for convenience.
+        if parsed_base == 'POPM':
+            if isinstance(value, dict) and value.get('__popm__'):
+                return POPM(email=str(value.get('email') or DEFAULT_POPM_EMAIL),
+                            rating=int(value.get('rating', 0)), count=int(value.get('count', 0)))
+            return None
+        if parsed_base == 'PCNT':
+            if isinstance(value, dict) and value.get('__pcnt__'):
+                return PCNT(count=int(value.get('count', 0)))
+            if isinstance(value, int):
+                return PCNT(count=max(0, value))
             return None
 
         # APIC is a BINARY frame but its UI category is 'image'. (The old
@@ -413,8 +431,62 @@ def _prompt_for_rva2(current_value: Any) -> dict | None:
     return {'__rva2__': True, 'gain': gain}
 
 
+# POPM rating: 0-5 stars ↔ 0-255 byte (Windows Media Player convention). Writing
+# uses the canonical byte per star; reading maps any byte to the nearest star via
+# WMP's boundaries so ratings written by other players display sensibly.
+_POPM_STAR_BYTES = (0, 1, 64, 128, 196, 255)
+DEFAULT_POPM_EMAIL = "Windows Media Player 9 Series"
+
+
+def popm_stars_to_byte(stars: int) -> int:
+    """Map a 0-5 star rating to its canonical WMP POPM byte value."""
+    return _POPM_STAR_BYTES[max(0, min(5, int(stars)))]
+
+
+def popm_byte_to_stars(rating: int) -> int:
+    """Map any POPM byte rating to the nearest 0-5 stars, per WMP's boundaries."""
+    r = int(rating)
+    if r <= 0:
+        return 0
+    if r < 32:
+        return 1
+    if r < 96:
+        return 2
+    if r < 160:
+        return 3
+    if r < 224:
+        return 4
+    return 5
+
+
+def _prompt_for_rating(current_value: Any) -> dict | None:
+    """Star-rating editor (0-5) + play count + rater email for a POPM frame."""
+    stars = count = 0
+    email = DEFAULT_POPM_EMAIL
+    if current_value is not None and hasattr(current_value, 'rating'):
+        stars = popm_byte_to_stars(getattr(current_value, 'rating', 0) or 0)
+        count = int(getattr(current_value, 'count', 0) or 0)
+        email = str(getattr(current_value, 'email', '') or DEFAULT_POPM_EMAIL)
+    res = prompt.rating_edit("Rating (POPM):", stars=stars, count=count, email=email)
+    if res is None:
+        return None
+    return {'__popm__': True, 'rating': popm_stars_to_byte(res['stars']),
+            'count': int(res['count']), 'email': str(res['email'] or DEFAULT_POPM_EMAIL)}
+
+
+def _prompt_for_playcount(current_value: Any) -> dict | None:
+    """Simple non-negative integer editor for a PCNT play-counter frame."""
+    cur = int(getattr(current_value, 'count', 0) or 0) if current_value is not None else 0
+    n = prompt.number_edit("Play count (PCNT):", value=cur, minimum=0)
+    if not isinstance(n, int):          # None (cancel) or MODE_TOGGLE
+        return None
+    return {'__pcnt__': True, 'count': int(n)}
+
+
 def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: list | None = None,
                      force_plain: bool | None = None, file_path: str | None = None) -> Any | None:
+    """Prompt for a new value for tag_id, dispatching to the right editor for its category
+    (structured binary frames, image picker, people list, plain/smart text, etc.)."""
     info = get_tag_info(tag_id)
     if not info:
         return None
@@ -424,11 +496,15 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     fmt = info.format_spec
     base_id, _, _ = parse_composite_tag_id(tag_id)
 
-    # Structured audio-adjustment editors (binary frames).
+    # Structured binary-frame editors (no raw-text equivalent).
     if base_id == 'EQU2':
         return _prompt_for_equalisation(current_value)
     if base_id == 'RVA2':
         return _prompt_for_rva2(current_value)
+    if base_id == 'POPM':
+        return _prompt_for_rating(current_value)
+    if base_id == 'PCNT':
+        return _prompt_for_playcount(current_value)
 
     # Extract editor-ready defaults from whatever current_value is.
     # It may be a raw mutagen frame (single-file edit), a summary string
@@ -500,6 +576,7 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         return prompt.system_editor_edit(initial_text=default_val)
 
     def _edit_once(as_plain: bool):
+        """Run a single edit pass: plain text/list field, or the format-specific widget."""
         if ui_cat == 'people':
             if as_plain:
                 lines = "\n".join(f"{r}: {n}" for r, n in (initial_people or []))
@@ -555,17 +632,21 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
                 return f"{curr}/{tot}"
             return curr or None
         if fmt == 'INT_BIG':
-            hint = " (milliseconds)" if ui_cat == 'duration' else ""
-            return prompt.text(f"{label}{hint}:", default=default_val)
+            try:
+                cur_int = int(str(default_val).strip() or 0)
+            except ValueError:
+                cur_int = 0
+            unit = "ms" if ui_cat == 'duration' else ""
+            return prompt.number_edit(f"{label}:", value=cur_int, minimum=0, unit=unit)
         # Default: plain text (TEXT_UTF8, URL, LIST_STRING, etc.)
         return prompt.text(f"{label}:", default=default_val)
 
     # The raw↔widget toggle (#62) is only meaningful when the smart editor
-    # actually differs from a plain text field. For plain-text/URL/INT_BIG
-    # frames the "smart widget" IS prompt.text(), so a toggle would be a no-op —
-    # don't advertise (or enable) Ctrl-T there.
+    # actually differs from a plain text field. For plain-text/URL frames the
+    # "smart widget" IS prompt.text(), so a toggle would be a no-op — don't
+    # advertise it there. INT_BIG now gets a numeric spinner, so it toggles too.
     has_widget_toggle = (multivalue or ui_cat == 'people'
-                         or fmt in ('ISO8601', 'DDMM', 'YYYY', 'HHMM', 'FRACTIONAL'))
+                         or fmt in ('ISO8601', 'DDMM', 'YYYY', 'HHMM', 'FRACTIONAL', 'INT_BIG'))
 
     # Multi-value frames (#60 avenue A): edit as a simple text field by default,
     # Ctrl-T expands to the list editor. Open straight into the list when the
@@ -604,6 +685,8 @@ def display_tag_id(tag_id: str) -> str:
 
 
 def summarize_tag_value(tag_id: str, raw_frame) -> str:
+    """Short display string for a frame's value, tailored to its category (people count, image size,
+    star rating, band/gain count, or joined text)."""
     info = get_tag_info(tag_id)
     if not info:
         return str(raw_frame)
@@ -625,6 +708,17 @@ def summarize_tag_value(tag_id: str, raw_frame) -> str:
         sylt_data = getattr(raw_frame, 'text', [])
         return f"{len(sylt_data)} lines"
 
+    # RATING (POPM) — show stars + play count.
+    if info.tag_id == 'POPM' or hasattr(raw_frame, 'rating'):
+        stars = popm_byte_to_stars(getattr(raw_frame, 'rating', 0) or 0)
+        cnt = int(getattr(raw_frame, 'count', 0) or 0)
+        star_str = '★' * stars + '☆' * (5 - stars)
+        return star_str + (f"  ({cnt} plays)" if cnt else "")
+
+    # PLAY COUNTER (PCNT)
+    if info.tag_id == 'PCNT':
+        return f"{int(getattr(raw_frame, 'count', 0) or 0)} plays"
+
     # AUDIO ADJUSTMENT (EQU2 / RVA2)
     if info.official_category == 'AUDIO_ADJUSTMENT' or hasattr(raw_frame, 'adjustments') or (hasattr(raw_frame, 'gain') and hasattr(raw_frame, 'channel')):
         if hasattr(raw_frame, 'adjustments'):
@@ -644,6 +738,7 @@ def summarize_tag_value(tag_id: str, raw_frame) -> str:
 
 
 def collect_tag_data(paths: list[str]) -> tuple[dict, dict, dict]:
+    """Scan files and tally tag presence counts, unique value summaries, and people-tag names."""
     tag_counts = {}
     tag_values = {}
     people_tags = {}
@@ -686,6 +781,7 @@ def apply_bulk_edit(
     new_value: Any = None,
     new_tag_id: str | None = None
 ) -> bool:
+    """Apply one set/rename/delete operation to a tag on an already-open ID3 object."""
     try:
         if operation == 'set':
             if new_value is None:
@@ -732,6 +828,8 @@ def apply_bulk_operation_to_files(
     target_value: Any = None,
     library: list | None = None
 ) -> tuple[int, int]:
+    """Apply one set/rename/delete operation across multiple files, saving and refreshing
+    the library cache for each one changed. Returns (success_count, fail_count)."""
     success_count = 0
     fail_count = 0
 

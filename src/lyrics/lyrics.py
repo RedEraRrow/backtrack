@@ -12,6 +12,7 @@ from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
 
 def normalize_lyric_newlines(text: str) -> str:
+    """Normalize CRLF/CR line endings to \\n."""
     if not text:
         return ""
     return text.replace('\r\n', '\n').replace('\r', '\n')
@@ -32,6 +33,7 @@ def _sentence_split(text: str, wrap_w: int, max_lines: int) -> list[str]:
     boundaries = [m.end() for m in re.finditer(r'[.!?]\s+', masked)]
 
     def _fits(chunk: str) -> bool:
+        """True if chunk wraps to no more than max_lines rows."""
         return len(textwrap.wrap(chunk, width=wrap_w)) <= max_lines
 
     if not boundaries:
@@ -116,6 +118,9 @@ def expand_uslt_lines(
     wrap_w: int,
     max_lines_per_chunk: int = 6,
 ) -> tuple[list[str], list[tuple]]:
+    """Split any USLT line that wraps past max_lines_per_chunk into shorter chunks,
+    dividing its time window across the chunks proportionally by word count.
+    Results are cached by (wrap_w, max_lines_per_chunk, id(lines))."""
     cache_key = (wrap_w, max_lines_per_chunk, id(lines))
     if cache_key in _expand_cache:
         return _expand_cache[cache_key]
@@ -150,6 +155,9 @@ def expand_uslt_lines(
 
 
 def build_uslt_line_times(lines: list, track_duration: float) -> list[tuple[float, float]]:
+    """Estimate (start, end) windows for untimed USLT lines by allocating
+    track_duration proportionally to each line's word count, after stripping
+    speaker prefixes and parenthetical/bracketed asides."""
     times = []
     t = 0.0
     total_words = 0
@@ -180,12 +188,16 @@ def build_uslt_line_times(lines: list, track_duration: float) -> list[tuple[floa
 
 
 def find_current_uslt_line(line_times: list[tuple[float, float]], elapsed: float) -> int:
+    """Binary-search line_times for the line covering elapsed, clamped to range."""
     ends = [t[1] for t in line_times]
     idx = bisect.bisect_right(ends, elapsed)
     return min(idx, max(0, len(line_times) - 1))
 
 
 def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
+    """Parse markdown dialogue text into DialogueLine entries, recognizing
+    stage-direction-only lines, `**Speaker** (stage dir): text` headers, and
+    unlabeled continuation lines appended to the previous entry."""
     lines = normalize_lyric_newlines(text).split('\n')
     dialogue_lines = []
 
@@ -251,6 +263,7 @@ def _apply_markdown_formatting(text: str, base: str = "",
 
 
 def _format_speaker_list(items: list[str]) -> str:
+    """Join speaker names into a markdown-bold list, joined with ', ' and 'and'."""
     if not items:
         return ""
     items = [item.strip() for item in items]
@@ -261,6 +274,7 @@ def _format_speaker_list(items: list[str]) -> str:
 
 class DialogueLine:
     def __init__(self, speakers: list[str] | None = None, stage_dir: str = "", text: str = "", start: float = 0.0, end: float = 0.0):
+        """Store speakers, stage direction and text (whitespace-trimmed) plus the timing window."""
         self.speakers = speakers or []
         self.stage_dir = stage_dir.strip()
         self.text = text.strip()
@@ -273,13 +287,16 @@ class DialogueLine:
         return _format_speaker_list(self.speakers)
 
     def is_stage_direction(self) -> bool:
+        """True if this line is a stage direction with no speakers or spoken text."""
         return not self.speakers and not self.text and bool(self.stage_dir)
 
     def is_empty(self) -> bool:
+        """True if this line has no speakers, text, or stage direction at all."""
         return not self.speakers and not self.text and not self.stage_dir
 
 
 def clean_text_for_timing(text: str) -> str:
+    """Strip stage directions and parenthetical asides so what remains is spoken-only text for word-count/timing use."""
     cleaned = re.sub(r'\s*\*[^(]*\([^)]*\)\*\s*|\s*\([^)]*\)\s*', ' ', text)
     return re.sub(r'\s+', ' ', cleaned).strip()
 
@@ -293,6 +310,13 @@ def expand_dialogue_into_sentences(
     word_timings: list[dict] | None = None,
     wrap_w: int = 50,
 ) -> tuple[list[dict], list[tuple[float, float]]]:
+    """Expand dialogue lines into per-sentence/clause chunks with timing windows.
+
+    Each sentence's words are matched forward against word_timings when available,
+    falling back to proportional word-count timing otherwise. Stage-direction-only
+    lines get a gap window up to the next word's start without consuming track
+    time. A final pass inserts synthetic 'is_air' chunks for silences longer than
+    _AIR_THRESHOLD that aren't already covered by a stage direction."""
     expanded_chunks: list[dict] = []
     time_windows: list[tuple[float, float]] = []
     total_elapsed = 0.0
@@ -307,6 +331,8 @@ def expand_dialogue_into_sentences(
         return raw.lower().strip().strip(".,!?;:\"'")
 
     def get_sentence_timing(sentence_words: list[str]) -> tuple[float, float] | None:
+        """Find this sentence's (start, end) by matching its words forward through
+        word_timings from the shared cursor; None if no word_timings or no match."""
         nonlocal wt_cursor
         if not word_timings or not sentence_words:
             return None
@@ -561,18 +587,21 @@ def draw_dialogue_window(
 
 
 def find_current_dialogue_line(line_times: list[tuple[float, float]], elapsed: float) -> int:
+    """Binary-search line_times for the chunk covering elapsed, clamped to range."""
     ends = [t[1] for t in line_times]
     idx = bisect.bisect_right(ends, elapsed)
     return min(idx, max(0, len(line_times) - 1))
 
 
 def _strip_markdown(text: str) -> str:
+    """Strip markdown emphasis/code markers (*_`~) for plain-text display."""
     return re.sub(r'[*_`~]', '', text)
 
 
 def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
                       width: int | None = None, max_row: int | None = None,
                       col: int = 1, bottom_row: int | None = None) -> None:
+    """Render the SYLT lyric window (dimmed prev/next line, bold wrapped current line), clearing the area first."""
     width = width or ui_utils.get_terminal_width()
     _, term_rows = ui_utils.get_terminal_size()
     max_row = max_row or term_rows
@@ -621,6 +650,8 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
                      manual_idx: int | None = None,
                      max_row: int | None = None,
                      col: int = 1, bottom_row: int | None = None) -> None:
+    """Render the USLT lyric window (dimmed prev/next line, wrapped current line),
+    honoring a manual scroll override via manual_idx over the elapsed-time index."""
     width = width or ui_utils.get_terminal_width()
     wrap_w = max(20, width - 10)
     _, term_rows = ui_utils.get_terminal_size()
@@ -679,6 +710,7 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
 def draw_lyric_initial(row: int, first_line: object, width: int | None = None,
                        max_row: int | None = None, col: int = 1,
                        bottom_row: int | None = None) -> None:
+    """Render a one-line preview of the first lyric before playback timing/highlighting begins."""
     width = width or ui_utils.get_terminal_width()
     _, term_rows = ui_utils.get_terminal_size()
     max_row = max_row or term_rows
@@ -709,6 +741,7 @@ def draw_lyric_initial(row: int, first_line: object, width: int | None = None,
 
 
 def _parse_sylt(audio) -> list[tuple[str, int]]:
+    """Collect all SYLT frame entries from the tag, sorted by timestamp."""
     sylt_data = []
     for tag in audio.getall('SYLT'):
         sylt_data.extend(tag.text)
@@ -737,6 +770,7 @@ def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]]) -> No
 
 
 def _parse_uslt(audio) -> list[tuple[str, int]]:
+    """Extract USLT text into (line, 0) tuples, normalizing newlines and dropping blank lines."""
     tags = audio.getall('USLT')
     if not tags:
         return []
@@ -748,6 +782,7 @@ def _parse_uslt(audio) -> list[tuple[str, int]]:
 
 
 def estimate_sylt_last_line_end(sylt_data: list[tuple[str, int]], duration_ms: float, words_per_second: float = 2.2) -> float:
+    """Estimate when the last SYLT line finishes, from its word count and words_per_second, capped at the track duration."""
     if not sylt_data: return 0.0
     last_text, last_ts_ms = sylt_data[-1]
     last_ts = last_ts_ms / 1000.0
@@ -757,7 +792,10 @@ def estimate_sylt_last_line_end(sylt_data: list[tuple[str, int]], duration_ms: f
 
 
 def find_uslt_handoff_index(uslt_lines: list[str], last_sylt_text: str) -> int:
+    """Find the USLT index to resume display at after the last SYLT line, matching
+    exactly first then falling back to substring containment."""
     def _norm(s: str) -> str:
+        """Collapse whitespace and lowercase for line-text comparison."""
         return re.sub(r'\s+', ' ', s.strip().lower())
     target = _norm(last_sylt_text)
     for i, line in enumerate(uslt_lines):
@@ -830,6 +868,7 @@ def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | Non
 
 
 def parse_markdown_file(file_path: str) -> list[DialogueLine] | None:
+    """Read and parse a markdown dialogue file; None if missing or unreadable."""
     path = Path(file_path)
     if not path.exists():
         return None
@@ -920,6 +959,8 @@ def _matchable(word: str) -> str:
 
 
 def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict]) -> None:
+    """Walk each markdown line's words against the word_timings stream in order,
+    stamping line.start/line.end from the first/last matched word."""
     word_idx = 0
     for line in md_lines:
         if line.is_empty():
@@ -962,6 +1003,9 @@ class DialoguePlaybackState:
     """Manages sentence-by-sentence narrative dialogue states with timing support."""
 
     def __init__(self, audio_path: str, track_duration: float):
+        """Load and expand the dialogue track for audio_path: find markdown + timing
+        files, parse dialogue lines, match them to word timings, expand into timed
+        sentence chunks, and merge in explicit dead-air beats; sets load_error on failure."""
         md_path = _find_markdown_for_audio(audio_path)
         _, json_path = _find_timing_files_for_audio(audio_path)
 
@@ -1020,20 +1064,24 @@ class DialoguePlaybackState:
             })
 
     def is_active(self) -> bool:
+        """True if any dialogue chunks were loaded."""
         return bool(self.expanded_chunks)
 
     def update(self, elapsed: float) -> None:
+        """Advance current_idx to the chunk covering elapsed."""
         if self.line_times:
             self.current_idx = find_current_dialogue_line(self.line_times, elapsed)
 
 
 def check_for_dialogue_files(audio_path: str) -> bool:
+    """True if any dialogue source (markdown, SRT, or JSON timings) exists for this audio file."""
     md_path = _find_markdown_for_audio(audio_path)
     srt_path, json_path = _find_timing_files_for_audio(audio_path)
     return bool(md_path or srt_path or json_path)
 
 
 def get_dialogue_file_info(audio_path: str) -> str:
+    """Human-readable summary of which dialogue source files were found."""
     md_path = _find_markdown_for_audio(audio_path)
     srt_path, json_path = _find_timing_files_for_audio(audio_path)
     parts = []

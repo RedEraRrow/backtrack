@@ -145,6 +145,7 @@ def _detail_view(path, derived, plan: dict, present: dict, apply_fields: set,
 
 
 def _num_pair(num, total) -> str:
+    """Format a "num/total" string, or just "num" when total is falsy."""
     return f"{num}/{total}" if total else f"{num}"
 
 
@@ -555,6 +556,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
             title=os.path.basename(p), value=p, checked=True, cells=cells))
 
     def _show_detail(path) -> None:
+        """Open the full derivation detail view for one previewed file."""
         _detail_view(path, derived[path], plans[path], present_cache[path],
                      apply_fields, overwrite, header)
 
@@ -991,6 +993,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     shared = {img for img, n in Counter(v for v in plan.values() if v).items() if n >= 2}
 
     def _conf(p: str) -> str:
+        """Confidence/group label for a track's planned cover, or '' if unmatched."""
         img = plan.get(p)
         if not img:
             return ''
@@ -999,6 +1002,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         return cm.confidence(cm.score_match(p, tokens[p], img))
 
     def _cover_cell(p: str):
+        """Cell text for a track's planned cover: label, plus a "has art" badge if replacing."""
         img = plan.get(p)
         if not img:
             return "— none (d to choose) —"
@@ -1008,6 +1012,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         return label
 
     def _checked(p: str) -> bool:
+        """Default tick state: matched, and either overwriting or no existing art."""
         return bool(plan.get(p)) and (overwrite_default or not existing_art[p])
 
     choice_by_path: dict = {}
@@ -1019,6 +1024,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         preview_choices.append(ch)
 
     def _reassign(path: str) -> None:
+        """Let the user pick/clear the cover for one track, updating plan and its row in place."""
         d = os.path.dirname(os.path.abspath(path))
         picked = pick_nearby_cover(path, tokens=tokens[path], images=dir_images[d],
                                    current=plan.get(path), allow_none=True, header=header)
@@ -1040,6 +1046,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     # Rebuilt on every render (select calls the header each frame), so the ticked
     # count tracks live as you Space/'a'/'d' through the list.
     def _preview_header():
+        """Build the live status line (matched/ticked/skipped counts) for the cover preview."""
         nk = sum(1 for ch in preview_choices if ch.checked)
         bits = [f"{len(shown)} track(s)", f"{n_match} matched"]
         if n_nodir:
@@ -1233,6 +1240,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         return
 
     def _int(s, what):
+        """Parse s as an int, or show a status error naming `what` and return None."""
         try:
             return int(str(s).strip())
         except (TypeError, ValueError):
@@ -1438,6 +1446,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         """Rounded, full-width box header: bold title left, track count right,
         optional dim subtitle line. Returns a builder for select()/checkbox()."""
         def _build():
+            """Render the boxed header lines for the current terminal width."""
             cols_now = get_terminal_width()
             mh = ui_utils.MARGIN_H
             # Reserve mh on BOTH sides (box border = 1+inner+2+1); the ' '*mh
@@ -1545,10 +1554,12 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     VAL_MAX = max(10, cols - alias_budget - 33)
 
     def _b_alias(tag):
+        """Friendly name for a tag id, or '' if unknown."""
         info = get_tag_info(tag)
         return info.name[0] if info else ""
 
     def _value_summary(tag) -> str:
+        """Summarize a tag's values across the selection: single value, "{n values}", or a type label."""
         if tag.startswith('APIC'):
             return "‹image›"
         if tag.startswith(('TMCL', 'TIPL')):
@@ -1570,6 +1581,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         return f"{{{n_vary} values}}"
 
     def _tag_option_cells(tag, count):
+        """Build the [id+name, category, value summary, count] row cells for a tag option."""
         # Column 1 = TAG (bright) + friendly name (dim) as two segments.
         alias = _b_alias(tag)
         friendly = f" ({alias})" if alias else ""
@@ -1849,6 +1861,7 @@ def select_files() -> list[str]:
 
 
 def bulk_edit_tags(file_paths: list[str], library: list) -> None:
+    """Interactive menu to set, rename, or delete a tag across the given files."""
     if not file_paths:
         ui_utils.show_status("No files selected.")
         return
@@ -1964,6 +1977,7 @@ def bulk_edit_tags(file_paths: list[str], library: list) -> None:
 
 
 def bulk_replace_apic(file_paths: list[str], library: list) -> None:
+    """Prompt for one image and replace the APIC cover art on every given file."""
     if not file_paths:
         ui_utils.show_status("No files selected.")
         return
@@ -1998,6 +2012,7 @@ def bulk_replace_apic(file_paths: list[str], library: list) -> None:
 
 
 def main_menu(library: list) -> None:
+    """Top-level menu: pick files then edit tags or replace album art in bulk."""
     while True:
         choice = prompt.select(
             "Bulk ID3 Editor",

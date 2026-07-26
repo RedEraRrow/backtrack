@@ -63,6 +63,7 @@ _SEASON_RE = re.compile(r's(\d{1,3})e\d{1,3}', re.IGNORECASE)
 # ---------------------------------------------------------------------------
 
 def _is_image(name: str) -> bool:
+    """True if the file extension is one of the supported image formats."""
     return os.path.splitext(name)[1].lower() in IMAGE_EXTS
 
 
@@ -73,6 +74,7 @@ def find_images(directory: str) -> list[str]:
     seen: set[str] = set()
 
     def _add_dir(d: str) -> None:
+        """Append every unseen image file directly inside ``d``."""
         try:
             entries = sorted(os.listdir(d))
         except OSError:
@@ -106,14 +108,17 @@ def find_images_for_track(track_path: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _stem(path: str) -> str:
+    """The file name without its directory or extension."""
     return os.path.splitext(os.path.basename(path))[0]
 
 
 def _numbers(s: str) -> list[int]:
+    """Every integer embedded in ``s``, in order."""
     return [int(n) for n in _NUM_RE.findall(s)]
 
 
 def _words(s: str) -> set[str]:
+    """Lowercased alphanumeric "words" (2+ chars) in ``s``, for overlap scoring."""
     return set(_WORD_RE.findall(s.lower()))
 
 
@@ -313,14 +318,17 @@ def group_key(track_path: str, tokens: dict[str, str] | None,
     tokens = tokens or {}
 
     def _disc():
+        """Group by the TPOS/disc tag, if numeric."""
         d = str(tokens.get('disc', '')).strip()
         return ('disc', int(d)) if d.isdigit() else None
 
     def _season():
+        """Group by an SxxExx season parsed from the file name."""
         s = season_number(track_path)
         return ('season', s) if s is not None else None
 
     def _work():
+        """Group by disc-subtitle / grouping / movement tag, whichever is set."""
         for tok in ('discsubtitle', 'grouping', 'movement'):
             v = str(tokens.get(tok, '')).strip()
             if v:
@@ -350,6 +358,7 @@ def group_label(track_path: str, tokens: dict[str, str] | None,
 
 
 def _group_sort(k: tuple) -> tuple:
+    """Order group keys numerically first, then alphabetically by value."""
     kind, val = k
     if isinstance(val, int):
         return (0, val, '')
@@ -358,6 +367,7 @@ def _group_sort(k: tuple) -> tuple:
 
 def _grouped_map(tracks: list[str], tokens: dict[str, dict],
                  group_by: str) -> dict[tuple, list[str]]:
+    """Bucket tracks by their :func:`group_key`."""
     groups: dict[tuple, list[str]] = {}
     for t in tracks:
         k = group_key(t, tokens.get(t) or fnm.read_tokens(t), group_by)
@@ -452,6 +462,7 @@ def plan_template(tracks: list[str], images: list[str], pattern: str,
 # ---------------------------------------------------------------------------
 
 def mime_for(image_path: str) -> str:
+    """The MIME type for an image file's extension, defaulting to JPEG."""
     return _EXT_TO_MIME.get(os.path.splitext(image_path)[1].lower(), 'image/jpeg')
 
 

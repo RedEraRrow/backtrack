@@ -20,12 +20,12 @@ DEFAULT_CONFIG = {
     "show_lyrics_editor": True,
     "tag_name_preferences": {},
     "sort_list_delimiter": "/",
-    "name_corpus": "full",
     "plain_text_editing": False,
     "autoplay_on_select": False,
 }
 
 def _default_config_dir() -> Path:
+    """The platform-conventional config directory when no override is set."""
     if os.name == "nt":
         appdata = os.getenv("APPDATA")
         if appdata:
@@ -41,6 +41,8 @@ CONFIG_DIR = Path(os.getenv("BACKTRACK_CONFIG_DIR") or _default_config_dir())
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 def load_config() -> dict:
+    """Load the config file, creating it with defaults if missing, and filling
+    in any keys added to DEFAULT_CONFIG since it was written."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_FILE.exists():
         with open(CONFIG_FILE, "w") as f:
@@ -56,6 +58,7 @@ def load_config() -> dict:
     return cfg
 
 def save_config(config: dict) -> None:
+    """Write the config dict to disk as JSON."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)

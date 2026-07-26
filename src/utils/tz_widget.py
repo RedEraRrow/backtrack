@@ -4,6 +4,13 @@ import re
 import sys
 import math
 
+# Allow running this file directly (`python3 src/utils/tz_widget.py`) for
+# standalone testing/fun — put the repo root on sys.path before the package
+# imports below, which otherwise require running as `python3 -m src.utils...`.
+if __name__ == '__main__' and __package__ in (None, ''):
+    import os
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 from src.utils.prompt_core import (
     _Widget, _read_key, _wait_for_keypress,
     _set_raw, _restore_term_attrs, _get_term_attrs,
@@ -838,6 +845,7 @@ _WORLD_BITMAP: list[list[int]] | None = None
 
 
 def _get_world_bitmap() -> list[list[int]]:
+    """Decode and cache the 2880x1440 world coastline bitmap (built lazily, once)."""
     global _WORLD_BITMAP
     if _WORLD_BITMAP is None:
         import zlib, base64 as _b64
@@ -1105,6 +1113,7 @@ _WORLD_TZMAP: bytearray | None = None
 
 
 def _get_tzmap() -> bytearray:
+    """Decode and cache the 1440x720 timezone raster (built lazily, once)."""
     global _WORLD_TZMAP
     if _WORLD_TZMAP is None:
         import zlib, base64 as _b64
@@ -1145,11 +1154,13 @@ def _render_world_map(selected_offset_h: int, selected_offset_m: int,
     px_h = map_rows * 4
 
     def _px_to_lonlat(px_col: int, px_row: int):
+        """Map a sub-pixel (2x4 per char cell) coordinate to (lon, lat)."""
         lon = -180.0 + (px_col + 0.5) * 360.0 / px_w
         lat = lat_top - (px_row + 0.5) * lat_range / px_h
         return lon, lat
 
     def _sample_px(px_col: int, px_row: int) -> int:
+        """Coastline bitmap bit at this sub-pixel; 0 outside ±90° latitude."""
         lon, lat = _px_to_lonlat(px_col, px_row)
         if lat < -90 or lat > 90:
             return 0
@@ -1158,9 +1169,11 @@ def _render_world_map(selected_offset_h: int, selected_offset_m: int,
         return bitmap[min(max(sr, 0), src_h - 1)][min(sc, src_w - 1)]
 
     def _char_lon(char_col: int) -> float:
+        """Longitude at the center of a map character column."""
         return -180.0 + (char_col + 0.5) * 360.0 / map_cols
 
     def _char_lat(char_row: int) -> float:
+        """Latitude at the center of a map character row."""
         return lat_top - (char_row + 0.5) * lat_range / map_rows
 
     # Timezone raster lookup (1440×720, byte = round((utc_offset+12)*4), 255=ocean)
@@ -1169,18 +1182,22 @@ def _render_world_map(selected_offset_h: int, selected_offset_m: int,
     selected_zone = selected_offset_h + selected_offset_m / 60.0
     selected_code = int(round((selected_zone + 12) * 4))
     def _is_hl_ll(lat: float, lon: float) -> bool:
+        """Whether (lat, lon) falls in the currently selected UTC offset's timezone."""
         tc = min(TZ_W - 1, max(0, int((lon + 180.0) / 360.0 * TZ_W)))
         tr = min(TZ_H - 1, max(0, int((90.0 - lat) / 180.0 * TZ_H)))
         code = tzmap[tr * TZ_W + tc]
         return code != 255 and code == selected_code
 
     def _is_hl(char_col: int, char_row: int) -> bool:
+        """Whether a map character cell falls in the currently selected offset's timezone."""
         return _is_hl_ll(_char_lat(char_row), _char_lon(char_col))
 
     def _lat_to_crow(lat: float) -> int:
+        """Latitude to map character row."""
         return int((lat_top - lat) / lat_range * map_rows)
 
     def _lon_to_ccol(lon: float) -> int:
+        """Longitude to map character column."""
         return int((lon + 180.0) / 360.0 * map_cols)
 
     # Build dot maps
@@ -1272,6 +1289,7 @@ def timezone_select(initial_offset: str = "") -> str | None:
         "Z" for UTC+0, "+05:30" for UTC+5:30, "-08:00" for UTC-8, or None on cancel.
     """
     def _parse_initial(s: str) -> tuple[int, int]:
+        """Parse an offset string like "+05:30" or "Z" into (hour, minute); default (0, 0)."""
         if not s or s == "Z":
             return (0, 0)
         m = re.match(r'^([+-])(\d{1,2}):(\d{2})$', s)
@@ -1292,6 +1310,7 @@ def timezone_select(initial_offset: str = "") -> str | None:
     cur_offset = unique_offsets[off_idx]
 
     def _tzs_for_offset(oh: int, om: int) -> list[int]:
+        """Indices into _TIMEZONES sharing this UTC offset."""
         return [i for i, tz in enumerate(_TIMEZONES) if tz[0] == oh and tz[1] == om]
 
     tz_idx_in_offset = 0
@@ -1301,18 +1320,21 @@ def timezone_select(initial_offset: str = "") -> str | None:
     MAX_ZONE_ROWS = 4   # max zone list rows shown at once
 
     def _offset_str(oh: int, om: int) -> str:
+        """Format (hour, minute) as the widget's return value: "Z" or "±HH:MM"."""
         if oh == 0 and om == 0:
             return "Z"
         sign = "+" if oh >= 0 else "-"
         return f"{sign}{abs(oh):02d}:{om:02d}"
 
     def _offset_display(oh: int, om: int) -> str:
+        """Format (hour, minute) as a human-readable "UTC±HH:MM" label."""
         if oh == 0 and om == 0:
             return "UTC+00:00"
         sign = "+" if oh >= 0 else "-"
         return f"UTC{sign}{abs(oh):02d}:{om:02d}"
 
     def _tz_desc(idx: int) -> str:
+        """Display label for a timezone entry: "City (ABBR)"."""
         tz = _TIMEZONES[idx]
         return f"{tz[6]} ({tz[5]})"
 
@@ -1498,5 +1520,15 @@ def timezone_select(initial_offset: str = "") -> str | None:
         w.clear()
 
     return result
+
+
+if __name__ == '__main__':
+    # Standalone demo: `python3 src/utils/tz_widget.py [+05:30]`
+    _initial = sys.argv[1] if len(sys.argv) > 1 else ""
+    try:
+        _picked = timezone_select(_initial)
+    except QuitToTerminal:
+        _picked = None
+    print(f"Selected offset: {_picked}" if _picked is not None else "Cancelled.")
 
 

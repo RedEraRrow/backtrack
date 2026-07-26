@@ -22,6 +22,7 @@ def _num(v) -> int:
 def order_tracks(songs: list) -> list:
     """Order song dicts by disc, then track, then filename (natural-ish)."""
     def key(s):
+        """(disc, track, filename) ordering tuple for one song."""
         base = os.path.basename(str(s.get('path', ''))).lower()
         return (_num(s.get('disc')), _num(s.get('track')), base)
     return sorted(songs, key=key)

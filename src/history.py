@@ -8,6 +8,7 @@ HISTORY_FILE = CONFIG_DIR / 'history.log'
 
 
 def log_listening_history(file_path: str, start_time: float, end_time: float) -> None:
+    """Append one play entry (timestamp, duration, path) to the history log."""
     duration_listened = int(end_time - start_time)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -19,6 +20,7 @@ def log_listening_history(file_path: str, start_time: float, end_time: float) ->
 
 
 def get_recent_paths() -> set:
+    """Every distinct file path that appears in the history log."""
     if not os.path.exists(HISTORY_FILE):
         return set()
 
@@ -36,6 +38,7 @@ def get_recent_paths() -> set:
 
 
 def clear_history() -> bool:
+    """Delete the history log file. Returns True on success."""
     try:
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
@@ -45,6 +48,7 @@ def clear_history() -> bool:
 
 
 def get_history(limit: int = 30) -> list:
+    """The most recent history entries, newest first, as (timestamp, duration, path) tuples."""
     if not os.path.exists(HISTORY_FILE):
         return []
 

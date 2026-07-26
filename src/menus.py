@@ -99,6 +99,7 @@ def _album_artist_of(songs: list) -> str:
 def _sort_groups(names: list, grouped: dict, cat_key: str, mode: str) -> list:
     """Order group names by the chosen sort mode; ties fall back to name order."""
     def nk(n: str) -> str:
+        """Sort key for group n (also used as the tiebreaker for other modes)."""
         return get_group_sort_key(n, grouped[n], cat_key)
     if mode == "name_desc":
         return sorted(names, key=nk, reverse=True)
@@ -114,6 +115,7 @@ def _sort_groups(names: list, grouped: dict, cat_key: str, mode: str) -> list:
 
 
 def _sort_label(options: list, mode: str) -> str:
+    """Display label for mode, falling back to the first option's label if unmatched."""
     for v, lbl in options:
         if v == mode:
             return lbl
@@ -220,6 +222,8 @@ def _search_result_cells(result, tokens: list) -> list:
 
 
 def handle_search(library: list) -> str | None:
+    """Run the live fuzzy search screen; on selecting a track, offer play/edit
+    actions (or play immediately if autoplay is on or there's only one option)."""
     if not library:
         ui_utils.show_status("Library is empty. Scan a directory first.")
         return None
@@ -233,10 +237,12 @@ def handle_search(library: list) -> str | None:
     scope = {'i': 0}   # index into _SCOPE_CYCLE
 
     def _fields() -> list:
+        """Return the field(s) to search under the current scope."""
         mode = _SCOPE_CYCLE[scope['i']]
         return _ALL_SEARCH_FIELDS if mode == 'all' else [mode]
 
     def _cycle() -> None:
+        """Advance the search scope to the next field in the cycle."""
         scope['i'] = (scope['i'] + 1) % len(_SCOPE_CYCLE)
 
     # Live fuzzy search: results re-rank on every keystroke, matched characters
@@ -244,6 +250,7 @@ def handle_search(library: list) -> str | None:
     _last: dict = {'results': []}
 
     def _provider(query: str) -> list:
+        """Run the search for query and build the live-select choices with highlighted matches."""
         results = _search.search(library, query, _fields(), recent=recent, limit=200)
         _last['results'] = [r.song for r in results]
         tokens = _search.tokenize(query)
@@ -349,6 +356,7 @@ def _relative_time(ts: str, now: "datetime.datetime | None" = None) -> str:
 
 
 def _nice_dur(raw: str) -> str:
+    """Format a raw duration (e.g. '90s') as compact 'h/m/s' text."""
     try:
         secs = int(str(raw).rstrip('s'))
     except ValueError:
@@ -366,6 +374,7 @@ def _nice_dur(raw: str) -> str:
 
 
 def handle_history(library: list) -> str | None:
+    """Show the recent listening history list; on selecting an entry, offer play/edit actions."""
     history_entries = get_history(limit=30)
 
     if not history_entries:
@@ -436,6 +445,7 @@ def _handle_tag_name_preferences() -> None:
     initial: list = [(tag_id, prefs.get(tag_id, "")) for tag_id in TAG_REGISTRY]
 
     def _tag_pref_hints(col: int, row: list) -> list:
+        """Suggest the tag registry's default display name as a hint for the preferred-name column."""
         if col != 1:
             return []
         tag_id = row[0].strip() if row else ""
@@ -471,6 +481,7 @@ def _handle_tag_name_preferences() -> None:
 
 
 def handle_settings(library_ref: list) -> None:
+    """Run the interactive settings menu loop, applying and persisting each toggled option."""
     config = load_config()
     _cursor = 0
 
@@ -490,7 +501,6 @@ def handle_settings(library_ref: list) -> None:
             "Toggle Plain-text Editing",
             "Tag Name Preferences",
             "Sort List Delimiter",
-            "Name Corpus Size",
             prompt.separator("HISTORY"),
             "Toggle Listening History",
             "Clear History Log",
@@ -571,20 +581,6 @@ def handle_settings(library_ref: list) -> None:
                 config["sort_list_delimiter"] = delim
                 ui_utils.show_status(f"Sort list delimiter set to {delim!r}.")
 
-        elif choice == "Name Corpus Size":
-            current = config.get("name_corpus", "full")
-            picked = prompt.select(
-                f"Name corpus for sort-order suggestions (current: {current}):",
-                choices=["full — ~2700 names, all naming traditions",
-                         "minimal — ~230 names, English + classical only"],
-            )
-            if picked:
-                size = picked.split()[0]
-                config["name_corpus"] = size
-                import src.id3.name_corpus as _corpus_mod
-                _corpus_mod._load.cache_clear()
-                ui_utils.show_status(f"Name corpus set to {size!r}.")
-
         elif choice == "Update Music Directory":
             new_root = prompt.path("Music directory:")
             if new_root and os.path.isdir(os.path.expanduser(new_root)):
@@ -648,6 +644,7 @@ def play_queue(paths: list, mode: str = "linear", library: list | None = None) -
 
 
 def browse_menu(library_ref: list, cat_choice: str) -> str | None:
+    """Drive the multi-level browse UI (groups → albums → tracks → actions) for one category."""
     library = library_ref[0]
     sorted_lib = sort_library_logic(library)
 
@@ -672,6 +669,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
             _sort_keys = {n: get_group_sort_key(n, grouped[n], _cat_key) for n in group_names}
 
             def _letter(name: str) -> str:
+                """Alphabetical index letter for name, or '#' if non-alphabetic."""
                 ch = _sort_keys[name][0].upper() if _sort_keys.get(name) else "#"
                 return ch if ch in string.ascii_uppercase else "#"
 
@@ -1100,6 +1098,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
 
 
 def handle_browse(library_ref: list) -> str | None:
+    """Show the "Browse by" category menu and route into browse_menu for the choice."""
     _cursor = 0
     _opts = ["Artists", "Albums", "Genres"]
     while True:
@@ -1119,6 +1118,7 @@ def handle_browse(library_ref: list) -> str | None:
 
 
 def main_menu(library_ref: list) -> None:
+    """Run the top-level main menu loop, dispatching to browse/search/history/settings."""
     _cursor = 0
     _opts = ["Browse", "Search", "Listening History", "Settings", "Exit"]
     while True:
