@@ -251,6 +251,17 @@ def _volume_bar_cells(volume: int) -> list[str]:
         return []
     bar_col, top, height = geo
 
+    # Keep the bar's bottom in line with the art's bottom even when the layout is
+    # tight: the art's flow lines are clipped at `rows - MARGIN_V`, but these
+    # absolute cells aren't — so clamp the bar to the same limit instead of
+    # letting it hang below a shortened art.
+    rows = ui_utils.get_terminal_size()[1]
+    visible = (rows - ui_utils.MARGIN_V) - top + 1
+    if visible < height:
+        height = visible
+    if height < 3:
+        return []
+
     pct = max(0.0, min(100.0, float(volume))) / 100.0
     # Whole-cell fill (rounded to the nearest row). A sub-cell partial block left
     # the top of the boundary cell as empty background — reading as a gap between
@@ -644,7 +655,13 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             # No right pane: centred single-column layout with breathing room on sides.
             content_w_max = min(ART_MAX_WIDTH, max(54, cols // 2), cols - 2 * ui_utils.MARGIN_H)
             left_col = _meta_left_lines(audio, file_path, content_w_max - 4)
-            avail_h = max(3, rows - len(left_col) - 6 - 2 * ui_utils.MARGIN_V)
+            # Size the controls/hints FIRST so the art height reserves room for
+            # them. Otherwise toggling help (multi-line hints) draws over the
+            # transport controls instead of shrinking the art and shifting the
+            # controls up to make space.
+            status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
+            shortcut_lines = shortcuts_ln.splitlines() or [""]
+            avail_h = max(3, rows - len(left_col) - len(shortcut_lines) - 5 - 2 * ui_utils.MARGIN_V)
 
             art_str, art_lines = _art_width_for_height(file_path, content_w_max, avail_h, pre_art)
             actual_art_w = max((_visible_len(l) for l in art_lines), default=content_w_max) if art_lines else content_w_max
@@ -658,7 +675,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             _last_right_width = None
 
             if art_lines:
-                top_pad = max(ui_utils.MARGIN_V, (rows - len(art_lines) - 1 - len(left_col) - 6) // 2)
+                top_pad = max(ui_utils.MARGIN_V, (rows - len(art_lines) - 1 - len(left_col) - len(shortcut_lines) - 5) // 2)
                 for _ in range(top_pad):
                     log("")
                 row_cursor += top_pad
@@ -667,10 +684,13 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             for line in art_lines:
                 log(" " * left_margin + line)
             row_cursor += len(art_lines)
-            for cell in _volume_bar_cells(volume):
-                log(cell)
             log("")
             row_cursor += 1
+            # Volume bar/label are absolute-positioned; log them AFTER the spacing
+            # blank so the blank's erase-to-end can't wipe the label (which sits on
+            # the art-bottom+1 row). Otherwise the number vanishes on a full redraw.
+            for cell in _volume_bar_cells(volume):
+                log(cell)
 
             for line in _center_lines(left_col, cols):
                 log(line)
@@ -680,6 +700,9 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             prog_row = row_cursor + 2
             ctrl_row = prog_row + 1
 
+            # Recompute now that the art geometry is set, so the transport line
+            # centers over the art. The hint-line count is unchanged from the
+            # early call that sized the art above.
             status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
             shortcut_lines = shortcuts_ln.splitlines() or [""]
             ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
@@ -701,7 +724,10 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         meta_val_w = right_w - 10
 
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
-        avail_h = max(3, rows - len(left_col) - 5 - 2 * ui_utils.MARGIN_V)
+        # Reserve the controls/hints height before sizing the art (see above).
+        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
+        shortcut_lines = shortcuts_ln.splitlines() or [""]
+        avail_h = max(3, rows - len(left_col) - len(shortcut_lines) - 4 - 2 * ui_utils.MARGIN_V)
         # Art is inset from the panel edges so it floats with breathing room.
         art_inner_w = max(10, art_w * 3 // 4)
         art_str, art_lines = _art_width_for_height(file_path, art_inner_w, avail_h, pre_art)
@@ -726,10 +752,11 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         for line in art_lines:
             log(" " * left_margin + line)
         row_cursor += len(art_lines)
-        for cell in _volume_bar_cells(volume):
-            log(cell)
         log("")
         row_cursor += 1
+        # Volume cells after the spacing blank (see the no-pane branch note).
+        for cell in _volume_bar_cells(volume):
+            log(cell)
 
         for line in left_col:
             vis = _visible_len(line)
@@ -741,6 +768,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         prog_row = row_cursor + 2
         ctrl_row = prog_row + 1
 
+        # Recompute now that the art geometry is set (see the no-pane branch).
         status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
         ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
@@ -833,10 +861,11 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         for line in art_lines: log(line)
         row_cursor += len(art_lines)
-        for cell in _volume_bar_cells(volume):
-            log(cell)
         log("")
         row_cursor += 1
+        # Volume cells after the spacing blank (see the no-pane branch note).
+        for cell in _volume_bar_cells(volume):
+            log(cell)
 
         left_col = _center_lines(left_col, cols)
         for line in left_col: log(line)
