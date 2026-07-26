@@ -715,7 +715,8 @@ def inspect_tag_loop(
             info = get_tag_info(base_id)
 
             if info:
-                value = prompt_for_value(base_id, current_value=_prompt_sort_order(base_id, audio))
+                value = prompt_for_value(base_id, current_value=_prompt_sort_order(base_id, audio),
+                                         file_path=file_path)
             else:
                 value = prompt.text(f"Value for {tag_id}:")
 
@@ -827,7 +828,8 @@ def inspect_tag_loop(
 
             elif action == "Edit":
                 current_frame = audio.get(choice)
-                new_value = prompt_for_value(choice, current_value=current_frame)
+                new_value = prompt_for_value(choice, current_value=current_frame,
+                                             file_path=file_path)
                 if new_value is not None:
                     new_frame = create_frame(choice, new_value)
                     if new_frame:

@@ -19,12 +19,15 @@ from src.id3.id3_tag_handler import (
     save_id3,
     apply_bulk_operation_to_files,
     _prompt_for_image_metadata,
+    pick_nearby_cover,
+    CLEAR_COVER,
     _EXT_TO_MIME,
 )
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import filename_parser as fp
 from src.id3 import tag_writer as tw
 from src.id3 import file_namer as fnm
+from src.id3 import cover_matcher as cm
 from src import bulk_pattern as bp
 from src.utils import ui_utils
 from src.utils.ui_utils import get_terminal_width, Colors as C
@@ -834,6 +837,274 @@ def rename_files_op(paths: list, library: list, header) -> None:
     ui_utils.show_status(msg)
 
 
+# Per-file album art: track · matched cover image · confidence.
+_COVER_PREVIEW_COLUMNS = [
+    prompt.Column(style='primary', max_frac=0.42),
+    prompt.Column(style='normal', flex=True),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
+]
+
+# Image-name patterns offered for the "%token%" match mode.
+_COVER_PATTERN_PRESETS = [
+    ('%track%', '01'),
+    ('%track% %title%', '01 Song'),
+    ('%title%', 'Song'),
+    ('%tracknopad%', '1'),
+    ('%album% %track%', 'Album 01'),
+]
+
+
+def _img_label(image_path: str, track_dir: str) -> str:
+    """Image name, prefixed with its subfolder when it isn't beside the track."""
+    d = os.path.dirname(os.path.abspath(image_path))
+    if os.path.abspath(track_dir) != d:
+        return f"{os.path.basename(d)}/{os.path.basename(image_path)}"
+    return os.path.basename(image_path)
+
+
+def _cover_pattern_prompt(header) -> str | None:
+    """Pick / type a %token% pattern for matching image file names."""
+    choices: list = []
+    for pat, ex in _COVER_PATTERN_PRESETS:
+        choices.append(prompt.Choice(title=pat, value=pat, cells=[pat, f"e.g. {ex}"]))
+    choices.append(prompt.separator())
+    choices.append(prompt.Choice(title="Custom pattern…", value="__custom__",
+                                 cells=["Custom pattern…", "type your own %token%"]))
+    choices.append(prompt.Choice(title="Show all tokens", value="__tokens__",
+                                 cells=["Show all tokens", f"{len(fnm.TOKENS)} available"]))
+    while True:
+        sel = prompt.select("Image-name pattern (matched against the image files):",
+                            choices=choices, columns=_RENAME_PICK_COLUMNS,
+                            header=header("cover-name pattern"))
+        if not sel:
+            return None
+        if sel == "__tokens__":
+            _show_tokens(header)
+            continue
+        if sel == "__custom__":
+            raw = prompt.text("Pattern (e.g. %track% %title% — 'Show all tokens' lists them):")
+            if not raw:
+                continue
+            unk = fnm.unknown_tokens(raw)
+            if unk:
+                ui_utils.show_status(f"Unknown token(s) render blank: {', '.join(unk)}")
+            return raw
+        return sel
+
+
+def set_album_art_op(paths: list, library: list, header) -> None:
+    """Embed a per-track cover image, pairing each track with the image file that
+    belongs to it (a folder of ``01 - Song.jpg`` … or ``covers/1.png`` …).
+
+    Four pairing modes (auto / file name / track order / %token% pattern); a
+    preview where ``d`` opens a ranked per-file picker to choose or change the
+    cover; fill-blanks by default with per-row checkboxes as the final word.
+    MP3 (APIC) and MP4 (``covr``; JPEG/PNG only) both write."""
+    writable = [p for p in paths if tw.is_writable(p)]
+    skipped_fmt = len(paths) - len(writable)
+    if not writable:
+        ui_utils.show_status("No MP3/MP4 files here to set art on.")
+        return
+
+    tokens = {p: fnm.read_tokens(p) for p in writable}
+
+    # Candidate images per directory (a box set's disc folders keep their own art).
+    dir_images: dict[str, list] = {}
+    for p in writable:
+        d = os.path.dirname(os.path.abspath(p))
+        if d not in dir_images:
+            dir_images[d] = cm.find_images(d)
+    if not any(dir_images.values()):
+        ui_utils.show_status("No images found beside these tracks "
+                             "(looked in the folder + artwork/covers/scans).")
+        return
+    n_images = len({img for imgs in dir_images.values() for img in imgs})
+
+    # 1) Matching strategy.
+    mode = prompt.select("Match cover images to tracks by:", choices=[
+        "Auto-detect (recommended)",
+        "One cover per disc / series / work",
+        "Matching file name",
+        "Track number / order",
+        "Name pattern (%token%)",
+    ], header=header(f"{n_images} image(s) found"))
+    if not mode:
+        return
+    pattern = None
+    group_by = 'auto'
+    grouped = mode.startswith("One cover per")
+    if grouped:
+        gb = prompt.select("Group tracks by:", choices=[
+            "Auto (disc, else series, else work)",
+            "Disc number",
+            "Series / season (SxxExx)",
+            "Work / grouping",
+        ], header=header())
+        if not gb:
+            return
+        group_by = {"Auto (disc, else series, else work)": 'auto',
+                    "Disc number": 'disc',
+                    "Series / season (SxxExx)": 'season',
+                    "Work / grouping": 'work'}[gb]
+    elif mode == "Name pattern (%token%)":
+        pattern = _cover_pattern_prompt(header)
+        if pattern is None:
+            return
+
+    # 2) Build the plan per directory, so images only pair with tracks beside them.
+    by_dir: dict[str, list] = {}
+    for p in writable:
+        by_dir.setdefault(os.path.dirname(os.path.abspath(p)), []).append(p)
+    plan: dict = {}
+    for d, group in by_dir.items():
+        imgs = dir_images[d]
+        if not imgs:
+            plan.update({p: None for p in group})
+        elif grouped:
+            plan.update(cm.plan_grouped(group, imgs, group_by, tokens))
+        elif mode.startswith("Auto"):
+            plan.update(cm.plan_best(group, imgs, tokens))
+        elif mode == "Matching file name":
+            plan.update(cm.plan_basename(group, imgs, tokens))
+        elif mode == "Track number / order":
+            plan.update(cm.plan_positional(group, imgs, tokens))
+        else:
+            plan.update(cm.plan_template(group, imgs, pattern or '', tokens))
+
+    # 3) Default policy — sets the initial checkbox state (the checkboxes decide).
+    policy = prompt.select("For tracks that already have art:",
+                           choices=["Fill blanks only", "Overwrite existing"],
+                           header=header())
+    if not policy:
+        return
+    overwrite_default = (policy == "Overwrite existing")
+    existing_art = {p: tw.has_cover(p) for p in writable}
+
+    # Only tracks whose folder has images are actionable (the rest have nothing
+    # to pair with, auto or by hand).
+    shown = [p for p in writable if dir_images[os.path.dirname(os.path.abspath(p))]]
+
+    # A cover shared by 2+ tracks is group art — badge every one of its rows with
+    # the group (disc/season/work) so the column stays consistent, instead of one
+    # row flipping to "high" just because its track number happens to match the
+    # cover's number. Per-track (unique) covers keep the match-confidence label.
+    shared = {img for img, n in Counter(v for v in plan.values() if v).items() if n >= 2}
+
+    def _conf(p: str) -> str:
+        img = plan.get(p)
+        if not img:
+            return ''
+        if grouped or img in shared:
+            return cm.group_label(p, tokens[p], group_by)
+        return cm.confidence(cm.score_match(p, tokens[p], img))
+
+    def _cover_cell(p: str):
+        img = plan.get(p)
+        if not img:
+            return "— none (d to choose) —"
+        label = _img_label(img, os.path.dirname(os.path.abspath(p)))
+        if existing_art[p]:
+            return [(label, 'normal'), ('  · has art', 'static-dim')]
+        return label
+
+    def _checked(p: str) -> bool:
+        return bool(plan.get(p)) and (overwrite_default or not existing_art[p])
+
+    choice_by_path: dict = {}
+    preview_choices: list = []
+    for p in shown:
+        ch = prompt.Choice(title=os.path.basename(p), value=p, checked=_checked(p),
+                           cells=[os.path.basename(p), _cover_cell(p), _conf(p)])
+        choice_by_path[p] = ch
+        preview_choices.append(ch)
+
+    def _reassign(path: str) -> None:
+        d = os.path.dirname(os.path.abspath(path))
+        picked = pick_nearby_cover(path, tokens=tokens[path], images=dir_images[d],
+                                   current=plan.get(path), allow_none=True, header=header)
+        if picked is None:
+            return                          # backed out, no change
+        ch = choice_by_path[path]
+        if picked is CLEAR_COVER:
+            plan[path] = None
+            ch.cells = [os.path.basename(path), "— none (d to choose) —", '']
+            ch.checked = False
+        else:
+            plan[path] = picked
+            ch.cells = [os.path.basename(path), _cover_cell(path), _conf(path)]
+            ch.checked = True               # an explicit pick means write it
+
+    n_match = sum(1 for p in shown if plan.get(p))
+    n_nodir = len(writable) - len(shown)
+
+    # Rebuilt on every render (select calls the header each frame), so the ticked
+    # count tracks live as you Space/'a'/'d' through the list.
+    def _preview_header():
+        nk = sum(1 for ch in preview_choices if ch.checked)
+        bits = [f"{len(shown)} track(s)", f"{n_match} matched"]
+        if n_nodir:
+            bits.append(f"{n_nodir} without images")
+        if skipped_fmt:
+            bits.append(f"{skipped_fmt} unsupported skipped")
+        if nk:
+            bits.append(f"{nk} ticked")
+        elif n_match:
+            bits.append("0 ticked — existing art; Overwrite or Space/a to tick")
+        return header(" · ".join(bits))()
+
+    sel = prompt.select(
+        "Preview — Space/a toggle, d to choose/change cover, Enter to apply:",
+        choices=preview_choices, columns=_COVER_PREVIEW_COLUMNS,
+        header=_preview_header, multi=True,
+        extra_hints={'d': 'choose cover'}, on_inspect=_reassign)
+    if sel is None:
+        return
+    apply_paths = set(sel)
+    if not apply_paths:
+        ui_utils.show_status("No tracks selected.")
+        return
+
+    # 4) Apply. The checkbox is explicit consent, so writes replace any existing
+    #    art (fill-blanks was already honoured by the default check state).
+    count = errors = mp4_skipped = 0
+    img_cache: dict[str, tuple | None] = {}
+    for p in shown:
+        if p not in apply_paths:
+            continue
+        img = plan.get(p)
+        if not img:
+            continue
+        if img not in img_cache:
+            img_cache[img] = cm.read_image(img)
+        read = img_cache[img]
+        if not read:
+            errors += 1
+            continue
+        data, mime = read
+        r = tw.write_cover(p, data, mime, pic_type=3, desc='', overwrite=True)
+        if r.skipped_format:
+            mp4_skipped += 1
+            continue
+        if r.error:
+            errors += 1
+            continue
+        if r.written:
+            count += 1
+            try:
+                refresh_library_entry(library, p)
+            except Exception:
+                pass
+
+    msg = f"Set album art on {count} track(s)."
+    if mp4_skipped:
+        msg += f" {mp4_skipped} MP4 skipped (cover needs JPEG/PNG)."
+    if skipped_fmt:
+        msg += f" {skipped_fmt} unsupported skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
 def apply_sort_orders(paths: list, library: list, header) -> None:
     """Generate smart sort-order tags (TSOP/TSO2/TSOA/TSOT) from each file's
     existing artist/album-artist/album/title, via the #42 engine. MP3/ID3 only."""
@@ -1214,6 +1485,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             choices=[
                 "Derive from filename",
                 "Rename files from tags",
+                "Set album art from files",
                 "Assign by range / schedule",
                 "Apply sort orders",
                 "Renumber tracks (disc ↔ continuous)",
@@ -1229,6 +1501,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     op_map = {
         "Derive from filename": "Derive From Filename",
         "Rename files from tags": "Rename Files",
+        "Set album art from files": "Set Album Art",
         "Assign by range / schedule": "Assign By Pattern",
         "Apply sort orders": "Apply Sort Orders",
         "Renumber tracks (disc ↔ continuous)": "Renumber Tracks",
@@ -1246,6 +1519,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         return
     if operation == "Rename Files":
         rename_files_op(album_tracks, library, _bulk_header)
+        return
+    if operation == "Set Album Art":
+        set_album_art_op(album_tracks, library, _bulk_header)
         return
     if operation == "Assign By Pattern":
         assign_by_pattern(album_tracks, library, _bulk_header)

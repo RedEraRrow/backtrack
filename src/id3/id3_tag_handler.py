@@ -48,6 +48,96 @@ def _get_mime_type(data: bytes) -> str:
     return 'image/jpeg'
 
 
+# Sentinel returned by pick_nearby_cover when the user chooses "no art here".
+CLEAR_COVER = object()
+
+_COVER_PICK_COLUMNS = [
+    prompt.Column(style='primary', flex=True),                          # image name
+    prompt.Column(style='dynamic-dim', align='right', max_width=10),    # size
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),  # confidence / current
+]
+
+
+def _cover_size(path: str) -> str:
+    try:
+        kb = os.path.getsize(path) / 1024
+    except OSError:
+        return ''
+    return f"{kb/1024:.1f} MB" if kb >= 1024 else f"{kb:.0f} KB"
+
+
+def _cover_label(image_path: str, track_dir: str) -> str:
+    """Image name, prefixed with its subfolder when it isn't beside the track."""
+    d = os.path.dirname(os.path.abspath(image_path))
+    if os.path.abspath(track_dir) != d:
+        return f"{os.path.basename(d)}/{os.path.basename(image_path)}"
+    return os.path.basename(image_path)
+
+
+def pick_nearby_cover(file_path: str, *, tokens: dict | None = None,
+                      images: list | None = None, current: str | None = None,
+                      allow_none: bool = False, header=None,
+                      title: str | None = None):
+    """Ranked picker of cover images sitting next to ``file_path``.
+
+    Lists the candidate images best-guess first (an exact name match, then a
+    track-number match, then a title match), with a size and confidence hint,
+    plus a "Type a path…" escape. Returns the chosen image *path*, ``None`` if
+    cancelled, or :data:`CLEAR_COVER` when ``allow_none`` and the user picks
+    "no art for this file". Falls straight through to a manual path prompt when
+    there are no nearby images.
+    """
+    from src.id3 import cover_matcher as cm
+    from src.id3 import file_namer as fnm
+
+    track_dir = os.path.dirname(os.path.abspath(file_path))
+    if tokens is None:
+        tokens = fnm.read_tokens(file_path) if fnm.is_supported(file_path) else {}
+    if images is None:
+        images = cm.find_images_for_track(file_path)
+
+    def _manual() -> str | None:
+        p = prompt.path("Path to image:")
+        if p and os.path.isfile(p):
+            return p
+        if p:
+            ui_utils.show_status("File not found.")
+        return None
+
+    if not images:
+        return _manual()
+
+    ranked = cm.rank_candidates(file_path, tokens, images)
+    choices: list = []
+    cur_idx = 0
+    for i, (score, img) in enumerate(ranked):
+        hint = cm.confidence(score)
+        if current and os.path.abspath(img) == os.path.abspath(current):
+            hint = 'current'
+            cur_idx = i
+        choices.append(prompt.Choice(
+            title=os.path.basename(img), value=img,
+            cells=[_cover_label(img, track_dir), _cover_size(img), hint]))
+    choices.append(prompt.separator())
+    choices.append(prompt.Choice(title="Type a path…", value='__manual__',
+                                 cells=["Type a path…", '', '']))
+    if allow_none:
+        choices.append(prompt.Choice(title="No art for this file", value='__none__',
+                                     cells=["No art for this file", '', '']))
+
+    msg = title or "Album art — top row is the best guess:"
+    hdr = header(f"{len(ranked)} candidate(s)") if header else None
+    sel = prompt.select(msg, choices=choices, columns=_COVER_PICK_COLUMNS,
+                        header=hdr, index=cur_idx)
+    if sel is None:
+        return None
+    if sel == '__manual__':
+        return _manual()
+    if sel == '__none__':
+        return CLEAR_COVER
+    return sel
+
+
 def _prompt_for_image_metadata() -> tuple[int, str] | None:
     """
     Prompt for picture type and description.
@@ -324,7 +414,7 @@ def _prompt_for_rva2(current_value: Any) -> dict | None:
 
 
 def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: list | None = None,
-                     force_plain: bool | None = None) -> Any | None:
+                     force_plain: bool | None = None, file_path: str | None = None) -> Any | None:
     info = get_tag_info(tag_id)
     if not info:
         return None
@@ -378,10 +468,25 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
 
     # Single-mode structural editors (no raw-text equivalent).
     if ui_cat == 'image':
-        img_data = _prompt_for_image_file()
-        if not img_data:
-            ui_utils.show_status("Cancelled")
-            return None
+        # With a known file, recommend the most likely cover sitting next to it
+        # (ranked, best-guess first) and let the user pick or type a path. Without
+        # one (some bulk paths), fall back to a plain path prompt.
+        if file_path:
+            img_path = pick_nearby_cover(file_path)
+            if not isinstance(img_path, str):     # None (cancelled); CLEAR only with allow_none
+                ui_utils.show_status("Cancelled")
+                return None
+            from src.id3 import cover_matcher as cm
+            read = cm.read_image(img_path)
+            if not read:
+                ui_utils.show_status("Could not read that image.")
+                return None
+            img_data = read[0]
+        else:
+            img_data = _prompt_for_image_file()
+            if not img_data:
+                ui_utils.show_status("Cancelled")
+                return None
         meta = _prompt_for_image_metadata()
         if not meta:
             ui_utils.show_status("Cancelled")

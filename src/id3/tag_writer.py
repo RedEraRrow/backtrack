@@ -19,7 +19,7 @@ import os
 from dataclasses import dataclass, field
 
 from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TSST, TDRC, TCMP, TSOT, TSOP, TSO2, TSOA  # type: ignore[reportPrivateImportUsage]  # noqa: E501
-from mutagen.mp4 import MP4  # type: ignore[reportPrivateImportUsage]
+from mutagen.mp4 import MP4, MP4Cover  # type: ignore[reportPrivateImportUsage]
 
 # The fields this writer understands (track/disc carry their totals). The
 # compilation flag is not a user field — it rides along when a compilation is
@@ -48,6 +48,7 @@ class WriteResult:
     skipped_existing: list[str] = field(default_factory=list)  # chosen but already had a value
     error: str | None = None
     unsupported: bool = False
+    skipped_format: bool = False   # e.g. an MP4 cover that isn't JPEG/PNG
 
     @property
     def changed(self) -> bool:
@@ -280,3 +281,82 @@ def _set_field(audio, kind: str, f: str, values: dict) -> None:
             tags['disk'] = [(int(values['disc']), int(values.get('total_discs') or 0))]
         elif f == 'year':
             tags['\xa9day'] = [str(values['year'])]
+
+
+# ---------------------------------------------------------------------------
+# Album art (APIC / covr) — used by the per-file album-art bulk op
+# ---------------------------------------------------------------------------
+
+def has_cover(path: str) -> bool:
+    """Whether the file already carries embedded album art.
+
+    MP3: any APIC frame. MP4: a non-empty ``covr`` atom. False on read errors so
+    a bad file is treated as blank (and the fill-blanks preview offers to fill).
+    """
+    kind = format_kind(path)
+    try:
+        if kind == 'mp3':
+            try:
+                audio = ID3(path)
+            except ID3NoHeaderError:
+                return False
+            return any(k == 'APIC' or k.startswith('APIC:') for k in audio.keys())
+        if kind == 'mp4':
+            audio = MP4(path)
+            return bool(audio.tags and audio.tags.get('covr'))
+    except Exception:
+        pass
+    return False
+
+
+def write_cover(path: str, data: bytes, mime: str, *, pic_type: int = 3,
+                desc: str = '', overwrite: bool = False) -> WriteResult:
+    """Embed ``data`` as album art on ``path`` (MP3 APIC or MP4 ``covr``).
+
+    Honours fill-blanks: a file that already has art is left untouched unless
+    ``overwrite`` is set (reported via ``skipped_existing``). MP4 ``covr`` only
+    holds JPEG/PNG — anything else returns ``skipped_format=True`` rather than
+    silently writing nothing. On MP3, existing APIC frames are replaced so the
+    new art is the only cover.
+    """
+    kind = format_kind(path)
+    if kind == 'unsupported':
+        return WriteResult(unsupported=True)
+    if not isinstance(data, bytes) or not data:
+        return WriteResult(error='empty image data')
+
+    res = WriteResult()
+    try:
+        if not overwrite and has_cover(path):
+            res.skipped_existing.append('cover')
+            return res
+
+        if kind == 'mp3':
+            from src.id3.id3_tag_handler import create_apic_frame, save_id3
+            try:
+                audio = ID3(path)
+            except ID3NoHeaderError:
+                audio = ID3()                     # fresh header for a blank MP3
+            frame = create_apic_frame(data, mime, pic_type, desc)
+            if frame is None:
+                return WriteResult(error='could not build APIC frame')
+            audio.delall('APIC')
+            audio.add(frame)
+            save_id3(audio, path)                 # type: ignore[arg-type]
+        else:  # mp4
+            fmt = (MP4Cover.FORMAT_PNG if mime == 'image/png'
+                   else MP4Cover.FORMAT_JPEG if mime == 'image/jpeg' else None)
+            if fmt is None:
+                return WriteResult(skipped_format=True)
+            audio = MP4(path)
+            if audio.tags is None:
+                audio.add_tags()
+            tags = audio.tags
+            assert tags is not None
+            tags['covr'] = [MP4Cover(data, imageformat=fmt)]
+            audio.save()
+    except Exception as e:
+        return WriteResult(error=str(e))
+
+    res.written.append('cover')
+    return res

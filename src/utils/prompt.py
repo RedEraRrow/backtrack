@@ -162,8 +162,14 @@ def select(message: str, choices: list, *,
     _update_interlock()
 
     base_hints: dict[str, str]
+    # Toggle-all ('a') is offered only where it can't misbehave: multi-select with
+    # no category interlock and no caller shortcut already bound to 'a'.
+    _toggle_all_ok = multi and interlock_category_callback is None and not (shortcuts and ('a' in shortcuts or 'A' in shortcuts))
     if multi:
         base_hints = {"↑↓": "move", "space": "toggle", "←/b": "back", "q": "quit", "↵": "confirm"}
+        if _toggle_all_ok:
+            base_hints = {"↑↓": "move", "space": "toggle", "a": "all",
+                          "←/b": "back", "q": "quit", "↵": "confirm"}
     else:
         base_hints = {"↑↓": "move", "←/b": "back", "q": "quit", "↵": "confirm"}
 
@@ -313,6 +319,16 @@ def select(message: str, choices: list, *,
                     _update_interlock()
                     selectable[:] = [i for i, x in enumerate(items) if not x.disabled or x.checked]
                     w.render(_lines())
+            elif key in ('a', 'A') and _toggle_all_ok:
+                # Toggle every selectable row at once: check all, or clear all if
+                # everything is already checked.
+                targets = [it for it in items if not it.disabled]
+                make_checked = any(not it.checked for it in targets)
+                for it in targets:
+                    it.checked = make_checked
+                selectable[:] = [i for i, x in enumerate(items) if not x.disabled or x.checked]
+                _sel_last_click = None
+                w.render(_lines())
             elif key in ('ENTER', 'RIGHT', 'l'):
                 if multi:
                     result = [it.value for it in items if it.checked]; break
