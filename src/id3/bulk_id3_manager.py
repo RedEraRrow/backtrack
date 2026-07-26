@@ -24,6 +24,7 @@ from src.id3.id3_tag_handler import (
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import filename_parser as fp
 from src.id3 import tag_writer as tw
+from src.id3 import file_namer as fnm
 from src import bulk_pattern as bp
 from src.utils import ui_utils
 from src.utils.ui_utils import get_terminal_width, Colors as C
@@ -686,6 +687,153 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
     ui_utils.show_status(msg)
 
 
+# Pattern picker: pattern · example/description.
+_RENAME_PICK_COLUMNS = [
+    prompt.Column(style='primary'),
+    prompt.Column(style='dynamic-dim', flex=True),
+]
+# Token reference: %token% · description.
+_TOKENS_COLUMNS = [
+    prompt.Column(style='primary'),
+    prompt.Column(style='dynamic-dim', flex=True),
+]
+# Rename preview: position · old name · new name.
+_RENAME_COLUMNS = [
+    prompt.Column(style='dynamic-dim', align='right', max_width=4),
+    prompt.Column(style='dynamic-dim', flex=True),
+    prompt.Column(style='primary', flex=True),
+]
+
+
+def _show_tokens(header) -> None:
+    """Read-only reference of every %token% the pattern accepts."""
+    rows: list = [prompt.Choice(title=f"%{t}%", value=t, disabled=True,
+                                cells=[f"%{t}%", desc]) for t, desc in fnm.TOKENS.items()]
+    rows.append(prompt.separator())
+    rows.append(prompt.Choice(title="Back", value="__back__"))
+    prompt.select("Available tokens:", choices=rows, columns=_TOKENS_COLUMNS,
+                  header=header("token reference"))
+
+
+def rename_files_op(paths: list, library: list, header) -> None:
+    """Rename files on disk from their tags via a %token% pattern (the inverse of
+    "Derive from filename"). Preset or custom pattern; the default includes
+    %artist% when track artists vary. Collision-safe two-phase rename that keeps
+    the library paths in sync. MP3 + MP4."""
+    writable = [p for p in paths if fnm.is_supported(p)]
+    skipped_fmt = len(paths) - len(writable)
+    if not writable:
+        ui_utils.show_status("No MP3/MP4 files to rename.")
+        return
+
+    tokens = {p: fnm.read_tokens(p) for p in writable}
+
+    # Smart default: fold the artist into the name only when it varies across
+    # the selection (a compilation / mixed artists); a single-artist album omits it.
+    vary = fnm.artists_vary(writable, tokens)
+    default_pattern = '%track% %artist% - %title%' if vary else '%track% %title%'
+
+    pattern: str | None = None
+    while pattern is None:
+        choices: list = []
+        for pat, example in fnm.PRESETS:
+            tail = f"e.g. {example}" + ("   ★ suggested" if pat == default_pattern else "")
+            choices.append(prompt.Choice(title=pat, value=pat, cells=[pat, tail]))
+        choices.append(prompt.separator())
+        choices.append(prompt.Choice(title="Custom pattern…", value="__custom__",
+                                     cells=["Custom pattern…", "type your own %token% pattern"]))
+        choices.append(prompt.Choice(title="Show all tokens", value="__tokens__",
+                                     cells=["Show all tokens", f"{len(fnm.TOKENS)} available"]))
+        default_idx = next((i for i, (pat, _) in enumerate(fnm.PRESETS)
+                            if pat == default_pattern), 0)
+        sub = f"{len(writable)} file(s)" + (" · artists vary → artist suggested" if vary else "")
+        sel = prompt.select("File-name pattern:", choices=choices,
+                            columns=_RENAME_PICK_COLUMNS, header=header(sub), index=default_idx)
+        if not sel:
+            return
+        if sel == "__tokens__":
+            _show_tokens(header)
+            continue
+        if sel == "__custom__":
+            raw = prompt.text("Pattern (e.g. %disc%-%track% %title% — 'Show all tokens' lists them):",
+                              default=default_pattern)
+            if not raw:
+                continue
+            unk = fnm.unknown_tokens(raw)
+            if unk:
+                ui_utils.show_status(f"Unknown token(s) will render blank: {', '.join(unk)}")
+            pattern = raw
+        else:
+            pattern = sel
+
+    plan = fnm.plan_renames(writable, pattern, tokens)     # [(path, old, new)]
+    changed = [(p, o, n) for (p, o, n) in plan if o != n]
+    if not changed:
+        ui_utils.show_status("File names already match the pattern.")
+        return
+
+    choices = [prompt.Choice(title=os.path.basename(p), value=p, checked=True,
+                             cells=[str(i + 1), o, n])
+               for i, (p, o, n) in enumerate(changed)]
+    sub = f"{len(changed)} to rename" + (f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
+    sel = prompt.select("Preview — Space to deselect, Enter to rename:", choices=choices,
+                        columns=_RENAME_COLUMNS, header=header(sub), multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel)
+    if not apply_set:
+        ui_utils.show_status("No files selected.")
+        return
+
+    import tempfile
+    todo = [(p, os.path.join(os.path.dirname(p), n)) for (p, o, n) in changed if p in apply_set]
+
+    # Phase 1: move each source to a unique temp name, so a target that equals
+    # another (not-yet-moved) selected file's current name can't clobber it.
+    staged: list[tuple[str, str, str]] = []   # (orig, temp, final)
+    errors = 0
+    for orig, final in todo:
+        d = os.path.dirname(orig)
+        try:
+            fd, tmp = tempfile.mkstemp(prefix='.rn_', dir=d, suffix=os.path.splitext(orig)[1])
+            os.close(fd)
+            os.replace(orig, tmp)
+            staged.append((orig, tmp, final))
+        except OSError as e:
+            errors += 1
+            ui_utils.show_status(f"Couldn't rename {os.path.basename(orig)}: {e}")
+
+    # Phase 2: move each temp to its final name and keep the library in sync.
+    count = 0
+    for orig, tmp, final in staged:
+        try:
+            os.replace(tmp, final)
+        except OSError as e:
+            errors += 1
+            ui_utils.show_status(f"Couldn't rename to {os.path.basename(final)}: {e}")
+            try:
+                os.replace(tmp, orig)   # roll this one back
+            except OSError:
+                pass
+            continue
+        count += 1
+        for track in library:
+            if track.get('path') == orig:
+                track['path'] = final
+                break
+        try:
+            refresh_library_entry(library, final)
+        except Exception:
+            pass
+
+    msg = f"Renamed {count} file(s)."
+    if skipped_fmt:
+        msg += f" {skipped_fmt} unsupported skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
 def apply_sort_orders(paths: list, library: list, header) -> None:
     """Generate smart sort-order tags (TSOP/TSO2/TSOA/TSOT) from each file's
     existing artist/album-artist/album/title, via the #42 engine. MP3/ID3 only."""
@@ -1065,6 +1213,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             "Automation:",
             choices=[
                 "Derive from filename",
+                "Rename files from tags",
                 "Assign by range / schedule",
                 "Apply sort orders",
                 "Renumber tracks (disc ↔ continuous)",
@@ -1079,6 +1228,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     op_display = operation.lower()
     op_map = {
         "Derive from filename": "Derive From Filename",
+        "Rename files from tags": "Rename Files",
         "Assign by range / schedule": "Assign By Pattern",
         "Apply sort orders": "Apply Sort Orders",
         "Renumber tracks (disc ↔ continuous)": "Renumber Tracks",
@@ -1093,6 +1243,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     # These manage their own preview/confirm/apply flow.
     if operation == "Derive From Filename":
         derive_from_filename(album_tracks, library, _bulk_header)
+        return
+    if operation == "Rename Files":
+        rename_files_op(album_tracks, library, _bulk_header)
         return
     if operation == "Assign By Pattern":
         assign_by_pattern(album_tracks, library, _bulk_header)

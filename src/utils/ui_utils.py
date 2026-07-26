@@ -219,32 +219,6 @@ def format_time(seconds: int | float) -> str:
     return base
 
 
-def format_duration_ms(milliseconds: int | float) -> str | None:
-    try:
-        ms = int(milliseconds)
-        mins = ms // 60000
-        secs = (ms % 60000) // 1000
-        return f"{mins}m {secs}s"
-    except (ValueError, TypeError):
-        return None
-
-
-def format_file_size(size_bytes: int | float) -> str | None:
-    try:
-        size_bytes = int(size_bytes)
-        size_mb = size_bytes / (1024 * 1024)
-        return f"{size_mb:.1f} MB"
-    except (ValueError, TypeError):
-        return None
-
-
-def format_bitrate(bitrate: int | float | str | None) -> str | None:
-    return f"{bitrate} kbps" if bitrate else None
-
-
-def format_sample_rate(sample_rate: int | float | str | None) -> str | None:
-    return f"{sample_rate} Hz" if sample_rate else None
-
 def _get_breadcrumb_str(width: int) -> str:
     sep = " > "
     full_path = sep.join(NAV_STACK)
@@ -315,43 +289,3 @@ def get_progress_bar(progress: float, width: int = 40) -> str:
     return f"{Colors.DIM}[{Colors.RESET}{Colors.PRIMARY}{bar}{padding}{Colors.RESET}{Colors.DIM}]{Colors.RESET}"
 
 
-def get_xml_metadata_lines(metadata: dict) -> list[str]:
-    xml_data = metadata.get('xml_data') or metadata
-    if not xml_data:
-        return []
-
-    cols = get_terminal_width()
-    lines = ["", divider(cols, "═"), "  LIBRARY METADATA (from Library.xml)", divider(cols, "═")]
-
-    sections = {
-        "Track Info": ["Name", "Artist", "Album Artist", "Composer", "Album"],
-        "Disc/Track": ["Track Number", "Track Count", "Disc Number", "Disc Count"],
-        "Dates": ["Year", "Release Date", "Date Added", "Date Modified"],
-        "Playback": ["Play Count", "Skip Count"],
-        "Technical": ["Kind", "Total Time", "Bit Rate", "Sample Rate", "Size"],
-        "Protection": ["Protected", "Apple Music"],
-    }
-
-    formatters = {
-        "Total Time": format_duration_ms,
-        "Size": format_file_size,
-        "Bit Rate": format_bitrate,
-        "Sample Rate": format_sample_rate,
-    }
-
-    for section_name, fields in sections.items():
-        section_data = {k: xml_data.get(k) for k in fields if xml_data.get(k)}
-        if section_data:
-            lines.append(f"\n{section_name}:")
-            for key, value in section_data.items():
-                val = formatters.get(key, lambda v: v)(value)
-                if val:
-                    lines.append(f"  {key:<20}: {val}")
-
-    lines.append("\n" + divider(cols, "═"))
-    return lines
-
-def display_xml_metadata(metadata: dict) -> None:
-    for line in get_xml_metadata_lines(metadata):
-        sys.stdout.write(line + "\n")
-    sys.stdout.flush()

@@ -203,7 +203,9 @@ def select(message: str, choices: list, *,
 
         hint_lines = _hint(*list(combined_hints.items()), extra=layout_constraint).splitlines()
 
-        fixed_overhead = len(h_lines) + len(hint_lines) + 2
+        # Non-item lines this widget emits: header + message + the two
+        # above/below indicator rows (always present) + hints.
+        fixed_overhead = len(h_lines) + len(hint_lines) + 3
         vis     = max(2, _visible_rows() - fixed_overhead)
 
         n       = len(items)
@@ -264,7 +266,9 @@ def select(message: str, choices: list, *,
 
         remaining = n - viewport - vis
         out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
-        out.extend(hint_lines)
+        # Inset the hint block by the left margin so it never hugs an edge; _hint
+        # centres within _cols() (= width-2*MARGIN_H), so this makes it symmetric.
+        out.extend(f"{' ' * ui_utils.MARGIN_H}{h}" for h in hint_lines)
         # Hard guarantee: no rendered line ever exceeds the terminal width, so
         # the list can never wrap no matter how narrow the window is.
         return [_clip_ansi(line, ui_utils.get_terminal_width()) for line in out]
@@ -463,7 +467,8 @@ def live_select(message: str, provider: Callable[[str], list], *,
         out.append(f"  {C.DIM}{count}{C.RESET}")
 
         hint_lines = _hint(*list(hints.items())).splitlines()
-        overhead = len(out) + len(hint_lines) + 3
+        # out already holds header + message + count; +2 for the above/below rows.
+        overhead = len(out) + len(hint_lines) + 2
         vis = max(2, _visible_rows() - overhead)
 
         n = len(items)
@@ -495,7 +500,9 @@ def live_select(message: str, provider: Callable[[str], list], *,
 
         remaining = n - viewport - vis
         out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
-        out.extend(hint_lines)
+        # Inset the hint block by the left margin so it never hugs an edge; _hint
+        # centres within _cols() (= width-2*MARGIN_H), so this makes it symmetric.
+        out.extend(f"{' ' * ui_utils.MARGIN_H}{h}" for h in hint_lines)
         return [_clip_ansi(line, width) for line in out]
 
     result = None
@@ -1072,7 +1079,7 @@ def _build_list_edit_lines(
                     out.append(f"  {cursor_glyph} {cell_str}")
 
     out.append(f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}")
-    out.extend(hint_lines)
+    out.extend(f"{' ' * ui_utils.MARGIN_H}{h}" for h in hint_lines)
 
     return out, viewport, vis, _LEDIT_HEADER_ROWS
 

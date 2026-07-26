@@ -18,7 +18,6 @@ DEFAULT_CONFIG = {
     "ignore_hidden_files": False,
     "show_metadata_editor": True,
     "show_lyrics_editor": True,
-    "xml_db_path": "",
     "tag_name_preferences": {},
     "sort_list_delimiter": "/",
     "name_corpus": "full",

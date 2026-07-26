@@ -11,7 +11,7 @@ from src.utils import prompt
 from src.utils import ui_utils
 from src.music_library import (
     build_library, save_library_cache,
-    load_xml_database, start_background_sync,
+    start_background_sync,
     get_grouped_data, get_group_sort_key, sort_library_logic,
     to_num
 )
@@ -481,10 +481,7 @@ def handle_settings(library_ref: list) -> None:
             "Toggle Auto-play on Select",
             prompt.separator("LIBRARY"),
             "Update Music Directory",
-            "Update iTunes Library XML Path",
         ]
-        if config.get("xml_db_path"):
-            _choices.append("Clear iTunes Library XML Path")
         _choices += [
             "Toggle Hidden Files",
             prompt.separator("EDITORS"),
@@ -594,35 +591,16 @@ def handle_settings(library_ref: list) -> None:
                 new_root = os.path.abspath(os.path.expanduser(new_root))
                 config["music_directory"] = new_root
                 ui_utils.show_status("Re-scanning library...")
-                xml_db, xml_title_keys = load_xml_database(config["xml_db_path"] if config["xml_db_path"] else config.get("music_directory", ""))
                 new_lib = build_library(
                     new_root,
-                    xml_db=xml_db,
-                    xml_title_keys=xml_title_keys,
                     ignore_hidden=config.get("ignore_hidden_files", False),
                 )
                 save_library_cache(new_lib, _async=False)
                 existing_lib = library_ref[0]
                 existing_lib.clear()
                 existing_lib.extend(new_lib)
-                start_background_sync(existing_lib, xml_db, xml_title_keys)
+                start_background_sync(existing_lib)
                 ui_utils.show_status(f"Done — {len(new_lib)} tracks.")
-
-        elif choice == "Update iTunes Library XML Path":
-            new_path = prompt.path("iTunes Library XML file:")
-            if new_path and os.path.isfile(new_path):
-                config["xml_db_path"] = new_path
-                xml_db, xml_title_keys = load_xml_database(new_path)
-                if xml_db:
-                    ui_utils.show_status(f"Metadata database loaded: {len(xml_db)} tracks")
-                    start_background_sync(library_ref[0], xml_db, xml_title_keys)
-                else:
-                    ui_utils.show_status("Failed to load XML database.")
-
-        elif choice == "Clear iTunes Library XML Path":
-            config["xml_db_path"] = ""
-            _cursor = 0  # option disappears from the list, so reset the cursor
-            ui_utils.show_status("iTunes Library XML path cleared.")
 
         elif choice == "Toggle Hidden Files":
             config["ignore_hidden_files"] = not config.get("ignore_hidden_files", False)
@@ -767,6 +745,16 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
             )
 
             if not selection:
+                # Back from a letter's filtered list → return to the A–Z index,
+                # not out of the whole category. (Only when we actually drilled in
+                # via a letter; a plain or toggled full list still exits.)
+                if _letter_filter and _can_letter:
+                    _restore_letter = _letter_filter
+                    _letter_mode    = True
+                    _letter_filter  = None
+                    _group_cursor   = (1 + letters_found.index(_restore_letter)
+                                       if _restore_letter in letters_found else None)
+                    continue
                 break
 
             if selection == "__toggle__":
@@ -1007,11 +995,16 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         if _show_editor:
                             _disc_choices.append(prompt.Choice(title=f"Edit tags — {disc_label}", value="__bulk_edit__"))
 
-                        disc_action = prompt.select(
-                            "Disc:",
-                            choices=_disc_choices,
-                            header=_menu_header(disc_label, _track_context),
-                        )
+                        # With only "Play all" (editor hidden), skip the extra
+                        # single-option screen and play the disc immediately.
+                        if len(_disc_choices) == 1:
+                            disc_action = "__play_all__"
+                        else:
+                            disc_action = prompt.select(
+                                "Disc:",
+                                choices=_disc_choices,
+                                header=_menu_header(disc_label, _track_context),
+                            )
                         if disc_action == "__play_all__":
                             res = play_queue(disc_paths, library=library)
                             if res == "QUIT_ALL":
@@ -1029,11 +1022,15 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         if _show_editor:
                             _work_choices.append(prompt.Choice(title=f"Edit tags — {work_name}", value="__bulk_edit__"))
 
-                        work_action = prompt.select(
-                            "Work:",
-                            choices=_work_choices,
-                            header=_menu_header(work_name, _track_context),
-                        )
+                        # Only "Play all" (editor hidden) → skip the extra screen.
+                        if len(_work_choices) == 1:
+                            work_action = "__play_all__"
+                        else:
+                            work_action = prompt.select(
+                                "Work:",
+                                choices=_work_choices,
+                                header=_menu_header(work_name, _track_context),
+                            )
                         if work_action == "__play_all__":
                             res = play_queue(work_paths, library=library)
                             if res == "QUIT_ALL":

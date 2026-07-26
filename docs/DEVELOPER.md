@@ -46,7 +46,6 @@ User data is stored outside the repository:
 - `~/.config/backtrack/config.json` — settings (created on first run)
 - `~/.cache/backtrack/library_cache.json` — cached library metadata
 - `~/.config/backtrack/history.log` — listening history
-- iTunes `Library.xml` path is configured in Settings (optional)
 
 ## Module Responsibilities
 
@@ -98,7 +97,7 @@ Keep interactions keyboard-driven and compatible with narrow terminal widths.
 
 ### Library & Metadata
 
-`src/music_library.py` builds the library from the configured music folder, extracts metadata from audio tags, and can enrich tracks from an optional iTunes XML export (`data/Library.xml`).
+`src/music_library.py` builds the library from the configured music folder and extracts metadata from audio tags. A background sync keeps the cache current — reconciling files added/removed/renamed on disk and re-reading edited files.
 
 It also maintains a background sync thread to refresh metadata and reload the cache when files change.
 
@@ -160,7 +159,6 @@ Important keys:
 - `lyric_lead_in` — lyric timing offset in seconds
 - `show_metadata_editor` — make the metadata editor available on track selection
 - `show_lyrics_editor` — make the lyrics editor available on track selection
-- `xml_db_path` — optional path to an iTunes `Library.xml` for enriched metadata
 
 ## Testing
 

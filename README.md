@@ -168,8 +168,7 @@ Common keys:
 - Audio: `MP3`, `M4A`, `MP4`, `M4P`, `AAC`
 - Lyrics: `USLT`, `SYLT`
 - Metadata: ID3 tags and MP4 tags
-- Optional library metadata: `data/Library.xml`
-- Album art: embedded MP3 APIC frames and external images via `viu`
+- Album art: embedded MP3 APIC frames, rendered in-terminal as Unicode half-blocks
 
 ## Troubleshooting
 

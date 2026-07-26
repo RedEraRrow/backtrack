@@ -554,8 +554,6 @@ def inspect_tag_loop(
         ui_utils.show_status("Tag editing is only supported for MP3 files.", duration=4.0)
         return
 
-    show_xml = False
-
     # Duration is constant for the file — compute it ONCE here, not per render.
     # (The header is redrawn on every keypress/resize; reading the file each
     # time made resizing feel sluggish.)
@@ -646,11 +644,6 @@ def inspect_tag_loop(
             "",
         ]
 
-        xml_data = library_metadata.get('xml_data') if library_metadata else None
-        has_id3 = file_path.lower().endswith('.mp3')
-        if xml_data and (show_xml or not has_id3):
-            lines.extend(ui_utils.get_xml_metadata_lines(xml_data))
-
         return lines
 
     while True:
@@ -682,26 +675,18 @@ def inspect_tag_loop(
         tag_choices = [filepath_row, prompt.separator()] + [
             prompt.Choice(title=t, value=t, cells=_tag_cells(t)) for t in tags
         ]
-        xml_data = library_metadata.get('xml_data') if library_metadata else None
         has_id3 = file_path.lower().endswith('.mp3')
-
-        extras = (["Toggle XML"] if xml_data and has_id3 else [])
-
         _shortcuts = {'a': 'Add Tag'} if has_id3 else None
         _extra_hints = {'a': 'add tag'} if has_id3 else None
 
         choice = prompt.select(
             "Select tag to manage:",
-            choices=tag_choices + extras,
+            choices=tag_choices,
             header=_main_header,
             shortcuts=_shortcuts,
             extra_hints=_extra_hints,
             columns=_TAG_COLUMNS,
         )
-
-        if choice == "Toggle XML":
-            show_xml = not show_xml
-            continue
 
         if choice == "__filepath__":
             _fp_header = [

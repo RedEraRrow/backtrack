@@ -629,8 +629,12 @@ def _read_key_raw(fd: int) -> str:
     return decoded
 
 def _visible_rows() -> int:
+    """Total lines a list widget may emit: the full terminal height minus the
+    status bar (1) and the top+bottom vertical margins. Callers subtract their
+    OWN chrome (header, message, indicators, hints) — do not double-count it
+    here, or lists show a premature "N more" (they did, by ~5–7 rows)."""
     _, rows = ui_utils.get_terminal_size()
-    return max(4, rows - 7 - 2 * ui_utils.MARGIN_V)
+    return max(4, rows - 1 - 2 * ui_utils.MARGIN_V)
 
 
 def _rows() -> int:

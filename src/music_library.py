@@ -3,10 +3,6 @@ from __future__ import annotations
 import os
 import json
 import tempfile
-import urllib.parse
-import re
-import xml.etree.ElementTree as ET
-import unicodedata
 import threading
 from pathlib import Path
 from typing import Any
@@ -39,17 +35,14 @@ def _default_cache_dir() -> Path:
 CACHE_DIR = Path(os.getenv("BACKTRACK_CACHE_DIR") or _default_cache_dir())
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_PATH = CACHE_DIR / "library_cache.json"
-XML_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/Library.xml"))
 
 # Background sync state
 _sync_thread: threading.Thread | None = None
 _sync_trigger = threading.Event()
 _cache_mtime = 0
 _sync_lock = threading.Lock()
-_sync_state = {
+_sync_state: dict[str, Any] = {
     "library": None,
-    "xml_db": None,
-    "xml_title_keys": set(),
 }
 
 
@@ -64,89 +57,11 @@ def to_num(v: Any) -> float:
         return 0.0
 
 
-def normalise_string(s: str) -> str:
-    if not s:
-        return ""
-
-    s = os.path.splitext(s)[0]
-    s = unicodedata.normalize('NFD', s)
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    return re.sub(r'[^a-z0-9]', '', s.lower())
-
-
-def _parse_plist_value(element: Any) -> Any:
-    handlers = {
-        'string': lambda e: e.text or '',
-        'integer': lambda e: e.text or '0',
-        'true': lambda e: True,
-        'false': lambda e: False,
-        'date': lambda e: e.text or '',
-    }
-    handler = handlers.get(element.tag, lambda e: e.text or '')
-    return handler(element)
-
-
-def load_xml_database(xml_path: str = "Library.xml") -> tuple:
-    """
-    Parse Apple Music Library XML format.
-
-    Returns:
-        (db_dict, title_keys_set) or (None, set()) if not found
-    """
-    db = {}
-    if not os.path.exists(xml_path):
-        return None, set()
-
-    try:
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
-        tracks_dict = root.find("./dict/dict")
-        if tracks_dict is None:
-            return None, set()
-
-        for i in range(0, len(tracks_dict), 2):
-            track_entry = tracks_dict[i + 1]
-            track_data = {}
-
-            for j in range(0, len(track_entry), 2):
-                k = track_entry[j].text
-                v = _parse_plist_value(track_entry[j + 1])
-                track_data[k] = v
-
-            # Index by filename and metadata-based keys for fuzzy matching
-            location = track_data.get('Location', '')
-            if location:
-                decoded_path = urllib.parse.unquote(location)
-                file_name = os.path.basename(decoded_path).replace(':', '_').replace('/', '_')
-                db[file_name] = track_data
-                db[f"norm_{normalise_string(file_name)}"] = track_data
-
-            if track_data.get('Name'):
-                norm_name = normalise_string(track_data['Name'])
-                db[f"title_{norm_name}"] = track_data
-                if track_data.get('Artist'):
-                    meta_key = normalise_string(f"{track_data['Artist']}{track_data['Name']}")
-                    db[f"meta_{meta_key}"] = track_data
-
-        return db, {k for k in db if k.startswith("title_")}
-    except (ET.ParseError, OSError, KeyError, IndexError):
-        return None, set()
-
-
-def _get_xml_mtime() -> float:
-    try:
-        return os.path.getmtime(XML_PATH)
-    except OSError:
-        return 0
-
-
-def start_background_sync(library: list, xml_db: dict, xml_title_keys: set) -> None:
+def start_background_sync(library: list) -> None:
     global _sync_thread
 
     with _sync_lock:
         _sync_state["library"] = library
-        _sync_state["xml_db"] = xml_db
-        _sync_state["xml_title_keys"] = xml_title_keys
 
         if _sync_thread and _sync_thread.is_alive():
             _sync_trigger.set()
@@ -154,35 +69,75 @@ def start_background_sync(library: list, xml_db: dict, xml_title_keys: set) -> N
 
         _sync_thread = threading.Thread(
             target=_sync_worker,
-            args=(library, xml_db, xml_title_keys),
+            args=(library,),
             daemon=True,
         )
         _sync_thread.start()
 
 
-def _sync_worker(library: list, xml_db: dict, xml_title_keys: set) -> None:
+def _reconcile_library(library: list, music_dir: str, ignore_hidden: bool = False) -> bool:
+    """Add files that appeared and drop entries whose file vanished, under
+    `music_dir` (an external rename/move shows up as a remove + an add). Cheap:
+    a directory walk (no tag parsing) diffed against the known paths; tags are
+    read only for genuinely new files. Mutates `library` in place; returns True
+    if anything changed.
+
+    Guarded against a temporarily unavailable directory (unmounted/network
+    drive): if the scan finds no files while the cache still holds entries under
+    `music_dir`, nothing is removed — otherwise the whole cache would be wiped.
+    """
+    if not music_dir or not os.path.isdir(music_dir):
+        return False
+
+    on_disk: set[str] = set()
+    for root, _, files in os.walk(music_dir):
+        for f in files:
+            if f.lower().endswith(VALID_AUDIO_EXTENSIONS):
+                on_disk.add(os.path.join(root, f))
+
+    known = {track['path'] for track in library}
+    under = {p for p in known if p == music_dir or p.startswith(music_dir + os.sep)}
+    if not on_disk and under:
+        return False                                  # unmount / empty-scan guard
+
+    changed = False
+    removed = under - on_disk
+    if removed:
+        library[:] = [t for t in library if t['path'] not in removed]
+        changed = True
+
+    current = {track['path'] for track in library}
+    for path in sorted(on_disk - current):
+        meta = get_metadata(path)
+        if ignore_hidden and meta.get('grouping') == 'HIDDEN':
+            continue
+        library.append(meta)
+        changed = True
+    return changed
+
+
+def _sync_worker(library: list) -> None:
     """Worker thread for background library synchronization."""
     global _cache_mtime
     from src.utils import ui_utils
 
-    last_xml_mtime = _get_xml_mtime()
-
     while True:
         library = _sync_state.get("library") or library
-        xml_db = _sync_state.get("xml_db") or xml_db
-        xml_title_keys = _sync_state.get("xml_title_keys") or xml_title_keys
 
         ui_utils.set_status("sync", "Checking library for updates...")
         changed = False
 
-        # Reload XML if modified
-        current_xml_mtime = _get_xml_mtime()
-        if current_xml_mtime and current_xml_mtime != last_xml_mtime:
-            refreshed_xml_db, refreshed_xml_title_keys = load_xml_database(XML_PATH)
-            if refreshed_xml_db is not None:
-                xml_db = refreshed_xml_db
-                xml_title_keys = refreshed_xml_title_keys
-            last_xml_mtime = current_xml_mtime
+        # Reconcile with the filesystem: pick up files added/removed/renamed
+        # outside the app (a rename is just a remove + an add).
+        try:
+            from src.config import load_config
+            cfg = load_config()
+            music_dir = os.path.abspath(os.path.expanduser(cfg.get('music_directory', '') or ''))
+            ignore_hidden = bool(cfg.get('ignore_hidden_files', False))
+        except Exception:
+            music_dir, ignore_hidden = '', False
+        if _reconcile_library(library, music_dir, ignore_hidden):
+            changed = True
 
         # Check for modified files
         path_map = {track['path']: track for track in library}
@@ -196,7 +151,7 @@ def _sync_worker(library: list, xml_db: dict, xml_title_keys: set) -> None:
                 continue
 
             if current_mtime != track.get('cached_mtime', 0) or 'people' not in track:
-                fresh = get_metadata(path, xml_db, xml_title_keys)
+                fresh = get_metadata(path)
                 track.update(fresh)
                 track.pop('performers', None)
                 changed = True
@@ -262,13 +217,11 @@ def get_song_duration(file_path: str) -> float:
         return 0
 
 
-def get_metadata(file_path: str, xml_db: dict | None = None,
-                 xml_title_keys: set | None = None) -> dict:
+def get_metadata(file_path: str) -> dict:
     """
     Extract metadata from audio file.
 
     All required metadata fields are initialized to prevent KeyErrors.
-    XML database is used for enrichment if available.
     """
     metadata = _get_default_metadata(file_path)
 
@@ -303,10 +256,6 @@ def get_metadata(file_path: str, xml_db: dict | None = None,
             metadata["duration"] = float(getattr(mf.info, "length", 0.0) or 0.0)
     except Exception:
         pass
-
-    # Enrich from XML database if available
-    if xml_db and xml_title_keys:
-        _enrich_from_xml(metadata, xml_db, xml_title_keys)
 
     return metadata
 
@@ -467,89 +416,12 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
     return result
 
 
-def _enrich_from_xml(metadata: dict, xml_db: dict, xml_title_keys: set) -> None:
-    """
-    Enrich metadata using iTunes Library.xml database with multiple lookup strategies.
-
-    Tries:
-    1. Title-based lookup (best when metadata exists)
-    2. Normalized filename lookup (handles special chars)
-    3. Exact filename lookup (fallback)
-    4. Metadata-based (artist + title)
-    """
-    if not xml_db:
-        return
-
-    file_path = metadata.get('path', '')
-    filename = os.path.basename(file_path)
-
-    # Strategy 1: Title-based lookup (if we have a real title, not just filename)
-    title = metadata.get('title', '').strip()
-    if title and not title.startswith('Unknown'):
-        norm_title = normalise_string(title)
-        xml_track = xml_db.get(f"title_{norm_title}")
-        if xml_track:
-            _update_metadata_from_xml(metadata, xml_track)
-            return
-
-    # Strategy 2: Normalized filename lookup (robust to special chars)
-    norm_filename = normalise_string(filename)
-    xml_track = xml_db.get(f"norm_{norm_filename}")
-    if xml_track:
-        _update_metadata_from_xml(metadata, xml_track)
-        return
-
-    # Strategy 3: Exact filename lookup
-    xml_track = xml_db.get(filename)
-    if xml_track:
-        _update_metadata_from_xml(metadata, xml_track)
-        return
-
-    # Strategy 4: Try without extension
-    filename_no_ext = os.path.splitext(filename)[0]
-    norm_no_ext = normalise_string(filename_no_ext)
-    xml_track = xml_db.get(f"norm_{norm_no_ext}")
-    if xml_track:
-        _update_metadata_from_xml(metadata, xml_track)
-        return
-
-
-def _update_metadata_from_xml(metadata: dict, xml_track: dict) -> None:
-    """Update metadata dictionary from XML track entry."""
-    if not xml_track:
-        return
-
-    updates = {}
-
-    # Map XML keys to metadata keys
-    xml_field_map = {
-        'Name': 'title',
-        'Artist': 'artist',
-        'Album Artist': 'album_artist',
-        'Album': 'album',
-        'Genre': 'genre',
-        'Year': 'year',
-        'BeatsPerMinute': 'bpm',
-    }
-
-    for xml_key, meta_key in xml_field_map.items():
-        if xml_key in xml_track and xml_track[xml_key]:
-            val = xml_track[xml_key]
-            updates[meta_key] = str(val).strip() if val else ""
-
-    metadata.update(updates)
-
-
-def build_library(directory: str, xml_db: dict | None = None,
-                  xml_title_keys: set | None = None,
-                  ignore_hidden: bool = False) -> list:
+def build_library(directory: str, ignore_hidden: bool = False) -> list:
     """
     Build music library from directory.
 
     Args:
         directory: Root directory to scan
-        xml_db: Optional iTunes Library.xml database
-        xml_title_keys: Optional title index keys
         ignore_hidden: Skip tracks marked HIDDEN
 
     Returns:
@@ -563,7 +435,7 @@ def build_library(directory: str, xml_db: dict | None = None,
         for file in files:
             if file.lower().endswith(VALID_AUDIO_EXTENSIONS):
                 full_path = os.path.join(root, file)
-                meta = get_metadata(full_path, xml_db, xml_title_keys)
+                meta = get_metadata(full_path)
                 if not (ignore_hidden and meta.get('grouping') == 'HIDDEN'):
                     library.append(meta)
     return library
@@ -618,20 +490,18 @@ def load_library_cache() -> list:
         return []
 
 
-def refresh_library_entry(library: list, file_path: str,
-                          xml_db: dict | None = None) -> dict:
+def refresh_library_entry(library: list, file_path: str) -> dict:
     """
     Re-read and update metadata for a single file.
 
     Args:
         library: Library to update
         file_path: Path to file to refresh
-        xml_db: Optional XML database for enrichment
 
     Returns:
         Updated track metadata
     """
-    fresh = get_metadata(file_path, xml_db)
+    fresh = get_metadata(file_path)
     for i, track in enumerate(library):
         if track['path'] == file_path:
             library[i] = fresh

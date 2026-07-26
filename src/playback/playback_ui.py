@@ -12,7 +12,12 @@ from src.utils.ui_utils import Colors as C
 
 ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
 
-_ABS_ROW_RE = re.compile(r'^\033\[\d+;')
+# Absolute cursor positioning (\033[<row>;<col>H) — must require the trailing
+# 'H' so it does NOT also match a 24-bit colour prefix like \033[38;2;r;g;bm,
+# which every half-block art line starts with. Matching those made the renderer
+# treat art lines as absolute (row-less), so metadata flowed to the top and drew
+# ABOVE the art in standard/minimal layouts.
+_ABS_ROW_RE = re.compile(r'^\033\[\d+;\d+H')
 
 _ANSI_RE = re.compile(
     r'(\x1b\[[0-9;?]*[ -/]*[@-~])|'
@@ -91,8 +96,19 @@ def _layout_mode(cols: int) -> str:
 
 
 def _get_art_cached(file_path: str, width: int) -> str:
-    key = (file_path, width)
+    # Key on the file's mtime so editing the file (e.g. adding album art)
+    # invalidates the cached render — otherwise a "No album art found." result
+    # would stick until the program restarts.
+    try:
+        mtime = os.path.getmtime(file_path)
+    except OSError:
+        mtime = 0.0
+    key = (file_path, width, mtime)
     if key not in _art_cache:
+        # Drop stale-mtime entries for this file+width so repeated edits don't
+        # grow the cache unbounded.
+        for k in [k for k in _art_cache if k[0] == file_path and k[1] == width and k[2] != mtime]:
+            del _art_cache[k]
         _art_cache[key] = get_art(file_path, width=width)
     return _art_cache[key]
 
