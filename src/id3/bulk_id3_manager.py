@@ -42,9 +42,9 @@ from mutagen.id3._frames import APIC
 # friendly name as two styled segments (TAG bright + friendly dim) in one column.
 _BULK_COLUMNS = [
     prompt.Column(style='primary'),                                     # TAG (friendly)
-    prompt.Column(style='dynamic-dim'),                                 # type / category
-    prompt.Column(style='normal', flex=True),                           # value summary
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # count / total
+    prompt.Column(style='dynamic-dim', priority=1),                     # type / category — drops first
+    prompt.Column(style='normal', flex=True),                           # value summary (kept)
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3, priority=2),  # count / total — drops next
 ]
 
 
@@ -207,9 +207,9 @@ def _plan_write(derived, apply_fields: set, overwrite: bool,
 
 # Columns for the bulk people editor: role · name · coverage/state.
 _PEOPLE_COLUMNS = [
-    prompt.Column(style='primary', flex=True, max_frac=0.45),           # role / character
-    prompt.Column(style='normal', flex=True),                           # name / actor
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # N/total or state
+    prompt.Column(style='primary', flex=True, max_frac=0.45),           # role / character (kept)
+    prompt.Column(style='normal', flex=True),                           # name / actor (kept)
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3, priority=1),  # N/total or state — drops first
 ]
 
 
@@ -601,8 +601,10 @@ def derive_from_filename(paths: list, library: list, header) -> None:
 
 
 # Preview columns for the pattern assignment: position · file · assigned value.
+# Position is just a list index, so it drops first; file and the assigned value
+# (the pending change) are kept.
 _PATTERN_COLUMNS = [
-    prompt.Column(style='dynamic-dim', align='right', max_width=4),
+    prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),
     prompt.Column(style='primary', flex=True),
     prompt.Column(style='normal', max_frac=0.42),
 ]
@@ -623,9 +625,9 @@ _SORT_APPLY_COLUMNS = [
 
 
 _RENUMBER_COLUMNS = [
-    prompt.Column(style='dynamic-dim', align='right', max_width=4),   # position
-    prompt.Column(style='primary', flex=True),                       # file
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # old → new
+    prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),  # position (index) — drops first
+    prompt.Column(style='primary', flex=True),                       # file (kept)
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # old → new (the change, kept)
 ]
 
 
@@ -702,9 +704,10 @@ _TOKENS_COLUMNS = [
     prompt.Column(style='primary'),
     prompt.Column(style='dynamic-dim', flex=True),
 ]
-# Rename preview: position · old name · new name.
+# Rename preview: position · old name · new name. Position (index) drops first;
+# both names are the pending change and are kept.
 _RENAME_COLUMNS = [
-    prompt.Column(style='dynamic-dim', align='right', max_width=4),
+    prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),
     prompt.Column(style='dynamic-dim', flex=True),
     prompt.Column(style='primary', flex=True),
 ]
@@ -839,11 +842,12 @@ def rename_files_op(paths: list, library: list, header) -> None:
     ui_utils.show_status(msg)
 
 
-# Per-file album art: track · matched cover image · confidence.
+# Per-file album art: track · matched cover image · confidence. Confidence is
+# advisory, so it drops first; track and the matched image (the change) are kept.
 _COVER_PREVIEW_COLUMNS = [
     prompt.Column(style='primary', max_frac=0.42),
     prompt.Column(style='normal', flex=True),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=1),
 ]
 
 # Image-name patterns offered for the "%token%" match mode.
@@ -1023,22 +1027,42 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         choice_by_path[p] = ch
         preview_choices.append(ch)
 
+    def _set_cover(p: str, img) -> None:
+        """Point track ``p`` at ``img`` (or None) and refresh its preview row."""
+        ch = choice_by_path[p]
+        if img is None:
+            plan[p] = None
+            ch.cells = [os.path.basename(p), "— none (d to choose) —", '']
+            ch.checked = False
+        else:
+            plan[p] = img
+            ch.cells = [os.path.basename(p), _cover_cell(p), _conf(p)]
+            ch.checked = True               # an explicit pick means write it
+
     def _reassign(path: str) -> None:
-        """Let the user pick/clear the cover for one track, updating plan and its row in place."""
+        """Let the user pick/clear the cover for one track, then optionally apply
+        that same cover to every track (handy for a shared album cover)."""
         d = os.path.dirname(os.path.abspath(path))
         picked = pick_nearby_cover(path, tokens=tokens[path], images=dir_images[d],
                                    current=plan.get(path), allow_none=True, header=header)
         if picked is None:
             return                          # backed out, no change
-        ch = choice_by_path[path]
-        if picked is CLEAR_COVER:
-            plan[path] = None
-            ch.cells = [os.path.basename(path), "— none (d to choose) —", '']
-            ch.checked = False
-        else:
-            plan[path] = picked
-            ch.cells = [os.path.basename(path), _cover_cell(path), _conf(path)]
-            ch.checked = True               # an explicit pick means write it
+        if picked is CLEAR_COVER or not isinstance(picked, str):
+            _set_cover(path, None)
+            return
+        targets = [path]
+        if len(shown) > 1:
+            scope = prompt.select(
+                f"Apply {os.path.basename(picked)} to:",
+                choices=[prompt.Choice(title="Just this track", value="one"),
+                         prompt.Choice(title=f"All {len(shown)} tracks", value="all")],
+                header=header("apply cover"))
+            if scope is None:
+                return                      # backed out — leave the row unchanged
+            if scope == "all":
+                targets = shown
+        for tp in targets:
+            _set_cover(tp, picked)
 
     n_match = sum(1 for p in shown if plan.get(p))
     n_nodir = len(writable) - len(shown)

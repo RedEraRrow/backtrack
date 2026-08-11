@@ -10,6 +10,10 @@ written, the default is **fill blanks only** (existing tags are never
 overwritten unless you ask), and you can press **`d`** on any preview row to see
 the full, untruncated breakdown for that file. So there's no risk in trying it.
 
+> This is the **parser reference**. For the *why* and broader conventions, see
+> **[filesystem-etiquette.md](filesystem-etiquette.md)** (organising a library on
+> disk) and **[tag-etiquette.md](tag-etiquette.md)** (good tagging practice).
+
 ---
 
 ## The ideal layout

@@ -126,6 +126,13 @@ def get_key_non_blocking() -> str | None:
             _pending_escape = None
             _escape_start_time = None
             return 'FOCUS_IN' if full == '\x1b[I' else 'FOCUS_OUT'
+        # A lone Esc (no continuation arrived) is a real keypress — emit it rather
+        # than buffering it, where the stale-flush would silently drop it. Callers
+        # match the raw '\x1b'; is_arrow_key ignores it (length 1).
+        if full == '\x1b':
+            _pending_escape = None
+            _escape_start_time = None
+            return '\x1b'
         _pending_escape = full
         return None
 

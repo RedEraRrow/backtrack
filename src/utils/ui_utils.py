@@ -12,6 +12,7 @@ from collections import OrderedDict
 from src.state import NAV_STACK
 
 _resize_flag = False
+_np_layout_dirty = False
 
 def _sigwinch_handler(signum: int, frame: Any) -> None:
     """Mark that the terminal was resized; consume_resize() picks this up."""
@@ -21,11 +22,21 @@ def _sigwinch_handler(signum: int, frame: Any) -> None:
 signal.signal(signal.SIGWINCH, _sigwinch_handler)
 
 
+def mark_now_playing_layout_dirty() -> None:
+    """Signal that the now-playing box's height changed (it appeared or vanished,
+    e.g. the player view opened in another window), so menus re-render and
+    re-reserve rows for it via consume_resize()."""
+    global _np_layout_dirty
+    _np_layout_dirty = True
+
+
 def consume_resize() -> bool:
-    """Returns True (and clears flag) if terminal was resized since last call."""
-    global _resize_flag
-    if _resize_flag:
+    """True (and clears the flags) if the terminal was resized *or* the now-playing
+    box changed height since last call — both need a full re-render/re-layout."""
+    global _resize_flag, _np_layout_dirty
+    if _resize_flag or _np_layout_dirty:
         _resize_flag = False
+        _np_layout_dirty = False
         return True
     return False
 
@@ -78,6 +89,83 @@ BACKGROUND_TASKS: dict[str, str] = {}
 _toast_message: str = ""
 _toast_expiry: float = 0.0
 
+# Now-playing box (#14): the playback layer registers a provider so the widget
+# layer can draw a background-audio box without importing playback (keeps the
+# dependency flowing one way). provider(width) -> list[str] | None (styled rows,
+# top to bottom; drawn just above the breadcrumb status line).
+_now_playing_provider = None
+_now_playing_lines: list[str] = []
+# A cheap identity of the currently-shown track (file/generation/paused/index …).
+# The idle-tick redraw keys off this so a background track change always repaints
+# the box, even in the rare case two tracks render to byte-identical rows.
+_now_playing_sig: tuple | None = None
+
+
+def set_now_playing_provider(fn) -> None:
+    """Register a ``callable(width) -> list[str] | None`` that renders the now-playing box."""
+    global _now_playing_provider
+    _now_playing_provider = fn
+
+
+def set_now_playing_signature(sig: tuple | None) -> None:
+    """Record the identity of the track the box provider just rendered (#14)."""
+    global _now_playing_sig
+    _now_playing_sig = sig
+
+
+# Event-driven repaint (#14): background threads (a joined window's snapshot
+# receiver, the host's auto-advance tick) call pulse_now_playing() when the
+# now-playing state changes so the menu poll repaints the box *immediately*
+# instead of only on the next keystroke. The waker is registered by the input
+# layer (a self-pipe that wakes its select); this hook keeps the playback/IPC
+# threads free of any input-layer import.
+_np_waker = None
+
+
+def set_now_playing_waker(fn) -> None:
+    """Register a ``callable()`` that nudges the menu poll to repaint the box."""
+    global _np_waker
+    _np_waker = fn
+
+
+def pulse_now_playing() -> None:
+    """Ask the active menu poll to repaint the now-playing box now (no-op if no
+    poll is listening — e.g. the full player view drives its own redraws)."""
+    if _np_waker is not None:
+        try:
+            _np_waker()
+        except Exception:
+            pass
+
+
+def now_playing_signature() -> tuple | None:
+    """The identity of the currently-shown track (see :func:`set_now_playing_signature`)."""
+    return _now_playing_sig
+
+
+def now_playing_lines(width: int) -> list[str]:
+    """The now-playing box rows for ``width`` (empty list when nothing is playing)."""
+    global _now_playing_lines
+    if _now_playing_provider is None:
+        _now_playing_lines = []
+        return []
+    try:
+        lines = _now_playing_provider(width) or []
+    except Exception:
+        lines = []
+    _now_playing_lines = list(lines)
+    return _now_playing_lines
+
+
+def now_playing_active() -> bool:
+    """Whether a now-playing box is currently shown (cached from the last draw)."""
+    return bool(_now_playing_lines)
+
+
+def now_playing_height() -> int:
+    """How many rows the now-playing box currently occupies (0 when inactive)."""
+    return len(_now_playing_lines)
+
 
 def set_status(task_id: str, message: str | None) -> None:
     """Update or remove a background task status."""
@@ -85,6 +173,24 @@ def set_status(task_id: str, message: str | None) -> None:
         BACKGROUND_TASKS.pop(task_id, None)
     else:
         BACKGROUND_TASKS[task_id] = message
+
+
+def has_background_tasks() -> bool:
+    """Whether any background activity is currently running (drives the live,
+    pulsing status indicator so the notice stays up until the work is done)."""
+    return bool(BACKGROUND_TASKS)
+
+
+# 256-colour greyscale brightness ramp (dim → white → dim) for the pulsing beacon.
+_PULSE_RAMP = (238, 243, 248, 253, 255, 253, 248, 243)
+
+
+def pulse_circle() -> str:
+    """A white ● whose brightness pulses over time — the beacon next to a running
+    background activity. The status bar is re-rendered ~8 Hz while a task is
+    active (see the menu idle tick), which animates this."""
+    code = _PULSE_RAMP[int(_time.time() * 6) % len(_PULSE_RAMP)]
+    return f"\033[38;5;{code}m●{Colors.RESET}"
 
 
 def show_status(message: str, duration: float = 3.0) -> None:
@@ -113,7 +219,7 @@ def get_status_line() -> str:
 
     right_parts: list[str] = []
     for msg in BACKGROUND_TASKS.values():
-        right_parts.append(f"{Colors.CYAN}●{Colors.RESET} {Colors.DIM}{msg}{Colors.RESET}")
+        right_parts.append(f"{pulse_circle()} {Colors.DIM}{msg}{Colors.RESET}")
     if _toast_message:
         right_parts.append(f"{Colors.DIM}{_toast_message}{Colors.RESET}")
     right = sep.join(right_parts)

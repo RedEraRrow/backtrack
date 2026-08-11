@@ -125,10 +125,17 @@ def _clip_ansi_to_width(text: str, max_cols: int) -> str:
     while i < len(text):
         if text[i] == '\x1b':
             j = i + 1
-            while j < len(text) and not (0x40 <= ord(text[j]) <= 0x7E):
+            if j < len(text) and text[j] == '[':
+                # CSI sequence: skip the '[' then scan to the final byte
+                # (0x40–0x7E) *after* the parameter bytes — otherwise '[' itself
+                # (0x5B) is mistaken for the terminator, leaving "7m"/"2m" visible.
                 j += 1
-            if j < len(text):
-                j += 1
+                while j < len(text) and not (0x40 <= ord(text[j]) <= 0x7E):
+                    j += 1
+                if j < len(text):
+                    j += 1
+            elif j < len(text):
+                j += 1                      # short escape (e.g. \x1bX)
             result.append(text[i:j])
             i = j
         else:
@@ -291,6 +298,90 @@ def draw_volume_bar(volume: int) -> None:
     if cells:
         sys.stdout.write("\0337" + "".join(cells) + "\0338")
         sys.stdout.flush()
+
+
+def _np_fmt_time(seconds: float) -> str:
+    """Seconds → m:ss for the now-playing bar."""
+    s = max(0, int(seconds))
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def _fit_segments(segs: list, budget: int) -> tuple[str, int]:
+    """Style-render (text, style) segments to fit ``budget`` plain columns,
+    truncating the tail with an ellipsis. Returns (styled_string, plain_width)."""
+    out = ""
+    used = 0
+    for text, style in segs:
+        if used >= budget:
+            break
+        remain = budget - used
+        if len(text) > remain:
+            text = text[:max(0, remain - 1)] + "…"
+        out += (f"{style}{text}{C.RESET}" if style else text)
+        used += len(text)
+    return out, used
+
+
+def format_now_playing_bar(width: int) -> list[str] | None:
+    """The background-audio now-playing box (#14), styling only (no colour): a
+    rounded box whose bottom border doubles as the progress bar. Row 1 = top
+    border; row 2 = ``▶ Title · Artist · Album … m:ss / m:ss · vol · ^P`` (bold
+    title, dim rest); row 3 = the progress border (heavy ``━`` elapsed / light
+    ``─`` remaining). Returns a list of styled rows, or None when nothing plays
+    or the terminal is too narrow for a box."""
+    from src.playback.session import current_now_playing
+    np = current_now_playing()
+    if np is None:
+        ui_utils.set_now_playing_signature(None)
+        return None
+    # When the full player view is open in ANY window of the session, the player
+    # itself is the now-playing display — hide the ambient bar everywhere else so
+    # it doesn't double up (#14). view_holder is the token of whichever window
+    # holds the view (broadcast to joined windows), or None when no view is open.
+    if np.get('view_holder'):
+        ui_utils.set_now_playing_signature(None)
+        return None
+    # Identity of this track for the idle-tick redraw: a change here forces the
+    # now-playing box to repaint even if the styled rows happen to match (#14).
+    ui_utils.set_now_playing_signature((
+        np.get('file_path'), np.get('generation'), np.get('paused'),
+        np.get('index'), np.get('count'), np.get('view_holder'),
+    ))
+    mh = 2
+    box_w = width - 2 * mh
+    inner = box_w - 4                       # content columns between "│ " and " │"
+    if inner < 16:
+        return None                         # too narrow to be worth a box
+
+    icon = '❚❚' if np['paused'] else '▶'
+    # Just the elapsed/total time; volume + queue position + the ^P hint live
+    # elsewhere (the player view and the menu hint bar).
+    right = f"{_np_fmt_time(np['elapsed'])} / {_np_fmt_time(np['duration'])}"
+
+    left_segs: list = [(f"{icon} ", C.BOLD), (np['title'] or '?', C.BOLD)]
+    if np['artist']:
+        left_segs += [("  ·  ", C.DIM), (np['artist'], C.DIM)]
+    if np['album']:
+        left_segs += [("  ·  ", C.DIM), (np['album'], C.DIM + C.ITALIC)]
+
+    left_budget = max(6, inner - len(right) - 2)
+    left_styled, left_used = _fit_segments(left_segs, left_budget)
+    gap = max(1, inner - left_used - len(right))
+    content = f"{left_styled}{' ' * gap}{C.DIM}{right}{C.RESET}"
+
+    pad = ' ' * mh
+    top = f"{pad}{C.DIM}╭{'─' * (box_w - 2)}╮{C.RESET}"
+    mid = f"{pad}{C.DIM}│{C.RESET} {content} {C.DIM}│{C.RESET}"
+
+    # Progress along the bottom border: heavy ━ for the elapsed fraction, light ─
+    # for the rest (the join to the rounded corners is intentionally light).
+    cells = box_w - 2
+    pct = (np['elapsed'] / np['duration']) if np['duration'] else 0.0
+    filled = max(0, min(cells, round(pct * cells)))
+    prog = f"{C.BOLD}{'━' * filled}{C.RESET}{C.DIM}{'─' * (cells - filled)}{C.RESET}"
+    bot = f"{pad}{C.DIM}╰{C.RESET}{prog}{C.DIM}╯{C.RESET}"
+
+    return [_clip_ansi_to_width(ln, width) for ln in (top, mid, bot)]
 
 
 def toggle_metadata() -> None:

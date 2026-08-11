@@ -49,6 +49,29 @@ _value_toggle_enabled = False
 _toggle_hint_label = 'widget'      # what text()'s ^t hint calls the alternate mode
 _toggle_carry: str | None = None   # in-progress text buffer handed across a Ctrl-T toggle
 
+# Global "reopen the player" hotkey (Ctrl-P, #14). The app registers a callback
+# that opens the full player view over the current list; select() invokes it and
+# redraws afterwards. Kept as a registered callback so prompt need not import the
+# playback layer.
+_PLAYER_KEY = '\x10'               # Ctrl-P
+_player_opener = None
+
+
+def set_player_opener(fn) -> None:
+    """Register a ``callable()`` that opens the background player's full view."""
+    global _player_opener
+    _player_opener = fn
+
+
+_notification_opener = None
+
+
+def set_notification_opener(fn) -> None:
+    """Register a ``callable()`` that opens the activity/notification centre —
+    invoked when the status-bar ● beacon is clicked."""
+    global _notification_opener
+    _notification_opener = fn
+
 
 def _toggle_hint() -> dict:
     """Hint-bar fragment advertising the Ctrl-T text/widget toggle, when enabled."""
@@ -66,6 +89,8 @@ def select(message: str, choices: list, *,
            interlock_category_callback: Callable[[Any], str] | None = ...,
            on_inspect: Callable[[Any], None] | None = ...,
            inspect_key: str = ...,
+           row_actions: dict[str, Callable[[Any], None]] | None = ...,
+           row_action_hints: dict[str, str] | None = ...,
            ) -> str | None: ...
 @overload
 def select(message: str, choices: list, *,
@@ -78,6 +103,8 @@ def select(message: str, choices: list, *,
            interlock_category_callback: Callable[[Any], str] | None = ...,
            on_inspect: Callable[[Any], None] | None = ...,
            inspect_key: str = ...,
+           row_actions: dict[str, Callable[[Any], None]] | None = ...,
+           row_action_hints: dict[str, str] | None = ...,
            ) -> list[Any] | None: ...
 def select(message: str, choices: list, *,
            header: list | None | Callable[[], list[str]] = None,
@@ -89,6 +116,8 @@ def select(message: str, choices: list, *,
            interlock_category_callback: Callable[[Any], str] | None = None,
            on_inspect: Callable[[Any], None] | None = None,
            inspect_key: str = 'd',
+           row_actions: dict[str, Callable[[Any], None]] | None = None,
+           row_action_hints: dict[str, str] | None = None,
            ) -> str | list[Any] | None:
     """Arrow keys / jk to navigate; Enter / → to confirm; ← / b / Esc / q → None.
 
@@ -111,6 +140,10 @@ def select(message: str, choices: list, *,
             pressed; runs its own view and returns, leaving selection/checkbox
             state intact (the list redraws afterwards).
         inspect_key: Key that triggers `on_inspect` (default 'd').
+        row_actions: key→callback(current row value) map. Pressing the key runs
+            the callback against the highlighted row and stays in the list (like
+            on_inspect, but any number of keys) — e.g. queue the current track.
+        row_action_hints: key→label map surfaced in the hint bar for row_actions.
     """
     _check_deferred_quit()
     items = _norm(choices)
@@ -179,6 +212,11 @@ def select(message: str, choices: list, *,
         combined_hints = {**extra_hints, **base_hints}
     else:
         combined_hints = base_hints
+    # Row-action keys (e.g. queue the current track) sit with the other action
+    # hints, before the navigation keys.
+    if row_action_hints:
+        combined_hints = {**{k: v for k, v in combined_hints.items() if k not in base_hints},
+                          **row_action_hints, **base_hints}
 
     _last_hlen = [0]
     # Maps a visible item index → its ANSI-stripped rendered text, so a mouse
@@ -209,7 +247,12 @@ def select(message: str, choices: list, *,
 
         layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
 
-        hint_lines = _hint(*list(combined_hints.items()), extra=layout_constraint).splitlines()
+        # Surface the reopen-player hotkey in the normal hint bar while background
+        # audio is active (recomputed each render so it appears/vanishes live).
+        hints_now = combined_hints
+        if _player_opener is not None and ui_utils.now_playing_active():
+            hints_now = {**combined_hints, "^P": "player"}
+        hint_lines = _hint(*list(hints_now.items()), extra=layout_constraint).splitlines()
 
         # Non-item lines this widget emits: header + message + the two
         # above/below indicator rows (always present) + hints.
@@ -304,6 +347,11 @@ def select(message: str, choices: list, *,
 
             key = _read_key(fd)
             if   key == 'CTRL_C':                break
+            elif key == 'FOCUS_IN':
+                # Regained focus: repaint fully in case a background track change
+                # (or the terminal not painting us while unfocused) left the list
+                # or now-playing box stale — no click needed (#14).
+                _sel_last_click = None; w.anchor_reset(); w.render(_lines())
             elif key in ('UP',   'k'):           cursor = _step(cursor, -1);          _sel_last_click = None; w.render(_lines())
             elif key in ('DOWN', 'j'):           cursor = _step(cursor, 1);           _sel_last_click = None; w.render(_lines())
             elif key == 'HOME':                  cursor = selectable[0];              _sel_last_click = None; w.render(_lines())
@@ -350,12 +398,41 @@ def select(message: str, choices: list, *,
                 _sel_last_click = None
                 w.anchor_reset()
                 w.render(_lines())
+            elif row_actions and key in row_actions and not items[cursor].disabled:
+                # Act on the highlighted row (e.g. queue this track) and stay in
+                # the list — the callback shows its own status; we just redraw.
+                row_actions[key](items[cursor].value)
+                _sel_last_click = None
+                w.render(_lines())
+            elif key == _PLAYER_KEY and _player_opener is not None:
+                # Ctrl-P: reopen the background player's full view over this list,
+                # then redraw when it minimises back (mirrors on_inspect).
+                _player_opener()
+                if not _IS_WINDOWS:
+                    sys.stdout.write("\033[?1000h\033[?1006h")
+                sys.stdout.flush()
+                _sel_last_click = None
+                w.anchor_reset()
+                w.render(_lines())
             elif shortcuts and key in shortcuts:  result = shortcuts[key]; break
             elif key == 'SCROLL_UP':             cursor = _step(cursor, -1); _sel_last_click = None; w.render(_lines())
             elif key == 'SCROLL_DOWN':           cursor = _step(cursor, 1); _sel_last_click = None; w.render(_lines())
             elif key.startswith('MOUSE_CLICK:'):
                 parts = key.split(':')
                 r, col = int(parts[2]), int(parts[3]) if len(parts) > 3 else 1
+                # Click on the status-bar row's pulsing ● beacon → open the
+                # activity centre (only while something is actually running).
+                if (_notification_opener is not None
+                        and r >= ui_utils.get_terminal_height()
+                        and ui_utils.has_background_tasks()):
+                    _notification_opener()
+                    if not _IS_WINDOWS:
+                        sys.stdout.write("\033[?1000h\033[?1006h")
+                    sys.stdout.flush()
+                    _sel_last_click = None
+                    w.anchor_reset()
+                    w.render(_lines())
+                    continue
                 if w.row is None:
                     continue
                 # render() prepends MARGIN_V blank rows before lines[0].

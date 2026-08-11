@@ -18,6 +18,7 @@ from src.music_library import (
 from src.history import get_history, clear_history, get_recent_paths
 from src import search as _search
 from src.playback.playback import music_player
+from src.playback.session import SESSION, REPEAT_OFF, REPEAT_ONE, REPEAT_ALL, active_session, is_client
 from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
 from src.config import load_config, save_config
 from src.state import NAV_STACK
@@ -29,8 +30,8 @@ from src.id3.tag_registry import TAG_REGISTRY
 # carries explicit `cells`).
 _TRACK_COLUMNS = [
     prompt.Column(style='primary', max_frac=0.5),                # title (truncates)
-    prompt.Column(style='dynamic-dim', flex=True, align='left', gap=3),  # featured artist (full)
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # duration (pinned right)
+    prompt.Column(style='dynamic-dim', flex=True, align='left', gap=3, priority=1),  # featured artist — drops first when narrow
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # duration (pinned right, kept)
 ]
 _ALBUM_COLUMNS = [
     prompt.Column(style='primary', flex=True),                   # album name
@@ -140,13 +141,17 @@ _SCOPE_CYCLE = ['all', 'title', 'artist', 'album', 'genre', 'people']
 # Columns for live search results: title (matched chars accented) · artist ·
 # album · people (whoever matched) · disc/track · duration. `title` flexes;
 # the rest are width-capped so the layout stays aligned across queries.
+# title · artist · album · people · disc/track · duration. On narrow terminals
+# the least important columns drop first (priority; lower = dropped sooner):
+# people, then disc/track, then duration, then album, then artist. Title never
+# drops (no priority = essential).
 _SEARCH_COLUMNS = [
     prompt.Column(style='primary', flex=True),
-    prompt.Column(style='dynamic-dim', max_frac=0.20),
-    prompt.Column(style='dynamic-dim', max_frac=0.20),
-    prompt.Column(style='dynamic-dim', max_frac=0.22),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
+    prompt.Column(style='dynamic-dim', max_frac=0.20, priority=5),
+    prompt.Column(style='dynamic-dim', max_frac=0.20, priority=4),
+    prompt.Column(style='dynamic-dim', max_frac=0.22, priority=1),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=2),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=3),
 ]
 
 
@@ -286,6 +291,7 @@ def handle_search(library: list) -> str | None:
         _action_choices.append("Edit Lyrics")
     if _show_editor:
         _action_choices.append("Edit Metadata")
+    _action_choices += _queue_action_choices()
 
     if len(_action_choices) == 1 or _autoplay():
         action = "Play"
@@ -302,6 +308,8 @@ def handle_search(library: list) -> str | None:
         ui_utils.clear_screen()
         if res and res.get("status") == "QUIT_ALL":
             return "QUIT_ALL"
+    elif _handle_queue_action(action, selected, track_title):
+        pass
     elif action == "Edit Lyrics":
         ui_utils.clear_screen()
         lyrics_editor(selected)
@@ -315,12 +323,14 @@ def handle_search(library: list) -> str | None:
 
 
 # Listening-history columns: title · artist · album · when (relative) · listened.
+# Narrow terminals drop the least important first (priority; lower = sooner):
+# album, then listened, then when, then artist. Title never drops (essential).
 _HISTORY_COLUMNS = [
     prompt.Column(style='primary', flex=True),
-    prompt.Column(style='dynamic-dim', max_frac=0.24),
-    prompt.Column(style='dynamic-dim', max_frac=0.24),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),
+    prompt.Column(style='dynamic-dim', max_frac=0.24, priority=4),
+    prompt.Column(style='dynamic-dim', max_frac=0.24, priority=1),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=3),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=2),
 ]
 
 
@@ -403,6 +413,7 @@ def handle_history(library: list) -> str | None:
         choices=choices,
         columns=_HISTORY_COLUMNS,
         header=_menu_header("Listening History", f"{len(history_entries)} recent"),
+        **_queue_shortcut_kwargs(library),
     )
     if not selected:
         return None
@@ -492,6 +503,7 @@ def handle_settings(library_ref: list) -> None:
             "Toggle Auto-play on Select",
             prompt.separator("LIBRARY"),
             "Update Music Directory",
+            "Activity Centre",
         ]
         _choices += [
             "Toggle Hidden Files",
@@ -520,7 +532,10 @@ def handle_settings(library_ref: list) -> None:
         _cursor = next((i for i, c in enumerate(_choices)
                         if not isinstance(c, prompt.Choice) and c == choice), _cursor)
 
-        if choice == "Toggle Listening History":
+        if choice == "Activity Centre":
+            notification_centre()
+
+        elif choice == "Toggle Listening History":
             config["history_enabled"] = not config["history_enabled"]
             ui_utils.show_status(f"History: {'ENABLED' if config['history_enabled'] else 'DISABLED'}")
 
@@ -620,27 +635,72 @@ def play_queue(paths: list, mode: str = "linear", library: list | None = None) -
         title_map = {s['path']: (s.get('title') or os.path.basename(s['path'])) for s in library}
     titles = [title_map.get(p) or os.path.splitext(os.path.basename(p))[0] for p in playlist]
 
-    idx = 0
-    while idx < len(playlist):
-        result = music_player(playlist[idx], queue_titles=titles, queue_index=idx)
-        if isinstance(result, dict):
-            status = result.get("status", "")
-            if status == "QUIT_ALL":
-                return "QUIT_ALL"
-            if status == "STOP":          # 'b' — stop the queue, back to browse (#41)
-                return None
-            if status == "PREVIOUS":
-                idx = max(0, idx - 1)
-                continue
-
-        if mode == "repeat_one":
-            continue
-
-        idx += 1
-        if mode == "repeat_all" and idx >= len(playlist):
-            idx = 0
-
+    # The shared session owns the queue and auto-advances in the background
+    # (feature #14), so this just starts it and opens the player. Minimising the
+    # player ('b'/Esc) returns here with audio still playing; Stop ('s') ends it.
+    session_mode = {"repeat_one": REPEAT_ONE, "repeat_all": REPEAT_ALL}.get(mode, REPEAT_OFF)
+    result = music_player(playlist[0], queue_titles=titles, queue_index=0,
+                          queue_paths=playlist, mode=session_mode)
+    if isinstance(result, dict) and result.get("status") == "QUIT_ALL":
+        return "QUIT_ALL"
     return None
+
+
+def _queue_action_choices() -> list:
+    """Track-menu queue actions for the *search* results (#14), which use the
+    `live_select` widget and so can't take the listing-level n/a shortcuts that
+    Browse/History now use. Offered whenever something is playing or we're a
+    joined window. Routes through active_session() (local host or remote)."""
+    return ["Play next", "Add to queue"] if (active_session().is_active() or is_client()) else []
+
+
+def _queue_shortcut_kwargs(library: list) -> dict:
+    """`select()` row-action kwargs for the listing-level queue shortcuts (#14):
+    ``n`` = Play next, ``a`` = Add to queue, acting on the highlighted track
+    without leaving the list. Offered whenever something is playing, and also
+    whenever we're a joined window (so you can build/start a queue on the host
+    even if it's currently idle) — mirrors the old track-menu visibility. Routes
+    through active_session() (local host or remote)."""
+    if not (active_session().is_active() or is_client()):
+        return {}
+
+    def _do(action: str, value) -> None:
+        # Ignore the Play-all / disc / work header rows — they aren't tracks.
+        if not isinstance(value, str) or value.startswith("__"):
+            return
+        song = next((s for s in library if s.get('path') == value), None)
+        title = song['title'] if song else os.path.basename(value)
+        _handle_queue_action(action, value, title)
+
+    return {
+        'row_actions': {
+            'n': lambda v: _do("Play next", v),
+            'a': lambda v: _do("Add to queue", v),
+        },
+        'row_action_hints': {'n': 'play next', 'a': 'queue'},
+    }
+
+
+def _handle_queue_action(action: str | None, path: str, title: str) -> bool:
+    """Dispatch a Play-next / Add-to-queue action against the active session
+    (local host or remote); returns True if ``action`` was one of them."""
+    if action not in ("Play next", "Add to queue"):
+        return False
+    a = active_session()
+    if not a.is_active():
+        # Nothing playing yet — queueing starts the session with this track so
+        # the now-playing box/panel appear and can be opened.
+        a.start(path, queue=[path], titles=[title])
+        ui_utils.show_status(f"▶ {title}")
+        return True
+    if action == "Play next":
+        a.play_next(path, title)
+        ui_utils.show_status(f"Playing next: {title}")
+    else:
+        n = a.enqueue(path, title)
+        # A remote host owns the real count, so only show it when we host locally.
+        ui_utils.show_status(f"Added to queue ({n} in queue): {title}" if n else f"Added to queue: {title}")
+    return True
 
 
 def browse_menu(library_ref: list, cat_choice: str) -> str | None:
@@ -962,6 +1022,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         shortcuts=_tsc,
                         extra_hints=_teh,
                         index=_track_cursor,
+                        **_queue_shortcut_kwargs(library),
                     )
 
                     if not path_choice_obj:
@@ -1115,6 +1176,47 @@ def handle_browse(library_ref: list) -> str | None:
         if res == "QUIT_ALL":
             return "QUIT_ALL"
     return None
+
+
+def notification_centre() -> None:
+    """A live panel of current background activities — opens from Settings or by
+    clicking the status-bar ● beacon. Lists each running job with its live status
+    and a pulsing dot, updating as they start/finish; closes on Esc / b / q, and
+    shows a placeholder when nothing is running."""
+    import sys
+    import time
+    from src.utils.terminal_input import raw_mode, get_key_non_blocking, clear_escape_buffer
+
+    def _draw() -> None:
+        tasks = list(ui_utils.BACKGROUND_TASKS.values())
+        out = ["\033[H\033[3J\033[J" + C.HIDE,
+               f"\n  {C.BOLD}Activity{C.RESET}"]
+        out.append(f"   {C.DIM}{len(tasks)} running{C.RESET}\n\n" if tasks else "\n\n")
+        if tasks:
+            for msg in tasks:
+                out.append(f"   {ui_utils.pulse_circle()}  {msg}\n")
+        else:
+            out.append(f"   {C.DIM}Nothing running right now.{C.RESET}\n")
+        out.append("\n\n" + prompt._hint(("esc/b", "back")))
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    with raw_mode(sys.stdin):
+        last = None
+        while True:
+            # Re-key on the pulse frame only while active, so an idle panel is static.
+            frame = int(time.time() * 6) if ui_utils.has_background_tasks() else 0
+            sig = (tuple(sorted(ui_utils.BACKGROUND_TASKS.items())), frame)
+            if sig != last:
+                _draw()
+                last = sig
+            key = get_key_non_blocking()
+            if key:
+                clear_escape_buffer()
+                if key in ('b', 'B', 'q', 'Q', '\x1b') or key == 'ESC':
+                    break
+            time.sleep(0.08)
+    ui_utils.clear_screen()
 
 
 def main_menu(library_ref: list) -> None:

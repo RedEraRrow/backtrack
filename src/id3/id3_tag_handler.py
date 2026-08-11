@@ -3,13 +3,14 @@ from __future__ import annotations
 from typing import Any, Optional
 from mutagen.id3 import ID3
 from mutagen.id3._frames import SYLT, USLT, TMCL, TIPL, TXXX, WXXX, COMM  # type: ignore[reportPrivateImportUsage]
-from mutagen.id3._frames import APIC, EQU2, RVA2, POPM, PCNT
+from mutagen.id3._frames import APIC, EQU2, RVA2, POPM, PCNT, RBUF
 
 from src.id3.tag_registry import (TAG_REGISTRY, TagInfo, parse_composite_tag_id, get_tag_info, get_tag_category, get_preferred_tag_name)
 from src.music_library import refresh_library_entry
 
 import mutagen.id3
 import os
+import re
 import time
 from src.utils import prompt, ui_utils
 
@@ -55,8 +56,8 @@ CLEAR_COVER = object()
 
 _COVER_PICK_COLUMNS = [
     prompt.Column(style='primary', flex=True),                          # image name
-    prompt.Column(style='dynamic-dim', align='right', max_width=10),    # size
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),  # confidence / current
+    prompt.Column(style='dynamic-dim', align='right', max_width=10, priority=1),  # size — drops first when narrow
+    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),  # confidence / current (kept)
 ]
 
 
@@ -201,7 +202,7 @@ def save_id3(audio: ID3, path: str | None = None) -> None:
         audio.save(path, v2_version=ver)
 
 
-def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | EQU2 | RVA2 | POPM | PCNT | None:
+def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | EQU2 | RVA2 | POPM | PCNT | RBUF | None:
     """Create the correct mutagen frame for tag_id from value, or None on failure."""
     if value is None:
         return None
@@ -237,6 +238,12 @@ def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | 
                 return PCNT(count=int(value.get('count', 0)))
             if isinstance(value, int):
                 return PCNT(count=max(0, value))
+            return None
+        if parsed_base == 'RBUF':
+            if isinstance(value, dict) and value.get('__rbuf__'):
+                return RBUF(size=int(value.get('size', 0)))
+            if isinstance(value, int):
+                return RBUF(size=max(0, value))
             return None
 
         # APIC is a BINARY frame but its UI category is 'image'. (The old
@@ -483,6 +490,117 @@ def _prompt_for_playcount(current_value: Any) -> dict | None:
     return {'__pcnt__': True, 'count': int(n)}
 
 
+def _current_text(current_value: Any) -> str:
+    """The current single value as a string, from a mutagen frame or a raw value."""
+    if current_value is None:
+        return ''
+    if hasattr(current_value, 'text') and current_value.text:
+        return str(current_value.text[0])
+    return str(current_value)
+
+
+# Musical keys for TKEY (ID3: ground keys A–G, ♯, minor 'm', off-key 'o').
+# The 12 chromatic notes: (ID3 value with '#', pretty display with ♯, flat enharmonic).
+# The tag stores plain ASCII ('C#'); the picker shows the ♯ glyph and full names.
+_KEY_NOTES = (
+    ('C', 'C', None), ('C#', 'C♯', 'D♭'), ('D', 'D', None), ('D#', 'D♯', 'E♭'),
+    ('E', 'E', None), ('F', 'F', None), ('F#', 'F♯', 'G♭'), ('G', 'G', None),
+    ('G#', 'G♯', 'A♭'), ('A', 'A', None), ('A#', 'A♯', 'B♭'), ('B', 'B', None),
+)
+
+_KEY_COLUMNS = [
+    prompt.Column(style='primary', min_width=4),        # pretty key code
+    prompt.Column(style='dynamic-dim', flex=True),      # full readable name
+]
+
+# Common TMED media types: (label shown, code stored). Codes follow the ID3v2.4
+# media-type table; a custom entry is always available for anything unusual.
+_MEDIA_TYPES = (
+    ('CD', 'CD'), ('Digital / file', 'DIG'), ('Vinyl', 'VIN'), ('Cassette', 'MC'),
+    ('DAT', 'DAT'), ('MiniDisc', 'MD'), ('DVD', 'DVD'), ('Laserdisc', 'LD'),
+    ('Reel', 'REE'), ('Radio', 'RAD'), ('Television', 'TV'), ('Telephone', 'TEL'),
+    ('Analogue (other)', 'ANA'),
+)
+
+_ISRC_RE = re.compile(r'^[A-Za-z]{2}[A-Za-z0-9]{3}\d{2}\d{5}$')
+
+
+def _prompt_for_musical_key(current_value: Any) -> str | None:
+    """Pick the initial musical key (TKEY) from a grouped, labelled picker (major /
+    minor / other, with ♯ glyphs and full names), or type a custom value."""
+    cur = _current_text(current_value)
+    choices: list = [prompt.separator("Major")]
+    for val, sym, flat in _KEY_NOTES:
+        name = f"{sym} / {flat} major" if flat else f"{sym} major"
+        choices.append(prompt.Choice(title=sym, value=val, cells=[sym, name]))
+    choices.append(prompt.separator("Minor"))
+    for val, sym, flat in _KEY_NOTES:
+        name = f"{sym} / {flat} minor" if flat else f"{sym} minor"
+        choices.append(prompt.Choice(title=f"{sym}m", value=f"{val}m", cells=[f"{sym}m", name]))
+    choices.append(prompt.separator("Other"))
+    choices.append(prompt.Choice(title="off-key", value="o", cells=["o", "off-key / atonal"]))
+    choices.append(prompt.Choice(title="Type custom…", value="__custom__",
+                                 cells=["Type custom…", "any ID3 key string"]))
+
+    idx = next((i for i, c in enumerate(choices) if getattr(c, 'value', None) == cur), 0)
+    sel = prompt.select("Initial key:", choices=choices, columns=_KEY_COLUMNS, index=idx)
+    if sel is None:
+        return None
+    if sel == '__custom__':
+        raw = prompt.text("Key (e.g. Dbm, F#, o):", default=cur)
+        return raw or None
+    return sel
+
+
+def _prompt_for_media_type(current_value: Any) -> str | None:
+    """Pick the media type (TMED) from common options, or type a custom code."""
+    cur = _current_text(current_value)
+    choices = [prompt.Choice(title=f"{label}  ({code})", value=code) for label, code in _MEDIA_TYPES]
+    choices += [prompt.separator(), prompt.Choice(title='Type custom…', value='__custom__')]
+    idx = next((i for i, (_, code) in enumerate(_MEDIA_TYPES) if code == cur), 0)
+    sel = prompt.select("Media type:", choices=choices, index=idx)
+    if sel is None:
+        return None
+    if sel == '__custom__':
+        raw = prompt.text("Media-type code (e.g. CD, DIG, VIN/33):", default=cur)
+        return raw or None
+    return sel
+
+
+def _prompt_for_isrc(current_value: Any) -> str | None:
+    """ISRC (TSRC) with light validation: normalise to 12 chars and warn if the
+    shape isn't CC-RRR-YY-NNNNN, but let the user save anyway."""
+    cur = _current_text(current_value)
+    raw = prompt.text("ISRC (CC-RRR-YY-NNNNN):", default=cur)
+    if not raw:
+        return None
+    norm = re.sub(r'[\s-]', '', raw).upper()
+    if not _ISRC_RE.match(norm):
+        if not prompt.confirm(f"'{norm}' doesn't look like a valid ISRC — save anyway?"):
+            return None
+    return norm
+
+
+def _prompt_for_compilation(current_value: Any) -> str | None:
+    """Yes/No toggle for the TCMP compilation flag (stored as '1'/'0')."""
+    cur = _current_text(current_value).strip()
+    is_comp = cur not in ('', '0')
+    sel = prompt.select("Part of a compilation (various-artists album)?",
+                        choices=[prompt.Choice(title='Yes', value='1'),
+                                 prompt.Choice(title='No', value='0')],
+                        index=0 if is_comp else 1)
+    return sel  # '1' / '0' / None
+
+
+def _prompt_for_rbuf(current_value: Any) -> dict | None:
+    """Numeric editor for the RBUF recommended-buffer-size frame (bytes)."""
+    cur = int(getattr(current_value, 'size', 0) or 0) if current_value is not None else 0
+    n = prompt.number_edit("Recommended buffer size (bytes):", value=cur, minimum=0)
+    if not isinstance(n, int):
+        return None
+    return {'__rbuf__': True, 'size': int(n)}
+
+
 def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: list | None = None,
                      force_plain: bool | None = None, file_path: str | None = None) -> Any | None:
     """Prompt for a new value for tag_id, dispatching to the right editor for its category
@@ -505,6 +623,21 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         return _prompt_for_rating(current_value)
     if base_id == 'PCNT':
         return _prompt_for_playcount(current_value)
+    if base_id == 'RBUF':
+        return _prompt_for_rbuf(current_value)
+    if base_id == 'RVRB':
+        ui_utils.show_status("Reverb (RVRB) isn't editable in Backtrack.")
+        return None
+
+    # Enum / bool text frames get a dedicated picker instead of a free-text field.
+    if base_id == 'TKEY':
+        return _prompt_for_musical_key(current_value)
+    if base_id == 'TMED':
+        return _prompt_for_media_type(current_value)
+    if base_id == 'TSRC':
+        return _prompt_for_isrc(current_value)
+    if base_id == 'TCMP':
+        return _prompt_for_compilation(current_value)
 
     # Extract editor-ready defaults from whatever current_value is.
     # It may be a raw mutagen frame (single-file edit), a summary string
@@ -718,6 +851,16 @@ def summarize_tag_value(tag_id: str, raw_frame) -> str:
     # PLAY COUNTER (PCNT)
     if info.tag_id == 'PCNT':
         return f"{int(getattr(raw_frame, 'count', 0) or 0)} plays"
+
+    # RECOMMENDED BUFFER SIZE (RBUF)
+    if info.tag_id == 'RBUF':
+        return f"{int(getattr(raw_frame, 'size', 0) or 0)} bytes"
+
+    # COMPILATION FLAG (TCMP)
+    if info.tag_id == 'TCMP':
+        txt = getattr(raw_frame, 'text', None)
+        val = str(txt[0]).strip() if txt else ''
+        return 'Yes' if val not in ('', '0') else 'No'
 
     # AUDIO ADJUSTMENT (EQU2 / RVA2)
     if info.official_category == 'AUDIO_ADJUSTMENT' or hasattr(raw_frame, 'adjustments') or (hasattr(raw_frame, 'gain') and hasattr(raw_frame, 'channel')):

@@ -38,9 +38,9 @@ from src.id3.id3_tag_handler import (
 # Structured columns for the tag list. Column 1 holds the tag id AND the friendly
 # name as two styled segments (TAG bright + friendly dim) in a single column.
 _TAG_COLUMNS = [
-    prompt.Column(style='primary'),                  # TAG (friendly)
-    prompt.Column(style='dynamic-dim'),              # type / category
-    prompt.Column(style='normal', flex=True),        # value (takes the rest)
+    prompt.Column(style='primary'),                       # TAG (friendly)
+    prompt.Column(style='dynamic-dim', priority=1),       # type / category — drops first when narrow
+    prompt.Column(style='normal', flex=True),             # value (takes the rest, kept)
 ]
 
 

@@ -1,199 +1,205 @@
 # Backtrack
 
-Backtrack is a terminal music player for macOS/Linux that plays audio with VLC, shows embedded lyrics, and lets you browse your music library in the terminal. [IN DEVELOPMENT, NOT FULLY USABLE YET]
+A terminal music player and tag editor for macOS and Linux. Backtrack plays your library with
+VLC, renders album art as Unicode half-blocks right in the terminal, shows synced and unsynced
+lyrics, and includes a full ID3/MP4 tag editor with a suite of bulk-automation tools.
 
-## Quick Start
+> **Status:** in active development. Core playback, browsing, search, lyrics, and the tag editor
+> (including bulk operations) are working; expect rough edges and changing internals.
 
-### Supported platforms
+---
 
-Backtrack is designed for macOS and Linux terminals. Windows can also work with the Python package and colorama-based ANSI support, but VLC/libvlc installation and terminal art rendering may need extra setup.
+## Features
 
-### First run example
+**Library & browsing**
+- Browse by **artist**, **album**, or **genre**, with an A–Z letter index for large collections.
+- Rich track rows (featured-artist marker, cached durations) and clean disc/work separators.
+- A background cache keeps the library fresh — it re-scans on an interval and reconciles against the
+  filesystem, picking up external adds, deletes, renames, and moves.
 
-On first run, Backtrack asks for your music directory and builds a cached library for faster startup.
+**Search**
+- **Fuzzy live search** that re-ranks on every keystroke, with the matched characters highlighted in
+  each field. Cycle the scope (all / title / artist / album / genre / people) with `Tab`.
 
-```bash
-python3 main.py
-```
+**Playback**
+- VLC/libvlc-backed audio with full transport controls and a live progress bar.
+- **In-terminal album art** rendered as Unicode half-blocks (no external viewer).
+- A full-height **volume bar** beside the art, and toggleable panes for **lyrics**, an up-next
+  **queue**, and cast/crew **credits**.
+- **Equaliser** — 24 presets applied during playback via libvlc; stored per file as an `EQU2` tag.
 
-Then follow the prompt to select your music folder and return to the main menu.
+**Lyrics**
+- Display **synced (`SYLT`)** and **unsynced (`USLT`)** lyrics; interactive sync tool to time
+  un-timed lyrics; import from `.lrc`; append writing credits.
 
-## What Backtrack Does
+**Tag editing (MP3)**
+- Edit every ID3 frame through a widget suited to its type: date/time with a **world-map timezone
+  picker**, track/disc **fractions**, **people/credit lists**, a **star-rating** editor (`POPM`),
+  a **graphic equaliser** (`EQU2`) and **dB gain** meter (`RVA2`), **numeric spinners**, and
+  enum/bool pickers (musical key, media type, a validated ISRC field, a compilation toggle).
+- **Multi-value** frames (artists, composers, genres…), automatic **sort-order** generation, and a
+  power-user **plain-text** mode.
 
-- Browse music by artist, album, or genre
-- Search your library by title, artist, album, genre, or file path
-- Play audio using VLC with playback controls
-- View synced lyrics from `SYLT`/`USLT` tags
-- Sync un-timed lyrics interactively
-- View and edit track metadata, including bulk edits and deriving tags from file names & folders (see [Library layout & naming](docs/library-layout.md))
-- Render album art in the terminal via `viu`
-- Track listening history
+**Bulk automation** (MP3 **and** MP4, with a preview before anything is written)
+- **Derive from filename** — fill tags from file/folder names.
+- **Rename files from tags** — the inverse, collision-safe.
+- **Set album art from files** — embed per-track or per-disc/series covers found beside the tracks.
+- **Apply sort orders**, **Renumber tracks** (disc ↔ continuous), **Assign by range/schedule**,
+  **Copy from first track**, plus set/rename/delete tags across a selection.
+
+**History & settings**
+- Listening history with relative timestamps, and a sectioned settings screen.
+
+---
+
+## Requirements
+
+- **Python 3.8+** (developed against 3.13/3.14).
+- **VLC / libvlc** installed on your system (provides audio playback).
+- Python packages from `requirements.txt`: `mutagen`, `python-vlc`, `opencv-python`, `numpy`,
+  `pyperclip`, `colorama`. Album art is rendered **in-project** (OpenCV + NumPy) — no external image
+  viewer is needed.
 
 ## Installation
 
-### Requirements
+**1. Install VLC / libvlc**
 
-- Python 3.8 or newer
-- VLC / libvlc installed on your system
-- `viu` CLI installed for album art rendering
-
-### Install VLC / libvlc and viu
-
-macOS with Homebrew:
-
+macOS (Homebrew):
 ```bash
-brew install vlc viu
+brew install vlc
 ```
 
 Ubuntu / Debian:
-
 ```bash
-sudo apt update
-sudo apt install vlc
-sudo snap install viu
+sudo apt update && sudo apt install vlc
 ```
 
-If `viu` is not available via package manager, install it from its repository or release assets.
-
-### Install Python dependencies
-
+**2. Install Python dependencies**
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-### Install as a package
-
+**3. (Optional) install as a package**
 ```bash
-python3 -m pip install .
+python3 -m pip install .        # or: pip install -e .  for an editable dev install
 ```
 
-For editable installs during development:
-
-```bash
-python3 -m pip install -e .
-```
-
-### Launch Backtrack
+## Running
 
 ```bash
 python3 main.py
 ```
-
-Or, if installed as a package:
-
+or, if installed as a package:
 ```bash
 backtrack
 ```
 
+On first run, Backtrack asks for your music directory and builds a cached library for faster
+subsequent startups.
+
+---
+
 ## Usage
 
-### Main Menu
+### Main menu
 
-After startup, the main menu lets you:
-- Browse Library
-- Search
-- Listening History
-- Settings
-- Exit
+Browse Library · Search · Listening History · Settings · Exit.
 
-### Browse Library
+Navigation is consistent everywhere: `↑↓`/`jk` move, `→`/`l`/`Enter` confirm, `←`/`b`/`h`/`Esc` go
+back, `q` quits to the terminal (saving any in-progress edit first). Lists never wrap, restore the
+cursor when you back out, and support mouse clicks and `Tab`-based select-all where relevant.
 
-Use Browse Library to explore your collection by:
-- Artist
-- Album
-- Genre
+### Browse
+
+Explore by **Artist**, **Album**, or **Genre**. Drilling into a letter in the A–Z index and backing
+out returns you to the index. Selecting a track offers Play / Edit tags (or plays immediately if
+*Auto-play on select* is enabled).
 
 ### Search
 
-Search your library across:
-- Title
-- Artist
-- Album
-- Genre
-- File path
+Fuzzy search across title, artist, album, genre, people, and file path. Type to filter; results
+re-rank live with the matched characters highlighted. `Tab` cycles the search scope; `Enter` opens
+a result; `Esc` backs out.
 
-Pick a result to play the track, sync lyrics, or edit metadata.
-
-### Playback Controls
+### Playback controls
 
 | Key | Action |
 |-----|--------|
-| `SPACE` / `P` | Pause / resume |
-| `N` | Stop playback and return to menu |
-| `Q` | Quit the application |
-| `→` | Seek forward 5 seconds |
-| `←` | Seek backward 5 seconds |
-| `.` | Seek forward 30 seconds |
-| `,` | Seek backward 30 seconds |
-| `L` | Seek forward 1 second |
-| `J` | Seek backward 1 second |
-| `+` / `=` | Increase volume |
-| `-` / `_` | Decrease volume |
-| `↑` / `↓` | Move lyric selection when viewing unsynced lyrics |
+| `space` | Play / pause |
+| `←` / `→` | Seek ∓5 s |
+| `j` / `l` | Seek ∓1 s |
+| `,` / `.` | Seek ∓30 s |
+| `+` / `-` | Volume up / down |
+| `m` | Toggle extended metadata (year · genre · work/movement …) |
+| `w` | Cycle the side panel (lyrics → queue → lyrics+credits) |
+| `↑` / `↓` | Scroll the active pane / lyric selection |
+| `i` | Toggle the full help/hint line |
+| `n` | Next track |
+| `b` | Back (stop and return to where you came from) |
+| `q` | Quit the application |
 
-### Listening History
+### Listening history
 
-The Listening History menu shows recent tracks you played and lets you replay them.
+Recent tracks in aligned columns (title · artist · album · when · listened), with relative times
+(`just now`, `40m ago`, `2w ago`). Replay any entry.
 
-### Sync Lyrics
+### Lyrics
 
-If a track contains unsynchronized lyrics (`USLT`), use Sync Lyrics to mark each line while the track plays. The recorded timestamps are saved back to the track.
+Tracks with `SYLT`/`USLT` show lyrics during playback. Use the interactive **Sync Lyrics** tool to
+time un-timed lyrics as the track plays, **import** from an `.lrc` file, or **append** Music-by /
+Words-by credits.
 
-### Metadata Editing
+### Metadata editing
 
-Search results may offer metadata editing options for title, artist, album art, lyrics, and other tags.
+From a track, choose **Edit tags** to open the single-track ID3 editor; from **Browse**, choose
+*Edit tags* on an album (or press `e`) for the **bulk** editor. Bulk operations live under a two-level
+menu — **TAGS** (add / set / rename / delete) and **Automation…** (derive, rename files, set album
+art, assign by range/schedule, apply sort orders, renumber tracks, copy from first track). Every
+operation previews its changes and, by default, only fills blank tags.
 
-- `USLT`/`SYLT` lyrics can now be imported from an `.lrc` file from the metadata editor.
+See the guides below to get the most out of tagging and auto-detection.
 
-#### Bulk editing & deriving from filenames
+---
 
-From **Browse**, choose *Edit tags* on an album (or press `e`) to edit many tracks at once — set, copy, delete, or rename tags. The **Derive from filename** operation fills in title, track/disc numbers (and totals), disc subtitle, album, album artist, year, the compilation flag, and sort-order tags from your file and folder names, for both MP3 and MP4 files. It previews every change before writing and, by default, only fills blank tags.
+## Documentation
 
-To get the most out of it, structure your library so the parser can recognise it — see **[Library layout & naming](docs/library-layout.md)** for the conventions (folder layout, disc/series folders, compilations, track-number formats, and the template override for irregular names).
+- **[Tag etiquette](docs/tag-etiquette.md)** — good ID3 practice, and how Backtrack reads each tag.
+- **[Filesystem etiquette](docs/filesystem-etiquette.md)** — how to organise a library on disk.
+- **[Library layout & naming](docs/library-layout.md)** — the exact folder/name patterns the
+  *Derive from filename* parser recognises, including template and regex overrides.
+- **[Developer notes](docs/DEVELOPER.md)** — internals and architecture.
+
+---
 
 ## Configuration
 
-Backtrack stores settings in `config/config.json`.
+Settings are managed in-app under **Settings** (playback, library, editors, history) and stored in a
+JSON config created on first run. Notable keys include `music_directory`, `history_enabled`,
+`search_weights`, `lyric_lead_in`, and the editor options (sort-list delimiter, plain-text editing,
+auto-play on select, tag-name preferences). Prefer the Settings screen over hand-editing the file.
 
-Common keys:
-- `music_directory` — path to your music folder
-- `history_enabled` — track listening history
-- `search_weights` — search relevance weights
-- `lyric_lead_in` — lyric sync timing offset
-- `art_width` — album art width
-- `show_metadata_editor` — toggle metadata editor availability
+## Supported formats
 
-## Supported Formats
-
-- Audio: `MP3`, `M4A`, `MP4`, `M4P`, `AAC`
-- Lyrics: `USLT`, `SYLT`
-- Metadata: ID3 tags and MP4 tags
-- Album art: embedded MP3 APIC frames, rendered in-terminal as Unicode half-blocks
+- **Audio:** MP3, M4A, MP4, M4P, AAC.
+- **Tags:** ID3v2 (MP3) and MP4 atoms. Single-track tag *editing* is MP3-only; the bulk operations
+  write both MP3 and MP4.
+- **Lyrics:** `USLT` (unsynced) and `SYLT` (synced).
+- **Album art:** embedded MP3 `APIC` and MP4 `covr` (JPEG/PNG), rendered in-terminal as half-blocks.
 
 ## Troubleshooting
 
-### Playback fails
+**Playback fails** — ensure VLC / libvlc is installed and the file is a supported format, and that
+the terminal can read your music directory.
 
-- Ensure VLC / libvlc is installed
-- Verify the file is a supported audio format
-- Confirm the terminal can access the music directory
+**Album art doesn't render** — confirm the file actually has embedded art; very narrow terminals
+shrink or omit the art. (No external viewer is required — art is rendered in-project.)
 
-### Album art does not render
+**Lyrics don't appear** — not all files have embedded lyrics; use **Sync Lyrics** to add timings, or
+import an `.lrc`.
 
-- Install the `viu` CLI
-- Try using a different file with embedded art
-
-### Lyrics do not appear
-
-- Not all files have embedded lyrics
-- Use Sync Lyrics to generate timestamps manually
-
-## Notes
-
-- `data/library_cache.json` is generated automatically
-- Listening history is logged to `data/history.log`
-- `config/config.json` is created on first run
+**Tag editing says "MP3 only"** — the single-track editor edits ID3/MP3; use the bulk Automation
+tools for MP4 tag changes.
 
 ## License
 
-Backtrack is provided under the MIT License.
+MIT.

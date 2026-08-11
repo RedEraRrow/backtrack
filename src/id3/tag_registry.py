@@ -82,7 +82,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', False, TOLY),
 
     'TCMP': TagInfo('TCMP', ['Compilation'],
-                    'TEXT', 'TEXT_UTF8', 'IDENTIFICATION', 'text', False, TCMP),
+                    'TEXT', 'TEXT_UTF8', 'IDENTIFICATION', 'text', True, TCMP),
     
     'TCOM': TagInfo('TCOM', ['Composer'],
                     'TEXT', 'TEXT_UTF8', 'INVOLVED_PERSONS', 'text', False, TCOM),
@@ -97,7 +97,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
                     'NUMERIC', 'INT_BIG', 'DERIVED_SUBJECTIVE', 'duration', True, TLEN),
     
     'TKEY': TagInfo('TKEY', ['Key', 'Initial key'],
-                    'TEXT', 'TEXT_UTF8', 'DERIVED_SUBJECTIVE', 'text', False, TKEY),
+                    'TEXT', 'TEXT_UTF8', 'DERIVED_SUBJECTIVE', 'text', True, TKEY),
     
     'TLAN': TagInfo('TLAN', ['Language', 'Language(s)'],
                     'LIST', 'LIST_STRING', 'DERIVED_SUBJECTIVE', 'text', False, TLAN),
@@ -109,7 +109,7 @@ TAG_REGISTRY: Dict[str, TagInfo] = {
                     'TEXT', 'TEXT_UTF8', 'DERIVED_SUBJECTIVE', 'text', False, TFLT),
     
     'TMED': TagInfo('TMED', ['Media type'],
-                    'TEXT', 'TEXT_UTF8', 'DERIVED_SUBJECTIVE', 'text', False, TMED),
+                    'TEXT', 'TEXT_UTF8', 'DERIVED_SUBJECTIVE', 'text', True, TMED),
     
     'TMOO': TagInfo('TMOO', ['Mood'],
                     'TEXT', 'TEXT_UTF8', 'DERIVED_SUBJECTIVE', 'text', False, TMOO),

@@ -41,6 +41,17 @@ _EXT_TO_MIME = {
 # Sibling folders that conventionally hold artwork (matched case-insensitively).
 SUBFOLDER_NAMES = ('artwork', 'covers', 'cover', 'scans', 'scan', 'art', 'images')
 
+# A per-disc subfolder of a multi-disc release (CD1 / Disc 2 / DVD1 / Vol. 3 …).
+# Tracks live in these, but the shared cover usually sits in the album folder one
+# level up, so cover discovery looks there too.
+_DISC_DIR_RE = re.compile(r'^(cd|dis[ck]|dvd|vol(?:ume)?|part|side)\s*[._-]?\s*\d+[a-z]?$',
+                          re.IGNORECASE)
+
+
+def _is_disc_dir(name: str) -> bool:
+    """Whether ``name`` looks like a per-disc subfolder (CD1, Disc 2, DVD1, …)."""
+    return bool(_DISC_DIR_RE.match(name.strip()))
+
 # Whole-album / non-track-specific image names — kept as candidates but scored
 # low so they never out-rank a real per-track match.
 _GENERIC_NAMES = ('cover', 'folder', 'front', 'albumart', 'albumartsmall',
@@ -69,7 +80,10 @@ def _is_image(name: str) -> bool:
 
 def find_images(directory: str) -> list[str]:
     """Image files directly in ``directory`` plus its conventional artwork
-    subfolders (one level deep). Absolute, de-duplicated, name-sorted."""
+    subfolders (one level deep). For a per-disc subfolder (``CD1``/``Disc 2``/…)
+    the album folder one level up is scanned too, so a cover shared across discs
+    (``The Wall/Cover.jpg`` while tracks sit in ``The Wall/CD1``) is found.
+    Absolute, de-duplicated, name-sorted."""
     found: list[str] = []
     seen: set[str] = set()
 
@@ -85,16 +99,22 @@ def find_images(directory: str) -> list[str]:
                 seen.add(full)
                 found.append(full)
 
+    def _scan(base: str) -> None:
+        """Scan ``base`` and any conventional artwork subfolder one level in."""
+        _add_dir(base)
+        try:
+            subs = sorted(os.listdir(base))
+        except OSError:
+            subs = []
+        for sub in subs:
+            subpath = os.path.join(base, sub)
+            if os.path.isdir(subpath) and sub.lower() in SUBFOLDER_NAMES:
+                _add_dir(subpath)
+
     directory = os.path.abspath(directory)
-    _add_dir(directory)
-    try:
-        subs = sorted(os.listdir(directory))
-    except OSError:
-        subs = []
-    for sub in subs:
-        subpath = os.path.join(directory, sub)
-        if os.path.isdir(subpath) and sub.lower() in SUBFOLDER_NAMES:
-            _add_dir(subpath)
+    _scan(directory)
+    if _is_disc_dir(os.path.basename(directory)):
+        _scan(os.path.dirname(directory))          # album folder above CD1/CD2/…
     return found
 
 
@@ -226,6 +246,25 @@ def best_match(track_path: str, tokens: dict[str, str] | None,
     if ranked and ranked[0][0] >= MATCH_FLOOR:
         return ranked[0][1]
     return None
+
+
+# Front-cover-ish / non-front name hints, used to pick the album cover when
+# nothing pairs per-track (a lone shared cover to embed on every track).
+_FRONT_COVER_NAMES = ('cover', 'front', 'folder', 'albumart', 'album')
+_NON_FRONT_NAMES = ('back', 'inlay', 'inside', 'obi', 'tray', 'disc', 'cd')
+
+
+def _sole_album_cover(images: list[str]) -> str | None:
+    """The single obvious album-wide cover to fall back on when nothing pairs
+    per-track: the lone image present, else the one clearly front-cover-named
+    image. None when it's ambiguous (leave the choice to the user)."""
+    imgs = [im for im in images if im]
+    if len(imgs) == 1:
+        return imgs[0]
+    fronts = [im for im in imgs
+              if any(g in _stem(im).lower() for g in _FRONT_COVER_NAMES)
+              and not any(b in _stem(im).lower() for b in _NON_FRONT_NAMES)]
+    return fronts[0] if len(fronts) == 1 else None
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +476,14 @@ def plan_best(tracks: list[str], images: list[str],
 
     if len(groups) >= 2 and len(grp_imgs) >= 2 and grp_n > per_n:
         return grp
+    # Nothing paired per-track (e.g. a single shared album cover — common on a
+    # multi-disc release, `The Wall/Cover.jpg` above `CD1`/`CD2`). Put that one
+    # cover on every track so it's ready to apply in one go rather than a manual
+    # pick per row.
+    if per_n == 0:
+        sole = _sole_album_cover(images)
+        if sole:
+            return {t: sole for t in tracks}
     return per
 
 

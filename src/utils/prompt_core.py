@@ -30,6 +30,8 @@ _IS_WINDOWS = os.name == "nt"
 
 _COLUMNS_MAX_WIDTH = 160   # cap effective width for table layout even on ultra-wide terminals
 _EDGE_MARGIN       = 2     # right-side padding for pinned columns
+_MIN_COL_FLOOR     = 6     # a squeezed column shrinks to at most this before it stops giving up space
+_MIN_PIN_GAP       = 2     # reserved breathing space between the left block and right-pinned columns
 
 tty: Any
 termios: Any
@@ -59,8 +61,111 @@ def _restore_term_attrs(fd: int, old):
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+_np_prev_h = [0]
+_np_prev_lines: list = [None]
+_np_prev_sig: list = [object()]          # last-drawn track identity (never == a real sig)
+_np_last_draw = [0.0]
+_status_prev_active = [False]            # was a background task shown last idle tick?
+
+# Self-pipe so background threads can wake the menu poll to repaint the box the
+# instant playback state changes (#14) — see ui_utils.pulse_now_playing(). The
+# poll's select() watches the read end alongside stdin; a pulse makes it return
+# immediately and repaint, rather than waiting on the next keystroke or timeout.
+try:
+    _wake_r, _wake_w = os.pipe()
+    os.set_blocking(_wake_r, False)
+    os.set_blocking(_wake_w, False)
+except OSError:                          # no pipes (e.g. odd sandbox) — degrade gracefully
+    _wake_r = _wake_w = -1
+
+
+def _poke_now_playing_wake() -> None:
+    """Write one byte to the wake pipe (coalesced by the reader; never blocks)."""
+    if _wake_w >= 0:
+        try:
+            os.write(_wake_w, b'.')
+        except (BlockingIOError, OSError):
+            pass                          # pipe full already → a wake is pending anyway
+
+
+if _wake_r >= 0:
+    ui_utils.set_now_playing_waker(_poke_now_playing_wake)
+
+
+def _np_box_str(rows: int, lines: list) -> str:
+    """Escape string that draws the now-playing box in the rows just above the
+    breadcrumb, clearing any band a taller previous box left behind. Updates the
+    shared cache so the widget render and the idle tick agree on what's shown."""
+    h = len(lines)
+    band = max(_np_prev_h[0], h)
+    parts: list[str] = []
+    for k in range(band):                    # clear the (possibly taller) old band
+        parts.append(f"\033[{rows - band + k};1H\033[2K")
+    for k in range(h):                       # draw current box against the bottom
+        parts.append(f"\033[{rows - h + k};1H\033[2K{lines[k]}")
+    _np_prev_h[0] = h
+    _np_prev_lines[0] = lines
+    _np_prev_sig[0] = ui_utils.now_playing_signature()
+    return "".join(parts)
+
+
+def now_playing_box_segment() -> str:
+    """The box draw-string for embedding in a widget's own atomic flush (so
+    navigation redraws it alongside the list instead of leaving it flashed out)."""
+    rows = ui_utils.get_terminal_height()
+    cols = ui_utils.get_terminal_width()
+    return _np_box_str(rows, ui_utils.now_playing_lines(cols))
+
+
+def invalidate_now_playing_box() -> None:
+    """Drop the last-drawn box cache so the next idle tick repaints unconditionally.
+    Used on focus-in (#14): while a window is unfocused the terminal may not paint
+    our box writes, yet the cache advances as if it had — leaving the box stale
+    after refocus until an interaction. Forcing a repaint fixes it without a click."""
+    _np_prev_lines[0] = None
+    _np_prev_sig[0] = object()          # sentinel: never equal to a real signature
+    _np_last_draw[0] = 0.0              # let the next poll repaint immediately
+
+
+def _render_now_playing_bar() -> None:
+    """Idle-tick refresh so the clock/progress advance (and a background track
+    change lands) when nothing else redraws. Repaints when either the track
+    identity or the styled rows changed, so an idle screen never flickers yet a
+    new song is never missed (#14)."""
+    rows = ui_utils.get_terminal_height()
+    cols = ui_utils.get_terminal_width()
+    lines = ui_utils.now_playing_lines(cols)
+    if len(lines) != _np_prev_h[0]:
+        # The box appeared or vanished — the menu must re-reserve rows for it.
+        ui_utils.mark_now_playing_layout_dirty()
+    if ui_utils.now_playing_signature() == _np_prev_sig[0] and lines == _np_prev_lines[0]:
+        return
+    sys.stdout.write("\0337" + _np_box_str(rows, lines) + "\0338")
+    sys.stdout.flush()
+
+
 def _wait_for_keypress(timeout: float = 0.05) -> bool:
-    """Block up to `timeout` seconds for a keypress; return whether one arrived."""
+    """Block up to `timeout` seconds for a keypress; return whether one arrived.
+
+    Also refreshes the now-playing box (#14) at ~4 Hz so background-audio status
+    stays live on every widget/menu without each one needing its own tick."""
+    now = time.time()
+    if now - _np_last_draw[0] >= 0.12:
+        _np_last_draw[0] = now
+        try:
+            _render_now_playing_bar()
+        except Exception:
+            pass
+        # Keep the background-activity notice live: while a task is running the
+        # status bar is re-stamped each tick so it stays up for the whole job and
+        # its cyan ● pulses; one extra redraw after the last task clears the bar.
+        active = ui_utils.has_background_tasks()
+        if active or _status_prev_active[0]:
+            try:
+                _render_status_bar()
+            except Exception:
+                pass
+        _status_prev_active[0] = active
     if _IS_WINDOWS:
         end = time.time() + timeout
         while time.time() < end:
@@ -68,7 +173,19 @@ def _wait_for_keypress(timeout: float = 0.05) -> bool:
                 return True
             time.sleep(0.01)
         return False
-    return bool(_sel.select([sys.stdin], [], [], timeout)[0])
+    watch = [sys.stdin, _wake_r] if _wake_r >= 0 else [sys.stdin]
+    ready = _sel.select(watch, [], [], timeout)[0]
+    if _wake_r >= 0 and _wake_r in ready:
+        try:
+            os.read(_wake_r, 4096)        # drain all coalesced pulses
+        except OSError:
+            pass
+        _np_last_draw[0] = time.time()    # this pulse counts as the tick
+        try:
+            _render_now_playing_bar()     # repaint immediately on a state change
+        except Exception:
+            pass
+    return sys.stdin in ready             # a wake alone is not a keypress
 
 
 def _clrline():
@@ -260,12 +377,19 @@ class Column:
     pin      : laid against the right edge (e.g. duration)
     max_frac : clamp column to this fraction of total width (0.0–1.0)
     gap      : leading gap before this column
+    priority : drop-order when the row is too narrow to show every column
+               readably. None (default) = essential, never dropped. A number
+               marks the column droppable; the lowest-priority droppable column
+               is dropped first, so give the least important columns the lowest
+               numbers (e.g. 1 = first to go).
     """
-    __slots__ = ('style', 'align', 'flex', 'pin', 'min_width', 'max_width', 'max_frac', 'gap')
+    __slots__ = ('style', 'align', 'flex', 'pin', 'min_width', 'max_width', 'max_frac',
+                 'gap', 'priority')
 
     def __init__(self, style: str = 'normal', align: str = 'left', flex: bool = False,
                  pin: bool = False, min_width: int = 0, max_width: int | None = None,
-                 max_frac: float | None = None, gap: int = 2) -> None:
+                 max_frac: float | None = None, gap: int = 2,
+                 priority: float | None = None) -> None:
         """Build a column spec for a structured select() table."""
         self.style     = style
         self.align     = align
@@ -275,6 +399,7 @@ class Column:
         self.max_width = max_width
         self.max_frac  = max_frac
         self.gap       = gap
+        self.priority  = priority
 
 
 def _cell_text(cell) -> tuple[str, str | None]:
@@ -334,31 +459,114 @@ def _render_cell_segments(cell, style: str, is_current: bool, width: int, align:
 
 def _table_widths(rows_cells: list, columns: list, eff: int,
                   pointer_w: int, right_margin: int) -> list[int]:
-    """Compute per-column widths from content, honoring min/max/frac
-    constraints and letting the flex column absorb remaining space."""
+    """Compute per-column widths that fit the effective width `eff`.
+
+    Content sets each column's natural width — scanned across *all* rows, so a
+    wide entry far down the list is accounted for and the layout stays stable
+    while scrolling. Natural widths are clamped by max_frac / max_width and
+    floored by min_width. Then space is reconciled with the terminal:
+
+      * drop  → if not every column can fit even at its comfortable minimum,
+                drop the lowest-priority droppable column (Column.priority) and
+                retry; essential columns (priority=None) are never dropped;
+      * fits  → flex column(s) share the leftover evenly (each respecting its
+                own max_frac / max_width cap) so the row fills the width and
+                pinned columns sit flush right;
+      * tight → the widest kept column gives up space first, one unit at a time,
+                never below a readable floor, so narrow columns (durations,
+                counts) stay intact and only the widest columns truncate.
+
+    Returns a width per column; a dropped column's width is -1 (skipped by the
+    renderer, which also drops its gap).
+    """
     ncol = len(columns)
     content = [0] * ncol
     for cells in rows_cells:
         for i in range(min(ncol, len(cells))):
             content[i] = max(content[i], len(_cell_text(cells[i])[0]))
 
-    widths = [0] * ncol
-    flex_idx = None
+    def _cap(col) -> int | None:
+        """The hard upper bound a column may reach (max_frac / max_width), or None."""
+        cap = int(eff * col.max_frac) if col.max_frac is not None else None
+        if col.max_width is not None:
+            cap = col.max_width if cap is None else min(cap, col.max_width)
+        return cap
+
+    # Natural (capped, min-floored) width each column would like.
+    natural = [0] * ncol
     for i, col in enumerate(columns):
         w = content[i]
-        if col.max_frac is not None:
-            w = min(w, int(eff * col.max_frac))
-        if col.max_width is not None:
-            w = min(w, col.max_width)
-        w = max(w, col.min_width)
-        widths[i] = w
-        if col.flex:
-            flex_idx = i
+        cap = _cap(col)
+        if cap is not None:
+            w = min(w, cap)
+        natural[i] = max(w, col.min_width)
 
-    gaps = sum(col.gap for col in columns)
-    if flex_idx is not None:
-        fixed = sum(widths[i] for i in range(ncol) if i != flex_idx)
-        widths[flex_idx] = max(8, eff - pointer_w - fixed - gaps - right_margin)
+    def _comfort(i: int) -> int:
+        """Smallest width column i still reads at (its content, if that's smaller)."""
+        return max(columns[i].min_width, min(natural[i], _MIN_COL_FLOOR))
+
+    def _overhead(ks: list) -> int:
+        """Fixed, non-content width for a kept set: pointer, gaps, margin, pin gap."""
+        pin = any(columns[i].pin for i in ks)
+        return (pointer_w + right_margin + sum(columns[i].gap for i in ks)
+                + (_MIN_PIN_GAP if pin else 0))
+
+    # Drop pass: while even everyone's comfortable minimum can't fit, shed the
+    # lowest-priority droppable column (ties: the rightmost goes first).
+    kept = list(range(ncol))
+    while len(kept) > 1 and _overhead(kept) + sum(_comfort(i) for i in kept) > eff:
+        droppable = [i for i in kept if columns[i].priority is not None]
+        if not droppable:
+            break
+        victim = min(droppable, key=lambda i: (columns[i].priority, -i))
+        kept.remove(victim)
+
+    widths = [-1] * ncol                 # -1 = dropped (renderer skips it and its gap)
+    for i in kept:
+        widths[i] = natural[i]
+
+    flex_idxs = [i for i in kept if columns[i].flex]
+    has_pin = any(columns[i].pin for i in kept)
+    gaps = sum(columns[i].gap for i in kept)
+    budget = eff - pointer_w - gaps - right_margin
+    if has_pin:
+        budget -= _MIN_PIN_GAP           # reserve the left/right inter-block gap
+    budget = max(0, budget)
+
+    total = sum(widths[i] for i in kept)
+    if total < budget and flex_idxs:
+        # Surplus: round-robin one unit at a time into the flex columns, each
+        # stopping at its own cap. Even fill; leftover past all caps goes unused.
+        surplus = budget - total
+        caps = {i: _cap(columns[i]) for i in flex_idxs}
+        progressed = True
+        while surplus > 0 and progressed:
+            progressed = False
+            for i in flex_idxs:
+                if surplus == 0:
+                    break
+                if caps[i] is None or widths[i] < caps[i]:
+                    widths[i] += 1
+                    surplus -= 1
+                    progressed = True
+    elif total > budget:
+        # Over budget: shave the widest kept column repeatedly until it fits,
+        # never below its floor (min_width, a readable minimum, or its own
+        # content if that is already smaller). The readable minimum eases toward
+        # the fair per-column share when a many-column row is genuinely cramped,
+        # so the layout still fits. n and the deficit are both small.
+        floor_cap = min(_MIN_COL_FLOOR, max(1, budget // len(kept)))
+        floors = {i: min(widths[i], max(columns[i].min_width, floor_cap)) for i in kept}
+        deficit = total - budget
+        while deficit > 0:
+            widest = -1
+            for i in kept:
+                if widths[i] > floors[i] and (widest < 0 or widths[i] > widths[widest]):
+                    widest = i
+            if widest < 0:
+                break                    # everything at its floor — clip guard handles the rest
+            widths[widest] -= 1
+            deficit -= 1
     return widths
 
 
@@ -375,13 +583,13 @@ def _render_table_row(cells: list, columns: list, is_current: bool,
         else:
             left = "   "                        # 3 spaces, same as single-select non-current
         for i, col in enumerate(columns):
-            if not col.pin:
+            if not col.pin and widths[i] >= 0:
                 left += " " * col.gap + _render_cell_segments(
                     cells[i] if i < len(cells) else "", 'dynamic-dim', False, widths[i], col.align,
                     force_dim=True)
         right = ""
         for i, col in enumerate(columns):
-            if col.pin:
+            if col.pin and widths[i] >= 0:
                 right += " " * col.gap + _render_cell_segments(
                     cells[i] if i < len(cells) else "", 'dynamic-dim', False, widths[i], col.align,
                     force_dim=True)
@@ -397,13 +605,13 @@ def _render_table_row(cells: list, columns: list, is_current: bool,
         glyph = f"{C.GREEN}✔{C.RESET}" if is_checked else f"{C.DIM}•{C.RESET}"
         left = f"  {pointer} {glyph}"
     for i, col in enumerate(columns):
-        if not col.pin:
+        if not col.pin and widths[i] >= 0:
             left += " " * col.gap + _render_cell_segments(
                 cells[i] if i < len(cells) else "", col.style, is_current, widths[i], col.align)
 
     right = ""
     for i, col in enumerate(columns):
-        if col.pin:
+        if col.pin and widths[i] >= 0:
             right += " " * col.gap + _render_cell_segments(
                 cells[i] if i < len(cells) else "", col.style, is_current, widths[i], col.align)
 
@@ -628,13 +836,18 @@ def _read_key_raw(fd: int) -> str:
                 if seq.isdigit():
                     os.read(fd, 4)
                     return 'ESC'
-                return {
+                mapped = {
                     'A': 'UP', 'B': 'DOWN', 'C': 'RIGHT', 'D': 'LEFT',
                     'H': 'HOME', 'F': 'END',
                     '5': 'PGUP', '6': 'PGDN',
                     'Z': 'BACKTAB',                       # Shift+Tab
                     'I': 'FOCUS_IN', 'O': 'FOCUS_OUT',
                 }.get(seq, 'ESC')
+                if mapped == 'FOCUS_IN':
+                    # Regained focus — force the now-playing box to repaint (it may
+                    # be stale from a background change while we were unfocused).
+                    invalidate_now_playing_box()
+                return mapped
             return 'ESC'
         except (OSError, EOFError):
             return 'ESC'
@@ -663,7 +876,10 @@ def _visible_rows() -> int:
     OWN chrome (header, message, indicators, hints) — do not double-count it
     here, or lists show a premature "N more" (they did, by ~5–7 rows)."""
     _, rows = ui_utils.get_terminal_size()
-    return max(4, rows - 1 - 2 * ui_utils.MARGIN_V)
+    # Reserve the status-bar row, plus the now-playing box's rows (#14) whenever
+    # background audio is active, so lists never collide with it.
+    reserve = 1 + ui_utils.now_playing_height()
+    return max(4, rows - reserve - 2 * ui_utils.MARGIN_V)
 
 
 def _rows() -> int:
@@ -738,9 +954,13 @@ class _Widget:
             out += _clrline() + "\n"
         self.last_h = len(padded)
 
-        # Stamp the status bar atomically in the same flush — no flicker.
+        # Stamp the status bar AND the now-playing box atomically in the same
+        # flush — the \033[J above wiped the bottom rows, so redrawing them here
+        # (rather than waiting for the idle tick) stops navigation from flashing
+        # the box (#14).
         status = ui_utils.get_status_line()
         out += f"\033[{rows};1H\033[2K{status}"
+        out += now_playing_box_segment()
 
         sys.stdout.write(out)
         sys.stdout.flush()
