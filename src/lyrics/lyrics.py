@@ -912,11 +912,17 @@ def _find_enriched_transcript(audio_path: str) -> str | None:
     _, json_path = _find_timing_files_for_audio(audio_path)
     parent = Path(audio_path).parent
     candidates: list[Path] = []
+    # Prefer any enriched transcript files that are NOT the editor's working
+    # sidecar ("*.sync.json") — the sidecar is a WIP save and should not be
+    # treated as the authoritative enriched transcript for playback. Look for
+    # other JSON files that contain editor `kind` beats instead.
     if json_path:
-        candidates.append(Path(json_path[:-5] + '.sync.json'))   # transcript.sync.json
-    candidates += sorted(parent.rglob('*.sync.json'))
-    if json_path:
-        candidates.append(Path(json_path))                       # last resort
+        candidates.append(Path(json_path))                       # transcript.json (preferred)
+    # Search subdirectories for any enriched transcripts, but skip '*.sync.json'
+    for p in sorted(parent.rglob('*.json')):
+        if p == Path(json_path) or p.name.endswith('.sync.json'):
+            continue
+        candidates.append(p)
     seen: set[str] = set()
     for c in candidates:
         cs = str(c)
@@ -948,6 +954,22 @@ def _parse_air_beats(json_path: str) -> list[tuple[float, float]]:
     return beats
 
 
+def _parse_stage_dirs(json_path: str) -> list[tuple[float, float, str]]:
+    """Timed stage-direction windows (start, end, text) from an enriched
+    transcript's `stage_dir` segments — preserves the editor's explicit
+    standalone directions for playback merging."""
+    try:
+        with open(json_path, encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out: list[tuple[float, float, str]] = []
+    for s in data.get('segments', []):
+        if s.get('kind') == 'stage_dir' and s.get('start') is not None and s.get('end') is not None:
+            out.append((float(s['start']), float(s['end']), str(s.get('text', '') or s.get('_md_text', '') or '')))
+    return out
+
+
 def _matchable(word: str) -> str:
     """Reduce a word to bare lowercase letters and digits for fuzzy matching.
 
@@ -961,9 +983,45 @@ def _matchable(word: str) -> str:
     return ''.join(c for c in decomposed if unicodedata.category(c)[0] in ('L', 'N'))
 
 
-def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict]) -> None:
+def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict], json_segments: list[dict] | None = None) -> None:
     """Walk each markdown line's words against the word_timings stream in order,
     stamping line.start/line.end from the first/last matched word."""
+    # If the original transcript.json carries segment boundaries, prefer
+    # assigning an MD line the start/end of the transcript segment that
+    # contains most of its words. This anchors MD→timings to the user's
+    # Whisper segments and reduces mis-association of repeated words.
+    if json_segments:
+        # Precompute normalized word sets for segments
+        seg_word_sets: list[set[str]] = []
+        for seg in json_segments:
+            txt = seg.get('text', '') if isinstance(seg, dict) else ''
+            words = [t for t in re.split(r'[^\\w]+', txt, flags=re.UNICODE) if t]
+            seg_word_sets.append(set(_matchable(w) for w in words if _matchable(w)))
+
+        for line in md_lines:
+            if line.is_empty():
+                continue
+            clean_text = re.sub(r'\*.*?\*|\(.*?\)', '', line.text)
+            words_in_line = [t for t in re.split(r'[^\w]+', clean_text, flags=re.UNICODE) if t]
+            if not words_in_line:
+                continue
+            norm_words = [ _matchable(w) for w in words_in_line if _matchable(w) ]
+            if not norm_words:
+                continue
+            best_i = -1; best_score = 0
+            for i, sset in enumerate(seg_word_sets):
+                score = sum(1 for w in norm_words if w in sset)
+                if score > best_score:
+                    best_score = score; best_i = i
+            # Accept a match only if it covers at least half the words, or at
+            # least one word when the line is very short.
+            if best_i >= 0 and (best_score >= max(1, len(norm_words) // 2)):
+                seg = json_segments[best_i]
+                if seg.get('start') is not None and seg.get('end') is not None:
+                    line.start = float(seg['start']); line.end = float(seg['end'])
+                    continue
+
+    # Fallback: sequential word-timings matching (existing behaviour)
     word_idx = 0
     for line in md_lines:
         if line.is_empty():
@@ -1018,6 +1076,16 @@ class DialoguePlaybackState:
         self.line_times: list[tuple[float, float]] = []
         self.current_idx = 0
         self.load_error = None
+        loaded_from_segments = False  # Track if we already have a full segmentation
+
+        # Diagnostic: report if files aren't found
+        if not md_path:
+            self.load_error = f"No markdown dialogue file found near {audio_path}"
+        if not json_path:
+            if self.load_error:
+                self.load_error += f"; no timing file found"
+            else:
+                self.load_error = f"No timing file found near {audio_path}"
 
         if md_path:
             try:
@@ -1029,13 +1097,48 @@ class DialoguePlaybackState:
                     if json_path:
                         try:
                             word_timings = _parse_word_timings_json(json_path)
-                            _match_md_to_timings(raw_dialogue_lines, word_timings)
+                            # Also load the transcript segments; prefer using them
+                            # verbatim for playback so the player matches the
+                            # editor's segmentation exactly (avoid using *.sync.json).
+                            try:
+                                with open(json_path, encoding='utf-8') as jf:
+                                    jcontainer = json.load(jf)
+                                    json_segments = jcontainer.get('segments', [])
+                            except Exception:
+                                json_segments = None
+                            # If transcript segments exist, build playback chunks
+                            # directly from them so timing/segmentation is exact.
+                            if json_segments:
+                                self.expanded_chunks = []
+                                self.line_times = []
+                                for si, seg in enumerate(json_segments):
+                                    s_kind = seg.get('kind')
+                                    s_start = seg.get('start')
+                                    s_end = seg.get('end')
+                                    if s_kind == 'stage_dir' or (s_kind is None and seg.get('text') and seg.get('text').startswith('(') and seg.get('text').endswith(')')):
+                                        self.expanded_chunks.append({'parent_idx': si, 'speaker': '', 'stage_dir': seg.get('text', '').strip('()'), 'text': '', 'is_stage': True, 'is_air': False})
+                                    elif s_kind == 'dead_air':
+                                        self.expanded_chunks.append({'parent_idx': si, 'speaker': '', 'stage_dir': seg.get('text', ''), 'text': '', 'is_stage': False, 'is_air': True})
+                                    else:
+                                        self.expanded_chunks.append({'parent_idx': si, 'speaker': '', 'stage_dir': '', 'text': seg.get('text', ''), 'is_stage': False, 'is_air': False})
+                                    if s_start is not None and s_end is not None:
+                                        self.line_times.append((float(s_start), float(s_end)))
+                                    else:
+                                        # Fallback zero-length window to keep indexing stable
+                                        self.line_times.append((0.0, 0.0))
+                                # Done — no further expansion or air-merge needed.
+                                self.load_error = None  # Clear error if we succeeded loading segments
+                                loaded_from_segments = True  # Skip MD expansion
+                                json_segments = None
+                                word_timings = None
+                            else:
+                                _match_md_to_timings(raw_dialogue_lines, word_timings, json_segments)
                         except Exception as e:
                             self.load_error = f"Error matching timings: {str(e)}"
             except Exception as e:
                 self.load_error = f"Error reading markdown: {str(e)}"
 
-        if raw_dialogue_lines:
+        if raw_dialogue_lines and not loaded_from_segments:
             total_words = sum(max(1, len(clean_text_for_timing(line.text).split()))
                               for line in raw_dialogue_lines if not line.is_empty())
             dynamic_wps = total_words / track_duration if track_duration > 0 else 2.2
@@ -1064,6 +1167,18 @@ class DialoguePlaybackState:
             self.expanded_chunks.insert(pos, {
                 'parent_idx': -1, 'speaker': '', 'stage_dir': '',
                 'text': '', 'is_stage': False, 'is_air': True,
+            })
+        # Also merge any explicit stage-direction beats so playback matches the
+        # editor's standalone directions. Insert them as `is_stage` chunks
+        # carrying the stage text.
+        for s_s, s_e, s_txt in _parse_stage_dirs(enriched):
+            if any(not (e <= s_s or s >= s_e) for (s, e) in self.line_times):
+                continue
+            pos = bisect.bisect_left([s for (s, _) in self.line_times], s_s)
+            self.line_times.insert(pos, (s_s, s_e))
+            self.expanded_chunks.insert(pos, {
+                'parent_idx': -1, 'speaker': '', 'stage_dir': s_txt,
+                'text': '', 'is_stage': True, 'is_air': False,
             })
 
     def is_active(self) -> bool:

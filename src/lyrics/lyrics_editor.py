@@ -49,7 +49,7 @@ except ImportError:
     _HAS_VLC = False
 
 from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[reportPrivateImportUsage]
-from src.lyrics.lyrics import _apply_markdown_formatting
+from src.lyrics.lyrics import _apply_markdown_formatting, _AIR_THRESHOLD
 
 SOURCE_TRANSCRIPT = 'transcript'
 SOURCE_SYLT       = 'sylt'
@@ -639,6 +639,15 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     B      = cols                 # body width (inside the 2-col indent)
     indent = " " * ui_utils.MARGIN_H
 
+    def _dot_rule(width: int | None = None) -> str:
+        """Return an equal-spaced round dotted rule filling `width` columns.
+
+        Uses a fine middle-dot repeated to produce a visually light, evenly
+        spaced full-width dotted divider.
+        """
+        w = width if width is not None else B
+        return "·" * max(0, w)
+
     # In review, the header names the phase; otherwise the mode.
     if review:
         label = f"REVIEW · {review[0].upper()}"
@@ -674,12 +683,13 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
 
     # Header starts on the first line; _Widget.render adds the MARGIN_V top row,
     # matching the rest of the app (no extra leading blank here).
+    term_w = ui_utils.get_terminal_width()
     out: list[str] = [
         indent + left_disp + " " * gap + right_disp,
-        f"{C.DIM}{ui_utils.divider()}{C.RESET}",
+        f"{C.DIM}{_dot_rule(term_w)}{C.RESET}",
     ]
 
-    sep = f"{C.DIM}{ui_utils.divider()}{C.RESET}"
+    sep = f"{C.DIM}{_dot_rule(term_w)}{C.RESET}"
 
     if mode == TAP:
         prev_s = segs[cursor - 1] if cursor > 0     else None
@@ -1178,7 +1188,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     return [_clip(ln, _cap) for ln in _fit_body_footer(out, footer, avail)], vp, hit_map
 
 
-_AIR_GAP_THRESHOLD = 1.5   # seconds — gaps shorter than this are not recommended
+_AIR_GAP_THRESHOLD = _AIR_THRESHOLD   # use the shared threshold from src.lyrics.lyrics
 
 
 def _build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
@@ -1639,7 +1649,19 @@ def lyrics_editor(mp3_path: str) -> None:
         return
 
     segs, source, aux = result
-    track_name = os.path.basename(os.path.dirname(mp3_path))
+    # Prefer ID3 `TIT2` title when available, otherwise fall back to filename stem
+    try:
+        try:
+            id3 = ID3(mp3_path)
+            tit = id3.get('TIT2')
+            if tit and getattr(tit, 'text', None):
+                track_name = str(tit.text[0])
+            else:
+                track_name = os.path.splitext(os.path.basename(mp3_path))[0]
+        except ID3NoHeaderError:
+            track_name = os.path.splitext(os.path.basename(mp3_path))[0]
+    except Exception:
+        track_name = os.path.splitext(os.path.basename(mp3_path))[0]
     if aux.get('drift'):
         ui_utils.show_status(
             "⚠ transcript.json changed since this working copy — W will overwrite it.", 6.0)
@@ -2005,6 +2027,17 @@ def lyrics_editor(mp3_path: str) -> None:
         with open(jpath[:-5] + '.srt', 'w', encoding='utf-8') as f:
             f.write(_rebuild_srt(segs))
         aux['meta']['source_fp'] = _file_fp(jpath)   # we now match the original
+        # Also write an enriched sidecar (.sync.json) that preserves the
+        # editor's stage-direction / dead-air beats so the player and editor
+        # render the same segments when loading this track.
+        try:
+            _ensure_ids(segs, aux['meta'])
+            sdata = {'version': 1, 'source_json': os.path.basename(jpath),
+                     'meta': aux['meta'], 'segments': segs}
+            with open(jpath[:-5] + '.sync.json', 'w', encoding='utf-8') as f:
+                json.dump(sdata, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
 
     def _pager(body: list, title: str) -> None:
         """Minimal scrollable full-screen viewer.  `body` lines are already
