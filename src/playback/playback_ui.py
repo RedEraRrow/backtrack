@@ -4,10 +4,11 @@ import os
 import re
 import sys
 
+from src.music_library import get_metadata
 from src.utils import ui_utils
 from src.art.album_art import get_art
 from src.utils.prompt import _hint
-from src.state import NAV_STACK
+from src.utils.prompt_core import Column, _table_widths, add_hint_click_cells
 from src.utils.ui_utils import Colors as C
 
 ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
@@ -28,7 +29,14 @@ _ANSI_RE = re.compile(
 )
 
 _WIDE_SPLIT_GUTTER = 3
-_ART_INNER_MARGIN = 8
+
+# When fitting art to the terminal height would only shave off a few columns, the
+# art lands in a "dead band": too narrow to fill edge-to-edge, too wide to leave a
+# clean volume-bar gutter — so the centred art shows thin, lopsided side margins.
+# Within this many columns of the full width, snap UP to full width and clip the
+# extra bottom pixel-row(s) instead, so the art is always either edge-to-edge or
+# has a comfortable gutter.
+_ART_SNAP_TO_FULL = 4
 
 
 def _render_frame_buffer(buf: list, rows: int) -> None:
@@ -73,7 +81,7 @@ _ui_state = {
     'pane_mode': 'off',   # off → lyrics → queue → lyrics+credits (single-key cycle)
 }
 # Up-next context for the queue view: list of display titles + current index.
-_queue_ctx: dict = {'titles': [], 'index': 0}
+_queue_ctx: dict = {'titles': [], 'paths': [], 'index': 0, 'meta': []}
 # Last rendered artwork width (visible characters) used to align progress/controls
 _last_art_width: int | None = None
 # Left pad (columns) where the artwork starts when printed
@@ -87,6 +95,11 @@ _last_vol_bar_col: int | None = None
 # Right pane geometry when in wide mode (1-based column of start, and width)
 _last_right_left: int | None = None
 _last_right_width: int | None = None
+# Clickable-control geometry (set by _controls_line / the draw): transport-icon
+# columns on the controls row, the active hint pairs, and the hint-glyph cell map.
+_last_transport_cols: dict[str, int] = {}
+_last_controls_hint_pairs: list = []
+_last_hint_cells: dict[tuple[int, int], str] = {}
 
 
 def _layout_mode(cols: int) -> str:
@@ -161,6 +174,12 @@ def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
     ratio = actual_w / actual_h if actual_h > 0 else 2.0
     fit_w = max(10, min(max_w - 1, int(avail_h * ratio)))
 
+    # Snap-to-full: if fitting to height only trims a handful of columns, keep the
+    # full width and clip the extra bottom row(s) rather than sit in the dead band
+    # (see _ART_SNAP_TO_FULL). Larger deficits fall through to a genuine re-fetch.
+    if max_w - fit_w <= _ART_SNAP_TO_FULL:
+        return art_str, lines[:avail_h]
+
     art_str2 = _get_art_cached(file_path, width=fit_w)
     lines2 = art_str2.splitlines()
     return art_str2, lines2[:avail_h]  # safety cap in case ratio was off
@@ -216,7 +235,7 @@ def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4)
         is_named = role not in PLAYER_CREDITS_ROLES
         label = f"{role.title()}: {name}" if is_named else name
         if len(label) > max_w - 3:
-            label = label[:max_w - 5] + ".."
+            label = label[:max_w - 4] + "…"
         prefix = f" • {label}"
         lines.append(prefix)
 
@@ -224,18 +243,6 @@ def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4)
         lines.append(f"{C.DIM} • + {total - cap} more…{C.RESET}")
 
     return lines
-
-
-def _volume_slider(volume: int, width: int = 20) -> str:
-    """Render volume as a horizontal bar with a position marker."""
-    percent = max(0.0, min(100.0, volume)) / 100.0
-    pos = int(round(percent * (width - 1)))
-    line = "━" * pos + "●" + "━" * (width - pos - 1)
-    return line
-
-
-
-
 def _volume_bar_geometry() -> tuple[int, int, int] | None:
     """Return (column, top_row, height) for the volume bar, or None if there
     is no rendered artwork or no horizontal room to the right of it."""
@@ -325,7 +332,7 @@ def _fit_segments(segs: list, budget: int) -> tuple[str, int]:
 def format_now_playing_bar(width: int) -> list[str] | None:
     """The background-audio now-playing box (#14), styling only (no colour): a
     rounded box whose bottom border doubles as the progress bar. Row 1 = top
-    border; row 2 = ``▶ Title · Artist · Album … m:ss / m:ss · vol · ^P`` (bold
+    border; row 2 = ``⏸ ⏭ Title · Artist · Album … m:ss / m:ss`` (bold
     title, dim rest); row 3 = the progress border (heavy ``━`` elapsed / light
     ``─`` remaining). Returns a list of styled rows, or None when nothing plays
     or the terminal is too narrow for a box."""
@@ -353,12 +360,16 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     if inner < 16:
         return None                         # too narrow to be worth a box
 
-    icon = '❚❚' if np['paused'] else '▶'
-    # Just the elapsed/total time; volume + queue position + the ^P hint live
-    # elsewhere (the player view and the menu hint bar).
+    # Match the full player's transport glyphs (see _controls_line): the
+    # play/pause glyph shows the action the toggle would take — ⏵ while paused,
+    # ⏸ while playing — followed by the next-track icon (no previous here).
+    pp_icon = '⏵' if np['paused'] else '⏸'
+    icon = f"{pp_icon} ⏭"
+    # Just the elapsed/total time; volume + queue position live elsewhere (the
+    # player view and the menu hint bar, which also surfaces the ^O/^P/^N/^B keys).
     right = f"{_np_fmt_time(np['elapsed'])} / {_np_fmt_time(np['duration'])}"
 
-    left_segs: list = [(f"{icon} ", C.BOLD), (np['title'] or '?', C.BOLD)]
+    left_segs: list = [(f"{icon}  ", C.BOLD), (np['title'] or '?', C.BOLD)]
     if np['artist']:
         left_segs += [("  ·  ", C.DIM), (np['artist'], C.DIM)]
     if np['album']:
@@ -387,28 +398,9 @@ def format_now_playing_bar(width: int) -> list[str] | None:
 def toggle_metadata() -> None:
     """Toggle display of the extended metadata details line."""
     _ui_state['show_metadata'] = not _ui_state['show_metadata']
-
-
-def toggle_credits() -> None:
-    """Toggle display of the cast/crew credits pane."""
-    _ui_state['show_credits'] = not _ui_state['show_credits']
-
-
-def toggle_lyrics() -> None:
-    """Toggle display of the lyrics pane."""
-    _ui_state['show_lyrics'] = not _ui_state['show_lyrics']
-
-
 def toggle_help() -> None:
     """Toggle display of the full keyboard-shortcut help line."""
     _ui_state['show_help'] = not _ui_state['show_help']
-
-
-def toggle_queue() -> None:
-    """Toggle display of the up-next queue pane."""
-    _ui_state['show_queue'] = not _ui_state['show_queue']
-
-
 def _set_pane_mode(mode: str) -> None:
     """Set the right-pane mode and sync the show_lyrics/show_credits/show_queue flags to match it."""
     _ui_state['pane_mode'] = mode
@@ -437,58 +429,229 @@ def cycle_right_pane(has_lyrics: bool = True, has_credits: bool = True,
     _set_pane_mode(states[(states.index(cur) + 1) % len(states)])
 
 
-def set_queue_context(titles: list[str], index: int) -> None:
+def set_queue_context(titles: list[str], index: int, paths: list[str] | None = None) -> None:
     """Register the current play queue so the queue view can render it."""
     _queue_ctx['titles'] = list(titles or [])
+    _queue_ctx['paths'] = list(paths or [])
     _queue_ctx['index'] = index
+    _queue_ctx['meta'] = _queue_metadata(_queue_ctx['titles'], _queue_ctx['paths'])
+
+
+def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
+    """Load a lightweight metadata cache for the queue pane."""
+    meta: list[dict] = []
+    for i, title in enumerate(titles):
+        item = {
+            'title': title or '',
+            'artist': '',
+            'album': '',
+            'album_artist': '',
+        }
+        if i < len(paths):
+            try:
+                data = get_metadata(paths[i])
+                item['title'] = data.get('title') or item['title']
+                item['artist'] = data.get('artist') or ''
+                item['album'] = data.get('album') or ''
+                item['album_artist'] = data.get('album_artist') or ''
+            except Exception:
+                pass
+        meta.append(item)
+    return meta
 
 
 def has_queue() -> bool:
     """Return whether there's more than one track in the queue worth showing."""
     return len(_queue_ctx['titles']) > 1
-
-
-def get_ui_state() -> dict:
-    """Return a copy of the current UI state (pane visibility/mode flags)."""
-    return _ui_state.copy()
-
-
 def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
     """Render the play queue as a scrolling list centred on the current track."""
     titles = _queue_ctx['titles']
     idx = _queue_ctx['index']
+    meta = _queue_ctx['meta']
     if not titles:
         return [f"{C.DIM}(queue empty){C.RESET}"]
 
-    out = [f"{C.DIM}UP NEXT  ({idx + 1}/{len(titles)}){C.RESET}", ""]
-    body_rows = max(1, max_rows - len(out))
+    out = [f"{C.DIM}UP NEXT{C.RESET}"]
+    body_rows = max(0, max_rows - len(out))
+    if body_rows <= 0:
+        return out
 
-    # Window the list so the current track stays visible.
-    if len(titles) <= body_rows:
-        start = 0
+    total = len(titles)
+    current = idx if 0 <= idx < total else None
+    visible_indices: list[int] = []
+
+    if current is None:
+        visible_indices = list(range(min(body_rows, total)))
     else:
-        start = max(0, min(idx - body_rows // 2, len(titles) - body_rows))
-    end = min(len(titles), start + body_rows)
+        remaining = body_rows
+        for i in range(current + 1, total):
+            if remaining <= 0:
+                break
+            visible_indices.append(i)
+            remaining -= 1
 
-    for i in range(start, end):
-        num = f"{i + 1:>2}. "
-        avail = max(4, max_w - len(num) - 2)
-        title = titles[i]
-        if len(title) > avail:
-            title = title[:avail - 1] + "…"
-        if i == idx:
-            out.append(f"{C.ACCENT}▶ {C.RESET}{C.BOLD}{num}{title}{C.RESET}")
+        if remaining > 0:
+            visible_indices.append(current)
+            remaining -= 1
+
+        for i in range(current - 1, -1, -1):
+            if remaining <= 0:
+                break
+            visible_indices.append(i)
+            remaining -= 1
+
+        visible_indices.sort()
+
+    show_artist = _queue_should_show_artist(meta)
+    show_album = _queue_should_show_album(meta)
+    cols = ['meta'] if show_artist or show_album else []
+
+    rows: list[str] = []
+    same_album = _queue_all_same_album(meta)
+    same_album_compilation = same_album and _queue_is_compilation_without_album_artist(meta)
+    rows_cells = []
+    row_kinds = []
+    prefixes = []
+    for item_idx in visible_indices:
+        item = meta[item_idx] if item_idx < len(meta) else {'title': titles[item_idx], 'artist': '', 'album': '', 'album_artist': ''}
+        prefix = f"{C.ACCENT}▶ {C.RESET}" if item_idx == current else "  "
+        if current is None:
+            row_kind = 'next'
+        elif item_idx < current:
+            row_kind = 'prev'
+        elif item_idx == current:
+            row_kind = 'current'
         else:
-            out.append(f"  {C.DIM}{num}{title}{C.RESET}")
+            row_kind = 'next'
+        rows_cells.append([
+            item.get('title', ''),
+            ui_utils.strip_ansi(_queue_meta_value(item, same_album, same_album_compilation))
+        ])
+        row_kinds.append(row_kind)
+        prefixes.append(prefix)
 
-    # Centre the block horizontally within the pane so it sits balanced (#57).
-    content_w = max((ui_utils.visual_len(l) for l in out), default=0)
-    pad = max(0, (max_w - content_w) // 2)
-    if pad:
-        out = [(" " * pad) + l for l in out]
+    specs = _queue_column_specs(cols)
+    widths = _table_widths(rows_cells, specs, max_w, pointer_w=0, right_margin=0)
+
+    for item_idx, row_kind, prefix in zip(visible_indices, row_kinds, prefixes):
+        item = meta[item_idx] if item_idx < len(meta) else {'title': titles[item_idx], 'artist': '', 'album': '', 'album_artist': ''}
+        meta_text = _queue_meta_value(item, same_album, same_album_compilation)
+        line = _render_queue_row(item, cols, specs, widths, row_kind, prefix, meta_text)
+        rows.append(line)
+
+    out.extend(rows)
     return out
 
 
+def _normalize_album_name(name: str) -> str:
+    return re.sub(r'\s+', ' ', name.strip().casefold())
+
+
+def _queue_all_same_album(meta: list[dict]) -> bool:
+    albums = [_normalize_album_name(item['album']) for item in meta if item.get('album')]
+    return len(albums) > 0 and len(set(albums)) == 1
+
+
+def _queue_is_compilation_without_album_artist(meta: list[dict]) -> bool:
+    if any(item.get('album_artist') for item in meta):
+        return False
+    artists = [item['artist'] for item in meta if item.get('artist')]
+    return len(set(artists)) > 1
+
+
+def _queue_should_show_artist(meta: list[dict]) -> bool:
+    if _queue_all_same_album(meta):
+        return any(
+            item.get('artist') and item.get('album_artist') and item['artist'] != item['album_artist']
+            for item in meta
+        ) or _queue_is_compilation_without_album_artist(meta)
+
+    artists = [item['artist'] for item in meta if item.get('artist')]
+    album_artists = [item['album_artist'] for item in meta if item.get('album_artist')]
+    if len(set(artists)) > 1:
+        return True
+    for item in meta:
+        if item.get('artist') and item.get('album_artist') and item['artist'] != item['album_artist']:
+            return True
+    return False
+
+
+def _queue_meta_value(item: dict, same_album: bool = False, compilation_without_album_artist: bool = False) -> str:
+    if same_album or compilation_without_album_artist:
+        artist = item.get('artist')
+        album_artist = item.get('album_artist')
+        if not artist:
+            return ''
+        if compilation_without_album_artist:
+            return artist
+        if not album_artist or artist != album_artist:
+            return artist
+        return ''
+
+    pieces = []
+    if item.get('artist'):
+        pieces.append(item['artist'])
+    if item.get('album'):
+        album = item['album']
+        pieces.append(f"{C.DIM}{C.ITALIC}{album}{C.RESET}")
+    return ' — '.join(pieces)
+
+
+def _queue_should_show_album(meta: list[dict]) -> bool:
+    if _queue_all_same_album(meta) or _queue_is_compilation_without_album_artist(meta):
+        return False
+    albums = [item['album'] for item in meta if item.get('album')]
+    return len(set(albums)) > 1
+
+
+def _queue_column_specs(columns: list[str]) -> list[Column]:
+    if not columns:
+        return [Column(style='normal', align='left', flex=True, min_width=10, max_frac=1.0, gap=0)]
+
+    return [
+        Column(style='normal', align='left', flex=False, min_width=6, max_width=40, max_frac=0.65, gap=0),
+        Column(style='normal', align='left', flex=True, min_width=10, max_width=None, max_frac=1.0, gap=2, priority=1),
+    ]
+
+
+def _render_queue_row(item: dict, columns: list[str], specs: list[Column], widths: list[int], row_kind: str, prefix: str, meta_text: str = '') -> str:
+    title = item.get('title', '')
+    values = [title, meta_text] if columns else [title]
+
+    if row_kind == 'current':
+        title_style = f"{C.BOLD}{C.WHITE}"
+        other_style = f"{C.BOLD}{C.DIM}"
+    elif row_kind == 'prev':
+        title_style = C.DIM
+        other_style = C.DIM
+    else:
+        title_style = C.WHITE
+        other_style = C.DIM
+
+    row = prefix
+    first = True
+    for i, width in enumerate(widths):
+        if width < 0:
+            continue
+        raw = values[i] if i < len(values) else ''
+        if ui_utils.visual_len(raw) > width:
+            if width <= 1:
+                text = ui_utils.clip_ansi(raw, width)
+            else:
+                clipped = ui_utils.clip_ansi(raw, max(0, width - 1))
+                if clipped.endswith(C.RESET):
+                    clipped = clipped[:-len(C.RESET)]
+                text = clipped + '…'
+        else:
+            text = raw
+        text = text + ' ' * max(0, width - ui_utils.visual_len(text))
+        styled = f"{title_style if i == 0 else other_style}{text}{C.RESET}"
+        if first:
+            row += styled
+            first = False
+        else:
+            row += ' ' * specs[i].gap + styled
+    return row
 def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
                      cast_names: list[str] | None = None,
                      limit: int = 4) -> list[str]:
@@ -502,7 +665,7 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
     seen_cast = set()
 
     for role, name in people:
-        name_l = name.title()
+        name_l = name.lower()
         if name_l in cast_name_lower and name_l not in seen_cast:
             cast_matches.append((cast_name_lower.index(name_l), role.title(), name))
             seen_cast.add(name_l)
@@ -532,7 +695,7 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
     for role, name in combined[:limit]:
         label = f"{role}: {name}"
         if len(label) > max_w - 3:
-            label = label[:max_w - 5] + ".."
+            label = label[:max_w - 4] + "…"
         lines.append(f" ⚙ {label}")
 
     if total > limit:
@@ -561,10 +724,12 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
         left_pad = max(0, (cols - _visible_len(controls)) // 2)
 
     status = " " * left_pad + controls
+    _record_transport_cols(status)
 
     if not _ui_state['show_help']:
-        shortcuts = _hint(('i', 'help'))
-        return status, shortcuts
+        pairs = [('i', 'help')]
+        _set_controls_hint_pairs(pairs)
+        return status, _hint(*pairs)
 
     hint_args = [
         ('space', 'play/pause'),
@@ -579,10 +744,75 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
         hint_args.append(('w', 'panel'))
     if is_uslt:
         hint_args.append(('↑↓', 'scroll'))
-    hint_args += [('i', 'hide help'), ('n', 'next'), ('b', 'back'), ('q', 'quit')]
+    hint_args += [('i', 'hide help'), ('[/]', 'prev/next'), ('b', 'back'), ('q', 'quit')]
 
-    shortcuts = _hint(*hint_args)
-    return status, shortcuts
+    _set_controls_hint_pairs(hint_args)
+    return status, _hint(*hint_args)
+
+
+def _record_transport_cols(status: str) -> None:
+    """Store the 1-based columns of the ⏮ / ⏸⏵ / ⏭ glyphs on the controls row so
+    clicks on them can be mapped back to prev / play-pause / next."""
+    global _last_transport_cols
+    pv = status.find('⏮')
+    pp = status.find('⏸')
+    if pp < 0:
+        pp = status.find('⏵')
+    nx = status.find('⏭')
+    cols: dict[str, int] = {}
+    if pv >= 0: cols['prev'] = pv + 1
+    if pp >= 0: cols['playpause'] = pp + 1
+    if nx >= 0: cols['next'] = nx + 1
+    _last_transport_cols = cols
+
+
+def _set_controls_hint_pairs(pairs: list) -> None:
+    """Remember the hint pairs currently shown under the controls, for hit-testing."""
+    global _last_controls_hint_pairs
+    _last_controls_hint_pairs = list(pairs)
+
+
+def compute_controls_hint_cells(shortcut_lines: list[str], first_row: int) -> None:
+    """Populate ``_last_hint_cells`` for hint lines drawn at ``first_row`` onward
+    (each rendered with a MARGIN_H left inset, like the draw does)."""
+    _last_hint_cells.clear()
+    if not _last_controls_hint_pairs:
+        return
+    for k, line in enumerate(shortcut_lines):
+        add_hint_click_cells(_last_hint_cells, ' ' * ui_utils.MARGIN_H + line,
+                             first_row + k, _last_controls_hint_pairs)
+
+
+def transport_click_action(row: int, col: int, ctrl_row: int) -> str | None:
+    """Return 'prev' / 'playpause' / 'next' if (row, col) hits a transport glyph
+    on the controls row, else None."""
+    if row != ctrl_row or not _last_transport_cols:
+        return None
+    for action, c in _last_transport_cols.items():
+        if abs(col - c) <= 1:
+            return action
+    return None
+
+
+def volume_from_click(row: int, col: int) -> int | None:
+    """If (row, col) lands on the vertical volume bar, return the volume (0–100)
+    for that height (top = 100, bottom = 0); else None."""
+    geo = _volume_bar_geometry()
+    if geo is None:
+        return None
+    bar_col, top, height = geo
+    bottom = top + height - 1
+    if not (top <= row <= bottom) or not (bar_col - 1 <= col <= bar_col + 1):
+        return None
+    if height <= 1:
+        return 100
+    frac = (bottom - row) / (height - 1)
+    return int(round(max(0.0, min(1.0, frac)) * 100))
+
+
+def hint_click_key(row: int, col: int) -> str | None:
+    """The synthesised key for a click on a controls hint glyph, or None."""
+    return _last_hint_cells.get((row, col))
 
 
 def _movement_roman(s: str) -> str:
@@ -801,6 +1031,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             log(f"\033[{ctrl_row};1H\033[K{status_ln}")
             for offset, line in enumerate(shortcut_lines, start=1):
                 log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
+            compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
 
             lyric_row = ctrl_row + len(shortcut_lines) + 2
             art_bottom_row = max(row_cursor + 6, rows - ui_utils.MARGIN_V)
@@ -867,6 +1098,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         log(f"\033[{ctrl_row};1H\033[K{status_ln}")
         for offset, line in enumerate(shortcut_lines, start=1):
             log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
+        compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
 
         _pane_top = _last_art_top  # right pane aligns with art top after any vertical centering
 
@@ -974,6 +1206,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         log(f"\033[{ctrl_row};1H\033[K{status_ln}")
         for offset, line in enumerate(shortcut_lines, start=1):
             log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
+        compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
 
         ctrl_row_end = ctrl_row + len(shortcut_lines)
 
@@ -1056,6 +1289,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         log(f"\033[{ctrl_row};1H\033[K{status_ln}")
         for offset, line in enumerate(shortcut_lines, start=1):
             log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
+        compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
         lyric_row = ctrl_row + len(shortcut_lines) + 2
         art_bottom_row = rows - ui_utils.MARGIN_V
         _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)

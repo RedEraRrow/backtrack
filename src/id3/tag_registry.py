@@ -1,6 +1,6 @@
 """Single source of truth for ID3v2.4 frames: the tag registry and lookups."""
 from dataclasses import dataclass
-from typing import Dict, Type, Literal, Any, Optional
+from typing import Dict, Type, Literal, Optional
 
 from mutagen.id3 import *  # type: ignore[reportWildcardImportFromLibrary]
 from mutagen.id3._frames import *  # type: ignore[reportWildcardImportFromLibrary]
@@ -34,11 +34,6 @@ class TagInfo:
     ui_category: UICategory
     single_only: bool
     mutagen_class: Type
-    description: str = ""
-    
-    def create_frame(self, *args, **kwargs) -> Any:
-        """Instantiate this tag's mutagen frame class with the given args."""
-        return self.mutagen_class(*args, **kwargs)
 
 
 TAG_REGISTRY: Dict[str, TagInfo] = {
@@ -368,38 +363,10 @@ def get_tag_info(tag_id: str) -> Optional[TagInfo]:
     """
     base_id, desc_val, lang_val = parse_composite_tag_id(tag_id)
     return TAG_REGISTRY.get(base_id)
-
-
-def get_official_category(tag_id: str) -> str:
-    """Return the official_category for tag_id, or 'OTHER' if unknown."""
-    info = get_tag_info(tag_id)
-    return info.official_category if info else "OTHER"
-
-
 def get_tag_category(tag_id: str) -> UICategory:
     """Return the ui_category for tag_id, or 'text' if unknown."""
     info = get_tag_info(tag_id)
     return info.ui_category if info else 'text'
-
-
-def tags_by_type(frame_type: str) -> list[str]:
-    """Get all tag IDs for a specific frame type."""
-    return [
-        tag_id
-        for tag_id, info in TAG_REGISTRY.items()
-        if info.frame_type == frame_type
-    ]
-
-
-def tags_by_ui_category(category: UICategory) -> list[str]:
-    """Get all tag IDs that use a specific UI widget."""
-    return [
-        tag_id
-        for tag_id, info in TAG_REGISTRY.items()
-        if info.ui_category == category
-    ]
-
-
 def get_preferred_tag_name(tag_id: str) -> str:
     """Get the user-defined preferred tag name from config, falling back to the registry's first friendly name."""
     config = load_config()

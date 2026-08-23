@@ -28,6 +28,7 @@ SESSIONS_DIR = CONFIG_DIR / "sessions"
 
 _BROADCAST_INTERVAL_S = 0.25
 _CONNECT_TIMEOUT_S = 0.4
+_SEND_TIMEOUT_S = 2.0        # drop a client whose socket blocks sends this long
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,8 @@ def _iter_messages(sock: socket.socket):
     while True:
         try:
             chunk = sock.recv(4096)
+        except socket.timeout:
+            continue          # idle read timeout (the socket has a send timeout set)
         except OSError:
             return
         if not chunk:
@@ -129,9 +132,20 @@ def list_sessions() -> list[dict]:
     return live
 
 
+def _host_lock_path(session_id: str) -> str:
+    return str(SESSIONS_DIR / f"{session_id}.host.lock")
+
+
 def _cleanup(session_id: str) -> None:
-    """Remove a session's registry + socket files (best effort)."""
-    for p in (_registry_path(session_id), _socket_path(session_id)):
+    """Remove a session's registry + socket + host-election lock files (best effort).
+
+    The host-election lock (`.host.lock`) is normally deleted by the window that
+    wins a hand-off, but a crash mid-election would otherwise leave it behind and
+    permanently deadlock every future election for this session id — so a dead
+    session's lock is swept here too.
+    """
+    for p in (_registry_path(session_id), _socket_path(session_id),
+              _host_lock_path(session_id)):
         try:
             os.remove(p)
         except OSError:
@@ -174,6 +188,10 @@ class SessionServer:
             pass
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(self.socket_path)
+        try:
+            os.chmod(self.socket_path, 0o600)   # owner-only: no other local user can drive playback
+        except OSError:
+            pass
         srv.listen(8)
         srv.settimeout(0.3)
         self._srv = srv
@@ -211,6 +229,10 @@ class SessionServer:
                 continue
             except OSError:
                 break
+            # A send timeout means a stuck/slow client can't wedge the broadcast
+            # loop (which holds _clients_lock during sendall); recv treats the
+            # same timeout as "idle, keep waiting".
+            conn.settimeout(_SEND_TIMEOUT_S)
             with self._clients_lock:
                 self._clients.add(conn)
             t = threading.Thread(target=self._client_loop, args=(conn,), daemon=True)

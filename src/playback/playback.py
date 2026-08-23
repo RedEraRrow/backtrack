@@ -39,7 +39,7 @@ from src.playback.playback_ui import (
 )
 from src.playback import playback_ui
 from src.playback.session import (
-    SESSION, REPEAT_OFF, REPEAT_ONE, REPEAT_ALL, is_client, has_other_windows,
+    SESSION, is_client, has_other_windows,
 )
 from src.utils.terminal_input import (
     clear_escape_buffer,
@@ -50,6 +50,15 @@ from src.utils.terminal_input import (
 
 _KEY_POLL_INTERVAL_S = 0.05
 _LOOP_TICK_S = 0.02
+
+# Translate a clicked hint's synthesised key (from add_hint_click_cells, which
+# speaks the menu vocabulary) into what the player's key switch expects: arrows as
+# raw escape sequences, space/enter as their characters. Anything else passes
+# through unchanged (plain letters/symbols already match).
+_PLAYER_SYNTH = {
+    'UP': '\x1b[A', 'DOWN': '\x1b[B', 'LEFT': '\x1b[D', 'RIGHT': '\x1b[C',
+    'SPACE': ' ', 'ENTER': '\n',
+}
 
 
 def _render_grouping_cover(file_path: str, cols: int) -> str:
@@ -146,11 +155,14 @@ def open_client_player_view() -> dict:
     audio = None
     duration = 0.0
     prog_row = 0
+    ctrl_row = 0
     toast = ""
     toast_expiry = 0.0
     width = ui_utils.get_terminal_size()[0]
     try:
         with raw_mode(sys.stdin):
+            sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
+            sys.stdout.flush()
             while True:
                 np = remote.now_playing()
                 if np is None or not np.get('file_path'):
@@ -163,7 +175,17 @@ def open_client_player_view() -> dict:
                     toast = ""; last_sig = None       # clear an expired message
                 fp = np['file_path']
                 size = ui_utils.get_terminal_size()
-                sig = (fp, np.get('paused'), np.get('volume'), np.get('generation'), size)
+                playback_ui.set_queue_context(np.get('titles') or [], int(np.get('index') or 0), np.get('queue') or [])
+                sig = (
+                    fp,
+                    np.get('paused'),
+                    np.get('volume'),
+                    np.get('generation'),
+                    int(np.get('index') or 0),
+                    len(np.get('queue') or []),
+                    tuple(np.get('titles') or []),
+                    size,
+                )
                 if sig != last_sig:
                     if last_sig is None or fp != last_sig[0] or np.get('generation') != last_sig[3]:
                         try:
@@ -171,7 +193,7 @@ def open_client_player_view() -> dict:
                         except Exception:
                             audio = None
                     duration = float(np.get('duration') or 0.0)
-                    prog_row, _cr, _lr, width, _br = draw_full_ui(
+                    prog_row, ctrl_row, _lr, width, _br = draw_full_ui(
                         fp, audio, None, size, is_paused=bool(np.get('paused')),
                         volume=int(np.get('volume') or 0), toast=toast)
                     last_sig = sig
@@ -187,6 +209,23 @@ def open_client_player_view() -> dict:
                 if key:
                     clear_escape_buffer()
                     arrow = is_arrow_key(key)
+                    if key.startswith('MOUSE_CLICK:'):
+                        _mp = key.split(':'); _mr = int(_mp[2]); _mc = int(_mp[3])
+                        _act = playback_ui.transport_click_action(_mr, _mc, ctrl_row)
+                        if _act == 'prev':
+                            key = '['
+                        elif _act == 'next':
+                            key = ']'
+                        elif _act == 'playpause':
+                            key = ' '
+                        else:
+                            _vol = playback_ui.volume_from_click(_mr, _mc)
+                            if _vol is not None:
+                                remote.set_volume(_vol); key = ''
+                            else:
+                                _hk = playback_ui.hint_click_key(_mr, _mc)
+                                key = _PLAYER_SYNTH.get(_hk, _hk) if _hk else ''
+                        arrow = is_arrow_key(key)
                     if key == 'FOCUS_IN':
                         last_sig = None                # force a full redraw
                     elif key in (' ', 'p', 'P'):
@@ -205,8 +244,10 @@ def open_client_player_view() -> dict:
                         remote.seek(-1)
                     elif key.lower() == 'l':
                         remote.seek(1)
-                    elif key.lower() == 'n':
+                    elif key == ']':
                         remote.next()
+                    elif key == '[':
+                        remote.prev()
                     elif key in ('=', '+'):
                         remote.set_volume(min(100, remote.get_volume() + 5))
                     elif key in ('-', '_'):
@@ -227,6 +268,8 @@ def open_client_player_view() -> dict:
                         return {"status": "QUIT_ALL"}
                 time.sleep(_LOOP_TICK_S)
     finally:
+        sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse on exit
+        sys.stdout.flush()
         remote.release_view(token)
         ui_utils.clear_screen()
 
@@ -279,7 +322,7 @@ def _player_view_loop() -> dict:
         audio = SESSION.audio
         duration = SESSION.duration
         # Keep the in-player queue pane ('w' cycle) in sync with the session queue.
-        playback_ui.set_queue_context(SESSION.titles, SESSION.index)
+        playback_ui.set_queue_context(SESSION.titles, SESSION.index, SESSION.queue)
         pre_art = _render_grouping_cover(fp, last_size[0]) if SESSION.is_grouping else None
         dialogue_state = DialoguePlaybackState(fp, track_duration=duration)
         has_credits = bool(audio and (audio.getall('TMCL') or audio.getall('TIPL')))
@@ -349,10 +392,17 @@ def _player_view_loop() -> dict:
         sys.stdout.flush()
 
     with raw_mode(sys.stdin):
+        sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse (click + scroll)
+        sys.stdout.flush()
         _prepare()
         _redraw_full()
+        last_track_sig = (SESSION.generation, SESSION.file_path)
 
-        while True:
+        try:
+          while True:
+            if not SESSION.is_active():
+                return {"status": "OK"}
+
             current_size = ui_utils.get_terminal_size()
             if current_size != last_size:
                 if not resize_pending:
@@ -371,11 +421,19 @@ def _player_view_loop() -> dict:
                 toast_text = ""
                 update_ctrl_ui()
 
+            current_track_sig = (SESSION.generation, SESSION.file_path)
+            if current_track_sig != last_track_sig:
+                last_track_sig = current_track_sig
+                _prepare()
+                _redraw_full()
+                continue
+
             # End-of-track / auto-advance is owned by the session.
             adv = SESSION.tick()
             if adv == 'stopped':
                 return {"status": "OK"}
             if adv == 'changed':
+                last_track_sig = (SESSION.generation, SESSION.file_path)
                 _prepare()
                 _redraw_full()
                 continue
@@ -385,7 +443,7 @@ def _player_view_loop() -> dict:
             q_sig = (tuple(SESSION.titles), SESSION.index)
             if q_sig != last_q_sig:
                 last_q_sig = q_sig
-                playback_ui.set_queue_context(SESSION.titles, SESSION.index)
+                playback_ui.set_queue_context(SESSION.titles, SESSION.index, SESSION.queue)
                 if _ui_state.get('show_queue'):
                     _redraw_full()
 
@@ -396,6 +454,29 @@ def _player_view_loop() -> dict:
             if key:
                 clear_escape_buffer()
                 arrow = is_arrow_key(key)
+
+                if key.startswith('MOUSE_CLICK:'):
+                    # Map clicks on the transport icons, volume bar, or hint
+                    # glyphs to the equivalent key, then let the switch handle it.
+                    _mp = key.split(':'); _mr = int(_mp[2]); _mc = int(_mp[3])
+                    _act = playback_ui.transport_click_action(_mr, _mc, ctrl_row)
+                    if _act == 'prev':
+                        key = '['
+                    elif _act == 'next':
+                        key = ']'
+                    elif _act == 'playpause':
+                        key = ' '
+                    else:
+                        _vol = playback_ui.volume_from_click(_mr, _mc)
+                        if _vol is not None:
+                            v = SESSION.set_volume(_vol)
+                            toast_text = f'Volume: {v}%'; toast_expiry = time.time() + 1.0
+                            playback_ui.draw_volume_bar(v); update_ctrl_ui()
+                            key = ''
+                        else:
+                            _hk = playback_ui.hint_click_key(_mr, _mc)
+                            key = _PLAYER_SYNTH.get(_hk, _hk) if _hk else ''
+                    arrow = is_arrow_key(key)
 
                 if key == 'FOCUS_OUT':
                     pass
@@ -440,10 +521,14 @@ def _player_view_loop() -> dict:
                     SESSION.seek(1)
                     toast_text = 'Seek Forward +1s'; toast_expiry = time.time() + 1.0
                     update_ctrl_ui()
-                elif key.lower() == 'n':          # NEXT track (skip), stay in the view
+                elif key == ']':                  # NEXT track (skip), stay in the view
                     if SESSION.next(manual=True) is None:
                         return {"status": "OK"}   # was the last track — queue finished
                     _prepare(); _redraw_full(); continue
+                elif key == '[':                  # PREVIOUS track (or restart current)
+                    if SESSION.prev() is not None:
+                        _prepare(); _redraw_full()
+                    continue
                 elif key in ('b', 'B') or key == '\x1b':   # MINIMISE — keep playing (#14)
                     # Pinned open while another window is browsing this session:
                     # the two windows stay specialised until one closes (#14).
@@ -541,6 +626,9 @@ def _player_view_loop() -> dict:
                             last_lyric_idx = current_idx
 
             time.sleep(_LOOP_TICK_S)
+        finally:
+            sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse on exit
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":

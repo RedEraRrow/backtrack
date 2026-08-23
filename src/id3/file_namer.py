@@ -84,7 +84,8 @@ _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _TOKEN_RE = re.compile(r'%([a-zA-Z]+)%')
 
 _MP3_EXTS = ('.mp3',)
-_MP4_EXTS = ('.m4a', '.mp4', '.m4p', '.aac')
+# Raw .aac (ADTS) has no MP4 atoms — not tag-writable (see tag_writer).
+_MP4_EXTS = ('.m4a', '.mp4', '.m4p')
 
 
 def _split_frac(raw: str) -> tuple[str, str]:

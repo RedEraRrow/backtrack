@@ -107,7 +107,11 @@ Browse Library · Search · Listening History · Settings · Exit.
 
 Navigation is consistent everywhere: `↑↓`/`jk` move, `→`/`l`/`Enter` confirm, `←`/`b`/`h`/`Esc` go
 back, `q` quits to the terminal (saving any in-progress edit first). Lists never wrap, restore the
-cursor when you back out, and support mouse clicks and `Tab`-based select-all where relevant.
+cursor when you back out, and support mouse clicks and `Tab`-based select-all where relevant. The
+hint bar (pinned to the bottom of the screen) is clickable too — click any highlighted key to trigger
+it. When audio is playing, the mini-player's ⏯/⏭ icons are clickable, and clicking anywhere else on it
+reopens the player. In the full player, the ⏮/⏯/⏭ controls, the hint bar, and the vertical volume bar
+are all clickable (click the volume bar at the height you want).
 
 ### Browse
 
@@ -125,7 +129,7 @@ a result; `Esc` backs out.
 
 | Key | Action |
 |-----|--------|
-| `space` | Play / pause |
+| `space` / `p` | Play / pause |
 | `←` / `→` | Seek ∓5 s |
 | `j` / `l` | Seek ∓1 s |
 | `,` / `.` | Seek ∓30 s |
@@ -134,9 +138,12 @@ a result; `Esc` backs out.
 | `w` | Cycle the side panel (lyrics → queue → lyrics+credits) |
 | `↑` / `↓` | Scroll the active pane / lyric selection |
 | `i` | Toggle the full help/hint line |
-| `n` | Next track |
-| `b` | Back (stop and return to where you came from) |
+| `[` / `]` | Previous / next track |
+| `b` / `Esc` | Minimise — leave the player but keep the audio playing in the background (pinned while another window shares the session) |
+| `s` | Stop playback |
 | `q` | Quit the application |
+
+From any menu while audio is playing: **Ctrl-O** reopens the player, and **Ctrl-P** / **Ctrl-N** / **Ctrl-B** control play-pause / next / previous.
 
 ### Listening history
 

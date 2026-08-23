@@ -222,15 +222,26 @@ class PlaybackSession:
             self.duration = duration if duration and duration > 0 else 0.0
             self._history_logged = False
             self.generation += 1
+            gen = self.generation
+            mp = self.mp
+            need_vlc_len = not self.duration
 
-            self.mp.play()
-            time.sleep(_VLC_PLAY_SETTLE_S)
-            if not self.duration:
-                vlc_len = self.mp.get_length()
-                self.duration = vlc_len / 1000.0 if vlc_len > 0 else 999.0
-            _apply_equalizer(self.mp, audio)
+            mp.play()
+            _apply_equalizer(mp, audio)     # right after play() so it takes (#74)
             self.track_start = time.time()
-            return True
+
+        # Outside the lock: only settle + probe VLC for a length when mutagen
+        # couldn't give us a duration (rare now get_song_duration covers MP4 too).
+        # Keeps the 0.3s VLC settle from freezing every lock-guarded op
+        # (now_playing / seek / volume / tick / IPC dispatch) on each track change.
+        if need_vlc_len:
+            time.sleep(_VLC_PLAY_SETTLE_S)
+            vlc_len = mp.get_length()
+            d = vlc_len / 1000.0 if vlc_len > 0 else 999.0
+            with self._lock:
+                if self.generation == gen:   # still the same track
+                    self.duration = d
+        return True
 
     # -- multi-window advertising (#14 Phase 2) ---------------------------
 
@@ -247,7 +258,6 @@ class PlaybackSession:
         if self._server is not None or is_client():
             return
         try:
-            import uuid
             from src.playback import ipc
             sid = self._session_id or uuid.uuid4().hex[:8]
             self._session_id = sid
@@ -444,11 +454,12 @@ class PlaybackSession:
                 ended = True
             if not ended:
                 return None
-            before = self.index
             result = self.next(manual=False)
             if result is None:
                 return 'stopped'
-            return 'changed' if self.index != before or self.mode == REPEAT_ONE else 'changed'
+            # next() advanced, repeated, or wrapped — in every case the track
+            # (re)loaded, so the view must refresh.
+            return 'changed'
 
     def start_background_tick(self) -> None:
         """Launch the daemon thread that advances the queue when no view is
@@ -663,7 +674,7 @@ def attempt_handoff(session_id: str, socket_path: str) -> None:
     dead client link's receiver thread."""
     from src.playback import ipc
     snap = _client_link.latest() if _client_link is not None else None
-    lock_path = str(ipc.SESSIONS_DIR / f"{session_id}.host.lock")
+    lock_path = ipc._host_lock_path(session_id)   # single source; swept by ipc._cleanup
     won = False
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)

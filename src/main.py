@@ -138,11 +138,11 @@ def _run(config: dict) -> None:
 
 
 def _wire_playback() -> None:
-    """Register the now-playing bar provider and the Ctrl-P player opener (#14),
-    so menus/browse can show background audio and reopen the player from anywhere."""
+    """Register the now-playing bar provider, the Ctrl-O player opener, and the
+    Ctrl-P/N/B transport hotkeys (#14), so menus/browse can show background audio
+    and control (or reopen) the player from anywhere."""
     from src.playback import playback_ui
     from src.playback.playback import open_player_view
-    from src.playback.session import SESSION
 
     ui_utils.set_now_playing_provider(playback_ui.format_now_playing_bar)
 
@@ -162,6 +162,21 @@ def _wire_playback() -> None:
             raise QuitToTerminal()
 
     prompt.set_player_opener(_open_player)
+
+    def _transport(action: str) -> None:
+        """Route a global transport hotkey to the active session (local host or
+        joined client), then repaint the now-playing box immediately."""
+        from src.playback import session as sess
+        a = sess.active_session()
+        if action == 'playpause':
+            a.pause_toggle()
+        elif action == 'next':
+            a.next()
+        elif action == 'prev':
+            a.prev()
+        ui_utils.pulse_now_playing()
+
+    prompt.set_transport_handler(_transport)
 
     # Clicking the status-bar activity beacon opens the live activity centre.
     from src.menus import notification_centre

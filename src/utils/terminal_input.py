@@ -111,12 +111,39 @@ def get_key_non_blocking() -> str | None:
         # in THIS call rather than one byte per loop iteration — otherwise a
         # single tap is slow and can be dropped by the stale-flush, forcing you
         # to hold the key. A short per-byte wait keeps it non-blocking.
-        while not (len(full) >= 3 and full[-1] in 'ABCD~') and full not in ('\x1b[I', '\x1b[O'):
-            if len(full) >= 8:                       # safety cap (e.g. mouse seq)
+        # SGR mouse reports (\x1b[<btn;col;row{M|m}) run longer than arrows and
+        # end in 'M'/'m', so they get their own terminator + larger cap.
+        is_sgr = full.startswith('\x1b[<')
+        while True:
+            if is_sgr:
+                if full[-1] in 'Mm':
+                    break
+            elif len(full) >= 3 and full[-1] in 'ABCD~':
+                break
+            if full in ('\x1b[I', '\x1b[O'):
+                break
+            if len(full) >= (32 if is_sgr else 8):    # safety cap
                 break
             if not select.select([fd], [], [], 0.02)[0]:
                 break
             full += os.read(fd, 1).decode('utf-8', 'replace')
+            if full.startswith('\x1b[<'):
+                is_sgr = True
+        if is_sgr and full[-1] in 'Mm':
+            _pending_escape = None
+            _escape_start_time = None
+            body, term = full[3:-1], full[-1]
+            parts = body.split(';')
+            if len(parts) == 3:
+                try:
+                    btn, col, row = int(parts[0]), int(parts[1]), int(parts[2])
+                    if btn == 64: return 'SCROLL_UP'
+                    if btn == 65: return 'SCROLL_DOWN'
+                    if term == 'm': return f'MOUSE_RELEASE:{btn}:{row}:{col}'
+                    if btn in (0, 1, 2): return f'MOUSE_CLICK:{btn}:{row}:{col}'
+                except ValueError:
+                    pass
+            return None
         if len(full) >= 3 and full[-1] in 'ABCD':
             _pending_escape = None
             _escape_start_time = None

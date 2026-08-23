@@ -4,8 +4,9 @@ from typing import Any, Optional
 from mutagen.id3 import ID3
 from mutagen.id3._frames import SYLT, USLT, TMCL, TIPL, TXXX, WXXX, COMM  # type: ignore[reportPrivateImportUsage]
 from mutagen.id3._frames import APIC, EQU2, RVA2, POPM, PCNT, RBUF
+from mutagen.id3._frames import Frame  # type: ignore[reportPrivateImportUsage]
 
-from src.id3.tag_registry import (TAG_REGISTRY, TagInfo, parse_composite_tag_id, get_tag_info, get_tag_category, get_preferred_tag_name)
+from src.id3.tag_registry import (parse_composite_tag_id, get_tag_info, get_tag_category, get_preferred_tag_name)
 from src.music_library import refresh_library_entry
 
 import mutagen.id3
@@ -202,7 +203,7 @@ def save_id3(audio: ID3, path: str | None = None) -> None:
         audio.save(path, v2_version=ver)
 
 
-def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | EQU2 | RVA2 | POPM | PCNT | RBUF | None:
+def create_frame(tag_id: str, value: Any) -> Frame | None:
     """Create the correct mutagen frame for tag_id from value, or None on failure."""
     if value is None:
         return None
@@ -284,6 +285,15 @@ def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | 
 
             return frame_class(encoding=3, text=vals)
 
+        elif info.frame_type == 'URL':
+            # W*** frames store a single URL; WXXX also carries a description.
+            url_val = str(value).strip()
+            if not url_val:
+                return None
+            if info.mutagen_class is WXXX:
+                return WXXX(encoding=3, desc=parsed_desc, url=url_val)
+            return info.mutagen_class(url=url_val)
+
         elif info.format_spec == 'ISO8601':
             date_val = str(value).strip()
             if not date_val or not any(c.isdigit() for c in date_val):
@@ -347,9 +357,7 @@ def create_frame(tag_id: str, value: Any) -> APIC | SYLT | USLT | TMCL | TIPL | 
                 return None
             return info.mutagen_class(encoding=3, text=[val])
 
-        elif tag_id.startswith('SYLT'):
-            return None
-
+        # SYLT and other unhandled kinds have no create path (edited elsewhere).
         return None
 
     except (ValueError, TypeError, AttributeError):
@@ -377,13 +385,14 @@ def create_apic_frame(data: bytes, mime: str = '', pic_type: int = 3, desc: str 
 
 
 def rename_frame(audio_obj: ID3, old_frame, new_id: str) -> bool:
-    """Rename a frame while preserving type and value."""
-    old_id = None
-    for key in audio_obj.keys():
-        if audio_obj[key] is old_frame:
-            old_id = key
-            break
+    """Rename a frame while preserving type and value.
 
+    Callers pop `old_frame` out of `audio_obj` before calling, so the old id is
+    read from the frame itself (`HashKey`/`FrameID`) rather than searched for in
+    the object (which no longer holds it). The new frame is added on success; on
+    failure the caller re-adds the original.
+    """
+    old_id = getattr(old_frame, 'HashKey', None) or getattr(old_frame, 'FrameID', None)
     if not old_id:
         return False
 
@@ -398,7 +407,11 @@ def rename_frame(audio_obj: ID3, old_frame, new_id: str) -> bool:
     if hasattr(old_frame, 'people'):
         value = old_frame.people
     elif hasattr(old_frame, 'text'):
-        value = old_frame.text[0] if old_frame.text else None
+        # Preserve every value for multi-value frames, not just the first.
+        value = list(old_frame.text) if len(old_frame.text) > 1 else (
+            old_frame.text[0] if old_frame.text else None)
+    elif hasattr(old_frame, 'url'):
+        value = old_frame.url
     else:
         value = str(old_frame)
 
@@ -410,7 +423,7 @@ def rename_frame(audio_obj: ID3, old_frame, new_id: str) -> bool:
         return False
 
     try:
-        audio_obj.pop(old_id)
+        audio_obj.pop(old_id, None)   # normally already popped by the caller
         audio_obj.add(new_frame)
         return True
     except (AttributeError, KeyError):
@@ -627,6 +640,13 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         return _prompt_for_rbuf(current_value)
     if base_id == 'RVRB':
         ui_utils.show_status("Reverb (RVRB) isn't editable in Backtrack.")
+        return None
+
+    # Other structured BINARY frames (UFID/MCDI/GEOB/PRIV/ETCO/MLLT/SEEK/…) have
+    # no meaningful free-text form and create_frame can't build them, so refuse
+    # them here rather than accept a value the save path would silently drop.
+    if info.frame_type == 'BINARY' and ui_cat not in ('image', 'audio adjustment', 'lyrics'):
+        ui_utils.show_status(f"{base_id} is a structured binary frame and isn't editable in Backtrack.")
         return None
 
     # Enum / bool text frames get a dedicated picker instead of a free-text field.

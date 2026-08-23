@@ -1,6 +1,5 @@
 """Album-art extraction and terminal rendering."""
 import os
-import subprocess
 import mutagen.id3
 from mutagen.id3 import ID3
 
@@ -9,16 +8,31 @@ import numpy as np
 
 def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
     """Render image bytes as ANSI half-block characters for terminal display."""
-    # 1. Decode bytes to image
+    # 1. Decode bytes to image (keep any alpha so transparent PNGs aren't mangled).
     nparr = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
     if img is None: return "Error decoding image."
+
+    # Normalise to 3-channel BGR, compositing any alpha channel over black.
+    if img.ndim == 2:                                    # grayscale
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif img.shape[2] == 4:                              # BGRA
+        alpha = img[:, :, 3:4].astype(np.float32) / 255.0
+        img = (img[:, :, :3].astype(np.float32) * alpha).astype(np.uint8)
+    elif img.shape[2] == 2:                              # gray + alpha
+        alpha = img[:, :, 1:2].astype(np.float32) / 255.0
+        gray = (img[:, :, 0:1].astype(np.float32) * alpha).astype(np.uint8)
+        img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
     # 2. Resize maintaining aspect ratio
     # Terminal cells are ~2:1 (tall:wide); half-blocks give 2 pixel rows per char row,
     # so those factors cancel — resize to full pixel height, step-by-2 does the rest.
+    width = max(1, width)
     aspect_ratio = img.shape[0] / img.shape[1]
-    height = int(width * aspect_ratio) 
+    # Round to an even height >= 2 so the final char row always has both pixels
+    # (no black sliver on odd-height art) and resize never gets a zero dimension.
+    height = int(width * aspect_ratio)
+    height = max(2, height - (height % 2))
     img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
 
     # 3. Convert to ANSI half-blocks
@@ -29,7 +43,7 @@ def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
         for x in range(img.shape[1]):
             # Get color of top and bottom pixel
             top = img[y, x]
-            bottom = img[y+1, x] if y + 1 < img.shape[0] else [0, 0, 0]
+            bottom = img[y+1, x] if y + 1 < img.shape[0] else top
             
             # ANSI escape sequence for Foreground (top) and Background (bottom)
             output.append(f"\033[38;2;{top[2]};{top[1]};{top[0]}m"

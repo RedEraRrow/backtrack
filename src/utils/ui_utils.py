@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 import shutil
 import signal
-import textwrap
 import time as _time
 from typing import Any
 import re
@@ -19,7 +18,9 @@ def _sigwinch_handler(signum: int, frame: Any) -> None:
     global _resize_flag
     _resize_flag = True
 
-signal.signal(signal.SIGWINCH, _sigwinch_handler)
+# SIGWINCH doesn't exist on Windows — guard so importing ui_utils never raises there.
+if hasattr(signal, "SIGWINCH"):
+    signal.signal(signal.SIGWINCH, _sigwinch_handler)
 
 
 def mark_now_playing_layout_dirty() -> None:
@@ -46,7 +47,8 @@ MARGIN_H = 2   # columns reserved on each horizontal side (left and right)
 MARGIN_V = 1   # rows reserved on each vertical side (top and bottom)
 
 class Colors:
-    PRIMARY = "\033[1;37m" # White
+    PRIMARY = "\033[1;37m" # Bold white
+    WHITE = "\033[37m" # Normal white
     ACCENT = "\033[1;31m" # Red
     CYAN = "\033[1;36m"
     YELLOW = "\033[1;33m"
@@ -212,6 +214,9 @@ def get_status_line() -> str:
     global _toast_message, _toast_expiry
     cols = get_terminal_width()
 
+    if cols <= 0:
+        return ""
+
     if _toast_message and _time.time() > _toast_expiry:
         _toast_message = ""
 
@@ -229,12 +234,17 @@ def get_status_line() -> str:
 
     if left and right:
         gap = max(2, cols - visual_len(left) - visual_len(right) - 2)
-        return left + " " * gap + right + "  "
-    if left:
-        return left
-    if right:
-        return "  " + right + "  "
-    return ""
+        status = left + " " * gap + right + "  "
+    elif left:
+        status = left
+    elif right:
+        status = "  " + right + "  "
+    else:
+        status = ""
+
+    if visual_len(status) > cols:
+        status = clip_ansi(status, cols)
+    return status
 
 def get_terminal_size(default: tuple = (80, 24)) -> tuple:
     """Terminal (columns, rows), falling back to `default` if the query fails."""
@@ -282,24 +292,43 @@ def visual_len(s: str) -> int:
     return len(strip_ansi(s))
 
 
+def clip_ansi(text: str, max_cols: int) -> str:
+    """Truncate an ANSI-styled string to `max_cols` visible characters."""
+    if max_cols <= 0:
+        return ""
+    if visual_len(text) <= max_cols:
+        return text
+
+    result: list[str] = []
+    visible = 0
+    i = 0
+    while i < len(text) and visible < max_cols:
+        if text[i] == "\x1b":
+            j = i + 1
+            if j < len(text) and text[j] == "[":
+                j += 1
+                while j < len(text) and not (0x40 <= ord(text[j]) <= 0x7E):
+                    j += 1
+                if j < len(text):
+                    j += 1
+            elif j < len(text):
+                j += 1
+            result.append(text[i:j])
+            i = j
+        else:
+            result.append(text[i])
+            visible += 1
+            i += 1
+    clipped = "".join(result)
+    if not clipped.endswith(Colors.RESET):
+        clipped += Colors.RESET
+    return clipped
+
+
 def divider(width: int | None = None, char: str = "─") -> str:
     """A horizontal rule of `char` spanning `width` (or the terminal width)."""
     width = width or get_terminal_width()
     return char * width
-
-
-def wrap_text(text: str, max_width: int = 80, margin: int = 6) -> list:
-    """Word-wrap text to `max_width` minus `margin`, preserving blank lines."""
-    wrap_width = max(20, max_width - margin)
-    lines = []
-    for line in text.split('\n'):
-        if not line.strip():
-            lines.append("")
-        else:
-            lines.extend(textwrap.wrap(line, width=wrap_width, drop_whitespace=False) or [""])
-    return lines
-
-
 def format_time(seconds: int | float) -> str:
     """Convert seconds (may be float) to a compact time string.
 
@@ -338,10 +367,13 @@ def format_time(seconds: int | float) -> str:
 def _get_breadcrumb_str(width: int) -> str:
     """Render NAV_STACK as a '>'-joined breadcrumb, truncated with a leading
     ellipsis to fit `width`."""
+    if width <= 1:
+        return ""
+
     sep = " > "
     full_path = sep.join(NAV_STACK)
 
-    max_length = width - 1
+    max_length = max(0, width - 1)
 
     if len(full_path) > max_length:
         available_space = max_length - 3  # Leave 3 spaces for "..."
@@ -407,5 +439,4 @@ def get_progress_bar(progress: float, width: int = 40) -> str:
     padding = " " * (width - len(bar))
 
     return f"{Colors.DIM}[{Colors.RESET}{Colors.PRIMARY}{bar}{padding}{Colors.RESET}{Colors.DIM}]{Colors.RESET}"
-
 

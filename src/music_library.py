@@ -1,4 +1,4 @@
-"""Library scanning, metadata extraction, search, sort, and background sync."""
+"""Library scanning, metadata extraction, grouping, sort, and background sync."""
 from __future__ import annotations
 import os
 import json
@@ -98,8 +98,13 @@ def _reconcile_library(library: list, music_dir: str, ignore_hidden: bool = Fals
             if f.lower().endswith(VALID_AUDIO_EXTENSIONS):
                 on_disk.add(os.path.join(root, f))
 
+    # Normalise (case + separators) so a trailing slash or a case-insensitive
+    # filesystem doesn't misclassify which cached paths live under music_dir.
+    def _np(p: str) -> str:
+        return os.path.normcase(os.path.normpath(p))
+    md = _np(music_dir)
     known = {track['path'] for track in library}
-    under = {p for p in known if p == music_dir or p.startswith(music_dir + os.sep)}
+    under = {p for p in known if _np(p) == md or _np(p).startswith(md + os.sep)}
     if not on_disk and under:
         return False                                  # unmount / empty-scan guard
 
@@ -209,15 +214,18 @@ def _get_default_metadata(file_path: str) -> dict:
 
 def get_song_duration(file_path: str) -> float:
     """
-    Get audio duration in seconds.
+    Get audio duration in seconds, for any supported format (MP3 and MP4/M4A/…).
 
     Returns:
-        Duration in seconds, or 0 if unavailable
+        Duration in seconds as a float, or 0.0 if unavailable
     """
     try:
-        return MP3(file_path).info.length
+        audio = mutagen.File(file_path)  # type: ignore[reportPrivateImportUsage]
+        if audio is not None and audio.info is not None:
+            return float(audio.info.length)
     except (mutagen.MutagenError, OSError, AttributeError):  # type: ignore[reportPrivateImportUsage]
-        return 0
+        pass
+    return 0.0
 
 
 def get_metadata(file_path: str) -> dict:
@@ -524,20 +532,51 @@ def get_grouped_data(library: list, category: str) -> dict:
     """Group library by category."""
     grouped = {}
 
+    if category == "artist":
+        # Prefer album_artist for artist grouping. If the album artist is absent
+        # and the album contains multiple distinct performers, treat it as a
+        # compilation and group under Various Artists.
+        album_groups: dict[tuple[str, str], list[dict]] = {}
+        for song in library:
+            album = (song.get("album") or "Unknown").strip()
+            album_artist = (song.get("album_artist") or "").strip()
+            album_groups.setdefault((album, album_artist), []).append(song)
+
+        compilation_map: dict[tuple[str, str], str] = {}
+        for key, songs in album_groups.items():
+            album_artist = key[1]
+            if album_artist:
+                compilation_map[key] = album_artist
+                continue
+
+            artists = {
+                (s.get("artist") or "").strip()
+                for s in songs
+                if s.get("artist")
+            }
+            artists = {a for a in artists if a}
+            compilation_map[key] = (
+                "Various Artists" if len(artists) > 1 else next(iter(artists), "Unknown")
+            )
+
+        for song in library:
+            album = (song.get("album") or "Unknown").strip()
+            album_artist = (song.get("album_artist") or "").strip()
+            val = compilation_map.get((album, album_artist), "Unknown")
+
+            # Classical artist normalization
+            if song.get("genre", "").lower() == "classical":
+                val = val.split(',')[0].split('&')[0].split(';')[0].strip()
+
+            grouped.setdefault(val, []).append(song)
+        return grouped
+
     for song in library:
         val = song.get(category) or "Unknown"
-
-        # Prefer album_artist for artist grouping
-        if category == "artist":
-            val = song.get("album_artist") or song.get("artist") or "Unknown"
 
         # Skip Unknown grouping
         if category == "grouping" and val == "Unknown":
             continue
-
-        # Classical artist normalization
-        if category == "artist" and song.get("genre", "").lower() == "classical":
-            val = val.split(',')[0].split('&')[0].split(';')[0].strip()
 
         grouped.setdefault(val, []).append(song)
 
@@ -628,55 +667,3 @@ def sort_album_tracks(tracks: list) -> list:
         return (disc, trk, mv)
 
     return sorted(tracks, key=key)
-
-
-def search_library(library: list, query: str,
-                   active_tags: list[str] | None = None) -> list:
-    """
-    Search library with AND logic and relevance scoring.
-
-    Scoring:
-        - Exact match: 4x weight
-        - Start-of-field: 2x weight
-        - Substring: 1x weight
-        - Recent play: +2 bonus
-    """
-    recent = get_recent_paths()
-    active_tags = active_tags or ['title', 'artist', 'album', 'genre', 'people']
-    weights = {'title': 10, 'artist': 8, 'album': 5, 'genre': 3, 'people': 2}
-
-    words = query.lower().split()
-    results = []
-
-    for song in library:
-        score = 0
-        field_vals = {tag: str(song.get(tag, "")).lower() for tag in active_tags}
-
-        # Every word must match at least one field (AND logic)
-        for word in words:
-            word_matched = False
-            for tag, val in field_vals.items():
-                if word in val:
-                    w = weights.get(tag, 1)
-                    if val == word:
-                        score += w * 4
-                    elif val.startswith(word):
-                        score += w * 2
-                    else:
-                        score += w
-                    word_matched = True
-            if not word_matched:
-                score = 0
-                break
-
-        if score <= 0:
-            continue
-
-        # Recency boost
-        if song['path'] in recent:
-            score += 2
-
-        results.append((score, song))
-
-    results.sort(key=lambda x: x[0], reverse=True)
-    return [s for _, s in results]

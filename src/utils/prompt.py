@@ -15,11 +15,9 @@ from __future__ import annotations
 import re
 import sys
 import os
-import math
 import datetime
 import calendar as cal
 import tempfile
-import textwrap
 import time
 import subprocess
 from typing import Any, Callable, Literal, overload
@@ -34,6 +32,7 @@ from src.utils.prompt_core import (
     _read_key, _read_key_raw,
     _visible_rows, _cols, _rows, _hint_lines, _wrap_bordered_input_lines,
     _Widget,
+    add_hint_click_cells, now_playing_click_action, _hint_pin_target,
 )
 from src.utils import ui_utils
 from src import state as _state
@@ -49,18 +48,29 @@ _value_toggle_enabled = False
 _toggle_hint_label = 'widget'      # what text()'s ^t hint calls the alternate mode
 _toggle_carry: str | None = None   # in-progress text buffer handed across a Ctrl-T toggle
 
-# Global "reopen the player" hotkey (Ctrl-P, #14). The app registers a callback
-# that opens the full player view over the current list; select() invokes it and
-# redraws afterwards. Kept as a registered callback so prompt need not import the
-# playback layer.
-_PLAYER_KEY = '\x10'               # Ctrl-P
+# Global playback hotkeys, live from any list/menu while background audio plays
+# (#14). Ctrl-O reopens the full player; Ctrl-P/N/B are transport. Routed through
+# registered callbacks so prompt need not import the playback layer.
+_PLAYER_KEY    = '\x0f'            # Ctrl-O — open the full player view
+_PLAYPAUSE_KEY = '\x10'           # Ctrl-P — play / pause
+_NEXT_KEY      = '\x0e'           # Ctrl-N — next track
+_PREV_KEY      = '\x02'           # Ctrl-B — previous track
 _player_opener = None
+_transport_handler = None
 
 
 def set_player_opener(fn) -> None:
     """Register a ``callable()`` that opens the background player's full view."""
     global _player_opener
     _player_opener = fn
+
+
+def set_transport_handler(fn) -> None:
+    """Register ``callable(action)`` for the global transport hotkeys, where
+    action is 'playpause', 'next', or 'prev'. Kept as a registered callback so
+    prompt need not import the playback layer (mirrors set_player_opener)."""
+    global _transport_handler
+    _transport_handler = fn
 
 
 _notification_opener = None
@@ -71,11 +81,6 @@ def set_notification_opener(fn) -> None:
     invoked when the status-bar ● beacon is clicked."""
     global _notification_opener
     _notification_opener = fn
-
-
-def _toggle_hint() -> dict:
-    """Hint-bar fragment advertising the Ctrl-T text/widget toggle, when enabled."""
-    return {"^t": "text/widget"} if _value_toggle_enabled else {}
 
 
 @overload
@@ -91,6 +96,7 @@ def select(message: str, choices: list, *,
            inspect_key: str = ...,
            row_actions: dict[str, Callable[[Any], None]] | None = ...,
            row_action_hints: dict[str, str] | None = ...,
+           allow_back: bool = ...,
            ) -> str | None: ...
 @overload
 def select(message: str, choices: list, *,
@@ -105,6 +111,7 @@ def select(message: str, choices: list, *,
            inspect_key: str = ...,
            row_actions: dict[str, Callable[[Any], None]] | None = ...,
            row_action_hints: dict[str, str] | None = ...,
+           allow_back: bool = ...,
            ) -> list[Any] | None: ...
 def select(message: str, choices: list, *,
            header: list | None | Callable[[], list[str]] = None,
@@ -118,6 +125,7 @@ def select(message: str, choices: list, *,
            inspect_key: str = 'd',
            row_actions: dict[str, Callable[[Any], None]] | None = None,
            row_action_hints: dict[str, str] | None = None,
+           allow_back: bool = True,
            ) -> str | list[Any] | None:
     """Arrow keys / jk to navigate; Enter / → to confirm; ← / b / Esc / q → None.
 
@@ -144,6 +152,9 @@ def select(message: str, choices: list, *,
             the callback against the highlighted row and stays in the list (like
             on_inspect, but any number of keys) — e.g. queue the current track.
         row_action_hints: key→label map surfaced in the hint bar for row_actions.
+        allow_back: when False, the cancel keys (←/b/h/Esc) are ignored so the
+            list can only move forward (Enter) or quit (q) — used for top-level
+            menus that have nowhere to go back to.
     """
     _check_deferred_quit()
     items = _norm(choices)
@@ -200,13 +211,14 @@ def select(message: str, choices: list, *,
     # Toggle-all ('a') is offered only where it can't misbehave: multi-select with
     # no category interlock and no caller shortcut already bound to 'a'.
     _toggle_all_ok = multi and interlock_category_callback is None and not (shortcuts and ('a' in shortcuts or 'A' in shortcuts))
+    _back_hint = {"←/b": "back"} if allow_back else {}
     if multi:
-        base_hints = {"↑↓": "move", "space": "toggle", "←/b": "back", "q": "quit", "↵": "confirm"}
+        base_hints = {"↑↓": "move", "space": "toggle", **_back_hint, "q": "quit", "↵": "confirm"}
         if _toggle_all_ok:
             base_hints = {"↑↓": "move", "space": "toggle", "a": "all",
-                          "←/b": "back", "q": "quit", "↵": "confirm"}
+                          **_back_hint, "q": "quit", "↵": "confirm"}
     else:
-        base_hints = {"↑↓": "move", "←/b": "back", "q": "quit", "↵": "confirm"}
+        base_hints = {"↑↓": "move", **_back_hint, "q": "quit", "↵": "confirm"}
 
     if extra_hints:
         combined_hints = {**extra_hints, **base_hints}
@@ -222,6 +234,9 @@ def select(message: str, choices: list, *,
     # Maps a visible item index → its ANSI-stripped rendered text, so a mouse
     # click can tell whether it landed on a printed character or blank space.
     _row_plain: dict[int, str] = {}
+    # Maps an absolute (row, col) on a hint line → the key that clicking that
+    # bright glyph should replay through the normal key handling below.
+    _hint_cells: dict[tuple[int, int], str] = {}
 
     def _plain(s: str) -> str:
         return re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s)
@@ -234,6 +249,11 @@ def select(message: str, choices: list, *,
     def _lines():
         nonlocal viewport
         cols    = _cols()
+        # Refresh the now-playing box height up front so this frame's row budget
+        # (vis) and hint pinning match the box that render() will actually draw —
+        # otherwise a just-appeared box paints over the pinned hints until the
+        # next redraw (hints missing until you click/navigate).
+        ui_utils.now_playing_lines(ui_utils.get_terminal_width())
         h_lines = _header_lines()
         _last_hlen[0] = len(h_lines)
         _row_plain.clear()
@@ -247,11 +267,15 @@ def select(message: str, choices: list, *,
 
         layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
 
-        # Surface the reopen-player hotkey in the normal hint bar while background
-        # audio is active (recomputed each render so it appears/vanishes live).
+        # Surface the playback hotkeys in the normal hint bar while background
+        # audio is active (recomputed each render so they appear/vanish live).
         hints_now = combined_hints
-        if _player_opener is not None and ui_utils.now_playing_active():
-            hints_now = {**combined_hints, "^P": "player"}
+        if ui_utils.now_playing_active():
+            if _transport_handler is not None:
+                hints_now = {**combined_hints,
+                             "^P": "play/pause", "^N/^B": "next/prev"}
+            if _player_opener is not None:
+                hints_now = {**hints_now, "^O": "player"}
         hint_lines = _hint(*list(hints_now.items()), extra=layout_constraint).splitlines()
 
         # Non-item lines this widget emits: header + message + the two
@@ -319,7 +343,23 @@ def select(message: str, choices: list, *,
         out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
         # Inset the hint block by the left margin so it never hugs an edge; _hint
         # centres within _cols() (= width-2*MARGIN_H), so this makes it symmetric.
+        # Pin the hint bar to the bottom (just above the miniplayer + status) so
+        # its keys keep a fixed screen position across redraws / list sizes.
+        _filler = _hint_pin_target() - len(out) - len(hint_lines)
+        if _filler > 0:
+            out.extend([""] * _filler)
         out.extend(f"{' ' * ui_utils.MARGIN_H}{h}" for h in hint_lines)
+        # Record the clickable bright-key glyphs on each hint line (the left
+        # inset is already baked into the line, so left_inset stays 0). Rows use
+        # the same anchor math as the mouse-click handler: out-index j is at
+        # terminal row w.row(=1) + MARGIN_V + j.
+        _hint_cells.clear()
+        if hint_lines:
+            _hp = list(hints_now.items())
+            _start = len(out) - len(hint_lines)
+            for _k in range(len(hint_lines)):
+                add_hint_click_cells(_hint_cells, out[_start + _k],
+                                     1 + ui_utils.MARGIN_V + (_start + _k), _hp)
         # Hard guarantee: no rendered line ever exceeds the terminal width, so
         # the list can never wrap no matter how narrow the window is.
         return [_clip_ansi(line, ui_utils.get_terminal_width()) for line in out]
@@ -346,6 +386,23 @@ def select(message: str, choices: list, *,
                 continue
 
             key = _read_key(fd)
+            if key.startswith('MOUSE_CLICK:'):
+                # Translate clicks on the now-playing box or a hint glyph before
+                # the normal switch: box → transport/open, hint → replay its key.
+                _mp = key.split(':')
+                _mr = int(_mp[2]); _mc = int(_mp[3]) if len(_mp) > 3 else 1
+                _act = now_playing_click_action(_mr, _mc)
+                if _act == 'open' and _player_opener is not None:
+                    _player_opener()
+                    if not _IS_WINDOWS:
+                        sys.stdout.write("\033[?1000h\033[?1006h")
+                    sys.stdout.flush()
+                    _sel_last_click = None; w.anchor_reset(); w.render(_lines()); continue
+                if _act in ('playpause', 'next') and _transport_handler is not None:
+                    _transport_handler(_act); continue
+                _hk = _hint_cells.get((_mr, _mc))
+                if _hk is not None:
+                    key = _hk            # replay the hint's key through the switch
             if   key == 'CTRL_C':                break
             elif key == 'FOCUS_IN':
                 # Regained focus: repaint fully in case a background track change
@@ -384,7 +441,10 @@ def select(message: str, choices: list, *,
                     result = [it.value for it in items if it.checked]; break
                 elif not items[cursor].disabled:
                     result = items[cursor].value; break
-            elif key in ('LEFT', 'b', 'h', 'ESC'): result = None; break
+            elif key in ('LEFT', 'b', 'h', 'ESC'):
+                if allow_back:
+                    result = None; break
+                # Top-level menu: no back/cancel — only forward or quit.
             elif key in ('q', 'Q'):              raise QuitToTerminal()
             elif on_inspect is not None and key == inspect_key and not items[cursor].disabled:
                 # Inspect the current row (e.g. a full detail view) without
@@ -405,7 +465,7 @@ def select(message: str, choices: list, *,
                 _sel_last_click = None
                 w.render(_lines())
             elif key == _PLAYER_KEY and _player_opener is not None:
-                # Ctrl-P: reopen the background player's full view over this list,
+                # Ctrl-O: reopen the background player's full view over this list,
                 # then redraw when it minimises back (mirrors on_inspect).
                 _player_opener()
                 if not _IS_WINDOWS:
@@ -414,6 +474,12 @@ def select(message: str, choices: list, *,
                 _sel_last_click = None
                 w.anchor_reset()
                 w.render(_lines())
+            elif key == _PLAYPAUSE_KEY and _transport_handler is not None:
+                _transport_handler('playpause')      # Ctrl-P — background audio
+            elif key == _NEXT_KEY and _transport_handler is not None:
+                _transport_handler('next')           # Ctrl-N — skip forward
+            elif key == _PREV_KEY and _transport_handler is not None:
+                _transport_handler('prev')           # Ctrl-B — skip back
             elif shortcuts and key in shortcuts:  result = shortcuts[key]; break
             elif key == 'SCROLL_UP':             cursor = _step(cursor, -1); _sel_last_click = None; w.render(_lines())
             elif key == 'SCROLL_DOWN':           cursor = _step(cursor, 1); _sel_last_click = None; w.render(_lines())
@@ -522,6 +588,8 @@ def live_select(message: str, provider: Callable[[str], list], *,
     if on_cycle is not None:
         base_hints["tab"] = "scope"
     hints = {**(extra_hints or {}), **base_hints}
+    # Maps an absolute (row, col) on a hint line → the key clicking it replays.
+    _hint_cells: dict[tuple[int, int], str] = {}
 
     def _header_lines() -> list[str]:
         if header is None:
@@ -554,6 +622,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
         nonlocal viewport
         width = ui_utils.get_terminal_width()
         cols  = _cols()
+        ui_utils.now_playing_lines(width)   # refresh box height (see select._lines)
         out = _header_lines()
 
         qtext = "".join(query)
@@ -598,7 +667,17 @@ def live_select(message: str, provider: Callable[[str], list], *,
         out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
         # Inset the hint block by the left margin so it never hugs an edge; _hint
         # centres within _cols() (= width-2*MARGIN_H), so this makes it symmetric.
+        _filler = _hint_pin_target() - len(out) - len(hint_lines)
+        if _filler > 0:
+            out.extend([""] * _filler)
         out.extend(f"{' ' * ui_utils.MARGIN_H}{h}" for h in hint_lines)
+        _hint_cells.clear()
+        if hint_lines:
+            _hp = list(hints.items())
+            _start = len(out) - len(hint_lines)
+            for _k in range(len(hint_lines)):
+                add_hint_click_cells(_hint_cells, out[_start + _k],
+                                     1 + ui_utils.MARGIN_V + (_start + _k), _hp)
         return [_clip_ansi(line, width) for line in out]
 
     result = None
@@ -620,6 +699,24 @@ def live_select(message: str, provider: Callable[[str], list], *,
             if not _wait_for_keypress(0.05):
                 continue
             key = _read_key(fd)
+
+            if key.startswith('MOUSE_CLICK:'):
+                # Clicks on the now-playing box or a hint glyph: box → transport/
+                # open, hint → replay its key. Other clicks are ignored here.
+                _mp = key.split(':')
+                _mr = int(_mp[2]); _mc = int(_mp[3]) if len(_mp) > 3 else 1
+                _act = now_playing_click_action(_mr, _mc)
+                if _act == 'open' and _player_opener is not None:
+                    _player_opener()
+                    if not _IS_WINDOWS:
+                        sys.stdout.write("\033[?1000h\033[?1006h")
+                    sys.stdout.flush()
+                    w.anchor_reset(); w.render(_lines()); continue
+                if _act in ('playpause', 'next') and _transport_handler is not None:
+                    _transport_handler(_act); continue
+                _hk = _hint_cells.get((_mr, _mc))
+                if _hk is not None:
+                    key = _hk            # replay the hint's key through the switch
 
             if key == 'CTRL_C':
                 raise QuitToTerminal()
@@ -684,36 +781,53 @@ def live_select(message: str, provider: Callable[[str], list], *,
 
 
 def confirm(message: str, default: bool = False) -> bool:
-    """Yes/no prompt; y/n or Enter (accepting `default`) answers, Ctrl-C answers no."""
+    """Yes/no prompt; y/n or Enter (accepting `default`) answers, Ctrl-C answers no.
+    The y / n / ↵ hints are clickable."""
     fd     = sys.stdin.fileno()
     old    = _get_term_attrs(fd)
     w      = _Widget(fd)
     result = default
+    _hint_cells: dict[tuple[int, int], str] = {}
 
     def _render():
-        cols = ui_utils.get_terminal_width()
         dflt = "yes" if default else "no"
-        lines = [
+        pairs = [("y", "yes"), ("n", "no"), ("↵", f"default ({dflt})")]
+        head = [
             f"  {C.DIM}{message}{C.RESET}",
             f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}",
         ]
-        lines.extend([f"  {s}" for s in _hint(
-            ("y", "yes"), ("n", "no"), ("↵", f"default ({dflt})")
-        ).splitlines()])
+        hint_lines = _hint(*pairs).splitlines()
+        lines = head + [f"  {s}" for s in hint_lines]
+        _hint_cells.clear()
+        _start = len(lines) - len(hint_lines)
+        for _k in range(len(hint_lines)):
+            add_hint_click_cells(_hint_cells, lines[_start + _k],
+                                 1 + ui_utils.MARGIN_V + (_start + _k), pairs)
         w.render(lines)
 
     try:
         _set_raw(fd)
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000h\033[?1006h")
         _render()
         while True:
             if not _wait_for_keypress(0.05):
                 continue
             key = _read_key(fd)
+            if key.startswith('MOUSE_CLICK:'):
+                _mp = key.split(':')
+                _mr = int(_mp[2]); _mc = int(_mp[3]) if len(_mp) > 3 else 1
+                _hk = _hint_cells.get((_mr, _mc))
+                if _hk is None:
+                    continue             # modal: ignore clicks off the y/n/↵ hints
+                key = _hk                # replay the hint's key
             if   key == 'CTRL_C':    result = False; break
             elif key == 'ENTER':     result = default; break
             elif key.lower() == 'y': result = True;  break
             elif key.lower() == 'n': result = False; break
     finally:
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000l\033[?1006l")
         _restore_term_attrs(fd, old)
         w.clear()
 
@@ -1032,6 +1146,7 @@ def _build_list_edit_lines(
     and report the resulting viewport/visible-row/header-row counts."""
     num_cols = len(headers)
     cols = _cols()
+    ui_utils.now_playing_lines(ui_utils.get_terminal_width())   # refresh box height (see select._lines)
     c = cols - 4
     inner = c
     out = []
@@ -1184,10 +1299,14 @@ def _build_list_edit_lines(
                 else:
                     out.append(f"  {cursor_glyph} {cell_str}")
 
+    # Pin the bottom separator + hint bar to the bottom of the screen.
+    _filler = _hint_pin_target() - len(out) - 1 - len(hint_lines)
+    if _filler > 0:
+        out.extend([""] * _filler)
     out.append(f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}")
     out.extend(f"{' ' * ui_utils.MARGIN_H}{h}" for h in hint_lines)
 
-    return out, viewport, vis, _LEDIT_HEADER_ROWS
+    return out, viewport, vis, _LEDIT_HEADER_ROWS, active_hints, len(hint_lines)
 
 def _parse_import_rows(text: str, headers: tuple[str, ...]) -> list:
     """Parse pasted/imported text into list_edit rows, auto-detecting the layout.
@@ -1279,10 +1398,13 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
 
     _le_vis: int = 2
     _le_header_rows: int = 4
+    # Maps an absolute (row, col) on a hint line → the key clicking it replays
+    # (populated only in non-edit mode, where those hints are actionable).
+    _hint_cells: dict[tuple[int, int], str] = {}
 
     def _render():
         nonlocal viewport, _le_vis, _le_header_rows
-        lines, new_viewport, new_vis, new_hdr = _build_list_edit_lines(
+        lines, new_viewport, new_vis, new_hdr, active_hints, n_hint = _build_list_edit_lines(
             message, items, headers,
             cursor, viewport,
             edit_mode, edit_col, edit_buf, edit_pos,
@@ -1292,6 +1414,13 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
         viewport = new_viewport
         _le_vis = new_vis
         _le_header_rows = new_hdr
+        _hint_cells.clear()
+        if n_hint and not edit_mode:
+            _hp = list(active_hints.items())
+            _start = len(lines) - n_hint
+            for _k in range(n_hint):
+                add_hint_click_cells(_hint_cells, lines[_start + _k],
+                                     1 + ui_utils.MARGIN_V + (_start + _k), _hp)
         w.render(lines)
 
     def _commit_edit_buffer():
@@ -1467,6 +1596,24 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     _render()
 
             else:
+                if key.startswith('MOUSE_CLICK:'):
+                    # Now-playing box / hint-glyph clicks first; a plain row click
+                    # falls through to the row-selection handler below.
+                    _mp = key.split(':')
+                    _mr = int(_mp[2]); _mc = int(_mp[3]) if len(_mp) > 3 else 1
+                    _act = now_playing_click_action(_mr, _mc)
+                    if _act == 'open' and _player_opener is not None:
+                        _player_opener()
+                        if not _IS_WINDOWS:
+                            sys.stdout.write("\033[?1000h\033[?1006h")
+                        sys.stdout.flush()
+                        w.anchor_reset(); _le_last_click = None; _render(); continue
+                    if _act in ('playpause', 'next') and _transport_handler is not None:
+                        _transport_handler(_act); continue
+                    _hk = _hint_cells.get((_mr, _mc))
+                    if _hk is not None:
+                        key = _hk        # replay the hint's key through the switch
+
                 if key == 'CTRL_C':
                     break
                 elif key == 'SCROLL_UP':
@@ -1620,7 +1767,8 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
 
                 elif key == 'ESC':
                     ui_utils.clear_screen()
-                    result = items if confirm("Discard changes?", default=False) else initial_items
+                    # "Discard changes?" → yes = drop edits (original), no = keep edits.
+                    result = initial_items if confirm("Discard changes?", default=False) else items
                     break
 
     finally:
@@ -1729,6 +1877,7 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
 
     cursor_day = d
     day_mode = False  # False: Navigates Month/Year | True: Navigates Days
+    _digit_buf = ""   # accumulates a leading 1/2/3 so days 10-31 are typable
 
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
@@ -1904,10 +2053,20 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                 sys.stdout.write("\033[H\033[3J\033[J")
                 sys.stdout.flush()
 
-            elif key.isdigit() and int(key) >= 1 and int(key) <= 9:
-                day = int(key)
-                if day <= _days_in_month(y, m):
-                    cursor_day = day
+            elif key.isdigit():
+                # Accumulate a leading 1/2/3 into a two-digit day (10-31),
+                # otherwise jump straight to the single-digit day.
+                dm = _days_in_month(y, m)
+                if _digit_buf in ("1", "2", "3") and 1 <= int(_digit_buf + key) <= dm:
+                    cursor_day = int(_digit_buf + key)
+                    _digit_buf = ""
+                else:
+                    d1 = int(key)
+                    _digit_buf = key if d1 in (1, 2, 3) else ""
+                    if 1 <= d1 <= dm:
+                        cursor_day = d1
+            else:
+                _digit_buf = ""
 
             _render()
 
@@ -2093,6 +2252,10 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
                     if tcursor < len(torder) - 1:
                         tcursor += 1
                     else:
+                        # Cycle back to the date section (docstring contract),
+                        # starting at the month/year view.
+                        section = 'date'
+                        day_mode = False
                         tcursor = 0
 
             elif section == 'date':
@@ -2442,6 +2605,8 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
                     ms = "".join(fields['millis']).zfill(3)
                     result = f"{h}:{m}:{s}.{ms}"
                     break
+                else:
+                    ui_utils.show_status("Invalid time (need hours < 24, minutes/seconds < 60)")
             elif key == 'ESC':
                 break
             elif key in ('q', 'Q'):
@@ -2832,7 +2997,6 @@ def number_edit(message: str = "Edit number:", *, value: int = 0,
 
 
 # POPM rating 0-5 stars → 0-255 byte, Windows Media Player convention.
-_RATING_STAR_BYTES = (0, 1, 64, 128, 196, 255)
 
 
 def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
@@ -3122,7 +3286,7 @@ def system_editor_edit(initial_text: str) -> str | None:
             result = f.read().strip()
         return result if result else None
     except (OSError, subprocess.CalledProcessError) as e:
-        print(f"Error launching editor: {e}")
+        ui_utils.show_status(f"Error launching editor: {e}")
         return None
     finally:
         if os.path.exists(temp_path):

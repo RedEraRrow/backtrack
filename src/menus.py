@@ -18,7 +18,7 @@ from src.music_library import (
 from src.history import get_history, clear_history, get_recent_paths
 from src import search as _search
 from src.playback.playback import music_player
-from src.playback.session import SESSION, REPEAT_OFF, REPEAT_ONE, REPEAT_ALL, active_session, is_client
+from src.playback.session import REPEAT_OFF, REPEAT_ONE, REPEAT_ALL, active_session, is_client
 from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
 from src.config import load_config, save_config
 from src.state import NAV_STACK
@@ -89,12 +89,28 @@ def _year_of(songs: list) -> int:
 
 
 def _album_artist_of(songs: list) -> str:
-    """First non-empty album artist (falling back to artist) among a group's songs."""
-    for s in songs:
-        aa = (s.get('album_artist') or s.get('artist') or '').strip()
-        if aa:
-            return aa
-    return ''
+    """First non-empty album artist among a group's songs.
+
+    If no album artist exists and the group contains multiple distinct
+    track artists, treat it as a compilation and return Various Artists.
+    """
+    album_artists = [
+        (s.get('album_artist') or '').strip()
+        for s in songs
+        if s.get('album_artist')
+    ]
+    if album_artists:
+        return album_artists[0]
+
+    artists = [
+        (s.get('artist') or '').strip()
+        for s in songs
+        if s.get('artist')
+    ]
+    unique_artists = {a.lower() for a in artists if a}
+    if len(unique_artists) > 1:
+        return "Various Artists"
+    return next((a for a in artists if a), '')
 
 
 def _sort_groups(names: list, grouped: dict, cat_key: str, mode: str) -> list:
@@ -113,16 +129,6 @@ def _sort_groups(names: list, grouped: dict, cat_key: str, mode: str) -> list:
     if mode == "tracks":
         return sorted(names, key=lambda n: (-len(grouped[n]), nk(n)))
     return sorted(names, key=nk)  # "name" (default, alphabetical)
-
-
-def _sort_label(options: list, mode: str) -> str:
-    """Display label for mode, falling back to the first option's label if unmatched."""
-    for v, lbl in options:
-        if v == mode:
-            return lbl
-    return options[0][1]
-
-
 def _pick_sort(current: str, options: list, header) -> str:
     """Show a sort picker; return the chosen mode (unchanged if cancelled)."""
     choices = [
@@ -425,6 +431,8 @@ def handle_history(library: list) -> str | None:
     _action_choices = ["Play"]
     if _cfg.get("show_lyrics_editor", True) and find_lyrics(selected):
         _action_choices.append("Edit Lyrics")
+    if _cfg.get("show_metadata_editor", True):
+        _action_choices.append("Edit Metadata")
 
     if len(_action_choices) == 1 or _autoplay():
         action = "Play"
@@ -444,6 +452,10 @@ def handle_history(library: list) -> str | None:
     elif action == "Edit Lyrics":
         ui_utils.clear_screen()
         lyrics_editor(selected)
+        ui_utils.clear_screen()
+    elif action == "Edit Metadata":
+        ui_utils.clear_screen()
+        inspect_tag_loop(selected, library_metadata=song_meta, library=library)
         ui_utils.clear_screen()
 
     return None
@@ -536,7 +548,7 @@ def handle_settings(library_ref: list) -> None:
             notification_centre()
 
         elif choice == "Toggle Listening History":
-            config["history_enabled"] = not config["history_enabled"]
+            config["history_enabled"] = not config.get("history_enabled", True)
             ui_utils.show_status(f"History: {'ENABLED' if config['history_enabled'] else 'DISABLED'}")
 
         elif choice == "Clear History Log":
@@ -554,7 +566,7 @@ def handle_settings(library_ref: list) -> None:
                 ui_utils.show_status("Auto-play: OFF — selecting shows the Play / Edit menu.")
 
         elif choice == "Adjust Lyric Lead-in Time":
-            val = prompt.text("Lead-in seconds:", default=str(config["lyric_lead_in"]))
+            val = prompt.text("Lead-in seconds:", default=str(config.get("lyric_lead_in", 2.0)))
             if val is not None:
                 try:
                     seconds = round(max(0.0, float(val)), 2)
@@ -615,10 +627,11 @@ def handle_settings(library_ref: list) -> None:
 
         elif choice == "Toggle Hidden Files":
             config["ignore_hidden_files"] = not config.get("ignore_hidden_files", False)
-            state = "ON" if config["ignore_hidden_files"] else "OFF"
-            ui_utils.show_status(f"Hidden file filter: {state}")
+            # Single message: the "ON" hint used to be immediately overwritten.
             if config["ignore_hidden_files"]:
-                ui_utils.show_status("Rebuild library via Update Music Directory to apply.")
+                ui_utils.show_status("Hidden file filter: ON — rebuild via Update Music Directory to apply.")
+            else:
+                ui_utils.show_status("Hidden file filter: OFF")
 
         save_config(config)
 
@@ -654,23 +667,48 @@ def _queue_action_choices() -> list:
     return ["Play next", "Add to queue"] if (active_session().is_active() or is_client()) else []
 
 
-def _queue_shortcut_kwargs(library: list) -> dict:
-    """`select()` row-action kwargs for the listing-level queue shortcuts (#14):
-    ``n`` = Play next, ``a`` = Add to queue, acting on the highlighted track
-    without leaving the list. Offered whenever something is playing, and also
-    whenever we're a joined window (so you can build/start a queue on the host
-    even if it's currently idle) — mirrors the old track-menu visibility. Routes
-    through active_session() (local host or remote)."""
+def _queue_titles_for_paths(paths: list[str], library: list) -> list[str]:
+    title_map = {s['path']: (s.get('title') or os.path.splitext(os.path.basename(s['path']))[0]) for s in library}
+    return [title_map.get(p) or os.path.splitext(os.path.basename(p))[0] for p in paths]
+
+
+def _queue_shortcut_kwargs(library: list,
+                           group_paths: dict[str, list[str]] | None = None,
+                           disc_track_map: dict[str, list[str]] | None = None,
+                           work_track_map: dict[str, list[str]] | None = None) -> dict:
+    """`select()` row-action kwargs for queue shortcuts in browse/list menus.
+
+    ``n`` = Play next, ``a`` = Add to queue. Works on individual track rows,
+    and also on group rows when provided with a group-to-paths mapping.
+    """
     if not (active_session().is_active() or is_client()):
         return {}
 
-    def _do(action: str, value) -> None:
-        # Ignore the Play-all / disc / work header rows — they aren't tracks.
+    def _resolve_paths(value) -> tuple[list[str] | None, str | None]:
         if not isinstance(value, str) or value.startswith("__"):
-            return
+            return None, None
+
+        if group_paths and value in group_paths:
+            return group_paths[value], value
+
+        if disc_track_map and value.startswith("__disc_"):
+            disc_val = value[len("__disc_"):]
+            return disc_track_map.get(disc_val), f"Disc {disc_val}"
+
+        if work_track_map and value.startswith("__work__"):
+            work_name = value[len("__work__"):]
+            return work_track_map.get(work_name), work_name
+
         song = next((s for s in library if s.get('path') == value), None)
-        title = song['title'] if song else os.path.basename(value)
-        _handle_queue_action(action, value, title)
+        if song:
+            return [value], song.get('title') or os.path.basename(value)
+        return None, None
+
+    def _do(action: str, value) -> None:
+        paths, title = _resolve_paths(value)
+        if not paths:
+            return
+        _handle_queue_action(action, paths, title or '', library)
 
     return {
         'row_actions': {
@@ -681,25 +719,38 @@ def _queue_shortcut_kwargs(library: list) -> dict:
     }
 
 
-def _handle_queue_action(action: str | None, path: str, title: str) -> bool:
+def _handle_queue_action(action: str | None, path: str | list[str], title: str,
+                         library: list | None = None) -> bool:
     """Dispatch a Play-next / Add-to-queue action against the active session
     (local host or remote); returns True if ``action`` was one of them."""
     if action not in ("Play next", "Add to queue"):
         return False
     a = active_session()
+    paths = [path] if isinstance(path, str) else list(path)
+    if not paths:
+        return False
+
+    titles = _queue_titles_for_paths(paths, library or [])
     if not a.is_active():
-        # Nothing playing yet — queueing starts the session with this track so
-        # the now-playing box/panel appear and can be opened.
-        a.start(path, queue=[path], titles=[title])
-        ui_utils.show_status(f"▶ {title}")
+        a.start(paths[0], queue=paths, titles=titles)
+        ui_utils.show_status(f"▶ {titles[0] if titles else os.path.basename(paths[0])}")
         return True
+
     if action == "Play next":
-        a.play_next(path, title)
-        ui_utils.show_status(f"Playing next: {title}")
+        for p, t in zip(reversed(paths), reversed(titles)):
+            a.play_next(p, t)
+        if len(paths) == 1:
+            ui_utils.show_status(f"Playing next: {title}")
+        else:
+            ui_utils.show_status(f"Playing next: {len(paths)} tracks")
     else:
-        n = a.enqueue(path, title)
-        # A remote host owns the real count, so only show it when we host locally.
-        ui_utils.show_status(f"Added to queue ({n} in queue): {title}" if n else f"Added to queue: {title}")
+        if len(paths) == 1:
+            n = a.enqueue(paths[0], title)
+            ui_utils.show_status(f"Added to queue ({n} in queue): {title}" if n else f"Added to queue: {title}")
+        else:
+            for p in paths:
+                a.enqueue(p, None)
+            ui_utils.show_status(f"Added {len(paths)} tracks to queue")
     return True
 
 
@@ -760,6 +811,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                 _sc["/"] = "__toggle__"
                 _eh["/"] = "full list" if _letter_mode else "by letter"
 
+            group_paths = None
             if _letter_mode:
                 # LETTER VIEW: compact A–Z index. Play all / Edit act on everything.
                 names = group_names
@@ -776,6 +828,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     _sc["s"] = "__sort__"
                     _eh["s"] = "sort"
                 _choices = [prompt.Choice(title=_play_label, value="__play_all__")]
+                group_paths = {name: [s['path'] for s in grouped[name]] for name in names}
                 # In album browse, show the album artist beside each album (dimmed),
                 # matching the artist/genre → album sublist.
                 if cat_choice == "Albums":
@@ -800,6 +853,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                 shortcuts=_sc,
                 extra_hints=_eh,
                 index=_group_cursor,
+                **_queue_shortcut_kwargs(library, group_paths=group_paths),
             )
 
             if not selection:
@@ -877,13 +931,14 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     # Show the album artist (dimmed) when it differs from the
                     # artist/genre we're browsing under (#33).
                     for _a in album_list:
-                        _aa = (albums[_a][0].get('album_artist') or '').strip()
+                        _aa = _album_artist_of(albums[_a])
                         _aa = _aa if (_aa and _aa.lower() != selection.lower()) else ""
                         _alb_choices.append(prompt.Choice(title=_a, value=_a, cells=[_a, _aa]))
 
                     if _album_cursor is None:        # start on the first real album
                         _album_cursor = 0 if _single_album else 1
 
+                    album_paths = {name: [s['path'] for s in albums[name]] for name in album_list}
                     alb = prompt.select(
                         "Albums:",
                         choices=_alb_choices,
@@ -892,6 +947,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         shortcuts=_asc,
                         extra_hints=_aeh,
                         index=_album_cursor,
+                        **_queue_shortcut_kwargs(library, group_paths=album_paths),
                     )
 
                     if not alb:
@@ -1005,9 +1061,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                             _tsc["e"] = "__bulk_edit__"; _teh["e"] = "edit tags"
 
                     # Album artist shown in the header subtitle (#33).
-                    _album_artist = next(
-                        (t.get('album_artist', '').strip() for t in final_tracks
-                         if t.get('album_artist', '').strip()), "")
+                    _album_artist = _album_artist_of(final_tracks)
                     _subtitle = _album_artist or (selection if _track_context != selection else cat_choice)
 
                     _all_track_choices = _track_header_choices + track_choices
@@ -1022,7 +1076,9 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         shortcuts=_tsc,
                         extra_hints=_teh,
                         index=_track_cursor,
-                        **_queue_shortcut_kwargs(library),
+                        **_queue_shortcut_kwargs(library,
+                                                 disc_track_map=disc_track_map,
+                                                 work_track_map=work_track_map),
                     )
 
                     if not path_choice_obj:
@@ -1187,6 +1243,9 @@ def notification_centre() -> None:
     import time
     from src.utils.terminal_input import raw_mode, get_key_non_blocking, clear_escape_buffer
 
+    _hint_pairs = [("esc/b", "back")]
+    hint_cells: dict = {}
+
     def _draw() -> None:
         tasks = list(ui_utils.BACKGROUND_TASKS.values())
         out = ["\033[H\033[3J\033[J" + C.HIDE,
@@ -1197,25 +1256,41 @@ def notification_centre() -> None:
                 out.append(f"   {ui_utils.pulse_circle()}  {msg}\n")
         else:
             out.append(f"   {C.DIM}Nothing running right now.{C.RESET}\n")
-        out.append("\n\n" + prompt._hint(("esc/b", "back")))
-        sys.stdout.write("".join(out))
+        body = "".join(out) + "\n\n"
+        hint = prompt._hint(*_hint_pairs)
+        sys.stdout.write(body + hint)
         sys.stdout.flush()
+        # Record the clickable 'esc/b' glyphs (the hint sits just below `body`).
+        hint_cells.clear()
+        first_row = 1 + body.count('\n')
+        for k, line in enumerate(hint.split('\n')):
+            prompt.add_hint_click_cells(hint_cells, line, first_row + k, _hint_pairs)
 
     with raw_mode(sys.stdin):
-        last = None
-        while True:
-            # Re-key on the pulse frame only while active, so an idle panel is static.
-            frame = int(time.time() * 6) if ui_utils.has_background_tasks() else 0
-            sig = (tuple(sorted(ui_utils.BACKGROUND_TASKS.items())), frame)
-            if sig != last:
-                _draw()
-                last = sig
-            key = get_key_non_blocking()
-            if key:
-                clear_escape_buffer()
-                if key in ('b', 'B', 'q', 'Q', '\x1b') or key == 'ESC':
-                    break
-            time.sleep(0.08)
+        sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
+        sys.stdout.flush()
+        try:
+            last = None
+            while True:
+                # Re-key on the pulse frame only while active, so an idle panel is static.
+                frame = int(time.time() * 6) if ui_utils.has_background_tasks() else 0
+                sig = (tuple(sorted(ui_utils.BACKGROUND_TASKS.items())), frame)
+                if sig != last:
+                    _draw()
+                    last = sig
+                key = get_key_non_blocking()
+                if key:
+                    clear_escape_buffer()
+                    if key.startswith('MOUSE_CLICK:'):
+                        _p = key.split(':')
+                        _r = int(_p[2]); _c = int(_p[3]) if len(_p) > 3 else 1
+                        key = hint_cells.get((_r, _c)) or ''   # only the 'esc/b' glyphs act
+                    if key in ('b', 'B', 'q', 'Q', '\x1b') or key == 'ESC':
+                        break
+                time.sleep(0.08)
+        finally:
+            sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse
+            sys.stdout.flush()
     ui_utils.clear_screen()
 
 
@@ -1229,6 +1304,7 @@ def main_menu(library_ref: list) -> None:
             choices=_opts,
             header=_menu_header("Music Player"),
             index=_cursor,
+            allow_back=False,   # top level: no ←/b/Esc exit — only Enter or q/Exit
         )
 
         if not choice or choice == "Exit":

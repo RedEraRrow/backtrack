@@ -30,7 +30,6 @@ from src.id3.id3_tag_handler import (
     rename_frame,
     save_id3,
     create_apic_frame,
-    TAG_REGISTRY,
     _EXT_TO_MIME,
     parse_composite_tag_id,
 )
@@ -95,7 +94,9 @@ _HONORIFICS: frozenset[str] = frozenset({
 })
 
 # Trailing generational/ordinal suffixes kept with the surname ("James Brown Jr."
-# → "Brown, James Jr."). Also a fixed pattern set.
+# → "Brown, James Jr."). Also a fixed pattern set. NB the roman numerals here also
+# usefully leave a two-token stage name like "Sammy V" un-inverted: stripping the
+# suffix leaves one word, so the engine returns the name unchanged.
 _NAME_SUFFIXES: frozenset[str] = frozenset({
     'jr', 'sr', 'jnr', 'snr', 'ii', 'iii', 'iv', 'v', 'vi', 'vii',
     'phd', 'md', 'esq',
@@ -109,12 +110,12 @@ _INITIAL_RE = re.compile(r'^[A-Za-zÀ-ÖØ-öø-ÿ]\.$')
 # ensemble belonging to the lead artist (e.g. "Paul Tremaine And His Aristocrats").
 _LIST_SPLIT_RE = re.compile(
     r'\s*(?:'
-    r'(?<!\w)&(?!\s*(?:his|her|their)\b)'   # & but not "& His/Her/Their" (backing band)
+    r'(?<!\w)&(?!\s*(?:his|her|their|the)\b)'   # & but not "& His/Her/Their/The" (backing band)
     r'|\|'
     r'|[/\\]'
     r'|\bfeaturing\b|\bfeat\.?\b|\bft\.?\b'
-    r'|\band(?=\s+\w)(?!\s+(?:his|her|their)\b)'  # "and X" but not "and his/her/their"
-    r'|\bwith(?=\s+\w)(?!\s+(?:his|her|their)\b)'
+    r'|\band(?=\s+\w)(?!\s+(?:his|her|their|the)\b)'  # "and X" but not "and his/her/their/the"
+    r'|\bwith(?=\s+\w)(?!\s+(?:his|her|their|the)\b)'
     r'|\bvs\.?\b'
     r'|\+'
     r')\s*',
@@ -384,7 +385,7 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
 
         return True
     except (OSError, subprocess.CalledProcessError) as e:
-        print(f"Error opening preview: {e}")
+        ui_utils.show_status(f"Error opening preview: {e}")
         return False
 
 

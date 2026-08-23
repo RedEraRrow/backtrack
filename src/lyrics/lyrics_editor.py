@@ -11,17 +11,35 @@ Modes:
   WORD   per-word editing (transcript source only)
   TAP    real-time tap — audio plays, SPACE marks current line's start
   EDIT   type exact timestamp
+
+Review walkthroughs (walk each item so it gets fixed without scrolling; Tab/⇧tab
+step next/prev, recomputed live so fixed items drop out, Esc leaves, save (s) and
+re-enter later to resume on whatever is outstanding):
+  R  issues     — MD mismatches, then word-timing errors, then overlaps
+  D  directions — uncategorised stage directions (x), then untimed ones (e / t)
+  L  long lines — over-long spoken lines; / splits at the best semantic break
+
+/ (in SEG): split the current spoken line at its strongest punctuation break
+  nearest the middle (or the middle if none), redistributing words and timing.
+
+Stage directions (on a stage-direction row in SEG) — press x to cycle the kind:
+  inline    ✦ indented under the words (a mid-phrase beat)
+  tone      ~ same indent — tonal / pronunciation note (e.g. drawn-out speech)
+  external  a framed section (scene/sound, or another person's aside); who and
+            when are left to be read from the text and context.
 """
 from __future__ import annotations
-import sys, os, json, time, re
+import sys, os, json, time, re, unicodedata
 
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C, MARGIN_V
 from src.utils.prompt import (
     _Widget, _read_key, _wait_for_keypress,
     _set_raw, _restore_term_attrs, _get_term_attrs,
-    _hint_lines, _rows, _cols, text as _prompt_text,
+    _hint_lines, _cols, text as _prompt_text,
 )
+from src.utils.prompt_core import add_hint_click_cells_auto, _HINT_ANSI_RE, _visible_rows, now_playing_click_action
+from src.utils import prompt as _promptmod
 
 _vlc = None
 try:
@@ -38,7 +56,6 @@ SOURCE_SYLT       = 'sylt'
 SOURCE_USLT       = 'uslt'
 SEG, WORD, EDIT, TAP, AUDITION = 'seg', 'word', 'edit', 'tap', 'audition'
 
-_TAP_HEADER_MAX_LEN = 38
 _AUD_CLIP   = 1.0    # audition: seconds played at a line's start, and at its end
 _AUD_STEP   = 0.05   # audition: fine whole-line move per arrow press
 _AUD_COARSE = 0.25   # audition: coarser whole-line move per , / . press
@@ -64,16 +81,21 @@ def _fmt(t: float | None) -> str:
     return f"{int(m):02d}:{s:02d}.{ms:03d}"
 
 
-_TS_W  = 21   # "MM:SS.mmm → MM:SS.mmm"  (9 + " → " + 9)
 _DUR_W = 6    # "123.4s" right-justified
 
 
 def _norm(t: str) -> str:
-    """Canonical match normalization: lowercase, hyphens→spaces, punctuation
-    dropped.  This is the single basis for ALL JSON↔MD comparison (alignment and
-    the verify report) so the two never disagree about what 'matches'."""
-    t = (t or "").lower().replace('-', ' ')
-    return re.sub(r'[^a-z0-9 ]', '', t).strip()
+    """Canonical match normalization: Unicode-fold (NFKD), lowercase, joiners
+    (hyphens / periods / slashes)→spaces, other punctuation dropped.  This is the
+    single basis for ALL JSON↔MD comparison (alignment and the verify report) so
+    the two never disagree about what 'matches'.  Treating '.' and '/' as word
+    boundaries makes a dotted abbreviation match its spoken-out letters
+    (C.P.L. → "c p l" == "C P L", G.P → "g p" == "G P").  Folding keeps non-ASCII
+    letters (accented Latin → base letter, Cyrillic/CJK preserved) instead of
+    deleting them, which previously made non-English lyrics vanish from the stream."""
+    t = unicodedata.normalize('NFKD', (t or "")).lower()
+    t = re.sub(r'[-./]', ' ', t)
+    return re.sub(r'[^\w ]', '', t).strip()
 
 
 def _norm_words(t: str) -> list[str]:
@@ -117,13 +139,6 @@ def _inline_stage_dirs(t: str) -> list[tuple[int, str]]:
             out.append((count, d))
         last = m.end()
     return out
-
-
-def _range(s_t, e_t) -> str:
-    """Fixed-width 'start → end' timestamp block (21 visible cols)."""
-    return f"{_fmt(s_t)} {'→'} {_fmt(e_t)}"
-
-
 def _dur(s_t, e_t) -> str:
     """Fixed-width duration column ('12.3s' r-justified, blank if untimed)."""
     if s_t is None or e_t is None:
@@ -160,16 +175,29 @@ def _clip(s: str, width: int, ell: str = "…") -> str:
     return "".join(out) + ell + C.RESET
 
 
-def _parse(s: str) -> float | None:
-    """Parse a 'MM:SS' or plain-seconds string into float seconds; None if invalid."""
-    s = s.strip()
-    try:
-        if ':' in s:
-            m, rest = s.split(':', 1)
-            return int(m) * 60 + float(rest)
-        return float(s)
-    except (ValueError, IndexError):
-        return None
+def _fit_body_footer(out: list, footer: list, avail: int) -> list:
+    """Assemble the scrolling body + the pinned hint footer into at most `avail`
+    rows, footer flush to the bottom. The footer (hints) always survives — the
+    body is trimmed to make room — so hints never overflow past the mini-player or
+    off the bottom of the screen (that was them 'disappearing' on short screens)."""
+    if avail <= 0:
+        return []
+    if len(footer) > avail:
+        footer = footer[-avail:]                 # last resort: even hints won't fit
+    body = out[:max(0, avail - len(footer))]
+    pad  = max(0, avail - len(body) - len(footer))
+    return body + [""] * pad + footer
+
+
+def _np_transport(action: str) -> None:
+    """Drive the shared session behind the mini-player box (play/pause · next ·
+    prev) from within the editor, then repaint the box."""
+    from src.playback import session as sess
+    a = sess.active_session()
+    if   action == 'playpause': a.pause_toggle()
+    elif action == 'next':      a.next()
+    elif action == 'prev':      a.prev()
+    ui_utils.pulse_now_playing()
 
 
 # Segmented timestamp editor (EDIT mode): start and end as MM:SS.mmm, each field
@@ -330,6 +358,149 @@ def _make_stage_dir(text: str, start: float | None = None, end: float | None = N
             "words": []}
 
 
+# Stage-direction kinds (cycled in-editor with `x`, persisted in the sidecar):
+#   inline    — a mid-phrase beat, indented under the words (✦)
+#   tone      — tonal / pronunciation note, same indent (~), e.g. drawn-out speech
+#   external  — a framed section (scene/sound directions, and another person's
+#               aside); who/when is left to be read from the text and context.
+_SD_SCOPES = ('inline', 'tone', 'external')
+
+
+def _sd_scope(seg: dict) -> str:
+    """The direction's kind (see _SD_SCOPES). Migrates older segs that used the
+    'speaker' scope or a separate `tone` flag."""
+    scope = seg.get('scope')
+    if scope in _SD_SCOPES:
+        return scope
+    return 'tone' if seg.get('tone') else 'inline'
+
+
+def _is_framed(seg: dict) -> bool:
+    """A beat that stands alone as its own framed section (dotted rules, no
+    speaker): dead air (silence — belongs to nobody) or an external stage
+    direction (scene/sound, or another person's aside)."""
+    k = seg.get('kind')
+    return k == 'dead_air' or (k == 'stage_dir' and _sd_scope(seg) == 'external')
+
+
+def _reading_time(text: str) -> float:
+    """A sensible on-screen read time for a short note (e.g. a tonal/pronunciation
+    beat): ~2.3 words/sec, floored so even a one-word note lingers long enough."""
+    words = len((text or '').split())
+    return round(max(0.8, words / 2.3), 3)
+
+
+# ── Review mode: walk each flagged line so things get fixed without scrolling ──
+# Phases run in order; each is recomputed live, so fixing a line drops it and
+# stopping/saving/re-entering simply resumes on whatever is still outstanding.
+# Two programs: 'issues' (R) and 'dirs' — stage directions to categorise/time (D).
+_REVIEW_PROGRAMS = {
+    'issues': ('md', 'words', 'overlaps'),
+    'dirs':   ('uncat', 'untimed'),
+    'long':   ('long',),
+}
+_REVIEW_PHASE_NAME = {
+    'md': 'MD mismatches', 'words': 'word timings', 'overlaps': 'overlaps',
+    'uncat': 'uncategorised directions', 'untimed': 'untimed directions',
+    'long': 'long lines',
+}
+
+
+def _seg_overlap(segs: list, si: int) -> bool:
+    """The seg starts before the previous one ends (the ⚠ overlap flag)."""
+    if si <= 0:
+        return False
+    s = segs[si].get('start')
+    pe = segs[si - 1].get('end')
+    return s is not None and pe is not None and s < pe
+
+
+def _seg_word_timing_error(seg: dict) -> bool:
+    """A word inside the line ends after the next word starts (the ⚠ words flag)."""
+    if seg.get('kind') in ('dead_air', 'stage_dir'):
+        return False
+    ws = seg.get('words') or []
+    return any(ws[i].get('end') is not None and ws[i + 1].get('start') is not None
+               and ws[i]['end'] > ws[i + 1]['start'] for i in range(len(ws) - 1))
+
+
+def _seg_md_error(si: int, md_quality: dict | None) -> bool:
+    """The transcript text doesn't match the MD script for this seg (≈/? md)."""
+    if not md_quality:
+        return False
+    mq = md_quality.get(si)
+    return bool(mq) and mq.get('score', 1.0) < 0.75
+
+
+def _seg_uncategorised(seg: dict) -> bool:
+    """A stage direction with no explicit kind chosen yet (still on the default)."""
+    return seg.get('kind') == 'stage_dir' and seg.get('scope') not in _SD_SCOPES
+
+
+def _seg_untimed_dir(seg: dict) -> bool:
+    """A stage direction with no start time set."""
+    return seg.get('kind') == 'stage_dir' and seg.get('start') is None
+
+
+_LONG_LINE_CHARS = 64   # a spoken line longer than this reads better split
+
+
+def _seg_long(seg: dict, limit: int = _LONG_LINE_CHARS) -> bool:
+    """A spoken line long enough to be worth splitting (and splittable: ≥2 words)."""
+    if seg.get('kind') in ('dead_air', 'stage_dir'):
+        return False
+    return len((seg.get('text') or '').strip()) > limit and len(seg.get('words') or []) >= 2
+
+
+# Punctuation ranked by how strong a semantic break it makes (for auto-splitting).
+def _split_rank(word: str) -> int:
+    w = (word or '').strip().rstrip('*"”’\')]}')
+    if w.endswith(('.', '!', '?', '…')):      return 4   # sentence end
+    if w.endswith((';', ':')):                return 3   # clause break
+    if w.endswith(('—', '–')) or w.endswith('--'): return 2   # dash aside
+    if w.endswith(','):                       return 1   # comma
+    return 0
+
+
+def _best_split_index(words: list, text_toks: list | None = None) -> int:
+    """The word index (1..len-1) to split at: PRIORITISE a real punctuation break
+    (strongest, then nearest the middle); only fall back to the middle when the
+    line genuinely has none.  Word timing tokens usually carry no punctuation
+    (it's only in the segment text), so pass the text's whitespace tokens when
+    they line up 1:1 — that's where the commas/periods actually are."""
+    n = len(words)
+    toks = (text_toks if (text_toks and len(text_toks) == n)
+            else [w.get('word', '') for w in words])
+    mid = n / 2
+    best_i, best_key = None, None
+    for i in range(1, n):
+        rank = _split_rank(toks[i - 1])
+        if rank == 0:
+            continue
+        key = (rank, -abs(i - mid))            # strongest break, then closest to centre
+        if best_key is None or key > best_key:
+            best_key, best_i = key, i
+    return best_i if best_i is not None else max(1, round(mid))
+
+
+def _review_phase_issues(segs: list, phase: str, md_quality: dict | None) -> list[int]:
+    """The seg indices flagged for a review phase, in document order."""
+    n = len(segs)
+    if phase == 'md':
+        return [si for si in range(n) if _seg_md_error(si, md_quality)]
+    if phase == 'words':
+        return [si for si in range(n) if _seg_word_timing_error(segs[si])]
+    if phase == 'overlaps':
+        return [si for si in range(n) if _seg_overlap(segs, si)]
+    if phase == 'uncat':
+        return [si for si in range(n) if _seg_uncategorised(segs[si])]
+    if phase == 'untimed':
+        return [si for si in range(n) if _seg_untimed_dir(segs[si])]
+    if phase == 'long':
+        return [si for si in range(n) if _seg_long(segs[si])]
+    return []
+
+
 def _rebuild_srt(segs: list) -> str:
     """Render segs as SRT text, wrapping stage-direction lines in *(...)* and skipping untexted dead-air blocks."""
     blocks = []
@@ -441,12 +612,17 @@ def _shift_word(word: dict, delta: float) -> None:
 def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
           dirty, undo_depth, track_name, playing, play_pos,
           edit, source, total_s, show_hints=False, md_overlay=None,
-          md_quality=None, aud_now=None, aud_editing=False) -> tuple[list[str], int, dict]:
+          md_quality=None, aud_now=None, aud_editing=False,
+          review=None) -> tuple[list[str], int, dict]:
     """Render the full editor screen for the current mode (TAP/AUDITION/SEG/WORD),
     returning the display lines, the updated viewport, and a row→item hit-map for
     mouse clicks."""
     cols = _cols()
-    rows = _rows()
+    # Refresh the now-playing box height, then budget the body with the same
+    # helper the list menus use — it reserves the status bar, the mini-player box,
+    # and the vertical margins — so the editor never paints under the player.
+    ui_utils.now_playing_lines(ui_utils.get_terminal_width())
+    avail = _visible_rows()
     n    = len(segs)
     vp   = viewport
 
@@ -463,13 +639,18 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     B      = cols                 # body width (inside the 2-col indent)
     indent = " " * ui_utils.MARGIN_H
 
-    label = ("TAP SYNC"    if mode == TAP
-             else "AUDITION"   if mode == AUDITION
-             else "TRANSCRIPT" if source == SOURCE_TRANSCRIPT
-             else "LYRICS")
+    # In review, the header names the phase; otherwise the mode.
+    if review:
+        label = f"REVIEW · {review[0].upper()}"
+    else:
+        label = ("TAP SYNC"    if mode == TAP
+                 else "AUDITION"   if mode == AUDITION
+                 else "TRANSCRIPT" if source == SOURCE_TRANSCRIPT
+                 else "LYRICS")
 
     # Right-aligned status cluster: dirty dot · playhead · position.
-    pos_str    = f"{cursor + 1} / {n}" if n else "–"
+    # In review, show the issue counter (i / N) instead of the seg position.
+    pos_str    = f"{review[1]} / {review[2]}" if review else (f"{cursor + 1} / {n}" if n else "–")
     right_plain, right_disp = "", ""
     if dirty:
         right_disp += f"{C.ACCENT}●{C.RESET}   "; right_plain += "●   "
@@ -491,13 +672,14 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     left_w       = len(label) + 2 + len(track_txt)
     gap          = max(1, B - left_w - right_w)
 
+    # Header starts on the first line; _Widget.render adds the MARGIN_V top row,
+    # matching the rest of the app (no extra leading blank here).
     out: list[str] = [
-        "",
         indent + left_disp + " " * gap + right_disp,
-        f"{C.DIM}{indent}{'─' * B}{C.RESET}",
+        f"{C.DIM}{ui_utils.divider()}{C.RESET}",
     ]
 
-    sep = f"{C.DIM}{indent}{'─' * B}{C.RESET}"
+    sep = f"{C.DIM}{ui_utils.divider()}{C.RESET}"
 
     if mode == TAP:
         prev_s = segs[cursor - 1] if cursor > 0     else None
@@ -527,7 +709,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         footer.extend(_hint_lines(*pairs))
 
         TAP_ROWS = 9  # 3 content lines + 4 blank spacers + progress + blank
-        n_body   = max(0, rows - 1 - 2 * MARGIN_V - 3 - len(footer))
+        n_body   = max(0, avail - 2 - len(footer))   # 2 header rows (title + rule)
         pad_top  = max(0, (n_body - TAP_ROWS) // 2)
 
         out += [""] * pad_top
@@ -541,14 +723,13 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         if total_s > 0:
             pct = min(play_pos / total_s, 1.0)
             _clock = f"{_fmt(play_pos)} / {_fmt(total_s)}"
-            bar = ui_utils.get_progress_bar(pct, max(4, B - len(_clock) - 2))
+            bar = ui_utils.get_progress_bar(pct, max(4, B - len(_clock) - 4))  # -4: bar's own [ ] + 2-space gap
             out.append(f"{indent}{C.DIM}{bar}  {_clock}{C.RESET}")
         else:
             out.append("")
 
-        padding = max(0, (rows - 1 - 2 * MARGIN_V) - len(out) - len(footer))
-        _cap = ui_utils.get_terminal_width() - ui_utils.MARGIN_H
-        return [_clip(ln, _cap) for ln in out + [""] * padding + footer], vp, hit_map
+        _cap = ui_utils.get_terminal_width()   # allow full-width rules; content self-limits to the margin
+        return [_clip(ln, _cap) for ln in _fit_body_footer(out, footer, avail)], vp, hit_map
 
     if mode == AUDITION:
         prev_s = segs[cursor - 1] if cursor > 0    else None
@@ -592,7 +773,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         footer.extend(_hint_lines(*pairs))
 
         AUD_ROWS = 8
-        n_body   = max(0, rows - 1 - 2 * MARGIN_V - 3 - len(footer))
+        n_body   = max(0, avail - 2 - len(footer))   # 2 header rows (title + rule)
         pad_top  = max(0, (n_body - AUD_ROWS) // 2)
 
         out += [""] * pad_top
@@ -608,14 +789,13 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         if total_s > 0:
             pct = min(play_pos / total_s, 1.0)
             _clock = f"{_fmt(play_pos)} / {_fmt(total_s)}"
-            bar = ui_utils.get_progress_bar(pct, max(4, B - len(_clock) - 2))
+            bar = ui_utils.get_progress_bar(pct, max(4, B - len(_clock) - 4))  # -4: bar's own [ ] + 2-space gap
             out.append(f"{indent}{C.DIM}{bar}  {_clock}{C.RESET}")
         else:
             out.append("")
 
-        padding = max(0, (rows - 1 - 2 * MARGIN_V) - len(out) - len(footer))
-        _cap = ui_utils.get_terminal_width() - ui_utils.MARGIN_H
-        return [_clip(ln, _cap) for ln in out + [""] * padding + footer], vp, hit_map
+        _cap = ui_utils.get_terminal_width()   # allow full-width rules; content self-limits to the margin
+        return [_clip(ln, _cap) for ln in _fit_body_footer(out, footer, avail)], vp, hit_map
 
     # Build footer first so its actual height governs how many items we show.
     footer = [sep]
@@ -624,7 +804,8 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         s_d, e_d = _render_edit_fields(edit)
         footer.append(f"  {C.ACCENT}✎{C.RESET}  start  {s_d}    end  {e_d}")
         footer.extend(_hint_lines(('tab/⇧tab', 'field'), ('←→', 'cursor'),
-                                  ('↑↓', 'adjust'), ('↵', 'apply'), ('esc', 'cancel')))
+                                  ('↑↓', 'adjust'), ('p', 'playhead'),
+                                  ('↵', 'apply'), ('esc', 'cancel')))
 
     elif mode == WORD:
         pairs: list[tuple[str, str]] = [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
@@ -642,7 +823,17 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         is_sdir   = cur_kind == "stage_dir"
         _md_label = 'remove md' if md_overlay is not None else 'import md'
         _has_sdir = bool(md_overlay) and any(ov['kind'] == 'stage_dir' for ov in md_overlay)
-        if show_hints:
+        if review:
+            pairs = [('tab/⇧tab', 'next/prev')]
+            if is_sdir:
+                pairs += [('x', 'kind'), ('e', 'timing'), ('l', 'label')]
+                if _HAS_VLC: pairs.append(('t', 'tap'))
+            elif is_air:
+                pairs += [('e', 'timing'), ('l', 'label'), ('k', 'make dir')]
+            else:
+                pairs += [('/', 'split'), ('e', 'edit'), ('w', 'words'), ('←→', '±0.25s')]
+            pairs += [('s', 'save'), ('esc', 'leave review'), ('q', 'quit')]
+        elif show_hints:
             pairs = [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
             if source == SOURCE_TRANSCRIPT: pairs.append(('w', 'words'))
             if _HAS_VLC:                    pairs.append(('t', 'tap sync'))
@@ -650,12 +841,16 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             pairs += [('e', 'edit'), ('j', 'join↓'), ('J/K', 'move↑/↓'),
                       ('a', 'dead air'), ('d', 'del'), ('l', 'label'),
                       ('k', 'air↔dir'), ('r', 'fill gaps'), ('m', _md_label)]
+            if is_sdir:
+                pairs.append(('x', 'kind (inline/tone/external)'))
             if _has_sdir: pairs.append(('M', 'commit stage dirs'))
             pairs += [('c', 'credits'), ('spc', 'mark')]
             if _HAS_VLC: pairs.append(('p', 'preview'))
             pairs.append(('s', 'save working'))
             if source == SOURCE_TRANSCRIPT:
                 pairs += [('V', 'verify md'), ('S', 'split by line'), ('W', 'write file')]
+            pairs += [('/', 'split line'),
+                      ('R', 'review issues'), ('D', 'review directions'), ('L', 'long lines')]
             if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
             pairs += [('?', 'hide hints'), ('q', 'quit')]
         else:
@@ -663,20 +858,23 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             if is_air or is_sdir:
                 pairs += [('d', 'del'), ('l', 'label'),
                           ('k', 'make dir' if is_air else 'make air'),
-                          ('e', 'timing'), ('J/K', 'move')]
+                          ('e', 'timing')]
+                if is_sdir:
+                    pairs.append(('x', 'kind'))
+                pairs.append(('J/K', 'move'))
             else:
                 pairs += [('e', 'edit'), ('j', 'join'), ('J/K', 'move')]
                 if source == SOURCE_TRANSCRIPT: pairs.append(('w', 'words'))
             if _has_sdir: pairs.append(('M', 'commit stage dirs'))
-            pairs += [('s', 'save'), ('?', 'more')]
+            pairs += [('/', 'split'), ('R', 'review'), ('D', 'dirs'), ('L', 'long'), ('s', 'save'), ('?', 'more')]
             if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
             pairs.append(('q', 'quit'))
             # (W = write to transcript.json — shown in full hints via ?)
         if selected: pairs.append(('', f'{len(selected)} marked'))
         footer.extend(_hint_lines(*pairs))
 
-    HEADER    = 3
-    available = rows - 1 - 2 * MARGIN_V - HEADER - 2 - len(footer)
+    HEADER    = 2   # title + rule (no leading blank; render adds the MARGIN_V top row)
+    available = avail - HEADER - 2 - len(footer)
     vis       = max(1, available)
 
     # Compact grid (visible widths after the 2-col indent):
@@ -709,8 +907,10 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             # out even on the bold current row, and every span restores `base` —
             # the row's own colour — so the highlight continues past the emphasis
             # instead of the span's reset blanking the rest of the line.
+            # Emphasis reads as type style, not underlines: *word* → italic,
+            # **word** → bold. Cleaner than the old underline on already-bright rows.
             t_disp = _apply_markdown_formatting(
-                t, base=text_color, strong=f"{C.BOLD}{C.UNDERLINE}", em=C.UNDERLINE)
+                t, base=text_color, strong=C.BOLD, em=C.ITALIC)
             # A music note is accent on the current row (text_color set) and dim
             # elsewhere — accent is reserved for the current line.  Either way it
             # renders in a fixed style rather than inheriting the row's bold, so
@@ -777,9 +977,15 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             return it['type'] == 'overlay' and it['data']['kind'] == 'stage_dir'
         spaced: list[dict] = []
         _n = len(display_items); _i = 0
+        def _is_banner(it: dict | None) -> bool:
+            return bool(it) and it['type'] == 'overlay' and it['data'].get('kind') == 'speaker'
         while _i < _n:
             if _is_float_sd(display_items[_i]):
-                spaced.append({'type': 'blank'})
+                # Hug the speaker banner when one sits directly above (a wordless
+                # noise line, e.g. MARTIN then ✦ (exasperated noise)); otherwise a
+                # blank fences the direction off as its own beat.
+                if not _is_banner(spaced[-1] if spaced else None):
+                    spaced.append({'type': 'blank'})
                 while _i < _n and _is_float_sd(display_items[_i]):
                     spaced.append(display_items[_i]); _i += 1
                 spaced.append({'type': 'blank'})
@@ -790,16 +996,56 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         n_disp    = len(display_items)
         cursor_di = next((i for i, it in enumerate(display_items)
                           if it['type'] == 'seg' and it['si'] == cursor), 0)
-        if cursor_di < vp:         vp = cursor_di
-        if cursor_di >= vp + vis:  vp = cursor_di - vis + 1
-        vp = max(0, min(vp, max(0, n_disp - vis)))
+
+        # Items aren't all one row — an external (framed) direction draws up to 3.
+        # Window by ROWS, not slots, so a run of tall items can't push the last
+        # line under the footer.
+        def _ov_spk(x):
+            return bool(x) and x['type'] == 'overlay' and x['data'].get('kind') == 'speaker'
+        def _ov_framed(x):
+            return bool(x) and x['type'] == 'seg' and _is_framed(x['seg'])
+        def _disp_rows(di: int) -> int:
+            it = display_items[di]
+            if not (it['type'] == 'seg' and _is_framed(it['seg'])):
+                return 1
+            prev = display_items[di - 1] if di > 0 else None
+            nxt  = display_items[di + 1] if di + 1 < n_disp else None
+            return 1 + (0 if (_ov_spk(prev) or _ov_framed(prev)) else 1) \
+                     + (0 if _ov_spk(nxt) else 1)
+
+        # Rows for the item list: reserve the two ↑/↓ indicators AND one blank so
+        # the last/selected item always clears the footer by +1 row.
+        item_rows = max(1, avail - HEADER - 2 - len(footer) - 1)
+
+        if cursor_di < vp:
+            vp = cursor_di
+        while vp < cursor_di:                       # grow vp until the cursor fits
+            _used = 0; _last = vp - 1
+            for _di in range(vp, n_disp):
+                _used += _disp_rows(_di)
+                if _used > item_rows:
+                    break
+                _last = _di
+            if cursor_di <= _last:
+                break
+            vp += 1
+        # Keep leading overlays (e.g. a stage direction before the first seg)
+        # visible when the cursor is that first seg and they still fit.
+        if not any(it['type'] == 'seg' for it in display_items[:cursor_di]):
+            if sum(_disp_rows(d) for d in range(cursor_di + 1)) <= item_rows:
+                vp = 0
+        vp = max(0, vp)
 
         segs_above = sum(1 for it in display_items[:vp] if it['type'] == 'seg')
         out.append(f"{indent}{C.DIM}↑  {segs_above} above{C.RESET}" if vp > 0 else "")
 
-        for slot in range(vis):
-            di = vp + slot
-            if di >= n_disp: break
+        _used_rows = 0
+        _last_shown = vp - 1
+        for di in range(vp, n_disp):
+            if _used_rows + _disp_rows(di) > item_rows:
+                break
+            _used_rows += _disp_rows(di)
+            _last_shown = di
             it = display_items[di]
 
             if it['type'] == 'blank':
@@ -815,7 +1061,9 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
                     if stg:
                         head  += f" {C.DIM}({stg}){C.RESET}"
                         hplain += f" ({stg})"
-                    rule = '┈' * max(1, B - len(hplain) - 3)
+                    # Dotted rule runs to the right edge of the body — i.e. where
+                    # the duration column ends on the rows below — not full window.
+                    rule = '┈' * max(1, B - len(hplain) - 1)
                     out.append(f"{indent}{head} {C.DIM}{rule}{C.RESET}")
                 else:
                     # Isolated stage direction (uncommitted overlay) — left-aligned
@@ -867,14 +1115,11 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
                 prefix  = f"{ptr} {chk} {start_d}  "
                 rhs_disp, rhs_w = _rhs(s_t, e_t, is_cur, flags)
 
-                hit_map[len(out)] = si   # this display row selects seg `si`
                 if is_air or is_sdir:
-                    sym   = '✦' if is_sdir else '◌'
+                    scope = _sd_scope(seg) if is_sdir else ''
+                    sym   = ('~' if scope == 'tone' else '✦') if is_sdir else '◌'
                     _lbl  = seg.get('text', '').strip()
-                    disp  = f"({_lbl})" if _lbl else ("(…)" if is_sdir else "silence")
-                    budget = max(1, B - PREFIX_W - 2 - (rhs_w + 2 if rhs_w else 0))
-                    disp   = ui_utils.truncate_text(disp, budget)
-                    # Accent is reserved for the current row; off-row markers dim.
+                    disp0 = f"({_lbl})" if _lbl else ("(…)" if is_sdir else "silence")
                     sym_c = C.ACCENT if is_cur else C.DIM
                     if is_sdir and s_t is not None:
                         # A *timed* stage direction is a placed beat — the italic
@@ -883,12 +1128,41 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
                         lbl_c = f"{C.PRIMARY if is_cur else C.DIM}{C.ITALIC}"
                     else:
                         lbl_c = C.PRIMARY if is_cur else C.DIM
-                    body   = f"{prefix}{sym_c}{sym}{C.RESET} {lbl_c}{disp}{C.RESET}"
+                    # inline / tone sit indented under the words; external is a
+                    # framed section (below).
+                    sd_pad  = '   ' if (is_sdir and scope in ('inline', 'tone')) else ''
+                    budget  = max(1, B - PREFIX_W - 2 - len(sd_pad) - (rhs_w + 2 if rhs_w else 0))
+                    disp    = ui_utils.truncate_text(disp0, budget)
+                    body    = (f"{prefix}{sd_pad}{sym_c}{sym}{C.RESET} "
+                               f"{lbl_c}{disp}{C.RESET}")
                     if rhs_w:
-                        pad = max(1, B - PREFIX_W - 2 - len(disp) - rhs_w)
+                        pad  = max(1, B - PREFIX_W - 2 - len(sd_pad) - len(disp) - rhs_w)
                         body += " " * pad + rhs_disp
-                    out.append(indent + body)
+                    if is_air or (is_sdir and scope == 'external'):
+                        # Framed section (dead air / external direction — belongs to
+                        # nobody). Never double up dotted lines: a neighbouring
+                        # speaker banner (NAME ┈┈) already draws a rule, so let it
+                        # serve as the border; a rule between two stacked framed
+                        # beats is drawn once.
+                        _prev = display_items[di - 1] if di > 0 else None
+                        _next = display_items[di + 1] if di + 1 < n_disp else None
+                        def _is_speaker(it):
+                            return bool(it) and it.get('type') == 'overlay' \
+                                and it['data'].get('kind') == 'speaker'
+                        def _is_framed_it(it):
+                            return bool(it) and it.get('type') == 'seg' and _is_framed(it['seg'])
+                        _erule = f"{C.DIM}{indent}{'┈' * B}{C.RESET}"
+                        if not (_is_speaker(_prev) or _is_framed_it(_prev)):
+                            out.append(_erule)                 # top rule
+                        hit_map[len(out)] = si
+                        out.append(indent + body)
+                        if not _is_speaker(_next):
+                            out.append(_erule)                 # bottom rule (else the banner below is it)
+                    else:
+                        hit_map[len(out)] = si   # this display row selects seg `si`
+                        out.append(indent + body)
                 else:
+                    hit_map[len(out)] = si   # this display row selects seg `si`
                     _mq     = (md_quality or {}).get(si)
                     _use_md = bool(_mq and _mq.get('md_text'))
                     raw     = (_mq['md_text'] if (_use_md and _mq) else seg.get('text', '')).strip()
@@ -897,12 +1171,11 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
                     out.append(_compose(prefix, raw, C.PRIMARY if is_cur else "",
                                         rhs_disp, rhs_w, fmt=True))
 
-        segs_below = sum(1 for it in display_items[vp + vis:] if it['type'] == 'seg')
+        segs_below = sum(1 for it in display_items[_last_shown + 1:] if it['type'] == 'seg')
         out.append(f"{indent}{C.DIM}↓  {segs_below} below{C.RESET}" if segs_below > 0 else "")
 
-    padding = max(0, (rows - 1 - 2 * MARGIN_V) - len(out) - len(footer))
-    _cap = ui_utils.get_terminal_width() - ui_utils.MARGIN_H
-    return [_clip(ln, _cap) for ln in out + [""] * padding + footer], vp, hit_map
+    _cap = ui_utils.get_terminal_width()   # allow full-width rules; content self-limits to the margin
+    return [_clip(ln, _cap) for ln in _fit_body_footer(out, footer, avail)], vp, hit_map
 
 
 _AIR_GAP_THRESHOLD = 1.5   # seconds — gaps shorter than this are not recommended
@@ -1059,12 +1332,17 @@ def _build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]
         pos     = d['pos']
         prev_si = seg_of_md[mis[pos - 1]] if 0 < pos <= len(mis) else None
         next_si = seg_of_md[mis[pos]]     if pos < len(mis)      else None
+        # Carry the line's speaker on every direction so the emit step can attribute
+        # it — e.g. `MARTIN: *(exasperated noise)*` between two ARTHUR turns gets a
+        # MARTIN banner. (For a direction on its own line's own speaker, the context
+        # check below suppresses a redundant banner.)
+        _spk = line_meta.get(d['line'], {}).get('speaker', '')
         if next_si is not None and next_si != prev_si:
-            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'anchor_si': next_si})
+            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'anchor_si': next_si, 'speaker': _spk})
         elif prev_si is not None:
-            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'anchor_si': prev_si + 1})
+            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'anchor_si': prev_si + 1, 'speaker': _spk})
         else:
-            stage_dirs.append({'text': d['text'], 'before_line': d['line']})
+            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'speaker': _spk})
 
     # ── Emit overlay: speaker banner per MD line + standalone stage directions ──
     line_first_seg: dict = {}                 # line_id → first seg (in order) covering it
@@ -1091,7 +1369,8 @@ def _build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]
     # Standalone stage directions: a committed stage_dir seg / labelled dead_air
     # claims the matching one by text so it isn't shown both as a seg AND a ✦.
     materialized: set = set()
-    for _seg in segs:
+    mat_seg: dict = {}                        # stage_dir idx → committed seg index
+    for _si, _seg in enumerate(segs):
         if _seg.get('kind') not in ('stage_dir', 'dead_air'):
             continue
         sn = _norm(_seg.get('_md_text') or _seg.get('text', ''))
@@ -1100,13 +1379,40 @@ def _build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]
         for idx, sd in enumerate(stage_dirs):
             if idx not in materialized and _norm(sd['text']) == sn:
                 materialized.add(idx)
+                mat_seg[idx] = _si
                 break
+
+    # Speaker in effect just before a seg position — the last dialogue line above
+    # it. Used to decide when a direction needs its own banner (a different
+    # speaker) vs. when the surrounding speaker already covers it.
+    _dia_spk = sorted((si, line_meta.get(links.get(si), {}).get('speaker', '')) for si in dia)
+    def _ctx_spk(pos: int) -> str:
+        spk = ''
+        for si, s in _dia_spk:
+            if si < pos:
+                spk = s or spk
+            else:
+                break
+        return spk
+
     covered = sorted(line_first_seg)
     for idx, sd in enumerate(stage_dirs):
+        _spk = sd.get('speaker', '')
         if idx in materialized:
+            # The direction shows as its own committed seg, but if it belongs to a
+            # DIFFERENT speaker than the surrounding dialogue (a wordless
+            # `MARTIN: *(noise)*` committed between ARTHUR lines), still banner it.
+            _msi = mat_seg.get(idx)
+            if _spk and _msi is not None and _spk != _ctx_spk(_msi):
+                items.append((_msi, -1, {'kind': 'speaker', 'text': _spk,
+                                         'stage': '', 'before_si': _msi}))
             continue
         if sd.get('anchor_si') is not None:   # mid-line dir pinned to a seg boundary
             bsi = min(sd['anchor_si'], len(segs))
+            # An inline direction belongs to its speaker's line, so it sits AFTER
+            # the banner (order 2) — e.g. a line that opens with *(a noise)*: the
+            # noise reads under MARTIN, not orphaned above the MARTIN banner.
+            order = 2
         else:
             L = sd['before_line']
             if L in line_first_seg:
@@ -1114,9 +1420,16 @@ def _build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]
             else:                             # its line has no seg → next covered line, else end
                 k = bisect.bisect_left(covered, L)
                 bsi = line_first_seg[covered[k]] if k < len(covered) else len(segs)
-        items.append((bsi, 0, {'kind': 'stage_dir', 'text': sd['text'], 'before_si': bsi}))
+            order = 0                          # a standalone direction sits above the banner
+        # Banner the direction's speaker above it when that speaker differs from
+        # the surrounding dialogue (suppresses a redundant banner on its own line).
+        if _spk and _spk != _ctx_spk(bsi):
+            items.append((bsi, -1, {'kind': 'speaker', 'text': _spk,
+                                    'stage': '', 'before_si': bsi}))
+        items.append((bsi, order, {'kind': 'stage_dir', 'text': sd['text'], 'before_si': bsi}))
 
-    items.sort(key=lambda t: (t[0], t[1]))    # stable: stage dir before speaker at a tie
+    # order at a tie: 0 standalone stage dir → 1 speaker banner → 2 inline stage dir
+    items.sort(key=lambda t: (t[0], t[1]))
     overlay = [it for _, _, it in items]
     return overlay, quality, links
 
@@ -1347,6 +1660,8 @@ def lyrics_editor(mp3_path: str) -> None:
     viewport   = 0
     dirty      = False
     show_hints = False
+    review_phase: str | None = None          # current phase, or None when not reviewing
+    review_program: str | None = None        # 'issues' (R) or 'dirs' (D)
     md_overlay: list | None = None
     md_quality: dict | None = None
     md_path:    str  | None = None
@@ -1474,6 +1789,98 @@ def lyrics_editor(mp3_path: str) -> None:
         else:
             md_overlay = md_quality = None
 
+    def _review_enter(program: str) -> None:
+        """Start a walkthrough (program 'issues' or 'dirs'): jump to the first
+        outstanding item, earliest phase first."""
+        nonlocal review_phase, review_program, cursor, viewport
+        for ph in _REVIEW_PROGRAMS[program]:
+            issues = _review_phase_issues(segs, ph, md_quality)
+            if issues:
+                review_program = program
+                review_phase = ph
+                cursor = issues[0]
+                viewport = 0
+                ui_utils.show_status(
+                    f"Review · {_REVIEW_PHASE_NAME[ph]}: {len(issues)} to fix — "
+                    f"Tab/⇧Tab next/prev, fix in place, Esc to leave.")
+                return
+        _none = ("stage directions need categorising or timing" if program == 'dirs'
+                 else "MD mismatches, word or overlap errors")
+        ui_utils.show_status(f"Nothing to review — no {_none}.")
+
+    def _review_advance(direction: int) -> None:
+        """Move to the next/prev outstanding item, recomputed live so fixed ones
+        drop out; rolls through this program's phases and ends when none remain."""
+        nonlocal review_phase, review_program, cursor, viewport
+        phases = _REVIEW_PROGRAMS.get(review_program, ())
+        ph = review_phase
+        while ph is not None and ph in phases:
+            issues = _review_phase_issues(segs, ph, md_quality)
+            if direction > 0:
+                nxt = next((si for si in issues if si > cursor), None)
+            else:
+                nxt = next((si for si in reversed(issues) if si < cursor), None)
+            if nxt is not None:
+                review_phase = ph
+                cursor = nxt
+                viewport = 0
+                return
+            # exhausted this phase in this direction — step to the adjacent phase
+            i = phases.index(ph) + (1 if direction > 0 else -1)
+            if not (0 <= i < len(phases)):
+                break
+            ph = phases[i]
+            issues = _review_phase_issues(segs, ph, md_quality)
+            if issues:
+                review_phase = ph
+                cursor = issues[0] if direction > 0 else issues[-1]
+                viewport = 0
+                ui_utils.show_status(f"Review · {_REVIEW_PHASE_NAME[ph]}: {len(issues)} to fix.")
+                return
+        review_phase = None
+        review_program = None
+        ui_utils.show_status("Review complete — all resolved. (Save with s.)")
+
+    def do_smart_split() -> None:
+        """Split the current spoken line at its strongest semantic break nearest the
+        middle (or the middle itself when there's no punctuation), redistributing
+        words and timing like the per-word split. Repeat to split further."""
+        nonlocal dirty, cursor
+        if not (segs and 0 <= cursor < len(segs)):
+            return
+        seg = segs[cursor]
+        if seg.get('kind') in ('dead_air', 'stage_dir'):
+            ui_utils.show_status("Only spoken lines can be split."); return
+        words = seg.get('words') or []
+        if len(words) < 2:
+            ui_utils.show_status("Line has too few timed words to split."); return
+        text_toks = (seg.get('text') or '').split()
+        i = _best_split_index(words, text_toks)
+        w_a, w_b = words[:i], words[i:]
+        # Keep each half's punctuation: rebuild text from the (punctuated) text
+        # tokens when they line up 1:1 with the words, not from the bare word tokens.
+        if len(text_toks) == len(words):
+            a_txt, b_txt = ' '.join(text_toks[:i]), ' '.join(text_toks[i:])
+        else:
+            a_txt = ' '.join(ww.get('word', '').strip() for ww in w_a)
+            b_txt = ' '.join(ww.get('word', '').strip() for ww in w_b)
+        boundary = (w_b[0].get('start') or w_a[-1].get('end')
+                    or round(((seg.get('start') or 0) + (seg.get('end') or 0)) / 2, 3))
+        seg_a = {'start': seg.get('start'), 'end': round(boundary, 3),
+                 'text': a_txt, 'words': w_a}
+        seg_b = {'start': round(boundary, 3), 'end': seg.get('end'),
+                 'text': b_txt, 'words': w_b}
+        for k in ('kind', 'line_ref'):        # both halves stay the same kind / MD line
+            if seg.get(k) is not None:
+                seg_a[k] = seg_b[k] = seg[k]
+        undo_stack.append(('split', cursor, seg))
+        segs[cursor:cursor + 1] = [seg_a, seg_b]
+        dirty = True
+        refresh_overlay()
+        _after = (text_toks[i - 1] if len(text_toks) == len(words)
+                  else w_a[-1].get('word', '')).strip()
+        ui_utils.show_status(f"Split after “{_after}”.")
+
     def apply_segs(idxs: list[int], delta: float) -> None:
         """Shift the given segments by delta seconds, marking dirty and recording an undo entry."""
         nonlocal dirty
@@ -1586,10 +1993,10 @@ def lyrics_editor(mp3_path: str) -> None:
                 container = json.load(f)
         except (OSError, json.JSONDecodeError):
             container = {}
-        spoken = [s for s in segs if s.get('kind') not in ('stage_dir', 'dead_air')]
+        spoken = [s for s in segs if s.get('kind') not in ('stage_dir', 'dead_air', 'credit')]
         container['segments']      = [_clean_seg(s) for s in spoken]
         container['word_segments'] = [
-            {'word': w['word'], 'start': w.get('start'),
+            {'word': w.get('word', ''), 'start': w.get('start'),
              'end': w.get('end'), 'score': w.get('score')}
             for seg in spoken for w in seg.get('words', [])
         ]
@@ -1603,21 +2010,31 @@ def lyrics_editor(mp3_path: str) -> None:
         """Minimal scrollable full-screen viewer.  `body` lines are already
         coloured; the pager just windows and clips them."""
         vp = 0
-        foot = [f"{C.DIM}{' ' * ui_utils.MARGIN_H}{'─' * _cols()}{C.RESET}"] + \
+        foot = [f"{C.DIM}{ui_utils.divider()}{C.RESET}"] + \
                _hint_lines(('↑↓', 'scroll'), ('PgUp/PgDn', 'page'),
                            ('Home/End', 'ends'), ('q', 'back'))
+        hint_cells: dict = {}
         while True:
-            rows, cols = _rows(), _cols()
-            vis = max(3, rows - 1 - 2 * MARGIN_V - len(foot) - 1)
+            ui_utils.now_playing_lines(ui_utils.get_terminal_width())
+            cols = _cols()
+            avail = _visible_rows()
+            vis = max(3, avail - len(foot) - 1)
             vp  = max(0, min(vp, max(0, len(body) - vis)))
             out = [""]
             for ln in body[vp:vp + vis]:
                 out.append(_clip("  " + ln, cols + ui_utils.MARGIN_H))
-            pad = max(0, (rows - 1 - 2 * MARGIN_V) - len(out) - len(foot))
-            w.render(out + [""] * pad + foot)
+            pad = max(0, (avail) - len(out) - len(foot))
+            rendered = out + [""] * pad + foot
+            w.render(rendered)
+            hint_cells.clear()
+            for _i in range(len(rendered) - len(foot), len(rendered)):
+                add_hint_click_cells_auto(hint_cells, rendered[_i], _i)
             if not _wait_for_keypress(0.2):
                 continue
             k = _read_key(fd)
+            if k.startswith('MOUSE_CLICK:') and w.row is not None:
+                _p = k.split(':'); _r = int(_p[2]); _c = int(_p[3]) if len(_p) > 3 else 1
+                k = hint_cells.get((_r - w.row - ui_utils.MARGIN_V, _c)) or ''
             if   k in ('q', 'ESC', 'CTRL_C'): break
             elif k in ('UP', 'k'):            vp -= 1
             elif k in ('DOWN', 'j', 'SPACE'): vp += 1
@@ -1761,14 +2178,39 @@ def lyrics_editor(mp3_path: str) -> None:
         return ws[cursor] if cursor < len(ws) else None
 
     def _edit_prefill() -> None:
-        """Populate the segmented fields from the item being edited."""
+        """Populate the segmented fields from the item being edited.  An *untimed*
+        stage direction / dead air is seeded from the gap between its timed
+        neighbours (or 0 at the top), so giving it a timing is usually a single
+        Enter instead of typing MM:SS.mmm from scratch."""
         nonlocal edit_fields, edit_orig, edit_fi, edit_pos, edit_fresh
         item = _edit_target() or {}
-        sm, ss, sms = _ts_parts(item.get('start'))
-        em, es, ems = _ts_parts(item.get('end'))
+        start_v, end_v = item.get('start'), item.get('end')
+        seed = (prev_mode == SEG and start_v is None
+                and item.get('kind') in ('stage_dir', 'dead_air')
+                and segs and cursor < len(segs))
+        if seed:
+            prev_t = next((segs[j].get('end') for j in range(cursor - 1, -1, -1)
+                           if segs[j].get('end') is not None), None)
+            next_t = next((segs[j].get('start') for j in range(cursor + 1, len(segs))
+                           if segs[j].get('start') is not None), None)
+            start_v = prev_t if prev_t is not None else 0.0
+            if end_v is None:
+                if item.get('kind') == 'stage_dir' and _sd_scope(item) == 'tone':
+                    # A tonal note starts at the end of the line above and runs a
+                    # sensible reading time — free to overlap whatever comes next.
+                    end_v = round(start_v + _reading_time(item.get('text', '')), 3)
+                else:
+                    end_v = next_t if next_t is not None else round(start_v + 1.0, 3)
+        sm, ss, sms = _ts_parts(start_v)
+        em, es, ems = _ts_parts(end_v)
         edit_fields = {'sm': list(sm), 'ss': list(ss), 'sms': list(sms),
                        'em': list(em), 'es': list(es), 'ems': list(ems)}
         edit_orig   = {k: "".join(v) for k, v in edit_fields.items()}
+        if seed:
+            # These bounds were unset; force Enter to commit the seeded values even
+            # when they read as 0, so one Enter actually times the direction.
+            for k in (*_EDIT_START, *_EDIT_END):
+                edit_orig[k] = "\x00"
         edit_fi     = 0
         edit_pos    = 0
         edit_fresh  = True   # first digit fills the field from the left
@@ -1831,6 +2273,7 @@ def lyrics_editor(mp3_path: str) -> None:
         sys.stdout.flush()
         need_redraw = True
         hit_map: dict[int, int] = {}   # row → item index, rebuilt on every _draw
+        hint_cells: dict = {}          # (out-index, col) → synth key for footer hints
 
         while True:
             n = len(segs)
@@ -1873,6 +2316,11 @@ def lyrics_editor(mp3_path: str) -> None:
                 w.anchor_reset(); need_redraw = True
 
             if need_redraw:
+                review_info = None
+                if review_phase:
+                    _riss = _review_phase_issues(segs, review_phase, md_quality)
+                    _ridx = (_riss.index(cursor) + 1) if cursor in _riss else '–'
+                    review_info = (_REVIEW_PHASE_NAME[review_phase], _ridx, len(_riss))
                 lines, viewport, hit_map = _draw(
                     segs, cursor, seg_cursor, mode, prev_mode, selected,
                     viewport, dirty, len(undo_stack), track_name,
@@ -1880,14 +2328,41 @@ def lyrics_editor(mp3_path: str) -> None:
                     {'fields': edit_fields, 'fi': edit_fi, 'pos': edit_pos},
                     source, total_s,
                     show_hints, md_overlay, md_quality, aud_now, aud_editing,
+                    review=review_info,
                 )
                 w.render(lines)
                 need_redraw = False
+                # Map the clickable footer-hint glyphs. The footer sits below the
+                # last full-width rule; scanning only there keeps lyric text with
+                # brackets (e.g. "[Chorus]") from being mistaken for a key. Cells
+                # are keyed by out-index row (col is absolute), matching the
+                # r → line_idx inversion the mouse handler uses.
+                hint_cells.clear()
+                _sep_idx = -1
+                for _i in range(len(lines) - 1, -1, -1):
+                    _s = _HINT_ANSI_RE.sub('', lines[_i]).strip()
+                    if _s and set(_s) <= {'─'}:
+                        _sep_idx = _i
+                        break
+                if _sep_idx >= 0:
+                    for _i in range(_sep_idx + 1, len(lines)):
+                        add_hint_click_cells_auto(hint_cells, lines[_i], _i)
 
             if not _wait_for_keypress(0.05):
                 continue
             key = _read_key(fd)
             need_redraw = True
+
+            # Mini-player (shared session) transport from the editor: Ctrl-P/N/B,
+            # and Ctrl-O to open the full player over the editor.
+            if key in ('\x10', '\x0e', '\x02'):
+                _np_transport({'\x10': 'playpause', '\x0e': 'next', '\x02': 'prev'}[key])
+                continue
+            if key == '\x0f' and _promptmod._player_opener is not None:
+                _promptmod._player_opener()
+                sys.stdout.write("\033[?1000h\033[?1006h"); sys.stdout.flush()
+                w.anchor_reset()
+                continue
 
             # Mouse: scroll navigates; a click positions the cursor on a row.
             if key == 'SCROLL_UP':
@@ -1895,33 +2370,64 @@ def lyrics_editor(mp3_path: str) -> None:
             elif key == 'SCROLL_DOWN':
                 key = 'DOWN'
             elif key.startswith(('MOUSE_CLICK:', 'MOUSE_RELEASE:')):
+                # A click on the now-playing box drives the shared session: the
+                # ⏯/⏭ icons play-pause/skip, elsewhere opens the full player.
+                if key.startswith('MOUSE_CLICK:'):
+                    _mp = key.split(':')
+                    _mr = int(_mp[2]) if len(_mp) > 2 else 0
+                    _mc = int(_mp[3]) if len(_mp) > 3 else 1
+                    _act = now_playing_click_action(_mr, _mc)
+                    if _act in ('playpause', 'next'):
+                        _np_transport(_act); continue
+                    if _act == 'open':
+                        if _promptmod._player_opener is not None:
+                            _promptmod._player_opener()
+                            sys.stdout.write("\033[?1000h\033[?1006h"); sys.stdout.flush()
+                            w.anchor_reset()
+                        continue
                 # Only the press acts; the paired release is swallowed so one
-                # physical click is one logical action.  `hit_map` (from the last
-                # _draw) maps a rendered line index to its item; the widget draws
-                # line[i] at terminal row w.row + MARGIN_V + i, so invert that.
-                # Clicking the line that is ALREADY current opens its word view;
-                # a not-yet-current line is first made current, so it takes a
-                # second click (a double-click) to open.
-                if key.startswith('MOUSE_CLICK:') and mode in (SEG, WORD) and w.row is not None:
+                # physical click is one logical action.  A click on a footer-hint
+                # glyph replays that key through the switch below; otherwise
+                # `hit_map` (from the last _draw) maps a rendered line index to its
+                # item — the widget draws line[i] at row w.row + MARGIN_V + i, so
+                # invert that. Clicking the ALREADY-current line opens its word
+                # view; a not-yet-current line is made current first (double-click).
+                _hk = None
+                if key.startswith('MOUSE_CLICK:') and w.row is not None:
                     parts = key.split(':')
                     r = int(parts[2]) if len(parts) > 2 else 0
+                    col = int(parts[3]) if len(parts) > 3 else 1
                     line_idx = r - w.row - ui_utils.MARGIN_V
-                    target = hit_map.get(line_idx)
-                    if target is not None:
-                        _t = segs[target] if target < len(segs) else {}
-                        if mode == SEG and target == cursor:
-                            # Confirm on the already-current line:
-                            #  · dialogue with words → open its word view
-                            #  · a *timed* dead air   → reclassify it (e.g. to a
-                            #    stage direction) now that you've placed it
-                            if source == SOURCE_TRANSCRIPT and _t.get("words"):
-                                seg_cursor = target
-                                mode = WORD; cursor = 0; viewport = 0
-                            elif _t.get("kind") == "dead_air" and _t.get("start") is not None:
-                                do_recategorise(target)
-                        else:
-                            cursor = target
-                continue
+                    _hk = hint_cells.get((line_idx, col))
+                    if _hk is None and mode in (SEG, WORD):
+                        target = hit_map.get(line_idx)
+                        if target is not None:
+                            _t = segs[target] if target < len(segs) else {}
+                            if mode == SEG and target == cursor:
+                                if source == SOURCE_TRANSCRIPT and _t.get("words"):
+                                    seg_cursor = target
+                                    mode = WORD; cursor = 0; viewport = 0
+                                elif _t.get("kind") == "dead_air" and _t.get("start") is not None:
+                                    do_recategorise(target)
+                            else:
+                                cursor = target
+                if _hk is None:
+                    continue
+                key = _hk           # replay the clicked hint's key through the switch
+
+            # Review walkthrough (layered over SEG): Tab/⇧Tab step between flagged
+            # lines, Esc leaves review; every other key falls through so you fix
+            # the current line in place with the normal editing keys.
+            if review_phase and mode == SEG:
+                if key == 'TAB':
+                    _review_advance(1); continue
+                if key == 'BACKTAB':
+                    _review_advance(-1); continue
+                if key == 'ESC':
+                    review_phase = None
+                    review_program = None
+                    ui_utils.show_status("Left review.")
+                    continue
 
             if mode == EDIT:
                 if key == 'ESC':
@@ -1929,6 +2435,13 @@ def lyrics_editor(mp3_path: str) -> None:
                 elif key == 'ENTER':
                     _edit_apply()
                     mode = prev_mode
+                elif key in ('p', 'P'):
+                    # Grab the live audio playhead into the focused start/end bound.
+                    _pm, _ps, _pms = _ts_parts(round(play_pos, 3))
+                    _bound = _EDIT_START if edit_fi < 3 else _EDIT_END
+                    for _fk, _v in zip(_bound, (_pm, _ps, _pms)):
+                        edit_fields[_fk] = list(_v)
+                    edit_fresh = False
                 else:
                     _edit_field_key(key)
                 continue
@@ -2071,7 +2584,9 @@ def lyrics_editor(mp3_path: str) -> None:
                         _credits.append("Words by: " + "; ".join(str(f) for f in _text))
                     if _credits:
                         for _cl in _credits:
-                            segs.append({"text": _cl})
+                            # Mark as 'credit' so it's shown but excluded from the
+                            # spoken-word transcript.json export (do_commit).
+                            segs.append({"text": _cl, "kind": "credit"})
                         cursor = len(segs) - 1
                         dirty = True
                         refresh_overlay()  # seg count changed — re-derive before_si
@@ -2082,9 +2597,10 @@ def lyrics_editor(mp3_path: str) -> None:
             elif key == 'a' and mode == SEG:
                 _restore_term_attrs(fd, old)
                 sys.stdout.write("\033[?1000l\033[?1006l")
-                # At position 0 offer inserting before the first seg (track intro)
+                # At position 0 offer inserting before the first item (track intro)
+                # whenever it starts after 0:00 — including before an initial stage
+                # direction, so you can place silence ahead of it.
                 _insert_before = (cursor == 0 and segs
-                                  and segs[0].get("kind") not in ("dead_air", "stage_dir")
                                   and (segs[0].get("start") or 0) > 0)
                 if _insert_before:
                     _where = _prompt_text("Insert before first segment (b) or after cursor (a)?")
@@ -2142,6 +2658,26 @@ def lyrics_editor(mp3_path: str) -> None:
                     ui_utils.show_status("Cursor is not on a dead air or stage direction segment.")
             elif key == 'k' and mode == SEG:
                 do_recategorise(cursor)
+            elif key == 'R' and mode == SEG:
+                _review_enter('issues')
+            elif key == 'D' and mode == SEG:
+                _review_enter('dirs')
+            elif key == 'L' and mode == SEG:
+                _review_enter('long')
+            elif key == '/' and mode == SEG:
+                do_smart_split()
+            elif key == 'x' and mode == SEG:
+                # Cycle the stage-direction kind: inline → tone → external.
+                _sd = segs[cursor] if (segs and cursor < len(segs)) else None
+                if not (_sd and _sd.get('kind') == 'stage_dir'):
+                    ui_utils.show_status("Cursor is not on a stage direction (✦).")
+                else:
+                    _next = _SD_SCOPES[(_SD_SCOPES.index(_sd_scope(_sd)) + 1) % len(_SD_SCOPES)]
+                    undo_stack.append(('snapshot', list(segs)))
+                    segs[cursor] = {**_sd, 'scope': _next}
+                    dirty = True
+                    refresh_overlay()
+                    ui_utils.show_status(f"Direction: {_next}")
             elif key == 'r' and mode == SEG:
                 # Scan gaps between timed segments; also time any untimed stage_dir segs.
                 _restore_term_attrs(fd, old)

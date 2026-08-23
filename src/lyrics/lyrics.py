@@ -154,32 +154,33 @@ def expand_uslt_lines(
     return exp_lines, exp_times
 
 
+# A clear leading "Speaker: " label (capitalised single token) — NOT a mid-line
+# colon like "9:00" or "waiting: for you", which must not be stripped.
+_SPEAKER_PREFIX_RE = re.compile(r"^[A-Z][A-Za-z.'-]{0,19}:\s")
+
+
+def _timing_word_count(text: str) -> int:
+    """Spoken-word count for timing: drop a leading speaker label and any
+    parenthetical/bracketed asides, then count words."""
+    text = _SPEAKER_PREFIX_RE.sub('', text, count=1)
+    text = re.sub(r'\([^)]*\)', '', text)
+    text = re.sub(r'\[[^\]]*\]', '', text)
+    return len(text.split())
+
+
 def build_uslt_line_times(lines: list, track_duration: float) -> list[tuple[float, float]]:
     """Estimate (start, end) windows for untimed USLT lines by allocating
     track_duration proportionally to each line's word count, after stripping
-    speaker prefixes and parenthetical/bracketed asides."""
+    a leading speaker label and parenthetical/bracketed asides."""
     times = []
     t = 0.0
-    total_words = 0
 
-    for line in lines:
-        text = line.text if hasattr(line, 'text') else str(line)
-        if ':' in text:
-            text = text.split(':', 1)[1]
-        text = re.sub(r'\([^)]*\)', '', text)
-        text = re.sub(r'\[[^\]]*\]', '', text)
-        n = len(text.split())
-        total_words += n
-
+    counts = [_timing_word_count(line.text if hasattr(line, 'text') else str(line))
+              for line in lines]
+    total_words = sum(counts)
     words_per_second = track_duration / total_words if total_words > 0 else 2.2
 
-    for line in lines:
-        text = line.text if hasattr(line, 'text') else str(line)
-        if ':' in text:
-            text = text.split(':', 1)[1]
-        text = re.sub(r'\([^)]*\)', '', text)
-        text = re.sub(r'\[[^\]]*\]', '', text)
-        n = len(text.split())
+    for n in counts:
         duration = max(0.5, n / words_per_second)
         times.append((t, t + duration))
         t += duration
@@ -803,7 +804,9 @@ def find_uslt_handoff_index(uslt_lines: list[str], last_sylt_text: str) -> int:
     for i, line in enumerate(uslt_lines):
         n = _norm(line)
         if target in n or n in target: return i + 1
-    return 0
+    # No match: resume past the end (show nothing) rather than replaying USLT from
+    # the top after SYLT has already covered the song.
+    return len(uslt_lines)
 
 def _find_markdown_for_audio(audio_path: str) -> str | None:
     """Tries (in order):
@@ -1071,21 +1074,3 @@ class DialoguePlaybackState:
         """Advance current_idx to the chunk covering elapsed."""
         if self.line_times:
             self.current_idx = find_current_dialogue_line(self.line_times, elapsed)
-
-
-def check_for_dialogue_files(audio_path: str) -> bool:
-    """True if any dialogue source (markdown, SRT, or JSON timings) exists for this audio file."""
-    md_path = _find_markdown_for_audio(audio_path)
-    srt_path, json_path = _find_timing_files_for_audio(audio_path)
-    return bool(md_path or srt_path or json_path)
-
-
-def get_dialogue_file_info(audio_path: str) -> str:
-    """Human-readable summary of which dialogue source files were found."""
-    md_path = _find_markdown_for_audio(audio_path)
-    srt_path, json_path = _find_timing_files_for_audio(audio_path)
-    parts = []
-    if md_path:   parts.append("MD")
-    if json_path: parts.append("JSON timings")
-    if srt_path:  parts.append("SRT")
-    return " + ".join(parts) if parts else "No dialogue files"

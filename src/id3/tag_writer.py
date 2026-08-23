@@ -39,7 +39,10 @@ _SORT_MAP = {
 }
 
 _MP3_EXTS = ('.mp3',)
-_MP4_EXTS = ('.m4a', '.mp4', '.m4p', '.aac')
+# Raw .aac (ADTS) is not an MP4 container and has no atoms — MP4() raises on it —
+# so it isn't tag-writable (music_library likewise only reads .m4a/.mp4/.m4p as MP4).
+# It stays playable/scannable, just reported unsupported for tag writes.
+_MP4_EXTS = ('.m4a', '.mp4', '.m4p')
 
 
 @dataclass

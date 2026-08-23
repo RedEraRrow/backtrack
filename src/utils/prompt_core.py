@@ -4,13 +4,9 @@ import re
 import sys
 import os
 import math
-import datetime
-import calendar as cal
-import tempfile
 import textwrap
 import time
 import select as _sel
-import subprocess
 from typing import Any, Callable, Literal, overload
 
 from src.utils import ui_utils
@@ -96,13 +92,25 @@ def _np_box_str(rows: int, lines: list) -> str:
     """Escape string that draws the now-playing box in the rows just above the
     breadcrumb, clearing any band a taller previous box left behind. Updates the
     shared cache so the widget render and the idle tick agree on what's shown."""
+    if rows <= 1:
+        _np_prev_h[0] = 0
+        _np_prev_lines[0] = []
+        _np_prev_sig[0] = ui_utils.now_playing_signature()
+        return ""
+
+    max_box_rows = max(0, rows - 1)
+    lines = lines[-max_box_rows:]
     h = len(lines)
     band = max(_np_prev_h[0], h)
     parts: list[str] = []
     for k in range(band):                    # clear the (possibly taller) old band
-        parts.append(f"\033[{rows - band + k};1H\033[2K")
+        row = rows - band + k
+        if row >= 1 and row < rows:
+            parts.append(f"\033[{row};1H\033[2K")
     for k in range(h):                       # draw current box against the bottom
-        parts.append(f"\033[{rows - h + k};1H\033[2K{lines[k]}")
+        row = rows - h + k
+        if row >= 1 and row < rows:
+            parts.append(f"\033[{row};1H\033[2K{lines[k]}")
     _np_prev_h[0] = h
     _np_prev_lines[0] = lines
     _np_prev_sig[0] = ui_utils.now_playing_signature()
@@ -113,6 +121,8 @@ def now_playing_box_segment() -> str:
     """The box draw-string for embedding in a widget's own atomic flush (so
     navigation redraws it alongside the list instead of leaving it flashed out)."""
     rows = ui_utils.get_terminal_height()
+    if rows <= 1:
+        return ""
     cols = ui_utils.get_terminal_width()
     return _np_box_str(rows, ui_utils.now_playing_lines(cols))
 
@@ -342,10 +352,121 @@ def _hint(*pairs, extra="") -> str:
 
     return "\n".join(split_lines)
 
+# --- Clickable hints & now-playing box hit-testing -------------------------
+# Hint keys render as ``[key] label`` with only ``key`` bold/bright; a click is
+# actionable only when it lands on those bright glyphs. Multi-key labels split
+# into separate buttons: a '/' between keys is a non-clickable separator, and an
+# adjacent arrow cluster (``↑↓``, ``←→``) is one button per arrow. Each button
+# maps to the SAME synthesised key the keyboard produces, so the widgets need no
+# extra per-key logic — a click just replays that key through their normal switch.
+
+_HINT_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mGKFHF]')
+_HINT_ARROWS = {'↑': 'UP', '↓': 'DOWN', '←': 'LEFT', '→': 'RIGHT'}
+_HINT_WORDS = {
+    'space': 'SPACE', 'spc': 'SPACE', 'esc': 'ESC', 'tab': 'TAB', '↵': 'ENTER',
+    'pgup': 'PGUP', 'pgdn': 'PGDN', '⇧tab': 'BACKTAB', 'home': 'HOME', 'end': 'END',
+}
+
+
+def _hint_key_tokens(key: str) -> list[tuple[int, int, str]]:
+    """Split a hint key label into clickable ``(offset, glyph_len, synth_key)``
+    buttons. ``offset`` is 0-based within the key text; the '/' joiners it skips
+    over are left non-clickable."""
+    segs = key.split('/') if (key and key != '/' and '/' in key) else [key]
+    tokens: list[tuple[int, int, str]] = []
+    off = 0
+    for si, seg in enumerate(segs):
+        if si > 0:
+            off += 1                       # the '/' separator column (not clickable)
+        if not seg:
+            continue
+        if all(c in _HINT_ARROWS for c in seg):     # e.g. "↑↓" → one button per arrow
+            for c in seg:
+                tokens.append((off, 1, _HINT_ARROWS[c]))
+                off += 1
+        elif seg.lower() in _HINT_WORDS:            # "space"/"esc"/"tab"/"↵"/"PgUp"…
+            tokens.append((off, len(seg), _HINT_WORDS[seg.lower()]))
+            off += len(seg)
+        elif len(seg) == 2 and seg[0] == '^':       # "^N" → Ctrl-N control char
+            tokens.append((off, 2, chr(ord(seg[1].upper()) - 64)))
+            off += 2
+        else:                                       # a single glyph / plain letter
+            tokens.append((off, len(seg), _HINT_WORDS.get(seg.lower(), seg)))
+            off += len(seg)
+    return tokens
+
+
+def add_hint_click_cells_auto(cells: dict, line: str, base_row: int,
+                              left_inset: int = 0) -> None:
+    """Like add_hint_click_cells but auto-detects ``[key]`` groups in the plain
+    text (no pairs needed). Use only on lines known to be a hint bar — arbitrary
+    bracketed text (e.g. a lyric ``[Chorus]``) would be picked up as a key."""
+    plain = _HINT_ANSI_RE.sub('', line)
+    for m in re.finditer(r'\[([^\[\]]+)\]', plain):
+        key_col0 = m.start() + 1
+        for off, glen, synth in _hint_key_tokens(m.group(1)):
+            for c in range(glen):
+                cells[(base_row, left_inset + key_col0 + off + c + 1)] = synth
+
+
+def add_hint_click_cells(cells: dict, line: str, base_row: int, pairs,
+                         left_inset: int = 0) -> None:
+    """Populate ``cells`` (a ``{(row, col): synth_key}`` map) with the clickable
+    bright-key glyphs found on one rendered hint ``line`` at absolute ``base_row``.
+    ``pairs`` is the (key, label) sequence that produced the hint bar."""
+    plain = _HINT_ANSI_RE.sub('', line)
+    for k, _v in pairs:
+        if not k:
+            continue
+        idx = plain.find(f"[{k}]")
+        if idx < 0:
+            continue
+        key_col0 = idx + 1                 # 0-based index of key[0] (just past '[')
+        for off, glen, synth in _hint_key_tokens(k):
+            for c in range(glen):
+                col = left_inset + key_col0 + off + c + 1   # 1-based screen column
+                cells[(base_row, col)] = synth
+
+
+def _hint_pin_target() -> int:
+    """The flowed-line count after which a widget's hint bar sits pinned at the
+    bottom — directly above the miniplayer + status bar — so its keys keep the
+    same screen position across redraws (repeated clicks don't chase the bar)."""
+    rows = ui_utils.get_terminal_height()
+    return rows - 1 - ui_utils.MARGIN_V - max(ui_utils.now_playing_height(), ui_utils.MARGIN_V)
+
+
+# Now-playing box transport-icon columns (see format_now_playing_bar: the box is
+# inset by 2, then "│ " before the ⏯/⏭ glyphs → play/pause at col 5, next at 7).
+_NP_PLAYPAUSE_COLS = (5, 6)
+_NP_NEXT_COLS = (7, 8)
+
+
+def now_playing_click_action(row: int, col: int) -> str | None:
+    """Classify a click against the now-playing box: ``'playpause'`` / ``'next'``
+    on the transport glyphs, ``'open'`` anywhere else in the box, or ``None`` when
+    the click misses it (or no box is shown)."""
+    h = _np_prev_h[0]
+    if h <= 0 or not ui_utils.now_playing_active():
+        return None
+    rows = ui_utils.get_terminal_height()
+    top = rows - h
+    if not (top <= row <= rows - 1):
+        return None
+    if row == top + 1:                     # the content row that carries the icons
+        if _NP_PLAYPAUSE_COLS[0] <= col <= _NP_PLAYPAUSE_COLS[1]:
+            return 'playpause'
+        if _NP_NEXT_COLS[0] <= col <= _NP_NEXT_COLS[1]:
+            return 'next'
+    return 'open'
+
+
 def _render_status_bar():
     """Redraw the bottom status bar in place, saving/restoring the cursor so
     the text input caret doesn't move."""
     rows = ui_utils.get_terminal_height()
+    if rows <= 0:
+        return
     status = ui_utils.get_status_line()
     # \0337 / \0338 save and restore cursor position (DEC) so the cursor
     # stays at the text input caret rather than jumping to the status bar row.
@@ -545,7 +666,8 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
             for i in flex_idxs:
                 if surplus == 0:
                     break
-                if caps[i] is None or widths[i] < caps[i]:
+                cap_i = caps[i]
+                if cap_i is None or widths[i] < cap_i:
                     widths[i] += 1
                     surplus -= 1
                     progressed = True
