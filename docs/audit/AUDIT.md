@@ -385,7 +385,11 @@ action (e.g. writing a sort tag) is cross-format in derive but MP3-only in `appl
 - `q` means "save-then-quit + set `QUIT_REQUESTED`" in value editors but "raise `QuitToTerminal`
   (discard)" in `select`. Two quit semantics under one key.
 
-### D3. 🟠 MODE_TOGGLE (Ctrl-T) support is uneven — CONFIRMED
+### D3. 🟠 MODE_TOGGLE (Ctrl-T) support is uneven — PARTLY ADDRESSED
+**Advertising** is no longer uneven: `_with_toggle_hint()` puts `^t` in the hint bar of every widget
+that answers it, and the `(^t widget)` suffix that only `text()` printed on its message line is gone
+(the key belongs in the hint bar). The rest of this finding stands.
+
 `rating_edit`, `rva2_edit`, `equaliser_edit` never check `_MODE_TOGGLE_KEY` (intentional for binary
 frames), but the sentinel contract is convention-only — no guard. It works today solely because
 `has_widget_toggle` (`id3_tag_handler.py:781`) excludes them. The whole mechanism is a **shared

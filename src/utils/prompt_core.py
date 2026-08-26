@@ -10,17 +10,7 @@ import select as _sel
 from typing import Any, Callable, Literal, overload
 
 from src.utils import ui_utils
-from src import state as _state
-from src.state import QuitToTerminal
 C = ui_utils.Colors
-
-
-def _check_deferred_quit() -> None:
-    """Raise QuitToTerminal if an editor requested save-and-quit. Called at the
-    start of navigation widgets so the pending edit is saved before unwinding."""
-    if _state.QUIT_REQUESTED:
-        _state.QUIT_REQUESTED = False
-        raise QuitToTerminal()
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -88,6 +78,116 @@ if _wake_r >= 0:
     ui_utils.set_now_playing_waker(_poke_now_playing_wake)
 
 
+# ---------------------------------------------------------------------------
+# Persistent screen model.
+#
+# One entry per screen row holding what is currently displayed there, shared by
+# every writer (widget frames, the now-playing box, the status bar). A repaint
+# writes only the rows whose content actually changed and never erases a row
+# before rewriting it — the old "erase to end of screen, then redraw everything"
+# frame is what made the whole screen flicker and the miniplayer blink out and
+# back on every keystroke. Rows are also written *absolutely*, with no newlines,
+# so a line-buffered stdout cannot flush a half-drawn frame.
+_screen: dict[int, str] = {}
+
+
+def screen_invalidate() -> None:
+    """Forget what is on screen — after a full clear, a resize, or a write by
+    something that doesn't go through here (the player view)."""
+    _screen.clear()
+
+
+def _register_screen_hooks() -> None:
+    """Let `ui_utils.clear_screen()` (and the alt-screen switch) drop the model."""
+    ui_utils.set_screen_invalidator(screen_invalidate)
+
+
+_takeover_pending = [False]
+
+
+def screen_takeover_next() -> None:
+    """Take the screen over on the next frame *without* clearing it first.
+
+    Called where a widget used to clear on entry: the next paint overwrites the
+    rows it needs and blanks whatever the previous screen left behind, in the
+    same flush. That removes the blank flash between every screen — a clear is
+    only genuinely needed when the terminal reflowed (resize) or something
+    painted outside this model.
+    """
+    _takeover_pending[0] = True
+
+
+def _takeover_rows(frame: dict) -> dict:
+    """Add blanks for rows the previous screen owned that `frame` doesn't."""
+    if not _takeover_pending[0]:
+        return frame
+    _takeover_pending[0] = False
+    out = dict(frame)
+    for row in _screen:
+        out.setdefault(row, "")
+    return out
+
+
+def screen_rows() -> set:
+    """Every row the painter currently believes it knows the content of."""
+    return set(_screen)
+
+
+def screen_forget_rows(first: int, last: int) -> None:
+    """Forget rows `first`..`last` inclusive (another writer owns them now)."""
+    for r in range(first, last + 1):
+        _screen.pop(r, None)
+
+
+def screen_row_paint(row: int, text: str, extra: str = "") -> str:
+    """The escape string that paints one row as `text` with `extra` layered on
+    top, or "" when the row already reads exactly that way.
+
+    `extra` is for absolute overlays that write a few columns of a row something
+    else owns (the volume bar sits on the album art's rows). Both layers are part
+    of the row's identity, so a row repaints when *either* changes — and a row
+    whose overlay went away is erased rather than keeping stale glyphs. A blank
+    row is content too: "" differs from anything previously drawn there.
+    """
+    key = f"{text}\x00{extra}"
+    if _screen.get(row) == key:
+        return ""
+    _screen[row] = key
+    return f"\033[{row};1H\033[2K{text}{extra}"
+
+
+def screen_row_segment(row: int, text: str) -> str:
+    """Paint one row of plain text (no overlay) — see `screen_row_paint`."""
+    return screen_row_paint(row, text)
+
+
+def screen_paint(rows: dict, *, cursor: tuple | None = None,
+                 hide_cursor: bool = True, save_cursor: bool = False) -> None:
+    """Paint `rows` ({1-based row: text}) as one buffered, single-syscall frame.
+
+    Unchanged rows cost nothing. `cursor` places the caret and shows it (text
+    inputs); `save_cursor` wraps the frame in DEC save/restore so a caret
+    elsewhere is left alone (background repaints).
+    """
+    rows = _takeover_rows(rows)
+    parts: list[str] = []
+    for row in sorted(rows):
+        seg = screen_row_segment(row, rows[row])
+        if seg:
+            parts.append(seg)
+    if not parts:
+        return                             # nothing changed: draw nothing at all
+    body = "".join(parts)
+    if save_cursor:
+        out = "\0337" + body + "\0338"
+    else:
+        out = (C.HIDE if hide_cursor else "") + body
+        if cursor is not None:
+            out += f"\033[{cursor[0]};{cursor[1]}H" + C.SHOW
+    sys.stdout.write(out)
+    sys.stdout.flush()
+
+
 def _np_box_str(rows: int, lines: list) -> str:
     """Escape string that draws the now-playing box in the rows just above the
     breadcrumb, clearing any band a taller previous box left behind. Updates the
@@ -102,19 +202,32 @@ def _np_box_str(rows: int, lines: list) -> str:
     lines = lines[-max_box_rows:]
     h = len(lines)
     band = max(_np_prev_h[0], h)
-    parts: list[str] = []
-    for k in range(band):                    # clear the (possibly taller) old band
+    # Rows the box no longer covers are blanked; rows it does are painted — both
+    # through the shared screen model, so an unchanged box emits nothing at all
+    # and a shrinking one clears exactly the rows it gave up.
+    wanted: dict[int, str] = {}
+    for k in range(band):
         row = rows - band + k
-        if row >= 1 and row < rows:
-            parts.append(f"\033[{row};1H\033[2K")
-    for k in range(h):                       # draw current box against the bottom
+        if 1 <= row < rows:
+            wanted[row] = ""
+    for k in range(h):
         row = rows - h + k
-        if row >= 1 and row < rows:
-            parts.append(f"\033[{row};1H\033[2K{lines[k]}")
+        if 1 <= row < rows:
+            wanted[row] = lines[k]
+    parts: list[str] = []
+    for row in sorted(wanted):
+        seg = screen_row_segment(row, wanted[row])
+        if seg:
+            parts.append(seg)
     _np_prev_h[0] = h
     _np_prev_lines[0] = lines
     _np_prev_sig[0] = ui_utils.now_playing_signature()
     return "".join(parts)
+
+
+def now_playing_height_for_layout() -> int:
+    """Rows the now-playing box occupies, as the frame layout should assume."""
+    return max(_np_prev_h[0], ui_utils.now_playing_height())
 
 
 def now_playing_box_segment() -> str:
@@ -150,8 +263,10 @@ def _render_now_playing_bar() -> None:
         ui_utils.mark_now_playing_layout_dirty()
     if ui_utils.now_playing_signature() == _np_prev_sig[0] and lines == _np_prev_lines[0]:
         return
-    sys.stdout.write("\0337" + _np_box_str(rows, lines) + "\0338")
-    sys.stdout.flush()
+    seg = _np_box_str(rows, lines)
+    if seg:                       # unchanged rows produce nothing to write
+        sys.stdout.write("\0337" + seg + "\0338")
+        sys.stdout.flush()
 
 
 def _wait_for_keypress(timeout: float = 0.05) -> bool:
@@ -246,8 +361,10 @@ def _hint(*pairs, extra="") -> str:
         if not k: return f"{C.DIM}{v}{C.RESET}"
         return f"{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}{k}{C.RESET}{C.DIM}] {v}{C.RESET}"
 
-    sep = f"{C.DIM} ⋅ {C.RESET}"
-    raw_sep_len = len(' ⋅ ')
+    # Interpunct (·) — the one separator used everywhere: hint bars, player
+    # details, bulk headers, multi-value fields.
+    sep = f"{C.DIM} · {C.RESET}"
+    raw_sep_len = len(' · ')
 
     # LAYOUT 1: Centred Long Line
     raw_len = sum(len(raw) for _, _, raw in parsed_items) + raw_sep_len * (total_items - 1)
@@ -436,16 +553,25 @@ def _hint_pin_target() -> int:
     return rows - 1 - ui_utils.MARGIN_V - max(ui_utils.now_playing_height(), ui_utils.MARGIN_V)
 
 
-# Now-playing box transport-icon columns (see format_now_playing_bar: the box is
-# inset by 2, then "│ " before the ⏯/⏭ glyphs → play/pause at col 5, next at 7).
-_NP_PLAYPAUSE_COLS = (5, 6)
-_NP_NEXT_COLS = (7, 8)
+# Now-playing box transport-icon columns, derived from the one place the glyph
+# layout is defined (ui_utils.NP_GLYPH_COLS) rather than restated here: the
+# box is inset by MARGIN_H, then "│ " precedes the content, so a glyph at content
+# offset `o` lands on 1-based column MARGIN_H + 3 + o. Each glyph claims its own
+# column plus the space after it, so a click just to the right still lands.
+def _np_glyph_cols() -> list[tuple[str, int, int]]:
+    """(action, first_col, last_col) for each transport glyph in the box."""
+    base = ui_utils.MARGIN_H + 3
+    actions = ('prev', 'playpause', 'next')
+    # A glyph claims its own cells plus the space after it, so a click just to
+    # the right of a narrow glyph still lands on it.
+    return [(a, base + start, base + start + width)
+            for a, (start, width) in zip(actions, ui_utils.NP_GLYPH_COLS)]
 
 
 def now_playing_click_action(row: int, col: int) -> str | None:
-    """Classify a click against the now-playing box: ``'playpause'`` / ``'next'``
-    on the transport glyphs, ``'open'`` anywhere else in the box, or ``None`` when
-    the click misses it (or no box is shown)."""
+    """Classify a click against the now-playing box: ``'prev'`` / ``'playpause'``
+    / ``'next'`` on the transport glyphs, ``'open'`` anywhere else in the box, or
+    ``None`` when the click misses it (or no box is shown)."""
     h = _np_prev_h[0]
     if h <= 0 or not ui_utils.now_playing_active():
         return None
@@ -454,10 +580,9 @@ def now_playing_click_action(row: int, col: int) -> str | None:
     if not (top <= row <= rows - 1):
         return None
     if row == top + 1:                     # the content row that carries the icons
-        if _NP_PLAYPAUSE_COLS[0] <= col <= _NP_PLAYPAUSE_COLS[1]:
-            return 'playpause'
-        if _NP_NEXT_COLS[0] <= col <= _NP_NEXT_COLS[1]:
-            return 'next'
+        for action, lo, hi in _np_glyph_cols():
+            if lo <= col <= hi:
+                return action
     return 'open'
 
 
@@ -468,10 +593,9 @@ def _render_status_bar():
     if rows <= 0:
         return
     status = ui_utils.get_status_line()
-    # \0337 / \0338 save and restore cursor position (DEC) so the cursor
-    # stays at the text input caret rather than jumping to the status bar row.
-    sys.stdout.write(f"\0337\033[{rows};1H\033[2K{status}\0338")
-    sys.stdout.flush()
+    # \0337 / \0338 (via save_cursor) keep the caret where the text input left
+    # it rather than jumping to the status row; an unchanged bar writes nothing.
+    screen_paint({rows: status}, save_cursor=True)
 
 
 class Choice:
@@ -489,6 +613,13 @@ class Choice:
         self.cursor_title = cursor_title  # alternate label shown when cursor is on this row
 
 
+# The single inter-column gap for every list in the app. Lists used to mix 2 and
+# 3 — the duration column sat a column closer to the edge in search and history
+# than in browse. Narrow terminals are handled by column `priority` (columns drop)
+# and by the dynamically computed pin gap, not by varying this.
+COL_GAP = 3
+
+
 class Column:
     """A column spec for a structured select() table (no string parsing).
 
@@ -497,7 +628,9 @@ class Column:
     flex     : absorbs leftover width, truncates (use for the title column)
     pin      : laid against the right edge (e.g. duration)
     max_frac : clamp column to this fraction of total width (0.0–1.0)
-    gap      : leading gap before this column
+    gap      : leading gap before this column (defaults to `COL_GAP` — the one
+               value every list uses; the pin block's separation from the left
+               block is computed per render, so this is only the minimum)
     priority : drop-order when the row is too narrow to show every column
                readably. None (default) = essential, never dropped. A number
                marks the column droppable; the lowest-priority droppable column
@@ -509,7 +642,7 @@ class Column:
 
     def __init__(self, style: str = 'normal', align: str = 'left', flex: bool = False,
                  pin: bool = False, min_width: int = 0, max_width: int | None = None,
-                 max_frac: float | None = None, gap: int = 2,
+                 max_frac: float | None = None, gap: int = COL_GAP,
                  priority: float | None = None) -> None:
         """Build a column spec for a structured select() table."""
         self.style     = style
@@ -579,7 +712,8 @@ def _render_cell_segments(cell, style: str, is_current: bool, width: int, align:
 
 
 def _table_widths(rows_cells: list, columns: list, eff: int,
-                  pointer_w: int, right_margin: int) -> list[int]:
+                  pointer_w: int, right_margin: int,
+                  visible_cells: list | None = None) -> list[int]:
     """Compute per-column widths that fit the effective width `eff`.
 
     Content sets each column's natural width — scanned across *all* rows, so a
@@ -587,15 +721,28 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
     while scrolling. Natural widths are clamped by max_frac / max_width and
     floored by min_width. Then space is reconciled with the terminal:
 
+      * blank → a droppable column with nothing to show in the *visible* window
+                is dropped outright. Its natural width comes from all rows, so
+                an off-screen entry would otherwise reserve a wide column that
+                renders as empty space on every row you can actually see (a
+                genre far down the search results, a featured artist nobody in
+                view has). Width it can't use is width the title column needs;
       * drop  → if not every column can fit even at its comfortable minimum,
                 drop the lowest-priority droppable column (Column.priority) and
                 retry; essential columns (priority=None) are never dropped;
       * fits  → flex column(s) share the leftover evenly (each respecting its
-                own max_frac / max_width cap) so the row fills the width and
-                pinned columns sit flush right;
+                own max_frac / max_width cap **and its own content**) so pinned
+                columns sit flush right. A flex column never grows past what it
+                has to show: padding a left column out to the full width just
+                buries the row's right-hand block behind a field of blanks. Any
+                surplus is left unallocated and the renderer spends it as the
+                single gap between the left block and the pinned block;
       * tight → the widest kept column gives up space first, one unit at a time,
                 never below a readable floor, so narrow columns (durations,
                 counts) stay intact and only the widest columns truncate.
+
+    `visible_cells` is the window of rows actually on screen (defaults to
+    `rows_cells`); only the blank pass uses it, so widths stay scroll-stable.
 
     Returns a width per column; a dropped column's width is -1 (skipped by the
     renderer, which also drops its gap).
@@ -605,6 +752,12 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
     for cells in rows_cells:
         for i in range(min(ncol, len(cells))):
             content[i] = max(content[i], len(_cell_text(cells[i])[0]))
+
+    # What each column actually has to show in the window on screen.
+    shown = [0] * ncol
+    for cells in (rows_cells if visible_cells is None else visible_cells):
+        for i in range(min(ncol, len(cells))):
+            shown[i] = max(shown[i], len(_cell_text(cells[i])[0]))
 
     def _cap(col) -> int | None:
         """The hard upper bound a column may reach (max_frac / max_width), or None."""
@@ -632,9 +785,20 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
         return (pointer_w + right_margin + sum(columns[i].gap for i in ks)
                 + (_MIN_PIN_GAP if pin else 0))
 
+    kept = list(range(ncol))
+
+    # Blank pass: a droppable column with nothing to show in the visible window
+    # reserves width that renders as empty space on every row on screen. Drop it
+    # and give the space to the columns that do have something to say; it comes
+    # back when you scroll to rows that fill it. Never drops the last column.
+    blank = [i for i in kept
+             if columns[i].priority is not None and shown[i] == 0 and columns[i].min_width == 0]
+    if len(blank) < len(kept):
+        for i in blank:
+            kept.remove(i)
+
     # Drop pass: while even everyone's comfortable minimum can't fit, shed the
     # lowest-priority droppable column (ties: the rightmost goes first).
-    kept = list(range(ncol))
     while len(kept) > 1 and _overhead(kept) + sum(_comfort(i) for i in kept) > eff:
         droppable = [i for i in kept if columns[i].priority is not None]
         if not droppable:
@@ -657,9 +821,17 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
     total = sum(widths[i] for i in kept)
     if total < budget and flex_idxs:
         # Surplus: round-robin one unit at a time into the flex columns, each
-        # stopping at its own cap. Even fill; leftover past all caps goes unused.
+        # stopping at its own cap *or its own content*, whichever comes first —
+        # growing a column past what it has to show only pads it with blanks and
+        # pushes the pinned block away from the text it belongs to. Leftover is
+        # deliberately unspent: _render_table_row turns it into the one gap
+        # between the left block and the right-pinned block.
         surplus = budget - total
-        caps = {i: _cap(columns[i]) for i in flex_idxs}
+        caps = {}
+        for i in flex_idxs:
+            cap_i = _cap(columns[i])
+            need_i = max(content[i], columns[i].min_width)
+            caps[i] = need_i if cap_i is None else min(cap_i, need_i)
         progressed = True
         while surplus > 0 and progressed:
             progressed = False
@@ -909,6 +1081,21 @@ def _read_key(fd: int) -> str:
             return key
 
 
+# How long to wait for the rest of an escape sequence before deciding the Esc
+# was pressed on its own. A real sequence's bytes arrive in the same burst, so
+# this only ever elapses for a genuine bare Esc; small enough that Esc still
+# feels instant, large enough to survive a slow link.
+_ESC_SEQ_TIMEOUT = 0.05
+
+
+def _byte_ready(fd: int, timeout: float) -> bool:
+    """True if another byte can be read from `fd` within `timeout` seconds."""
+    try:
+        return bool(_sel.select([fd], [], [], timeout)[0])
+    except (OSError, ValueError):
+        return False
+
+
 def _read_key_raw(fd: int) -> str:
     """Read and decode one raw keypress, including escape sequences and mouse
     events, into a named key string."""
@@ -931,7 +1118,20 @@ def _read_key_raw(fd: int) -> str:
     ch = os.read(fd, 1)
     if ch == b'\x1b':
         try:
+            # A lone Esc is just this byte; an arrow/function key sends more in
+            # the same burst. Raw mode's read blocks while nothing is pending, so
+            # peek first — otherwise Esc looked dead until the *next* keypress
+            # arrived to unblock the read, and that keypress was then swallowed
+            # as part of the sequence. Hence "Esc only works if you press twice".
+            if not _byte_ready(fd, _ESC_SEQ_TIMEOUT):
+                return 'ESC'
             ch2 = os.read(fd, 1)
+            if ch2 == b'O':
+                # SS3: some terminals send ESC O A for the arrows while in
+                # application-cursor mode.
+                ss3 = os.read(fd, 1).decode('utf-8', errors='replace')
+                return {'A': 'UP', 'B': 'DOWN', 'C': 'RIGHT', 'D': 'LEFT',
+                        'H': 'HOME', 'F': 'END'}.get(ss3, 'ESC')
             if ch2 == b'[':
                 ch3 = os.read(fd, 1)
                 seq = ch3.decode('utf-8', errors='replace')
@@ -939,6 +1139,11 @@ def _read_key_raw(fd: int) -> str:
                     # SGR mouse event: \033[<btn;col;row{M|m}
                     buf = ''
                     while len(buf) < 24:
+                        # Same guard as the bare Esc above: a truncated mouse
+                        # report would otherwise block the whole UI until the
+                        # next keypress arrived.
+                        if not _byte_ready(fd, _ESC_SEQ_TIMEOUT):
+                            return 'ESC'
                         c = os.read(fd, 1).decode('utf-8', errors='replace')
                         if c in ('M', 'm'):
                             parts = buf.split(';')
@@ -956,12 +1161,35 @@ def _read_key_raw(fd: int) -> str:
                         buf += c
                     return 'ESC'
                 if seq.isdigit():
-                    os.read(fd, 4)
-                    return 'ESC'
+                    # ESC [ <number> ~ — page/home/end/delete/insert. This used
+                    # to swallow four bytes and report 'ESC', so PgUp and PgDn
+                    # acted as "back" (the 5/6 entries in the table below were
+                    # dead code, never reached).
+                    num, term = seq, ''
+                    while len(num) < 4 and _byte_ready(fd, _ESC_SEQ_TIMEOUT):
+                        c = os.read(fd, 1).decode('utf-8', errors='replace')
+                        if c.isdigit():
+                            num += c
+                            continue
+                        term = c
+                        break
+                    if term == ';':
+                        # Modified form (ESC [ 1;5A = Ctrl-Up): drain to the
+                        # final letter and treat it as the unmodified key.
+                        while _byte_ready(fd, _ESC_SEQ_TIMEOUT):
+                            c = os.read(fd, 1).decode('utf-8', errors='replace')
+                            if c.isalpha():
+                                term = c
+                                break
+                    if term.isalpha():
+                        return {'A': 'UP', 'B': 'DOWN', 'C': 'RIGHT', 'D': 'LEFT',
+                                'H': 'HOME', 'F': 'END'}.get(term, 'ESC')
+                    return {'1': 'HOME', '2': 'INSERT', '3': 'DELETE', '4': 'END',
+                            '5': 'PGUP', '6': 'PGDN', '7': 'HOME', '8': 'END',
+                            }.get(num, 'ESC')
                 mapped = {
                     'A': 'UP', 'B': 'DOWN', 'C': 'RIGHT', 'D': 'LEFT',
                     'H': 'HOME', 'F': 'END',
-                    '5': 'PGUP', '6': 'PGDN',
                     'Z': 'BACKTAB',                       # Shift+Tab
                     'I': 'FOCUS_IN', 'O': 'FOCUS_OUT',
                 }.get(seq, 'ESC')
@@ -1044,54 +1272,84 @@ class _Widget:
         self._full   = False  # whether we own the full screen
 
     def anchor_reset(self) -> None:
-        """Called on resize — triggers a full-screen redraw next render."""
+        """Called on resize (or after another view owned the screen) — clears and
+        redraws from scratch next render."""
         self.row   = None
         self._full = True
 
+    def refresh(self) -> None:
+        """Repaint every row next render *without* clearing first.
+
+        For a stale-but-correctly-sized screen — regaining focus, a background
+        track change — where a clear would only add a visible blank flash.
+        """
+        screen_invalidate()
+
     def render(self, lines: list) -> None:
-        """Draw `lines` at the anchor row, clearing stale content from a
-        previous taller render and restamping the status bar in the same flush."""
+        """Paint `lines` from row 1, diffed against what is already on screen.
+
+        Only rows whose content changed are written, in one buffered frame with
+        no newlines and no erase-to-end-of-screen — so the frame can't be flushed
+        half-drawn, and the rows this widget doesn't own (the now-playing box, the
+        status bar) are left exactly as they are instead of being wiped and
+        restamped on every keystroke.
+        """
         mv   = ui_utils.MARGIN_V
         rows = ui_utils.get_terminal_height()
 
         # Wrap content with vertical margins: mv blank rows on top, mv reserved
-        # rows before the status bar at the bottom.
+        # rows before the status bar at the bottom. The box's band is excluded so
+        # the two writers never own the same row (a shrinking box would otherwise
+        # blank rows this diff believes it still owns).
         padded: list[str] = [''] * mv + list(lines)
-        padded = padded[:rows - 1 - mv]  # -1 status bar, -mv bottom margin
+        limit = rows - 1 - max(mv, now_playing_height_for_layout())
+        padded = padded[:max(0, limit)]
 
         if self._full or self.row is None:
-            # Full clear prevents any ghost lines from a previous render.
-            sys.stdout.write("\033[H\033[3J\033[J" + C.HIDE)
+            if self._full and _screen:
+                # A real clear only for a resize (or after another view owned the
+                # screen): the terminal reflowed, so nothing on it can be trusted.
+                sys.stdout.write("\033[H\033[2J" + C.HIDE)
+                screen_invalidate()
+            else:
+                # First frame of a new widget: take the screen over in the paint
+                # itself, so moving between screens never shows a blank one.
+                screen_takeover_next()
             self.row   = 1
             self._full = False
-            out = ""
-        else:
-            out = C.HIDE + _goto(self.row) + "\033[J"
 
-        for line in padded:
-            out += _clrline() + line + "\n"
-
-        # Erase leftover lines from a previous taller render.
-        for _ in range(max(0, self.last_h - len(padded))):
-            out += _clrline() + "\n"
+        frame: dict[int, str] = {i + 1: line for i, line in enumerate(padded)}
+        # Blank any rows a previous, taller frame left behind.
+        for i in range(len(padded), self.last_h):
+            frame[i + 1] = ""
         self.last_h = len(padded)
 
-        # Stamp the status bar AND the now-playing box atomically in the same
-        # flush — the \033[J above wiped the bottom rows, so redrawing them here
-        # (rather than waiting for the idle tick) stops navigation from flashing
-        # the box (#14).
-        status = ui_utils.get_status_line()
-        out += f"\033[{rows};1H\033[2K{status}"
-        out += now_playing_box_segment()
-
-        sys.stdout.write(out)
-        sys.stdout.flush()
+        # The status bar and the box join the same frame, so everything lands in
+        # one flush — but each row still only costs anything if it changed.
+        frame[rows] = ui_utils.get_status_line()
+        frame = _takeover_rows(frame)
+        parts = [C.HIDE]
+        for row in sorted(frame):
+            parts.append(screen_row_segment(row, frame[row]))
+        parts.append(now_playing_box_segment())
+        out = "".join(p for p in parts if p)
+        if out != C.HIDE:
+            sys.stdout.write(out)
+            sys.stdout.flush()
 
     def clear(self) -> None:
-        """Clear the screen, show the cursor, and reset anchor state."""
-        sys.stdout.write("\033[H\033[3J\033[J" + C.SHOW)
+        """Clear the screen and reset anchor state, cursor still hidden.
+
+        It used to show the cursor here, which left it blinking at home until the
+        next screen painted. The cursor is only ever shown for a text caret, or by
+        `ui_utils.exit_alt_screen()` when the app hands the terminal back.
+        """
+        sys.stdout.write("\033[H\033[3J\033[J" + C.HIDE)
         sys.stdout.flush()
+        screen_invalidate()
         self.last_h = 0
         self.row    = None
         self._full  = True
 
+
+_register_screen_hooks()

@@ -52,6 +52,14 @@ shatters into one "album" per performer.
 
 ### The compilation flag
 
+**Tag the cover as a front cover.** APIC carries a picture type, and rippers often write "Other"
+(0) instead of "Cover (front)" (3) — anything that asks for a front cover then finds nothing. Bulk
+edit → *Automation…* → **Set picture type** fixes a whole library in one pass.
+
+**Leave the disc number off a single-disc release.** `TPOS = 1/1` is noise: it adds a disc header to
+browse lists and a `1-` prefix to names derived from tags. Bulk edit → *Automation…* →
+**Remove single-disc numbering** strips it from anything tagged disc 1 of 1.
+
 Set **`TCMP = 1`** on every track of a various-artists album (soundtracks, label samplers, "Now
 That's What I Call…"). It tells players to group by album rather than by artist. Pair it with album
 artist `Various Artists`. Leave it unset (or `0`) for normal albums.
@@ -63,9 +71,42 @@ crammed into a string. Multi-value is right for: artists, composers, conductors,
 languages, moods. It is wrong for single-identity fields (title, album, album artist) — those are
 one value by definition.
 
+- **Never store "Various Artists".** It isn't a name — it's what the app *works out* when a
+  compilation has no single artist across its tracks. Store the truth instead: the real per-track
+  artists, and `TCMP = 1`. Backtrack refuses to write it (and "VA", "Unknown Artist" and friends) into
+  any name field, and *Derive from filename* sets the compilation flag rather than the name.
+- **No title sort order.** A title sorts on itself, so `TSOT` is never generated — one fewer value to
+  keep in step for no gain. Nor is any sort tag whose value would equal its source: `Moby` and `Rio`
+  need no sort tag, so they don't get one.
+- **Composers are a list too.** `TCOM` takes one composer per value, in natural order
+  (`Fred E. Ahlert`, `Roy Turk`) — not `Fred E. Ahlert/Roy Turk` in a single string, and not inverted
+  (`Ahlert, Fred E.`); inversion is the *sort* tag's job. A generational suffix stays with its name
+  (`Al Jackson, Jr.`).
 - **Slashes are dangerous** in single-value ID3v2.3 storage — `AC/DC` or `9/11` can be mis-split.
   Backtrack sidesteps this by writing **v2.4** whenever a file holds any multi-value frame
   (see [ID3 version](#id3-version-v23-vs-v24) below).
+- **Stored with semicolons, shown with commas.** Backtrack joins a frame's values with `; `
+  internally — that string is what round-trips through the editors, the clipboard and the cache —
+  and renders them as `Ada Lark, Bo Vale` on screen. A value that contains a comma of its own
+  (`Karajan, Herbert`) keeps the semicolon on screen too, so the list can't be misread as more
+  names than it holds.
+- **Genres split; credits don't.** A track tagged with genres `Pop` + `Rock` is listed under **Pop**
+  *and* under **Rock** — both leading to the same album — rather than under one merged
+  `Pop; Rock` pseudo-genre. Genre values are independent facets, so each earns its own entry. So tag
+  `Pop` + `Rock` as two values, never as the single string `Pop; Rock` — one value with a semicolon
+  in it is indistinguishable from two, and gets split the same way.
+- **A joint credit is one act.** Two names on one album are a *billing*, not two separate artists, so
+  the artist browse lists them together: `Herbert von Karajan, Berlin Philharmonic & Friends` gets one
+  entry, not one per name. (When a value contains a comma of its own the separator stays a semicolon —
+  `Rutter, John; The Cambridge Singers` — so the list can't be misread.)
+- **Dates sort by year, however you write them.** `TDRC` may be a bare year, a date, or a full
+  timestamp — all sort correctly. When an album's tracks carry different years (a compilation, a
+  radio series), it sorts under the earliest year **two or more** of them share, so one stray or
+  mis-tagged track can't move the album; a series whose episodes all differ sorts under its first.
+- **A guest doesn't split the album.** With no album-artist tag, an album is filed under the artists
+  credited on *every* track, so a featured guest on one track changes nothing. Only a line-up with
+  no artist throughout becomes **Various Artists** — which is still worth tagging explicitly
+  (album artist `Various Artists` + `TCMP = 1`).
 
 ### Credits: performers and production
 

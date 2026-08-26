@@ -4,6 +4,43 @@ Architecture and development practices for Backtrack. See also **[README.md](../
 user-facing docs and **[tag-etiquette.md](tag-etiquette.md)** / **[library-layout.md](library-layout.md)**
 / **[filesystem-etiquette.md](filesystem-etiquette.md)** for tag/library conventions.
 
+## UI style rules
+
+One rule per axis, so similar screens read the same way.
+
+| Axis | Rule |
+|---|---|
+| Separator | Interpunct `·` — hint bars, headers, player details, multi-value fields. Never `⋅`. |
+| Truncation | `…`, one column, never `...`. `truncate_text`'s default. |
+| Hierarchy | `>` in the breadcrumb only — it means descent, not separation. |
+| Column gap | `prompt_core.COL_GAP` (3) for every list; never a per-list override. Narrow terminals are handled by column `priority` and the per-render pin gap. |
+| Case | Sentence case for every label, menu item, prompt title and separator heading. |
+| Tick / cross | One pair, heavy: `✔` U+2714 and `✘` U+2718. The tick already marks the current sort, a checked multi-select row and "Save changes", so state uses the same one. Never `✓` U+2713 (lighter, doesn't match) or `✗` U+2717 (drawn brush-style in most fonts). |
+| On/off state | Shown in the row itself, in a left-aligned column right beside the labels — pinned right, a value was too far from its label to scan. |
+| Status message | Either a state readout (`Metadata editor ✔`) or a sentence ending in `.`. An em dash introduces a clause; never a hyphen. Failures read "Could not …". No trailing stop when the message ends in interpolated text. |
+| Action row | Sentence case, `…` when it opens a further prompt, a `— scope` suffix only when the row acts on something narrower than the header. **Glyphs are not decoration**: only `▸` (play) and `＋` (add) prefix a row, two spaces after; everything else (Copy, Rename, Replace image…) is plain text, like the tag-action screen. |
+| Long lists | The viewport never leaves blank space: `viewport = max(0, min(viewport, n - vis))` after following the cursor, so growing the window (or deleting rows) un-scrolls the list instead of stranding it. |
+| Boxes | Rounded — `╭─╮ │ ╰─╯` — dim, indented by `MARGIN_H`, with a blank row after. Header boxes are one line: styled title left, dim facts right, facts shed from the right rather than wrapping. |
+| Embedded art | Sized from the rows left after the screen's chrome (`_art_width`), less breathing rows, capped so it stays a thumbnail; centred in a rounded box; **hidden** below `_MIN_ART_ROWS`, where the facts line says more than six rows of mush. Never a fixed `height × 1.5`, which overflowed tall windows. |
+| Prompt title | Says what confirming *does* (`Preview — ↵ applies:`); the keys belong in the hint bar, not the title. |
+| Shift+Tab | Always Tab in reverse, on every screen where Tab does something; advertised as one hint, `[tab/⇧tab]`, both halves clickable. |
+
+### Key vocabulary
+
+One word per concept, so the same key reads the same way on every screen.
+
+| Key | Label | Meaning |
+|---|---|---|
+| `esc` | **back** | Leaves the screen. Never "cancel" — every editor already discards on leave. |
+| `↵` | **save** | In an editor: writes the value. |
+| `↵` | **confirm** | In a chooser (`select`, `live_select`, list_edit's barrel mode): picks the highlighted item. |
+| `tab/⇧tab` | **field** · **column** · **complete** | Names the destination, forwards and back. |
+| `tab` | **month/day** | The calendar's two modes — no reverse to advertise. |
+| `q` | **quit app** | It leaves *Backtrack*, not the screen. This surprised people. |
+| `d` | **delete** | Never "del". |
+| `a` | **add** in an editor · **all** in a multi-select | Genuinely different actions, so different words. |
+
+
 ## Architecture
 
 Backtrack is a terminal-first music player and tag editor. The guiding split is **pure logic vs.
@@ -33,6 +70,7 @@ backtrack/
 │   │   ├── bulk_id3_manager.py # Two-level bulk menu (TAGS / Automation…) and its operations
 │   │   ├── filename_parser.py  # PURE: file/folder names → tag fields (Derive from filename)
 │   │   ├── file_namer.py       # PURE: tags → %token% file names (Rename files from tags)
+│   │   │                        #       number styles: %track:r% (roman), %disc:en% (words)
 │   │   ├── cover_matcher.py    # PURE: pair tracks ↔ cover-image files (Set album art from files)
 │   │   └── tag_writer.py       # Format-agnostic writer: MP3 (ID3) + MP4 atoms; write_fields/write_cover
 │   ├── lyrics/
@@ -43,10 +81,12 @@ backtrack/
 │   │   └── playback_ui.py      # Playback screen renderer (frame buffer, layout modes, panes, volume bar)
 │   └── utils/
 │       ├── prompt_core.py      # Low-level terminal primitives: raw mode, key decode, anchored _Widget,
+│   │                            #       + the persistent screen model (diffed row painting)
 │       │                       #   column/table layout, hint engine
 │       ├── prompt.py           # The widget library built on prompt_core (see "Prompt widgets")
 │       ├── tz_widget.py        # Full-screen world-map timezone picker (runnable standalone)
 │       ├── terminal_input.py   # Non-blocking key reads for the playback loop
+│       ├── datetime_parse.py   # the one date/time parser (precision-aware, human errors)
 │       └── ui_utils.py         # ANSI helpers, terminal size, margins, breadcrumb status bar
 └── docs/                       # This guide + user docs
 ```
@@ -87,7 +127,8 @@ app against a throwaway config/cache without touching your own.
 
 ### Library & metadata — `music_library.py`
 
-Scans the configured music dir, extracts metadata from ID3 (`_extract_id3_metadata`) and MP4
+Scans every configured music directory (`config.music_dirs()`; roots may nest and are de-duplicated),
+extracts metadata from ID3 (`_extract_id3_metadata`) and MP4
 (`_extract_mp4_metadata`), and caches it. A background sync thread runs on an interval and
 **reconciles against the filesystem** (a cheap `os.walk` diff), picking up external adds/removes and
 renames/moves, with an unmount guard so a temporarily-missing drive doesn't wipe the cache. In-app
@@ -117,6 +158,19 @@ match spans. `prompt.live_select` re-runs it per keystroke and highlights matche
   renumber tracks, copy from first track). Each automation op builds a preview then applies via the
   pure modules + `tag_writer`.
 
+### Dates and times — `utils/datetime_parse.py`
+
+Every hand-typed date in the app goes through `parse_datetime`. It takes year-first dates with any
+of `-` `/` `.` (or spaces) between the parts, zero-padding optional, the compact `20080702` form,
+and an optional time after a `T` or a space; it reports the **precision** it was given (`year` …
+`second`) so a caller that needs a real day can insist rather than silently scheduling from an
+invented 1 January, and returns a short human reason on failure instead of a bare `None`.
+
+`02/07/2008` is ambiguous and is refused unless the caller passes `dayfirst`; a part over 12
+settles the order on its own. `prompt._parse_date` (calendar + date/time widgets) and
+`bulk_pattern.parse_start` / `norm_time` are thin wrappers over it — add new date reading here
+rather than growing a fourth set of rules.
+
 ### Format-agnostic writing — `id3/tag_writer.py`
 
 `write_fields(path, values, apply_fields, overwrite)` and `write_cover(path, data, mime, …)` write
@@ -133,11 +187,41 @@ builds the widgets:
 - `select` — the one list widget (single-select; `multi=True` is the old checkbox; `columns=` for
   structured rows; `on_inspect`/`inspect_key` for a `d`-style detail view; `a` toggles all in multi).
 - `live_select` (incremental search), `text`, `path` (tab-completion), `confirm`, `list_edit`.
+- `list_edit` cell types: a column can be plain text (default), a **barrel** field (`col_hints`
+  supplies candidate values to cycle through), or a **timestamp** field (`col_types={i: 'timestamp'}`)
+  — a split `YYYY-MM-DD HH:MM:SS` mask where you type only the digits and the left/right arrows run
+  past the end of one part into the next, with Tab still moving between *columns*. Widths come from
+  `col_ratios` with `col_mins` honoured first, so a fixed-shape cell stays readable as the terminal
+  narrows and its neighbours give way instead.
 - Value editors: `calendar_select`, `datetime_edit` (+ `tz_widget.timezone_select`), `time_edit`,
   `fraction_edit`, `number_edit` (bounded int spinner), `rating_edit` (POPM stars + count + email),
   `rva2_edit` (dB meter), `equaliser_edit` (graphic EQ), `system_editor_edit`.
 - **Raw↔widget toggle:** value editors return the `MODE_TOGGLE` sentinel on **Ctrl-T** so
   `prompt_for_value` can flip between the smart widget and a plain text field (#62).
+- **Key convention:** `q` **quits the application** — it raises `QuitToTerminal` (a `BaseException`,
+  so the editors' broad `except Exception` handlers can't swallow it) on the spot. It is never a way
+  to leave a widget and carry on. Backing out is **Esc** everywhere, plus **←/b** in the list
+  widgets. There is deliberately no vim-style `hjkl` navigation: those are ordinary letters the
+  user may want to type, and binding them to movement made `h` back out of a list without ever
+  being advertised in the hint bar. In widgets whose input is free text — the live
+  search, `text`, `path`, the timezone search — `q` is a literal character and **Ctrl-C** is the
+  quit key. (There used to be a deferred `state.QUIT_REQUESTED` "save the edit, quit at the next
+  menu" flag; it committed a half-finished edit as a side effect of quitting and only fired if a
+  `select` happened to run next, so it has been removed.)
+- **Shared screen chrome:** every screen owes the user the same four things — a hint bar pinned
+  above the miniplayer + status bar so its keys never move, those keys clickable, the background
+  transport keys listed whenever the miniplayer is up, and clicks on the miniplayer box itself
+  doing something. That contract lives in one place:
+  `chrome_hint_pairs` / `chrome_hint_lines` (build the pairs, adding `^P`/`^N`/`^B`/`^O` only when
+  a handler is actually installed), `append_chrome` (pin to `_hint_pin_target`, render, register
+  the click cells), and `consume_chrome` (call it right after `_read_key`; it returns
+  `CHROME_HANDLED`, `CHROME_REDRAW`, a replacement key when a hint was clicked, or `None`).
+  `enable_mouse`/`disable_mouse` turn click reporting on for widgets that want it.
+  **A new widget wires these two call sites and gets all four behaviours** — previously each
+  widget grew its own subset and they had drifted badly apart.
+  A widget that sizes content to the terminal must budget against
+  `_hint_pin_target() - len(chrome_hint_lines(pairs))`, not the raw terminal height, or it draws
+  over the miniplayer (both the EQ and the RVA2 meter did).
 
 ### Playback — `playback/`
 

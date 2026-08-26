@@ -19,9 +19,10 @@ from src.id3.id3_tag_handler import (
     save_id3,
     apply_bulk_operation_to_files,
     _prompt_for_image_metadata,
+    _prompt_for_picture_type,
+    _PICTURE_TYPES,
     pick_nearby_cover,
     CLEAR_COVER,
-    _EXT_TO_MIME,
 )
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import filename_parser as fp
@@ -29,6 +30,8 @@ from src.id3 import tag_writer as tw
 from src.id3 import file_namer as fnm
 from src.id3 import cover_matcher as cm
 from src import bulk_pattern as bp
+from src.music_library import format_value_list
+from src.utils import numbering
 from src.utils import ui_utils
 from src.utils.ui_utils import get_terminal_width, Colors as C
 from src.music_library import refresh_library_entry
@@ -44,30 +47,8 @@ _BULK_COLUMNS = [
     prompt.Column(style='primary'),                                     # TAG (friendly)
     prompt.Column(style='dynamic-dim', priority=1),                     # type / category — drops first
     prompt.Column(style='normal', flex=True),                           # value summary (kept)
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3, priority=2),  # count / total — drops next
+    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=2),  # count / total — drops next
 ]
-
-
-def prompt_for_image_payload() -> tuple[bytes, str, int, str] | None:
-    """
-    Prompts the user for artwork details.
-    Returns (img_data, mime_type, pic_type, description) or None if cancelled.
-    """
-    img_path = prompt.text("Path to image:")
-    if not img_path or not os.path.isfile(img_path):
-        ui_utils.show_status("File not found.")
-        return None
-
-    ext = os.path.splitext(img_path)[1].lower()
-    mime = _EXT_TO_MIME.get(ext, 'image/jpeg')
-
-    meta = _prompt_for_image_metadata()
-    if meta is None:
-        return None
-    pic_type, desc = meta
-
-    with open(img_path, 'rb') as f:
-        return f.read(), mime, pic_type, desc
 
 
 # Field → short label shown in the preview / detail view.
@@ -94,7 +75,7 @@ _DERIVE_FIELD_COL = {
 _DETAIL_COLUMNS = [
     prompt.Column(style='primary'),                              # field label
     prompt.Column(style='normal', flex=True),                   # full value
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # write / kept
+    prompt.Column(style='dynamic-dim', align='right', pin=True),  # write / kept
 ]
 
 
@@ -151,7 +132,7 @@ def _num_pair(num, total) -> str:
 
 # base field → sort frame id, used to compute sort-order strings via the #42 engine.
 _SORT_BASE = [('artist', 'TSOP'), ('album_artist', 'TSO2'),
-              ('album', 'TSOA'), ('title', 'TSOT')]
+              ('album', 'TSOA')]          # no title sort — a title sorts on itself
 
 
 def _sort_value(base_id: str, raw: str) -> str | None:
@@ -159,8 +140,9 @@ def _sort_value(base_id: str, raw: str) -> str | None:
 
     Reuses the #42 engine (name-inversion for artists, article-move for
     album/title). "Various Artists" sorts as itself, so no tag is generated."""
-    if not raw or raw.strip().lower() in ('various artists', 'various'):
-        return None
+    from src.id3.id3_tag_handler import is_placeholder_name
+    if not raw or is_placeholder_name(raw):
+        return None                     # derived names sort as themselves
     from src.id3.id3_browser import _sort_candidates
     cands = _sort_candidates(base_id, str(raw))
     return cands[0] if cands else None
@@ -209,7 +191,7 @@ def _plan_write(derived, apply_fields: set, overwrite: bool,
 _PEOPLE_COLUMNS = [
     prompt.Column(style='primary', flex=True, max_frac=0.45),           # role / character (kept)
     prompt.Column(style='normal', flex=True),                           # name / actor (kept)
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3, priority=1),  # N/total or state — drops first
+    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=1),  # N/total or state — drops first
 ]
 
 
@@ -286,7 +268,7 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
             choices.append(prompt.Choice(title=f"{r['role']} → {r['name']}", value=i,
                                          cells=[r['role'] or '—', r['name'] or '—', state]))
         choices.append(prompt.separator())
-        choices.append(prompt.Choice(title="＋ Add person (to all files)", value="__add__"))
+        choices.append(prompt.Choice(title="＋  Add person to all files…", value="__add__"))
         choices.append(prompt.Choice(title="✔ Save changes", value="__save__"))
 
         sub = f"{total} file(s) · Enter a row to edit/remove"
@@ -366,17 +348,145 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
     ui_utils.show_status(f"Updated {label} in {changed} file(s).")
 
 
+def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> None:
+    """Edit a fraction tag (``n/N`` — TRCK / TPOS / MVIN) across many files.
+
+    Whichever half the selection already agrees on is seeded and editable; the
+    half that differs between files is shown as a dim ``──  (varies)`` and, left
+    alone, keeps each file's own value.  So you can set one common disc total
+    across tracks whose disc *numbers* differ — or renumber the discs while
+    leaving mixed totals intact — without the editor flattening the other half to
+    whatever the first file happened to hold.
+    """
+    info = get_tag_info(tag_id)
+    label = info.name[0] if info else tag_id
+    base_id, _, _ = parse_composite_tag_id(tag_id)
+
+    mp3s = [p for p in paths if p.lower().endswith('.mp3')]
+    skipped_fmt = len(paths) - len(mp3s)
+    existing: dict = {}
+    for p in mp3s:
+        try:
+            audio = ID3(p)
+        except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
+            continue
+        fr = audio.get(tag_id)
+        raw = str(fr.text[0]) if (fr is not None and getattr(fr, 'text', None)) else ''
+        cur, _, tot = raw.partition('/')
+        existing[p] = (cur.strip(), tot.strip())
+    if not existing:
+        ui_utils.show_status(f"No MP3s carry {label}.")
+        return
+
+    currents = {c for c, _ in existing.values()}
+    totals = {t for _, t in existing.values()}
+    varies = set()
+    if len(currents) > 1:
+        varies.add('current')
+    if len(totals) > 1:
+        varies.add('total')
+
+    seed_cur = next(iter(currents)) if len(currents) == 1 else ''
+    seed_tot = next(iter(totals)) if len(totals) == 1 else ''
+    seed = f"{seed_cur}/{seed_tot}" if seed_tot else seed_cur
+    note = {frozenset(): 'all files agree',
+            frozenset({'current'}): 'the numbers differ, the total is shared',
+            frozenset({'total'}): 'the totals differ, the number is shared',
+            frozenset({'current', 'total'}): 'numbers and totals both differ',
+            }[frozenset(varies)]
+    res = prompt.fraction_edit(f"{label} across {len(existing)} file(s) — {note}:",
+                               tag=base_id, value=seed, varies=varies)
+    if res is None or res is prompt.MODE_TOGGLE:
+        return
+    new_cur, new_tot = res.get('current'), res.get('total')
+
+    plan: dict = {}
+    for p, (cur, tot) in existing.items():
+        # None means "this half varied and was left alone" — keep the file's own.
+        c = cur if new_cur is None else new_cur.strip()
+        t = tot if new_tot is None else new_tot.strip()
+        if not c:
+            continue                       # nothing to write without an index
+        plan[p] = f"{c}/{t}" if t else c
+
+    ordered = [p for p in mp3s if p in plan]
+    pos = {p: i + 1 for i, p in enumerate(ordered)}
+    choices, n_changed = [], 0
+    for p in ordered:
+        cur, tot = existing[p]
+        old = f"{cur}/{tot}" if tot else (cur or '—')
+        changed = old != plan[p]
+        n_changed += changed
+        choices.append(prompt.Choice(
+            title=os.path.basename(p), value=p, checked=changed,
+            cells=[str(pos[p]), os.path.basename(p),
+                   f"{old} → {plan[p]}" if changed else 'no change']))
+    if not choices:
+        ui_utils.show_status("Nothing to write.")
+        return
+
+    def _frac_header():
+        """Live counts for the fraction preview."""
+        nk = sum(1 for ch in choices if ch.checked)
+        bits = [f"{label}", ui_utils.plural(len(choices), "file"), f"{n_changed} changing", f"{nk} ticked"]
+        if skipped_fmt:
+            bits.append(f"{skipped_fmt} non-MP3 skipped")
+        return header(' · '.join(bits))()
+
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+                        columns=_RENUMBER_COLUMNS, header=_frac_header, multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel)
+    if not apply_set:
+        ui_utils.show_status("No files selected.")
+        return
+
+    count = errors = 0
+    for p in ordered:
+        if p not in apply_set:
+            continue
+        try:
+            try:
+                audio = ID3(p)
+            except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
+                audio = ID3()
+            frame = create_frame(tag_id, plan[p])
+            if frame is None:
+                continue
+            audio.delall(tag_id)
+            audio.add(frame)
+            save_id3(audio, p)
+            count += 1
+            try:
+                refresh_library_entry(library, p)
+            except Exception:
+                pass
+        except Exception:
+            errors += 1
+
+    msg = f"Set {label} on {count} file(s)."
+    if skipped_fmt:
+        msg += f" {skipped_fmt} non-MP3 skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
 def _derive_regex_base(paths: list) -> str:
     """Base directory for folder-path regex matching: the configured library
     root when every file is under it, otherwise the files' common ancestor."""
     abspaths = [os.path.abspath(p) for p in paths]
     try:
-        from src.config import load_config
-        music_dir = os.path.abspath(load_config().get('music_directory', '') or '')
+        from src.config import music_dirs
+        roots = music_dirs()
     except Exception:
-        music_dir = ''
-    if music_dir and all(p.startswith(music_dir + os.sep) for p in abspaths):
-        return music_dir
+        roots = []
+    # With several library roots, the deepest one containing every selected file
+    # wins — that's the folder path the user thinks in.
+    for music_dir in sorted(roots, key=len, reverse=True):
+        if all(p.startswith(music_dir + os.sep) for p in abspaths):
+            return music_dir
     try:
         return os.path.commonpath(abspaths)
     except ValueError:
@@ -520,7 +630,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
     varying = [f for f in tw.FIELDS if f in field_vals and f not in uniform]
 
     # Header: uniform fields + counts.
-    header_bits = [f"{len(to_write)} file(s)"]
+    header_bits = [ui_utils.plural(len(to_write), "file")]
     for f in tw.FIELDS:
         if f in uniform:
             header_bits.append(f"{_DERIVE_LABELS[f]}: {next(iter(field_vals[f]))}")
@@ -538,7 +648,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
     if 'disc_subtitle' in apply_fields:
         n_mp4 = sum(1 for p in writable if tw.format_kind(p) == 'mp4')
         if n_mp4:
-            header_bits.append(f"disc subtitle N/A on {n_mp4} MP4 file(s)")
+            header_bits.append(f"disc subtitle N/A on {ui_utils.plural(n_mp4, 'MP4 file')}")
     if 'sort' in apply_fields:
         header_bits.append("+ sort orders")
     sub = " · ".join(header_bits)
@@ -561,7 +671,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
                      apply_fields, overwrite, header)
 
     selected = prompt.select(
-        "Preview — Space to deselect, d for details, Enter to apply:",
+        "Preview — ↵ applies:",
         choices=preview_choices, columns=prev_cols,
         header=header(sub), multi=True,
         extra_hints={'d': 'details'}, on_inspect=_show_detail)
@@ -603,6 +713,14 @@ def derive_from_filename(paths: list, library: list, header) -> None:
 # Preview columns for the pattern assignment: position · file · assigned value.
 # Position is just a list index, so it drops first; file and the assigned value
 # (the pending change) are kept.
+# Per-range schedule table. START holds a whole "YYYY-MM-DD HH:MM:SS" (19 cols)
+# at any terminal width; FROM/TO/EVERY/STEP are short and shrink around it.
+_SCHEDULE_COL_MINS = (4, 4, 19, 5, 5)
+# The numeric columns sit at their minimums and START gets just enough for a
+# whole stamp; whatever the terminal has left over falls into the last column as
+# trailing space, where it reads as a margin rather than a gap mid-row.
+_SCHEDULE_COL_RATIOS = (4, 4, 21, 5, 46)
+
 _PATTERN_COLUMNS = [
     prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),
     prompt.Column(style='primary', flex=True),
@@ -615,7 +733,6 @@ _SORT_SRC = [
     ('artist',       'TPE1', 'TSOP'),
     ('album_artist', 'TPE2', 'TSO2'),
     ('album',        'TALB', 'TSOA'),
-    ('title',        'TIT2', 'TSOT'),
 ]
 
 _SORT_APPLY_COLUMNS = [
@@ -627,17 +744,25 @@ _SORT_APPLY_COLUMNS = [
 _RENUMBER_COLUMNS = [
     prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),  # position (index) — drops first
     prompt.Column(style='primary', flex=True),                       # file (kept)
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # old → new (the change, kept)
+    prompt.Column(style='dynamic-dim', align='right', pin=True),  # old → new (the change, kept)
 ]
 
 
 def renumber_tracks_op(paths: list, library: list, header) -> None:
     """Renumber track numbers per-disc (disc-relative) ↔ continuous (album-
     relative / movement systems). Works for MP3 and MP4 via tag_writer."""
-    by_path = {s['path']: s for s in library}
-    ordered = bp.order_tracks([by_path.get(p, {'path': p}) for p in paths])
-    writable = [s for s in ordered if tw.is_writable(s['path'])]
-    skipped_fmt = len(ordered) - len(writable)
+    # Disc/track numbering is read from the files, not the library cache. Taking
+    # the discs from a stale cache silently flattened a multi-disc selection into
+    # one group, so a *per-disc* renumber wrote a single continuous 1…N run over
+    # every disc — the exact thing you reach for this after inserting a disc.
+    songs = []
+    for p in paths:
+        if not tw.is_writable(p):
+            continue
+        pairs = tw.read_number_pairs(p)
+        songs.append({'path': p, 'disc': pairs['disc'], 'track': pairs['track']})
+    skipped_fmt = len(paths) - len(songs)
+    writable = bp.order_tracks(songs)
     if not writable:
         ui_utils.show_status("No MP3/MP4 tracks to renumber.")
         return
@@ -660,8 +785,8 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
         choices.append(prompt.Choice(
             title=os.path.basename(s['path']), value=s['path'], checked=True,
             cells=[str(pos[s['path']]), os.path.basename(s['path']), f"{old} → {trk}/{total}"]))
-    sub = f"{len(choices)} file(s)" + (f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
-    sel = prompt.select("Preview — Space to deselect, Enter to apply:", choices=choices,
+    sub = ui_utils.plural(len(choices), "file") + (f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
                         columns=_RENUMBER_COLUMNS, header=header(sub), multi=True)
     if sel is None:
         return
@@ -694,6 +819,324 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
     ui_utils.show_status(msg)
 
 
+def reflow_discs_op(paths: list, library: list, header) -> None:
+    """Re-flow disc numbering after a disc is inserted, removed or appended.
+
+    Renumbering the distinct disc values onto a dense 1…N handles all three edits
+    with one rule: a disc parked at ``1.5`` becomes 2 and everything above shifts
+    up; a deleted disc closes its gap; an appended disc keeps its number and only
+    the totals move. "Totals only" fixes the "of N" half without renumbering, for
+    deliberately sparse discs. MP3 and MP4 both write, via tag_writer.
+    """
+    # Numbering comes from the files, not the library cache: you reach for this
+    # right after hand-numbering a disc 1.5, when the cache has not caught up.
+    songs = []
+    for p in paths:
+        if not tw.is_writable(p):
+            continue
+        pairs = tw.read_number_pairs(p)
+        songs.append({'path': p, 'disc': pairs['disc'], 'track': pairs['track'],
+                      'total_discs': pairs['total_discs'],
+                      'total_tracks': pairs['total_tracks']})
+    skipped_fmt = len(paths) - len(songs)
+    writable = bp.order_tracks(songs)
+    if not writable:
+        ui_utils.show_status("No MP3/MP4 tracks to reflow.")
+        return
+
+    runs = bp.disc_ranges(writable)
+    disc_list = ', '.join(lab for _, _, lab in runs[:8]) + ('…' if len(runs) > 8 else '')
+    sub = f"{len(writable)} tracks · discs {disc_list}"
+
+    mode_sel = prompt.select(
+        "Disc numbering:",
+        choices=[f"Reflow — renumber the {len(runs)} disc(s) to 1…{len(runs)} and set totals",
+                 "Totals only — set the disc total, keep the numbers as they are"],
+        header=header(sub))
+    if not mode_sel:
+        return
+    renumber = mode_sel.startswith("Reflow")
+
+    which = prompt.select(
+        "Totals to update:",
+        choices=[prompt.Choice(title="Disc totals (the 'of N' in disc n/N)",
+                               value='disc', checked=True),
+                 prompt.Choice(title="Track totals (each disc's own track count)",
+                               value='track')],
+        header=header(sub), multi=True)
+    if which is None:
+        return
+    disc_totals, track_totals = 'disc' in which, 'track' in which
+    if not renumber and not disc_totals and not track_totals:
+        ui_utils.show_status("Nothing to change — pick a total to update.")
+        return
+
+    plan = bp.reflow_discs(writable, renumber=renumber,
+                           disc_totals=disc_totals, track_totals=track_totals)
+
+    def _old_pair(s, cur_key, tot_key) -> str:
+        """The track's existing 'n/N' for a pair field, as stored."""
+        raw = str(s.get(cur_key, '') or '').strip()
+        if '/' in raw:
+            return raw
+        tot = str(s.get(tot_key, '') or '').strip()
+        return f"{raw or '?'}/{tot}" if tot else (raw or '?')
+
+    def _new_pair(f: dict, cur_key: str, tot_key: str) -> str:
+        """The planned 'n/N' for a pair field."""
+        return f"{f[cur_key]}/{f[tot_key]}" if tot_key in f else str(f[cur_key])
+
+    pos = {s['path']: i + 1 for i, s in enumerate(writable)}
+    choices, n_changed = [], 0
+    for s in writable:
+        f = plan[s['path']]
+        bits = []
+        d_old, d_new = _old_pair(s, 'disc', 'total_discs'), _new_pair(f, 'disc', 'total_discs')
+        if d_old != d_new:
+            bits.append(f"disc {d_old} → {d_new}")
+        if track_totals:
+            t_old = _old_pair(s, 'track', 'total_tracks')
+            t_new = _new_pair(f, 'track', 'total_tracks')
+            if t_old != t_new:
+                bits.append(f"track {t_old} → {t_new}")
+        changed = bool(bits)
+        n_changed += changed
+        # Unchanged rows stay listed but unticked — no point rewriting a file
+        # whose numbering the reflow leaves exactly as it was.
+        choices.append(prompt.Choice(
+            title=os.path.basename(s['path']), value=s['path'], checked=changed,
+            cells=[str(pos[s['path']]), os.path.basename(s['path']),
+                   ' · '.join(bits) if changed else 'no change']))
+
+    if not n_changed:
+        # Already dense with the right totals — say so, rather than showing an
+        # all-unticked preview that ends in "No tracks selected".
+        ui_utils.show_status(
+            f"Disc numbering is already 1…{len(runs)} with matching totals — nothing to do.")
+        return
+
+    def _reflow_header():
+        """Live counts for the reflow preview."""
+        nk = sum(1 for ch in choices if ch.checked)
+        bits = [ui_utils.plural(len(writable), "track"), f"{n_changed} changing", f"{nk} ticked"]
+        if skipped_fmt:
+            bits.append(f"{skipped_fmt} unsupported skipped")
+        return header(' · '.join(bits))()
+
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+                        columns=_RENUMBER_COLUMNS, header=_reflow_header, multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel)
+    if not apply_set:
+        ui_utils.show_status("No tracks selected.")
+        return
+
+    fields = {'disc'} | ({'track'} if track_totals else set())
+    count = errors = 0
+    for s in writable:
+        p = s['path']
+        if p not in apply_set:
+            continue
+        r = tw.write_fields(p, plan[p], fields, overwrite=True)
+        if r.error:
+            errors += 1
+        elif r.written:
+            count += 1
+            try:
+                refresh_library_entry(library, p)
+            except Exception:
+                pass
+
+    msg = f"Reflowed disc numbering on {count} file(s)."
+    if skipped_fmt:
+        msg += f" {skipped_fmt} unsupported skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
+def _picture_type_name(pic_type) -> str:
+    """Human label for an APIC picture-type byte ("Cover (front)", "Other"…)."""
+    return dict(_PICTURE_TYPES).get(int(pic_type), f"type {pic_type}")
+
+
+def set_picture_type_op(paths: list, library: list, header) -> None:
+    """Set the picture type on art that's already embedded.
+
+    Rippers routinely tag a front cover as "Other" (type 0), which anything
+    looking specifically for a front cover then misses. This retypes in bulk
+    without touching the image. MP3 only — MP4's `covr` atom has no type field.
+    """
+    art = []
+    for path in paths:
+        if not path.lower().endswith('.mp3'):
+            continue
+        try:
+            tags = ID3(path)
+        except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
+            continue
+        frames = [tags[k] for k in tags if k.startswith('APIC')]
+        if frames:
+            art.append({'path': path,
+                        'types': [int(getattr(f, 'type', 3)) for f in frames]})
+    skipped = len(paths) - len(art)
+    if not art:
+        ui_utils.show_status("No MP3s with embedded art in this selection.")
+        return
+
+    counts = Counter(t for a in art for t in a['types'])
+    seen = ' · '.join(f"{_picture_type_name(t)} ×{n}" for t, n in counts.most_common())
+
+    pic_type = _prompt_for_picture_type(
+        initial=3, header=lambda: header(f"{len(art)} file(s) with art · {seen}")())
+    if pic_type is None:
+        return
+
+    pos = {a['path']: i + 1 for i, a in enumerate(art)}
+    choices, n_changed = [], 0
+    for a in art:
+        stale = [t for t in a['types'] if t != pic_type]
+        n_changed += bool(stale)
+        was = ' · '.join(_picture_type_name(t) for t in a['types'])
+        choices.append(prompt.Choice(
+            title=os.path.basename(a['path']), value=a['path'], checked=bool(stale),
+            cells=[str(pos[a['path']]), os.path.basename(a['path']),
+                   f"{was} → {_picture_type_name(pic_type)}" if stale else "already correct"]))
+
+    if not n_changed:
+        ui_utils.show_status(f"Every image is already {_picture_type_name(pic_type)}.")
+        return
+
+    def _type_header():
+        """Live counts for the preview."""
+        nk = sum(1 for ch in choices if ch.checked)
+        bits = [f"{len(art)} file(s) with art", f"{n_changed} to retype", f"{nk} ticked"]
+        if skipped:
+            bits.append(f"{skipped} without art or not MP3")
+        return header(' · '.join(bits))()
+
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+                        columns=_RENUMBER_COLUMNS, header=_type_header, multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel)
+    if not apply_set:
+        ui_utils.show_status("No tracks selected.")
+        return
+
+    count = errors = 0
+    for a in art:
+        if a['path'] not in apply_set:
+            continue
+        r = tw.retype_cover(a['path'], pic_type)
+        if r.error:
+            errors += 1
+        elif r.written:
+            count += 1
+            try:
+                refresh_library_entry(library, a['path'])
+            except Exception:
+                pass
+
+    msg = f"Set {_picture_type_name(pic_type)} on {count} file(s)."
+    if skipped:
+        msg += f" {skipped} without art or not MP3."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
+def strip_single_disc_op(paths: list, library: list, header) -> None:
+    """Remove the disc number from tracks that are disc 1 of 1.
+
+    A single-disc release doesn't need a disc tag: "1/1" is noise that shows up as
+    a disc header in browse lists and in file names derived from tags. Bare "1"
+    (no total) counts too, but only when nothing in the selection sits on another
+    disc — on a real multi-disc album an untotalled "1" is meaningful.
+    """
+    songs = []
+    for path in paths:
+        if not tw.is_writable(path):
+            continue
+        pairs = tw.read_number_pairs(path)
+        songs.append({'path': path, 'disc': pairs['disc'].strip(),
+                      'total_discs': pairs['total_discs'].strip(),
+                      'track': pairs['track'], 'total_tracks': pairs['total_tracks']})
+    skipped_fmt = len(paths) - len(songs)
+    ordered = bp.order_tracks(songs)
+    if not ordered:
+        ui_utils.show_status("No MP3/MP4 tracks to change.")
+        return
+
+    # Is every disc value in this selection either absent or 1?
+    single_disc = not {s['disc'] for s in ordered} - {'', '1'}
+
+    def _why(s: dict) -> str:
+        """Why this track is (or isn't) a candidate."""
+        disc, total = s['disc'], s['total_discs']
+        if not disc:
+            return ""                                  # nothing to remove
+        if total == '1':
+            return f"disc {disc}/{total} → —"
+        if not total and disc == '1' and single_disc:
+            return "disc 1 → —"
+        return ""
+
+    pos = {s['path']: i + 1 for i, s in enumerate(ordered)}
+    choices, n_changed = [], 0
+    for s in ordered:
+        why = _why(s)
+        n_changed += bool(why)
+        stored = s['disc'] + (f"/{s['total_discs']}" if s['total_discs'] else "")
+        choices.append(prompt.Choice(
+            title=os.path.basename(s['path']), value=s['path'], checked=bool(why),
+            cells=[str(pos[s['path']]), os.path.basename(s['path']),
+                   why or (f"keeps disc {stored}" if stored else "no disc number")]))
+
+    if not n_changed:
+        ui_utils.show_status("No tracks are disc 1 of 1 — nothing to remove.")
+        return
+
+    def _strip_header():
+        """Live counts for the preview."""
+        nk = sum(1 for ch in choices if ch.checked)
+        bits = [ui_utils.plural(len(ordered), "track"), f"{n_changed} with 1/1", f"{nk} ticked"]
+        if skipped_fmt:
+            bits.append(f"{skipped_fmt} unsupported skipped")
+        return header(' · '.join(bits))()
+
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+                        columns=_RENUMBER_COLUMNS, header=_strip_header, multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel)
+    if not apply_set:
+        ui_utils.show_status("No tracks selected.")
+        return
+
+    count = errors = 0
+    for s in ordered:
+        if s['path'] not in apply_set:
+            continue
+        r = tw.clear_fields(s['path'], {'disc'})
+        if r.error:
+            errors += 1
+        elif r.written:
+            count += 1
+            try:
+                refresh_library_entry(library, s['path'])
+            except Exception:
+                pass
+
+    msg = f"Removed the disc number from {count} file(s)."
+    if skipped_fmt:
+        msg += f" {skipped_fmt} unsupported skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
 # Pattern picker: pattern · example/description.
 _RENAME_PICK_COLUMNS = [
     prompt.Column(style='primary'),
@@ -717,6 +1160,15 @@ def _show_tokens(header) -> None:
     """Read-only reference of every %token% the pattern accepts."""
     rows: list = [prompt.Choice(title=f"%{t}%", value=t, disabled=True,
                                 cells=[f"%{t}%", desc]) for t, desc in fnm.TOKENS.items()]
+    # Number styles apply to any numeric token: %track:r%, %disc:en%, %track:r:l%.
+    rows.append(prompt.separator())
+    for style, desc in numbering.STYLES.items():
+        suffix = "" if style == 'n' else f":{style}"
+        rows.append(prompt.Choice(title=f"%track{suffix}%", value=f"__style_{style}",
+                                  disabled=True,
+                                  cells=[f"%track{suffix}%", f"{desc} — any numeric token"]))
+    rows.append(prompt.Choice(title="%track:r:l%", value="__style_case", disabled=True,
+                              cells=["%track:r:l%", f"case: {numbering.CASES}"]))
     rows.append(prompt.separator())
     rows.append(prompt.Choice(title="Back", value="__back__"))
     prompt.select("Available tokens:", choices=rows, columns=_TOKENS_COLUMNS,
@@ -754,7 +1206,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
                                      cells=["Show all tokens", f"{len(fnm.TOKENS)} available"]))
         default_idx = next((i for i, (pat, _) in enumerate(fnm.PRESETS)
                             if pat == default_pattern), 0)
-        sub = f"{len(writable)} file(s)" + (" · artists vary → artist suggested" if vary else "")
+        sub = ui_utils.plural(len(writable), "file") + (" · artists vary → artist suggested" if vary else "")
         sel = prompt.select("File-name pattern:", choices=choices,
                             columns=_RENAME_PICK_COLUMNS, header=header(sub), index=default_idx)
         if not sel:
@@ -784,7 +1236,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
                              cells=[str(i + 1), o, n])
                for i, (p, o, n) in enumerate(changed)]
     sub = f"{len(changed)} to rename" + (f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
-    sel = prompt.select("Preview — Space to deselect, Enter to rename:", choices=choices,
+    sel = prompt.select("Preview — ↵ renames:", choices=choices,
                         columns=_RENAME_COLUMNS, header=header(sub), multi=True)
     if sel is None:
         return
@@ -809,7 +1261,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
             staged.append((orig, tmp, final))
         except OSError as e:
             errors += 1
-            ui_utils.show_status(f"Couldn't rename {os.path.basename(orig)}: {e}")
+            ui_utils.show_status(f"Could not rename {os.path.basename(orig)}: {e}")
 
     # Phase 2: move each temp to its final name and keep the library in sync.
     count = 0
@@ -818,7 +1270,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
             os.replace(tmp, final)
         except OSError as e:
             errors += 1
-            ui_utils.show_status(f"Couldn't rename to {os.path.basename(final)}: {e}")
+            ui_utils.show_status(f"Could not rename to {os.path.basename(final)}: {e}")
             try:
                 os.replace(tmp, orig)   # roll this one back
             except OSError:
@@ -847,7 +1299,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
 _COVER_PREVIEW_COLUMNS = [
     prompt.Column(style='primary', max_frac=0.42),
     prompt.Column(style='normal', flex=True),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=1),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=1),
 ]
 
 # Image-name patterns offered for the "%token%" match mode.
@@ -1039,9 +1491,49 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             ch.cells = [os.path.basename(p), _cover_cell(p), _conf(p)]
             ch.checked = True               # an explicit pick means write it
 
+    def _copy_scope(picked: str, path: str) -> list | None:
+        """Ask how far a hand-picked cover should carry, and return the tracks it
+        applies to (None if the user backed out).
+
+        A cover chosen for an unmatched track is usually right for its
+        neighbours too, but not always for the whole selection — a box set
+        changes art per disc.  So the choice is: every track, everything from
+        here down, a counted run from here, or this track alone.
+        """
+        below = shown[shown.index(path):]
+        choices = [prompt.Choice(title=f"All {len(shown)} tracks", value="all")]
+        if len(below) > 1 and len(below) != len(shown):
+            choices.append(prompt.Choice(
+                title=f"This track and the {len(below) - 1} below it", value="down"))
+        if len(below) > 1:
+            choices.append(prompt.Choice(title="This track and the next N…", value="count"))
+        choices.append(prompt.Choice(title="Just this track", value="one"))
+
+        scope = prompt.select(f"Apply {os.path.basename(picked)} to:", choices=choices,
+                              header=header("apply cover"))
+        if scope is None:
+            return None                     # backed out — leave the row unchanged
+        if scope == "all":
+            return shown
+        if scope == "down":
+            return below
+        if scope == "count":
+            raw = prompt.text(f"How many tracks from here (1-{len(below)}):",
+                              default=str(len(below)))
+            if raw is None:
+                return None
+            try:
+                n = int(raw.strip())
+            except ValueError:
+                ui_utils.show_status("Not a number — applied to this track only.")
+                return [path]
+            n = max(1, min(n, len(below)))
+            return below[:n]
+        return [path]
+
     def _reassign(path: str) -> None:
-        """Let the user pick/clear the cover for one track, then optionally apply
-        that same cover to every track (handy for a shared album cover)."""
+        """Let the user pick/clear the cover for one track, then choose how far
+        that cover carries down the selection."""
         d = os.path.dirname(os.path.abspath(path))
         picked = pick_nearby_cover(path, tokens=tokens[path], images=dir_images[d],
                                    current=plan.get(path), allow_none=True, header=header)
@@ -1052,15 +1544,9 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             return
         targets = [path]
         if len(shown) > 1:
-            scope = prompt.select(
-                f"Apply {os.path.basename(picked)} to:",
-                choices=[prompt.Choice(title="Just this track", value="one"),
-                         prompt.Choice(title=f"All {len(shown)} tracks", value="all")],
-                header=header("apply cover"))
-            if scope is None:
-                return                      # backed out — leave the row unchanged
-            if scope == "all":
-                targets = shown
+            targets = _copy_scope(picked, path)
+            if targets is None:
+                return
         for tp in targets:
             _set_cover(tp, picked)
 
@@ -1072,7 +1558,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     def _preview_header():
         """Build the live status line (matched/ticked/skipped counts) for the cover preview."""
         nk = sum(1 for ch in preview_choices if ch.checked)
-        bits = [f"{len(shown)} track(s)", f"{n_match} matched"]
+        bits = [ui_utils.plural(len(shown), "track"), f"{n_match} matched"]
         if n_nodir:
             bits.append(f"{n_nodir} without images")
         if skipped_fmt:
@@ -1084,7 +1570,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         return header(" · ".join(bits))()
 
     sel = prompt.select(
-        "Preview — Space/a toggle, d to choose/change cover, Enter to apply:",
+        "Preview — ↵ applies:",
         choices=preview_choices, columns=_COVER_PREVIEW_COLUMNS,
         header=_preview_header, multi=True,
         extra_hints={'d': 'choose cover'}, on_inspect=_reassign)
@@ -1137,13 +1623,17 @@ def set_album_art_op(paths: list, library: list, header) -> None:
 
 
 def apply_sort_orders(paths: list, library: list, header) -> None:
-    """Generate smart sort-order tags (TSOP/TSO2/TSOA/TSOT) from each file's
-    existing artist/album-artist/album/title, via the #42 engine. MP3/ID3 only."""
+    """Generate smart sort-order tags (TSOP/TSO2/TSOA) from each file's existing
+    artist/album-artist/album, via the #42 engine. MP3/ID3 only.
+
+    No title sort: a title sorts on itself, so TSOT is never generated. Nor is a
+    sort tag whose value would equal its source — the engine returns None there,
+    so nothing is written where sorting wouldn't change.
+    """
     field_choices = [
         prompt.Choice(title="Artist sort (TSOP)", value='artist', checked=True),
         prompt.Choice(title="Album-artist sort (TSO2)", value='album_artist', checked=True),
         prompt.Choice(title="Album sort (TSOA)", value='album', checked=True),
-        prompt.Choice(title="Title sort (TSOT)", value='title'),
     ]
     chosen = prompt.select("Sort tags to generate:", choices=field_choices,
                            header=header(), multi=True)
@@ -1194,8 +1684,8 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
         summary = " · ".join(f"{t}={v}" for t, v in plan[p])
         choices.append(prompt.Choice(title=os.path.basename(p), value=p, checked=True,
                                      cells=[os.path.basename(p), summary]))
-    sub = f"{len(choices)} file(s)" + (f" · {skipped_fmt} non-MP3 skipped" if skipped_fmt else "")
-    sel = prompt.select("Preview — Space to deselect, Enter to apply:", choices=choices,
+    sub = ui_utils.plural(len(choices), "file") + (f" · {skipped_fmt} non-MP3 skipped" if skipped_fmt else "")
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
                         columns=_SORT_APPLY_COLUMNS, header=header(sub), multi=True)
     if sel is None:
         return
@@ -1239,7 +1729,20 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
     """Assign one tag across an ordered selection by ranges, an every-N grouping,
     or a date schedule (#IDEA: pattern-based bulk editing). MP3/ID3 only."""
     by_path = {s['path']: s for s in library}
-    ordered = bp.order_tracks([by_path.get(p, {'path': p}) for p in paths])
+    # Overlay the on-disk disc/track numbers over the cached ones: the ranges and
+    # the per-disc seeding are position-based, so ordering from a stale cache
+    # would point every range at the wrong tracks.
+    merged = []
+    for p in paths:
+        s = dict(by_path.get(p, {'path': p}))
+        s['path'] = p
+        pairs = tw.read_number_pairs(p)
+        if pairs['disc']:
+            s['disc'] = pairs['disc']
+        if pairs['track']:
+            s['track'] = pairs['track']
+        merged.append(s)
+    ordered = bp.order_tracks(merged)
     if not ordered:
         ui_utils.show_status("No tracks.")
         return
@@ -1258,6 +1761,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
     modes = ["Ranges (from–to → value)", "Every N tracks → value"]
     if is_date:
         modes.append("Date schedule")
+        modes.append("Schedule per range (own start + interval)")
     mode = prompt.select("Assignment mode:", choices=modes,
                          header=header(f"{tag_id} · {n} tracks in disc/track order"))
     if not mode:
@@ -1273,7 +1777,8 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
 
     assignments: dict = {}
     if mode.startswith("Ranges"):
-        rows = prompt.list_edit(f"Ranges for {tag_id} (positions 1–{n}; {{n}} = range no.):",
+        rows = prompt.list_edit(f"Ranges for {tag_id} (positions 1–{n}; range no. as "
+                                f"{{n}} 3 / {{r}} III / {{en}} Three):",
                                 [], ("FROM", "TO", "VALUE"))
         if not rows:
             return
@@ -1291,10 +1796,81 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         gs = _int(prompt.text("Group size (N tracks per group):"), "Group size")
         if gs is None:
             return
-        tmpl = prompt.text("Value (use {n} for the group number, e.g. Series {n}):")
+        tmpl = prompt.text("Value — group number as {n} 3, {r} III or {en} Three "
+                           "(e.g. Series {n}, Act {r}, Series {en}):")
         if tmpl is None:
             return
         assignments = bp.assign_periodic(ordered, gs, tmpl)
+    elif mode.startswith("Schedule per range"):
+        # Seeded with one row per disc — the common case is "each disc/series has
+        # its own start date and cadence", so the positions are filled in from
+        # the real disc boundaries and only START/EVERY need typing.
+        runs = bp.disc_ranges(ordered)
+        seeded = [[str(lo), str(hi), '', '7', 'track'] for lo, hi, _ in runs]
+
+        labels = [lab for _, _, lab in runs]
+        shown = ', '.join(labels[:6]) + ('…' if len(labels) > 6 else '')
+
+        def _sched_hints(col: int, row: list) -> list:
+            """Barrel-pickable values for the STEP column."""
+            return ['track', 'disc'] if col == 4 else []
+
+        rows = prompt.list_edit(
+            f"Per-range {tag_id} schedule — a row per disc ({shown}); "
+            f"type digits into START, EVERY = days, STEP = track/disc:",
+            seeded, ("FROM", "TO", "START", "EVERY", "STEP"),
+            col_hints=_sched_hints,
+            # START edits as a split date/time field and is given the width to
+            # show a whole stamp; the short numeric columns give way to it.
+            col_types={2: 'timestamp'},
+            col_mins=_SCHEDULE_COL_MINS,
+            col_ratios=_SCHEDULE_COL_RATIOS)
+        if not rows:
+            return
+
+        # Every row is checked before anything is written, and a bad one is named
+        # rather than quietly dropping out of the result.
+        specs, row_errors = bp.validate_schedule_rows(rows, n)
+        if row_errors:
+            ui_utils.show_status("  ·  ".join(row_errors[:3])
+                                 + (f"  (+{len(row_errors) - 3} more)"
+                                    if len(row_errors) > 3 else ""), duration=5.0)
+            if not specs:
+                return
+            if not prompt.confirm(f"{len(row_errors)} row(s) unusable — "
+                                  f"apply the other {len(specs)}?"):
+                return
+        if not specs:
+            ui_utils.show_status("No usable schedule rows.")
+            return
+
+        # A time typed into START is kept per range. Only when no row carried one
+        # is a time worth asking about — and "No time" sits first, so Enter
+        # accepts the plain dates most archives want.
+        if not any(spec[3] for spec in specs):
+            tchoices = ["No time", "Same time for all"]
+            if 1 < len(specs) <= 12:
+                tchoices.append("Per range")
+            tsel = prompt.select("Time of day:", choices=tchoices, header=header())
+            if not tsel:
+                return
+            if tsel == "Same time for all":
+                tval = bp.norm_time(prompt.text("Time (HH:MM, 24-hour):"))
+                if not tval:
+                    ui_utils.show_status("Not a valid 24-hour time.")
+                    return
+                specs = [(lo, hi, st, tval, ev, sp) for lo, hi, st, _, ev, sp in specs]
+            elif tsel == "Per range":
+                filled = []
+                for lo, hi, st, _, ev, sp in specs:
+                    raw = prompt.text(f"Time for positions {lo}-{hi} "
+                                      f"(HH:MM, blank = none):")
+                    if raw is None:
+                        return
+                    filled.append((lo, hi, st, bp.norm_time(raw), ev, sp))
+                specs = filled
+
+        assignments = bp.assign_range_schedules(ordered, specs)
     else:                                            # Date schedule (ISO8601 tags)
         start = prompt.calendar_select("Start date:")
         if not start:
@@ -1359,8 +1935,8 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
     if not choices:
         ui_utils.show_status("No MP3s to assign (this operation is MP3-only).")
         return
-    sub = f"{tag_id} · {len(choices)} file(s)" + (f" · {n_mp4} non-MP3 skipped" if n_mp4 else "")
-    sel = prompt.select("Preview — Space to deselect, Enter to apply:", choices=choices,
+    sub = f"{tag_id} · {ui_utils.plural(len(choices), 'file')}" + (f" · {n_mp4} non-MP3 skipped" if n_mp4 else "")
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
                         columns=_PATTERN_COLUMNS, header=header(sub), multi=True)
     if sel is None:
         return
@@ -1406,6 +1982,13 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
     ui_utils.show_status(msg)
 
 
+def _operation_verb(operation: str) -> str:
+    """The verb of a bulk operation name, without the object it acts on:
+    ``"Delete Tags"`` -> ``"delete"``, ``"Set Common Value"`` -> ``"set common value"``.
+    """
+    return re.sub(r'\s+tags?$', '', operation, flags=re.I).lower()
+
+
 def bulk_id3_manager(library: list, album_name: str | None = None, paths: list | None = None) -> None:
     """
     Bulk tag operations across a set of tracks.
@@ -1429,6 +2012,10 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     ui_utils.show_status(f"Scanning {len(album_tracks)} tracks…")
     all_tag_counts: Counter = Counter()
     tag_values: dict = {}
+    # The first real frame seen for each tag.  `tag_values` holds *display*
+    # summaries (newlines flattened to '\\', multi-values joined) which are fine
+    # on screen but lossy — editing must start from the frame itself.
+    tag_first_frame: dict = {}
 
     for path in album_tracks:
         # The ID3-based operations below are MP3-only; non-MP3s are skipped
@@ -1456,12 +2043,16 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 elif hasattr(raw, 'gain') and hasattr(raw, 'channel'):
                     val = f"{raw.gain:+g} dB"
                 elif hasattr(raw, 'text'):
-                    full_text = "".join(str(t) for t in raw.text)
+                    # Rendered for the screen (values are stored with ';').
+                    # This used to concatenate with no separator at all, so a
+                    # two-genre frame summarised as "PopRock".
+                    full_text = format_value_list(list(raw.text))
                     lines = [line for line in full_text.replace("\r\n", "\n").split("\n")]
                     val = "\\".join(lines)
                 else:
                     val = str(raw)
                 tag_values.setdefault(k, []).append(val)
+                tag_first_frame.setdefault(k, raw)
         except Exception as e:
             ui_utils.show_status(f"Error scanning {os.path.basename(path)}: {e}")
             continue
@@ -1522,6 +2113,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 "Assign by range / schedule",
                 "Apply sort orders",
                 "Renumber tracks (disc ↔ continuous)",
+                "Reflow disc numbering",
+                "Remove single-disc numbering",
+                "Set picture type",
                 "Copy from first track",
             ],
             header=_bulk_header()
@@ -1538,6 +2132,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         "Assign by range / schedule": "Assign By Pattern",
         "Apply sort orders": "Apply Sort Orders",
         "Renumber tracks (disc ↔ continuous)": "Renumber Tracks",
+        "Reflow disc numbering": "Reflow Discs",
+        "Remove single-disc numbering": "Strip Single Disc",
+        "Set picture type": "Set Picture Type",
         "Set value": "Set Common Value",
         "Copy from first track": "Copy From First Track",
         "Delete tags": "Delete Tags",
@@ -1564,6 +2161,15 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         return
     if operation == "Renumber Tracks":
         renumber_tracks_op(album_tracks, library, _bulk_header)
+        return
+    if operation == "Set Picture Type":
+        set_picture_type_op(album_tracks, library, _bulk_header)
+        return
+    if operation == "Strip Single Disc":
+        strip_single_disc_op(album_tracks, library, _bulk_header)
+        return
+    if operation == "Reflow Discs":
+        reflow_discs_op(album_tracks, library, _bulk_header)
         return
 
     if not all_tag_counts and operation not in ("Add New Tag",):
@@ -1646,7 +2252,10 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         callback = None if operation == "Delete Tags" else get_tag_category
 
         selected_tags = prompt.select(
-            message=f"Select tags to {operation.lower()}:",
+            # The operation names already end in their object ("Delete Tags",
+            # "Rename Tags"), and this prompt supplies its own — so use the verb
+            # alone, or the line reads "Select tags to delete tags:".
+            message=f"Select tags to {_operation_verb(operation)}:",
             choices=tag_options,
             interlock_category_callback=callback,
             header=_bulk_header(),
@@ -1672,58 +2281,83 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 selected_tags = [t for t in selected_tags if t not in people_sel]
                 if not selected_tags:
                     return
-            first_tag = selected_tags[0]
-            existing_vals = tag_values.get(first_tag, [])
-            fallback_val = existing_vals[0] if existing_vals else ""
+            # Fraction pairs (TRCK/TPOS/MVIN) get their own editor too: it greys
+            # out whichever half differs between the files instead of writing one
+            # file's whole 'n/N' over the selection.
+            frac_sel = [t for t in selected_tags
+                        if getattr(get_tag_info(t), 'format_spec', None) == 'FRACTIONAL']
+            if frac_sel:
+                for ft in frac_sel:
+                    bulk_fraction_editor(album_tracks, ft, library, _bulk_header)
+                selected_tags = [t for t in selected_tags if t not in frac_sel]
+                if not selected_tags:
+                    return
+            # Album art has its own picker and preview further down.  Routing it
+            # through the text-value prompt as well asked for the image, its
+            # picture type and its description a *second* time — the worst of the
+            # screen bloat here.  Art-only selections skip straight to that block.
+            value_sel = [t for t in selected_tags if not t.startswith('APIC')]
+            if not value_sel:
+                target_val = "_album_art_"   # sentinel: the art block does the work
+            else:
+                first_tag = value_sel[0]
+                # Seed the editor from the frame itself.  Seeding it from
+                # `tag_values` fed the '\\'-joined display summary back in and saved
+                # it verbatim, so every bulk pass over a lyric frame replaced its
+                # newlines with literal backslashes.
+                existing_vals = tag_values.get(first_tag, [])
+                fallback_val = tag_first_frame.get(first_tag)
+                if fallback_val is None:
+                    fallback_val = existing_vals[0] if existing_vals else ""
 
-            source = prompt.select(
-                "Value source:",
-                choices=["Enter a value", "Find & replace (regex)",
-                         "From file name / folder (regex)"],
-                header=_bulk_header())
-            if not source:
-                return
+                source = prompt.select(
+                    "Value source:",
+                    choices=["Enter a value", "Find & replace (regex)",
+                             "From file name / folder (regex)"],
+                    header=_bulk_header())
+                if not source:
+                    return
 
-            if source == "Enter a value":
-                target_val = prompt_for_value(first_tag, current_value=fallback_val)
-            elif source == "Find & replace (regex)":
-                pat = prompt.text("Find (regex) — applied to each existing value:")
-                if not pat:
-                    return
-                try:
-                    rx = re.compile(pat)
-                except re.error as e:
-                    ui_utils.show_status(f"Invalid regex: {e}")
-                    return
-                repl = prompt.text(r"Replace with (\1 / \g<name> for capture groups):",
-                                   default="")
-                if repl is None:
-                    return
-                set_spec = {'mode': 'replace', 'rx': rx, 'repl': repl}
-                target_val = "_regex_"   # sentinel so the None-guard below doesn't bail
-            else:  # From file name / folder (regex)
-                against = prompt.select("Match regex against:",
-                                        choices=["File name", "Folder path"],
-                                        header=_bulk_header())
-                if not against:
-                    return
-                base = _derive_regex_base(album_tracks) if against == "Folder path" else None
-                sample = fp._regex_target(album_tracks[0], base) if album_tracks else ''
-                pat = prompt.text(
-                    rf"Regex with capture groups (matches e.g. '{sample}'; "
-                    "use / between folders):")
-                if not pat:
-                    return
-                try:
-                    rx = re.compile(pat)
-                except re.error as e:
-                    ui_utils.show_status(f"Invalid regex: {e}")
-                    return
-                tmpl = prompt.text(r"Value template (\1, \2 or \g<name> for groups):")
-                if not tmpl:
-                    return
-                set_spec = {'mode': 'filename', 'rx': rx, 'tmpl': tmpl, 'base': base}
-                target_val = "_regex_"
+                if source == "Enter a value":
+                    target_val = prompt_for_value(first_tag, current_value=fallback_val)
+                elif source == "Find & replace (regex)":
+                    pat = prompt.text("Find (regex) — applied to each existing value:")
+                    if not pat:
+                        return
+                    try:
+                        rx = re.compile(pat)
+                    except re.error as e:
+                        ui_utils.show_status(f"Invalid regex: {e}")
+                        return
+                    repl = prompt.text(r"Replace with (\1 / \g<name> for capture groups):",
+                                       default="")
+                    if repl is None:
+                        return
+                    set_spec = {'mode': 'replace', 'rx': rx, 'repl': repl}
+                    target_val = "_regex_"   # sentinel so the None-guard below doesn't bail
+                else:  # From file name / folder (regex)
+                    against = prompt.select("Match regex against:",
+                                            choices=["File name", "Folder path"],
+                                            header=_bulk_header())
+                    if not against:
+                        return
+                    base = _derive_regex_base(album_tracks) if against == "Folder path" else None
+                    sample = fp._regex_target(album_tracks[0], base) if album_tracks else ''
+                    pat = prompt.text(
+                        rf"Regex with capture groups (matches e.g. '{sample}'; "
+                        "use / between folders):")
+                    if not pat:
+                        return
+                    try:
+                        rx = re.compile(pat)
+                    except re.error as e:
+                        ui_utils.show_status(f"Invalid regex: {e}")
+                        return
+                    tmpl = prompt.text(r"Value template (\1, \2 or \g<name> for groups):")
+                    if not tmpl:
+                        return
+                    set_spec = {'mode': 'filename', 'rx': rx, 'tmpl': tmpl, 'base': base}
+                    target_val = "_regex_"
         elif operation == "Copy From First Track":
             # Values come directly from the first track; no extra prompt needed.
             target_val = "_copy_from_first_"
@@ -1736,30 +2370,116 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     new_apic_frame = None
     new_apic_desc = None
 
+    # Album art is its own little pipeline: pick the image from the ranked
+    # candidates beside the tracks (never a hand-typed path), settle its type and
+    # description on one screen, and preview per file before writing.
+    new_apic_type = None
     if apic_tags and operation != "Delete Tags":
         apic_action = prompt.select(
-            f"Bulk APIC action ({len(apic_tags)} tags):",
-            choices=["Replace Image", "Edit Description", "Edit Picture Type", "Skip APIC"]
-        )
+            f"Album art — {len(apic_tags)} frame(s) selected:",
+            choices=["Replace image", "Edit description", "Edit picture type",
+                     "Skip album art"],
+            header=_bulk_header())
 
-        if apic_action == "Replace Image":
-            payload = prompt_for_image_payload()
-            if payload:
-                img_data, mime, pic_type, desc = payload
-                new_apic_frame = APIC(encoding=3, mime=mime, type=pic_type, desc=desc, data=img_data)
-            else:
+        if apic_action == "Replace image":
+            picked = pick_nearby_cover(
+                album_tracks[0], header=_bulk_header,
+                title="Cover to embed on every ticked track — best guess first:")
+            read = cm.read_image(picked) if isinstance(picked, str) else None
+            if not read:
+                if isinstance(picked, str):
+                    ui_utils.show_status("Could not read that image.")
                 apic_tags = []
-        elif apic_action == "Edit Description":
-            new_apic_desc = prompt.text("New description for all APIC tags:")
+            else:
+                img_data, mime = read
+                meta = _prompt_for_image_metadata(header=_bulk_header)
+                if meta is None:
+                    apic_tags = []          # cancelled — don't write anything
+                else:
+                    pic_type, desc = meta
+                    new_apic_frame = APIC(encoding=3, mime=mime, type=pic_type,
+                                          desc=desc, data=img_data)
+        elif apic_action == "Edit description":
+            new_apic_desc = prompt.text("New description for all album-art frames:")
             if new_apic_desc is None:
                 apic_tags = []
-        elif apic_action == "Edit Picture Type":
-            meta = _prompt_for_image_metadata()
-            new_apic_frame = meta[0] if meta is not None else None  # int pic_type, checked with isinstance below
+        elif apic_action == "Edit picture type":
+            # Type only — the old path asked for a description here too and then
+            # threw it away.
+            new_apic_type = _prompt_for_picture_type(header=_bulk_header)
+            if new_apic_type is None:
+                apic_tags = []              # cancelled — was a silent no-op before
         else:
             apic_tags = []
 
-    if not prompt.confirm(f"Apply {op_display} to {len(album_tracks)} tracks?"):
+    # Backing out of the art screens with nothing else selected ends the run.
+    # Falling through asked "Apply set value to N tracks?" and then reported
+    # "processed 0 files" — two screens of noise after an explicit cancel.
+    # ("Add new tag" never selects existing tags, so it is exempt.)
+    if operation != "Add New Tag" and not apic_tags and not non_apic_tags:
+        ui_utils.show_status("Cancelled")
+        return
+
+    # Album art gets a preview with per-row ticks, like every other bulk op —
+    # the old path went straight from a hand-typed path to a bare yes/no.  Enter
+    # on the preview IS the confirmation, so it replaces the confirm entirely.
+    apic_apply: set = set(album_tracks)
+    if apic_tags:
+        mp3s = [p for p in album_tracks if p.lower().endswith('.mp3')]
+        n_other = len(album_tracks) - len(mp3s)
+        if not mp3s:
+            ui_utils.show_status("No MP3s here — album-art frames are ID3-only.")
+            return
+
+        had_art = {p: tw.has_cover(p) for p in mp3s}
+
+        def _art_action(p: str):
+            """What this track's art will become, as preview cells."""
+            if operation == "Delete Tags":
+                return ("remove art", 'has art' if had_art[p] else 'none')
+            if new_apic_frame is not None:
+                return ("embed cover", 'replaces art' if had_art[p] else 'adds art')
+            if new_apic_desc is not None:
+                return (f"description → {new_apic_desc or '(blank)'}",
+                        '' if had_art[p] else 'no art')
+            if new_apic_type is not None:
+                label = dict(_PICTURE_TYPES).get(new_apic_type, str(new_apic_type))
+                return (f"picture type → {label}", '' if had_art[p] else 'no art')
+            return ("no change", '')
+
+        art_choices = []
+        for p in mp3s:
+            what, note = _art_action(p)
+            # Only a replace can act on a track with no art yet; the description
+            # and type edits need an existing frame to edit.
+            actionable = (new_apic_frame is not None or operation == "Delete Tags"
+                          or had_art[p])
+            art_choices.append(prompt.Choice(
+                title=os.path.basename(p), value=p, checked=actionable,
+                cells=[os.path.basename(p), what, note]))
+
+        def _art_header():
+            """Live counts for the album-art preview."""
+            nk = sum(1 for ch in art_choices if ch.checked)
+            bits = [ui_utils.plural(len(mp3s), "MP3"), f"{nk} ticked"]
+            n_blank = sum(1 for p in mp3s if not had_art[p])
+            if n_blank:
+                bits.append(f"{n_blank} without art")
+            if n_other:
+                bits.append(f"{n_other} non-MP3 skipped")
+            return _bulk_header(" · ".join(bits))()
+
+        picked_rows = prompt.select(
+            "Preview — ↵ applies:",
+            choices=art_choices, columns=_COVER_PREVIEW_COLUMNS,
+            header=_art_header, multi=True)
+        if picked_rows is None:
+            return
+        apic_apply = set(picked_rows)
+        if not apic_apply and not non_apic_tags:
+            ui_utils.show_status("No tracks selected.")
+            return
+    elif not prompt.confirm(f"Apply {op_display} to {len(album_tracks)} tracks?"):
         return
 
     # For copy-from-first, read source frames once from the first track.
@@ -1775,9 +2495,11 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             return
 
     count_modified = 0
+    count_other_fmt = 0
     for path in album_tracks:
         # These operations are ID3/MP3-only; skip other formats without erroring.
         if not path.lower().endswith('.mp3'):
+            count_other_fmt += 1
             continue
         try:
             try:
@@ -1800,21 +2522,36 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                     audio.add(new_frame)
                     changed = True
 
-            for tag in apic_tags:
-                if tag in audio:
-                    if operation == "Delete Tags":
-                        audio.pop(tag)
-                        changed = True
-                    elif new_apic_desc is not None:
-                        audio[tag].desc = new_apic_desc
-                        changed = True
-                    elif isinstance(new_apic_frame, int):
-                        audio[tag].type = new_apic_frame
-                        changed = True
-                    elif isinstance(new_apic_frame, APIC):
+            if apic_tags and path in apic_apply:
+                if new_apic_frame is not None:
+                    # A replace clears every selected art frame and writes the new
+                    # one ONCE.  The old loop added the same frame per selected
+                    # key — and they share the `APIC:desc` hash key, so two
+                    # selected frames silently collapsed into one.  It also only
+                    # acted `if tag in audio`, so tracks with no art yet — the
+                    # ones most in need of a cover — were skipped in silence.
+                    for tag in apic_tags:
                         audio.delall(tag)
-                        audio.add(new_apic_frame)
-                        changed = True
+                    audio.add(new_apic_frame)
+                    changed = True
+                else:
+                    # Description / type edits need an existing frame to edit.
+                    for tag in apic_tags:
+                        if tag not in audio:
+                            continue
+                        if operation == "Delete Tags":
+                            audio.pop(tag)
+                            changed = True
+                        elif new_apic_desc is not None:
+                            # `desc` is part of the hash key, so re-key the frame
+                            # rather than mutating it in place under a stale key.
+                            frame = audio.pop(tag)
+                            frame.desc = new_apic_desc
+                            audio.add(frame)
+                            changed = True
+                        elif new_apic_type is not None:
+                            audio[tag].type = new_apic_type
+                            changed = True
 
             for tag in non_apic_tags:
                 if operation == "Copy From First Track":
@@ -1864,6 +2601,10 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 except Exception:
                     pass
         except Exception as e:
-            ui_utils.show_status(f"Failed to process track {os.path.basename(path)}: {e}")
+            ui_utils.show_status(f"Could not process track {os.path.basename(path)}: {e}")
 
-    ui_utils.show_status(f"Successfully processed {count_modified} files.")
+    msg = f"Successfully processed {count_modified} files."
+    if count_other_fmt:
+        # Previously skipped in total silence, which read as "nothing happened".
+        msg += f" {count_other_fmt} non-MP3 skipped (these ops are ID3-only)."
+    ui_utils.show_status(msg)

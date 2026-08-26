@@ -138,7 +138,20 @@ Pick **"Use a naming template"** and describe the file-name shape with tokens:
 
 Tokens: `%track%` `%disc%` `%title%` `%artist%` `%albumartist%` `%album%`
 `%year%` `%date%` `%season%` `%episode%` and **`%ignore%`** (swallow a run of
-characters you don't want to keep). For example, an old-time-radio file like
+characters you don't want to keep).
+
+**Numbers that aren't digits.** Add `:r` (Roman) or `:en` (written out) to any
+numeric token and it matches that form instead, converting to a real number:
+
+```
+Act %track:r% - %title%                            → Act III - The Duel      (track 3)
+Series %disc:en% Episode %track:en% - %title%      → Series Three Episode Four - Pilot
+```
+
+A raw regex gets this for free — a `(?P<track>…)` group that captures `III` or
+`three` lands as 3 without any extra work.
+
+For example, an old-time-radio file like
 `You Bet Your Life 1952-02-20 (160) Secret Word - Heart` cleans up with:
 
 ```

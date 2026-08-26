@@ -195,7 +195,7 @@ def open_client_player_view() -> dict:
                     duration = float(np.get('duration') or 0.0)
                     prog_row, ctrl_row, _lr, width, _br = draw_full_ui(
                         fp, audio, None, size, is_paused=bool(np.get('paused')),
-                        volume=int(np.get('volume') or 0), toast=toast)
+                        volume=sess.clamp_volume(np.get('volume')), toast=toast)
                     last_sig = sig
 
                 elapsed = float(np.get('elapsed') or 0.0)
@@ -220,8 +220,13 @@ def open_client_player_view() -> dict:
                             key = ' '
                         else:
                             _vol = playback_ui.volume_from_click(_mr, _mc)
+                            _frac = playback_ui.progress_from_click(_mr, _mc)
                             if _vol is not None:
                                 remote.set_volume(_vol); key = ''
+                            elif _frac is not None and duration:
+                                # Click anywhere on the bar to jump there (the
+                                # session only takes relative seeks).
+                                remote.seek(_frac * duration - elapsed); key = ''
                             else:
                                 _hk = playback_ui.hint_click_key(_mr, _mc)
                                 key = _PLAYER_SYNTH.get(_hk, _hk) if _hk else ''
@@ -308,6 +313,11 @@ def _player_view_loop() -> dict:
     in_uslt_tail = False
     prog_row = ctrl_row = lyric_row = art_bottom_row = 0
     current_width = last_size[0]
+    # The USLT timeline currently on screen: the whole track normally, or just
+    # the post-SYLT tail once we hand off.  `_redraw_full` re-wraps from these,
+    # so a resize during the tail can't drop us back onto the full-track lines.
+    view_lines: list = []
+    view_times: list = []
     exp_lines: list = []
     exp_times: list = []
     last_q_sig: tuple | None = None
@@ -317,7 +327,7 @@ def _player_view_loop() -> dict:
         nonlocal audio, duration, pre_art, sylt_data, uslt_lines, line_times
         nonlocal is_uslt, has_uslt, has_credits, has_lyrics, dialogue_state
         nonlocal sylt_handoff_end_s, uslt_handoff_idx, in_uslt_tail, uslt_time_offset
-        nonlocal toast_text, toast_expiry
+        nonlocal toast_text, toast_expiry, view_lines, view_times
         fp = SESSION.file_path or ""
         audio = SESSION.audio
         duration = SESSION.duration
@@ -341,6 +351,7 @@ def _player_view_loop() -> dict:
             line_times = build_uslt_line_times(uslt_lines, duration)
         has_lyrics = bool(sylt_data) or has_uslt or dialogue_state.is_active()
         in_uslt_tail = False
+        view_lines, view_times = uslt_lines, line_times
         uslt_time_offset = 0.0
         if sylt_data and not is_uslt and has_uslt:
             sylt_handoff_end_s = estimate_sylt_last_line_end(sylt_data, duration * 1000)
@@ -363,7 +374,7 @@ def _player_view_loop() -> dict:
         last_lyric_idx = -1
         if is_uslt or in_uslt_tail:
             _wrap_w = max(20, current_width - 8)
-            exp_lines, exp_times = expand_uslt_lines(uslt_lines, line_times, _wrap_w)
+            exp_lines, exp_times = expand_uslt_lines(view_lines, view_times, _wrap_w)
         else:
             exp_lines, exp_times = [], []
 
@@ -468,10 +479,20 @@ def _player_view_loop() -> dict:
                         key = ' '
                     else:
                         _vol = playback_ui.volume_from_click(_mr, _mc)
+                        _frac = playback_ui.progress_from_click(_mr, _mc)
                         if _vol is not None:
                             v = SESSION.set_volume(_vol)
                             toast_text = f'Volume: {v}%'; toast_expiry = time.time() + 1.0
                             playback_ui.draw_volume_bar(v); update_ctrl_ui()
+                            key = ''
+                        elif _frac is not None and duration:
+                            # Click anywhere on the bar to jump there; SESSION only
+                            # takes relative seeks, so aim from where we are.
+                            _tgt = _frac * duration
+                            SESSION.seek(_tgt - elapsed)
+                            toast_text = f'Seek to {ui_utils.format_time(int(_tgt))}'
+                            toast_expiry = time.time() + 1.0
+                            update_ctrl_ui()
                             key = ''
                         else:
                             _hk = playback_ui.hint_click_key(_mr, _mc)
@@ -587,6 +608,7 @@ def _player_view_loop() -> dict:
                             and elapsed < sylt_handoff_end_s):
                         in_uslt_tail = False
                         uslt_time_offset = 0.0
+                        view_lines, view_times = uslt_lines, line_times
                         last_lyric_idx = -1
 
                     if is_uslt or in_uslt_tail:
@@ -611,11 +633,17 @@ def _player_view_loop() -> dict:
                             uslt_time_offset = 0.0
                             _wrap_w = max(20, current_width - 8)
                             tail_lines = uslt_lines[uslt_handoff_idx:]
-                            tail_raw_times = build_uslt_line_times(tail_lines, duration)
+                            # The tail only owns the run-out *after* SYLT stops,
+                            # not the whole track — pacing it over `duration` and
+                            # then shifting it by the hand-off ran the lines a
+                            # track-length past the end of the audio.
+                            tail_span = max(0.0, duration - sylt_handoff_end_s)
+                            tail_raw_times = build_uslt_line_times(tail_lines, tail_span)
                             tail_raw_times = [
                                 (t_start + sylt_handoff_end_s, t_end + sylt_handoff_end_s)
                                 for t_start, t_end in tail_raw_times]
-                            exp_lines, exp_times = expand_uslt_lines(tail_lines, tail_raw_times, _wrap_w)
+                            view_lines, view_times = tail_lines, tail_raw_times
+                            exp_lines, exp_times = expand_uslt_lines(view_lines, view_times, _wrap_w)
                             last_lyric_idx = -1
 
                         if current_idx != last_lyric_idx:

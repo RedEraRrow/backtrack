@@ -2,8 +2,10 @@
 from __future__ import annotations
 import os
 import json
+import re
 import tempfile
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,12 @@ from src.history import get_recent_paths
 
 VALID_AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac')
 SYNC_INTERVAL_SECONDS = 30
+
+# Bump whenever `_get_default_metadata` gains a field or an extractor learns a new
+# tag: cached entries carrying an older version are re-read on the next sync even
+# though their mtime hasn't moved. (Before this, each new field needed its own
+# `'field' not in track` special case.)
+METADATA_VERSION = 2
 
 
 def _default_cache_dir() -> Path:
@@ -45,6 +53,39 @@ _sync_lock = threading.Lock()
 _sync_state: dict[str, Any] = {
     "library": None,
 }
+
+
+_YEAR_RE = re.compile(r'(\d{4})')
+
+
+def year_of(value: Any) -> int:
+    """The year in any date form — '1970', '1970-04-01', '2005-09-15 18:30:00' —
+    or 0 when there is none ('Unknown Year', '').
+
+    ID3's TDRC is a *timestamp*, so `int(str(value))` raised for every dated file
+    and silently treated it as year-less. Matching the first four-digit run is what
+    the now-playing panel already did.
+    """
+    m = _YEAR_RE.search(str(value or ''))
+    return int(m.group(1)) if m else 0
+
+
+def album_year(songs: list) -> int:
+    """One representative year for an album: the **earliest corroborated** year —
+    the oldest that at least two tracks share, or the oldest of all when every
+    track carries a different date. 0 if none of them carry a year.
+
+    A per-track year says when that *recording* is from, so an album can hold
+    many. Asking for corroboration means a single stray or mis-tagged track can't
+    drag the album backwards (a `Bridge Over Troubled Water` with one 1969 track
+    stays 1970), while a series whose episodes all differ still reads as the year
+    it began rather than its busiest year.
+    """
+    counts = Counter(y for y in (year_of(s.get('year')) for s in songs) if y)
+    if not counts:
+        return 0
+    shared = [y for y, c in counts.items() if c > 1]
+    return min(shared) if shared else min(counts)
 
 
 def to_num(v: Any) -> float:
@@ -78,38 +119,53 @@ def start_background_sync(library: list) -> None:
         _sync_thread.start()
 
 
-def _reconcile_library(library: list, music_dir: str, ignore_hidden: bool = False) -> bool:
-    """Add files that appeared and drop entries whose file vanished, under
-    `music_dir` (an external rename/move shows up as a remove + an add). Cheap:
+def _reconcile_library(library: list, music_dirs, ignore_hidden: bool = False) -> bool:
+    """Add files that appeared and drop entries whose file vanished, under any of
+    `music_dirs` (an external rename/move shows up as a remove + an add). Cheap:
     a directory walk (no tag parsing) diffed against the known paths; tags are
     read only for genuinely new files. Mutates `library` in place; returns True
     if anything changed.
 
     Guarded against a temporarily unavailable directory (unmounted/network
-    drive): if the scan finds no files while the cache still holds entries under
-    `music_dir`, nothing is removed — otherwise the whole cache would be wiped.
+    drive) **per root**: a root that scans empty while the cache still holds
+    entries under it is skipped entirely, so one absent drive can neither wipe
+    its own tracks nor those of the roots that are present.
     """
-    if not music_dir or not os.path.isdir(music_dir):
-        return False
-
-    on_disk: set[str] = set()
-    for root, _, files in os.walk(music_dir):
-        for f in files:
-            if f.lower().endswith(VALID_AUDIO_EXTENSIONS):
-                on_disk.add(os.path.join(root, f))
-
     # Normalise (case + separators) so a trailing slash or a case-insensitive
-    # filesystem doesn't misclassify which cached paths live under music_dir.
+    # filesystem doesn't misclassify which cached paths live under a root.
     def _np(p: str) -> str:
         return os.path.normcase(os.path.normpath(p))
-    md = _np(music_dir)
+
     known = {track['path'] for track in library}
-    under = {p for p in known if _np(p) == md or _np(p).startswith(md + os.sep)}
-    if not on_disk and under:
-        return False                                  # unmount / empty-scan guard
+
+    def _under(root: str) -> set[str]:
+        """Cached paths that live under `root`."""
+        md = _np(root)
+        return {p for p in known if _np(p) == md or _np(p).startswith(md + os.sep)}
+
+    on_disk: set[str] = set()          # everything found across the live roots
+    covered: set[str] = set()          # cached paths belonging to those roots
+    for music_dir in as_dir_list(music_dirs):
+        if not os.path.isdir(music_dir):
+            continue                                  # missing root: leave it alone
+        found: set[str] = set()
+        for root, _, files in os.walk(music_dir):
+            for f in files:
+                if f.lower().endswith(VALID_AUDIO_EXTENSIONS):
+                    found.add(os.path.join(root, f))
+        under = _under(music_dir)
+        if not found and under:
+            continue                                  # unmount / empty-scan guard
+        on_disk |= found
+        covered |= under
+
+    if not on_disk and not covered:
+        return False
 
     changed = False
-    removed = under - on_disk
+    # Roots can nest, so removal is judged against every live root at once: a
+    # path still present under one of them is never dropped for missing another.
+    removed = covered - on_disk
     if removed:
         library[:] = [t for t in library if t['path'] not in removed]
         changed = True
@@ -132,19 +188,19 @@ def _sync_worker(library: list) -> None:
     while True:
         library = _sync_state.get("library") or library
 
-        ui_utils.set_status("sync", "Checking library for updates...")
+        ui_utils.set_status("sync", "Checking library for updates…")
         changed = False
 
         # Reconcile with the filesystem: pick up files added/removed/renamed
         # outside the app (a rename is just a remove + an add).
         try:
-            from src.config import load_config
+            from src.config import load_config, music_dirs as _music_dirs
             cfg = load_config()
-            music_dir = os.path.abspath(os.path.expanduser(cfg.get('music_directory', '') or ''))
+            roots = _music_dirs(cfg)
             ignore_hidden = bool(cfg.get('ignore_hidden_files', False))
         except Exception:
-            music_dir, ignore_hidden = '', False
-        if _reconcile_library(library, music_dir, ignore_hidden):
+            roots, ignore_hidden = [], False
+        if _reconcile_library(library, roots, ignore_hidden):
             changed = True
 
         # Check for modified files
@@ -158,7 +214,8 @@ def _sync_worker(library: list) -> None:
             except OSError:
                 continue
 
-            if current_mtime != track.get('cached_mtime', 0) or 'people' not in track:
+            if (current_mtime != track.get('cached_mtime', 0)
+                    or track.get('meta_version') != METADATA_VERSION):
                 fresh = get_metadata(path)
                 track.update(fresh)
                 track.pop('performers', None)
@@ -209,6 +266,7 @@ def _get_default_metadata(file_path: str) -> dict:
         "people": "",
         "duration": 0.0,
         "cached_mtime": 0,
+        "meta_version": METADATA_VERSION,
     }
 
 
@@ -285,6 +343,12 @@ def _extract_id3_metadata(tags: ID3) -> dict:
         'TDRC': 'year',
         'TIT3': 'work',
         'TBPM': 'bpm',
+        # Sort-order frames, under the friendly names the sort keys look up.
+        'TSOT': 'Title Sort Order',
+        'TSOP': 'Performer Sort Order',
+        'TSO2': 'Album Artist Sort Order',
+        'TSOA': 'Album Sort Order',
+        'TSOC': 'Composer Sort Order',
     }
 
     for frame_id, field in frame_map.items():
@@ -365,6 +429,12 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
         '\xa9day': 'year',
         '\xa9wrk': 'work',
         'tmpo': 'bpm',
+        # Sort atoms — the MP4 counterparts of the TSO* frames.
+        'sonm': 'Title Sort Order',
+        'soar': 'Performer Sort Order',
+        'soaa': 'Album Artist Sort Order',
+        'soal': 'Album Sort Order',
+        'soco': 'Composer Sort Order',
     }
 
     for mp4_atom, field in field_map.items():
@@ -372,8 +442,14 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
             if mp4_atom in tags:
                 val = tags[mp4_atom]
                 if val:
-                    # Handle both list and direct values
-                    text = val[0] if isinstance(val, list) else val
+                    # Handle both list and direct values. A multi-value atom
+                    # (artist/genre) joins with '; ' — same shape as the ID3 side,
+                    # so browsing splits it back into one group per value.
+                    if isinstance(val, list):
+                        parts = [str(v).strip() for v in val if str(v).strip()]
+                        text = "; ".join(parts)
+                    else:
+                        text = val
                     if text:
                         result[field] = str(text).strip()
         except (KeyError, IndexError, TypeError):
@@ -429,25 +505,51 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
     return result
 
 
-def build_library(directory: str, ignore_hidden: bool = False) -> list:
+def as_dir_list(directories) -> list[str]:
+    """One directory or many → a list of absolute paths (blanks dropped).
+
+    Every scanning entry point takes either, so a caller holding a single root
+    (first run, a test) needs no ceremony.
     """
-    Build music library from directory.
+    if isinstance(directories, (str, os.PathLike)):
+        directories = [directories]
+    out: list[str] = []
+    seen: set[str] = set()
+    for d in directories or []:
+        full = os.path.abspath(os.path.expanduser(str(d).strip())) if str(d).strip() else ''
+        key = os.path.normcase(full)
+        if full and key not in seen:
+            seen.add(key)
+            out.append(full)
+    return out
+
+
+def build_library(directories, ignore_hidden: bool = False) -> list:
+    """
+    Build the music library by scanning one or several root directories.
 
     Args:
-        directory: Root directory to scan
+        directories: A root directory, or a list of them
         ignore_hidden: Skip tracks marked HIDDEN
 
     Returns:
         List of track metadata dictionaries
     """
     library = []
-    # Resolve to an absolute path so stored track paths remain valid no matter
-    # what the working directory is when the library is later loaded.
-    directory = os.path.abspath(os.path.expanduser(directory))
-    for root, _, files in os.walk(directory):
-        for file in files:
-            if file.lower().endswith(VALID_AUDIO_EXTENSIONS):
+    # Absolute paths, so stored track paths stay valid no matter what the working
+    # directory is when the library is later loaded. Roots may nest (one inside
+    # another), so a path already seen is skipped rather than scanned twice.
+    seen: set[str] = set()
+    for directory in as_dir_list(directories):
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if not file.lower().endswith(VALID_AUDIO_EXTENSIONS):
+                    continue
                 full_path = os.path.join(root, file)
+                key = os.path.normcase(full_path)
+                if key in seen:
+                    continue
+                seen.add(key)
                 meta = get_metadata(full_path)
                 if not (ignore_hidden and meta.get('grouping') == 'HIDDEN'):
                     library.append(meta)
@@ -528,59 +630,188 @@ def refresh_library_entry(library: list, file_path: str) -> dict:
     return fresh
 
 
+# Values from a multi-value frame reach the library joined with '; ' (see
+# `_extract_id3_metadata`). List-like fields are split apart again for browsing,
+# so a track tagged "Pop; Rock" is filed under Pop *and* under Rock rather than
+# under a merged "Pop; Rock" pseudo-genre — both entries lead to the same album.
+# Fields whose text is one single title (album, grouping) are never split: a
+# semicolon there belongs to the name.
+_LIST_FIELDS = frozenset({'artist', 'album_artist', 'genre', 'composer'})
+
+
+def split_tag_values(value: Any) -> list[str]:
+    """Split a joined multi-value tag into its individual values, in tag order.
+
+    Case-insensitive duplicates collapse, so one track can never land twice in
+    the same group. An empty (or all-whitespace) value yields [].
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in str(value or '').split(';'):
+        part = part.strip()
+        if part and part.lower() not in seen:
+            seen.add(part.lower())
+            out.append(part)
+    return out
+
+
+def format_tag_values(value: Any) -> str:
+    """Render a stored multi-value field for the screen: "Ada Lark, Bo Vale".
+
+    Values are *stored* semicolon-joined (that is what the tag frames hold and
+    what round-trips through the editors) and only *displayed* comma-separated,
+    which reads as a list rather than as machine output.
+
+    Only for list-like fields — artist, album artist, genre, composer, people.
+    Never pass a single-title field: an album really called "Songs; Ohia" would
+    come back as "Songs, Ohia".
+
+    One exception keeps the display honest: when a value contains a comma of its
+    own (a surname-first credit like "Karajan, Herbert"), comma-separating the
+    list would read as four names instead of two, so the stored separator is kept
+    for that field.
+    """
+    return format_value_list(split_tag_values(value))
+
+
+def format_value_list(values: list[str]) -> str:
+    """Render already-separated values for the screen — the list-taking form of
+    `format_tag_values`, for callers holding a frame's real value list (no
+    re-splitting, so a value containing ';' stays whole).
+    """
+    vals = [v for v in (str(x).strip() for x in values) if v]
+    sep = "; " if any("," in v for v in vals) else ", "
+    return sep.join(vals)
+
+
+def group_values(field: str, value: Any) -> list[str]:
+    """The group name(s) one track's `field` value contributes to."""
+    if field in _LIST_FIELDS:
+        return split_tag_values(value)
+    val = str(value or '').strip()
+    return [val] if val else []
+
+
+def derive_album_credit(songs: list) -> str:
+    """The credit an album carrying no album-artist tag is filed under ('' if its
+    tracks name no artist at all).
+
+    Each track's artist tag is one *cast* — a multi-value credit "A; B" is a duo,
+    not two separate artists. The album is filed under its **anchor**: the artists
+    credited on every track. So a duet album survives a guest appearance on one
+    track, while a genuinely disjoint line-up (nobody credited throughout) is a
+    compilation and collapses to "Various Artists".
+    """
+    casts = [c for c in (split_tag_values(s.get("artist")) for s in songs) if c]
+    if not casts:
+        return ""
+
+    anchor = set.intersection(*({v.lower() for v in c} for c in casts))
+    if not anchor:
+        return "Various Artists"
+    # Anchor names in first-credited order, keeping the tag's own casing.
+    return "; ".join(v for v in casts[0] if v.lower() in anchor)
+
+
 def get_grouped_data(library: list, category: str) -> dict:
-    """Group library by category."""
+    """Group library by category.
+
+    A multi-value **genre** files the track under each of its values (see
+    `_LIST_FIELDS`); a multi-value **artist credit** stays whole, because two
+    names on one album are a joint billing rather than two separate acts.
+    """
     grouped = {}
 
     if category == "artist":
-        # Prefer album_artist for artist grouping. If the album artist is absent
-        # and the album contains multiple distinct performers, treat it as a
-        # compilation and group under Various Artists.
+        # Prefer album_artist for artist grouping; with none, derive the album's
+        # credit from its track casts (see derive_album_credit).
         album_groups: dict[tuple[str, str], list[dict]] = {}
         for song in library:
             album = (song.get("album") or "Unknown").strip()
             album_artist = (song.get("album_artist") or "").strip()
             album_groups.setdefault((album, album_artist), []).append(song)
 
-        compilation_map: dict[tuple[str, str], str] = {}
-        for key, songs in album_groups.items():
-            album_artist = key[1]
-            if album_artist:
-                compilation_map[key] = album_artist
-                continue
-
-            artists = {
-                (s.get("artist") or "").strip()
-                for s in songs
-                if s.get("artist")
-            }
-            artists = {a for a in artists if a}
-            compilation_map[key] = (
-                "Various Artists" if len(artists) > 1 else next(iter(artists), "Unknown")
-            )
+        compilation_map: dict[tuple[str, str], str] = {
+            key: (key[1] or derive_album_credit(songs) or "Unknown")
+            for key, songs in album_groups.items()
+        }
 
         for song in library:
             album = (song.get("album") or "Unknown").strip()
             album_artist = (song.get("album_artist") or "").strip()
             val = compilation_map.get((album, album_artist), "Unknown")
 
-            # Classical artist normalization
-            if song.get("genre", "").lower() == "classical":
-                val = val.split(',')[0].split('&')[0].split(';')[0].strip()
+            values = split_tag_values(val) or ["Unknown"]
 
-            grouped.setdefault(val, []).append(song)
+            if len(values) == 1 and song.get("genre", "").lower() == "classical":
+                # Classical single-value credit: one string jamming several names
+                # together ("Karajan, Herbert & Berlin Phil") files under the first.
+                name = values[0].split(',')[0].split('&')[0].strip() or values[0]
+            else:
+                # A credit naming several people is one *billing*, so it gets one
+                # entry reading "Ada Lark, Bo Vale" — not an entry per name. (Genre
+                # is the opposite: its values are independent facets and do split.)
+                name = format_tag_values(val) or "Unknown"
+
+            grouped.setdefault(name, []).append(song)
         return grouped
 
     for song in library:
-        val = song.get(category) or "Unknown"
+        vals = group_values(category, song.get(category)) or ["Unknown"]
 
-        # Skip Unknown grouping
-        if category == "grouping" and val == "Unknown":
-            continue
+        for val in vals:
+            # Skip Unknown grouping
+            if category == "grouping" and val == "Unknown":
+                continue
 
-        grouped.setdefault(val, []).append(song)
+            grouped.setdefault(val, []).append(song)
 
     return grouped
+
+
+# Which tag pairs with which credit, per browse category, best source first: the
+# displayed name comes from the first field, its sort key from the second.
+_SORT_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
+    'artist':       (('album_artist', 'Album Artist Sort Order'),
+                     ('artist', 'Performer Sort Order')),
+    'album_artist': (('album_artist', 'Album Artist Sort Order'),
+                     ('artist', 'Performer Sort Order')),
+    'album':        (('album', 'Album Sort Order'),),
+}
+
+
+def _sort_text(value: str) -> str:
+    """Normalise one sort-order value into a comparable key."""
+    key = value.strip().lower()
+    return key[:-5].strip() if key.endswith(', the') else key
+
+
+def _tagged_sort_key(display_name: str, songs: list, category: str) -> str | None:
+    """The sort-order value that belongs to this group, or None if none applies.
+
+    A multi-value credit and its sort frame pair up **by position** —
+    `TPE2 = "Cee Dot" / "Dee Ray"` alongside `TSO2 = "Dot, Cee" / "Ray, Dee"`. A
+    group named after the whole billing takes the first value's sort name; a group
+    named after one artist may only claim the value at its own index, never a
+    co-credited artist's. Counts that disagree are ambiguous, and a derived group
+    name ("Various Artists", a classical-normalised surname) belongs to no index
+    at all: both fall through to the display name.
+    """
+    target = display_name.strip().lower()
+    for song in songs:
+        for name_field, sort_field in _SORT_PAIRS.get(category, ()):
+            names = group_values(name_field, song.get(name_field))
+            sorts = split_tag_values(song.get(sort_field))
+            if not sorts or len(sorts) != len(names):
+                continue
+            # A joint billing ("Cee Dot, Dee Ray") is one group, and files under
+            # the first artist's sort name.
+            if len(names) > 1 and format_tag_values(song.get(name_field)).lower() == target:
+                return _sort_text(sorts[0])
+            for name, sort in zip(names, sorts):
+                if name.strip().lower() == target:
+                    return _sort_text(sort)
+    return None
 
 
 def get_group_sort_key(display_name: str, songs: list, category: str) -> str:
@@ -588,24 +819,14 @@ def get_group_sort_key(display_name: str, songs: list, category: str) -> str:
     Sort key for group name.
 
     Priority:
-        1. Explicit sort-order tag (TSOP/TSO2/TSOA)
+        1. Explicit sort-order tag (TSOP/TSO2/TSOA), matched to this group by
+           position within a multi-value credit
         2. Display name with leading "The " dropped
         3. Raw lowercase display name
     """
-    sort_tags = {
-        'artist': ('Album Artist Sort Order', 'Performer Sort Order'),
-        'album_artist': ('Album Artist Sort Order', 'Performer Sort Order'),
-        'album': ('Album Sort Order',),
-    }.get(category, ())
-
-    for tag in sort_tags:
-        for song in songs:
-            val = song.get(tag, '').strip()
-            if val:
-                key = val.lower()
-                if key.endswith(', the'):
-                    key = key[:-5].strip()
-                return key
+    tagged = _tagged_sort_key(display_name, songs, category)
+    if tagged:
+        return tagged
 
     # No sort tag — use display name, strip "The "
     name = display_name.lower()
@@ -635,10 +856,7 @@ def sort_library_logic(tracks: list) -> list:
         album_sort = track.get('Album Sort Order')
         year_val = track.get('year')
 
-        try:
-            clean_year = int(str(year_val))
-        except (ValueError, TypeError):
-            clean_year = 0
+        clean_year = year_of(year_val)
 
         mv_num = to_num(track.get('movement_number', 0))
 

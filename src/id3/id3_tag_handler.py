@@ -7,7 +7,7 @@ from mutagen.id3._frames import APIC, EQU2, RVA2, POPM, PCNT, RBUF
 from mutagen.id3._frames import Frame  # type: ignore[reportPrivateImportUsage]
 
 from src.id3.tag_registry import (parse_composite_tag_id, get_tag_info, get_tag_category, get_preferred_tag_name)
-from src.music_library import refresh_library_entry
+from src.music_library import refresh_library_entry, format_value_list
 
 import mutagen.id3
 import os
@@ -58,7 +58,7 @@ CLEAR_COVER = object()
 _COVER_PICK_COLUMNS = [
     prompt.Column(style='primary', flex=True),                          # image name
     prompt.Column(style='dynamic-dim', align='right', max_width=10, priority=1),  # size — drops first when narrow
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2),  # confidence / current (kept)
+    prompt.Column(style='dynamic-dim', align='right', pin=True),  # confidence / current (kept)
 ]
 
 
@@ -132,7 +132,7 @@ def pick_nearby_cover(file_path: str, *, tokens: dict | None = None,
                                      cells=["No art for this file", '', '']))
 
     msg = title or "Album art — top row is the best guess:"
-    hdr = header(f"{len(ranked)} candidate(s)") if header else None
+    hdr = header(ui_utils.plural(len(ranked), "candidate")) if header else None
     sel = prompt.select(msg, choices=choices, columns=_COVER_PICK_COLUMNS,
                         header=hdr, index=cur_idx)
     if sel is None:
@@ -144,25 +144,96 @@ def pick_nearby_cover(file_path: str, *, tokens: dict | None = None,
     return sel
 
 
-def _prompt_for_image_metadata() -> tuple[int, str] | None:
-    """
-    Prompt for picture type and description.
+# APIC picture types offered when embedding art: (ID3 type byte, label).
+_PICTURE_TYPES = [(3, "Cover (front)"), (4, "Cover (back)"),
+                  (8, "Artist"), (0, "Other")]
+
+_IMAGE_META_COLUMNS = [
+    prompt.Column(style='primary'),                                   # type + [n]
+    prompt.Column(style='dynamic-dim', flex=True, priority=1),        # description
+]
+
+
+def _prompt_for_picture_type(*, initial: int = 3, header=None) -> int | None:
+    """Pick just the APIC picture type. Returns the type byte, or None if cancelled."""
+    choices, index = [], 0
+    for i, (pt, label) in enumerate(_PICTURE_TYPES):
+        if pt == initial:
+            index = i
+        choices.append(prompt.Choice(f"{label}  [{pt}]", pt))
+    sel = prompt.select("Picture type:", choices=choices, index=index,
+                        header=header() if header else None)
+    return sel if isinstance(sel, int) else None
+
+
+def _prompt_for_image_metadata(*, initial_type: int = 3, initial_desc: str = '',
+                               header=None) -> tuple[int, str] | None:
+    """Pick the picture type and its description on ONE screen.
+
+    Prefilled with Cover (front) and no description — the overwhelmingly common
+    case — so Enter accepts immediately instead of walking the user through a
+    type screen and then a description screen for every single image.  `d` edits
+    the description in place, without leaving the list.
+
     Returns (pic_type, description) or None if cancelled.
     """
-    pic_type = prompt.select(
-        "Picture type:",
-        choices=[
-            prompt.Choice("Cover (front) [3]", 3),
-            prompt.Choice("Cover (back)  [4]", 4),
-            prompt.Choice("Artist        [8]", 8),
-            prompt.Choice("Other         [0]", 0),
-        ]
-    )
-    if not isinstance(pic_type, int):
-        return None
+    desc = initial_desc
 
-    desc = prompt.text("Description (leave blank for none):") or ''
-    return pic_type, desc
+    def _desc_cell() -> str:
+        """The description column's text, or a placeholder when it's blank."""
+        return desc if desc else "— no description —"
+
+    choices, index = [], 0
+    for i, (pt, label) in enumerate(_PICTURE_TYPES):
+        if pt == initial_type:
+            index = i
+        choices.append(prompt.Choice(f"{label}  [{pt}]", pt,
+                                     cells=[f"{label}  [{pt}]", _desc_cell()]))
+
+    def _edit_desc(_row) -> None:
+        """Prompt for a description and restamp it onto every row's cells."""
+        nonlocal desc
+        new_desc = prompt.text("Description (blank for none):", default=desc)
+        if new_desc is None:
+            return
+        desc = new_desc.strip()
+        for ch in choices:
+            ch.cells[1] = _desc_cell()
+
+    sel = prompt.select("Picture type:",
+                        choices=choices, columns=_IMAGE_META_COLUMNS, index=index,
+                        header=header() if header else None,
+                        row_actions={'d': _edit_desc},
+                        row_action_hints={'d': 'description'})
+    if not isinstance(sel, int):
+        return None
+    return sel, desc
+
+
+# "Various Artists" is *derived*, never stored: the app works it out from the
+# tracks (see music_library.derive_album_credit) and shows it wherever a
+# compilation has no single artist. Writing it into a tag turns an inference into
+# data that then has to be maintained — and it hides the real per-track artists.
+# The compilation flag (TCMP) is the thing worth storing.
+_PLACEHOLDER_NAMES = frozenset({
+    'various artists', 'various', 'va', 'v.a.', 'v/a', 'unknown', 'unknown artist',
+    'unknown album', 'no artist', 'n/a', 'none',
+})
+# Fields this applies to: names of people or acts, and their sort tags.
+_NAME_FIELD_IDS = ('TPE1', 'TPE2', 'TPE3', 'TPE4', 'TCOM', 'TSOP', 'TSO2', 'TSOC')
+
+
+def is_placeholder_name(value: Any) -> bool:
+    """True for a name the app derives rather than stores ("Various Artists")."""
+    return str(value or '').strip().lower() in _PLACEHOLDER_NAMES
+
+
+def strip_placeholder_names(tag_id: str, values: list[str]) -> list[str]:
+    """Drop derived-only names from a name field's values (other fields pass through)."""
+    base = str(tag_id or '').split(':')[0].upper()
+    if base not in _NAME_FIELD_IDS:
+        return values
+    return [v for v in values if not is_placeholder_name(v)]
 
 
 def _as_value_list(value: Any) -> list[str]:
@@ -276,7 +347,7 @@ def create_frame(tag_id: str, value: Any) -> Frame | None:
                 return frame_class(encoding=3, lang=clean_lang, desc=parsed_desc, text=text_val)
 
             # Multi-value text frames (#60): value may be a list of strings.
-            vals = _as_value_list(value)
+            vals = strip_placeholder_names(tag_id, _as_value_list(value))
             if not vals:
                 return None
 
@@ -676,7 +747,15 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
             initial_people = list(current_value.people) if current_value.people else []
         default_val = ""
     elif hasattr(current_value, 'text'):
-        default_vals = [str(t) for t in current_value.text] if current_value.text else []
+        txt = current_value.text
+        # USLT and USER carry a single scalar string, not the value *list* every
+        # other text frame uses.  Iterating one splits it into characters, so the
+        # editor opened pre-filled with just the first letter of the lyrics — and
+        # saving wrote that one character back over the whole body.
+        if isinstance(txt, str):
+            default_vals = [txt] if txt else []
+        else:
+            default_vals = [str(t) for t in txt] if txt else []
         default_val = default_vals[0] if default_vals else ""
     else:
         # Already a plain string (bulk edit summary — multi-values joined by '; ').
@@ -723,7 +802,7 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         pic_type, desc = meta
         return {'__image__': True, 'data': img_data, 'type': pic_type, 'desc': desc}
     if ui_cat == 'lyrics':
-        ui_utils.show_status("Use lyric sync tool for SYLT")
+        ui_utils.show_status("Use lyric sync tool for SYLT.")
         return None
     if ui_cat == 'multiline text':
         return prompt.system_editor_edit(initial_text=default_val)
@@ -779,8 +858,10 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
             result = prompt.fraction_edit(f"Edit {label}:", tag=b_id, value=default_val)
             if result is prompt.MODE_TOGGLE or result is None:
                 return result
-            curr = result.get('current', '').strip()
-            tot = result.get('total', '').strip()
+            # A value can come back None when that half "varies" (bulk); the
+            # single-file path never sets `varies`, but stay defensive.
+            curr = (result.get('current') or '').strip()
+            tot = (result.get('total') or '').strip()
             if curr and tot:
                 return f"{curr}/{tot}"
             return curr or None
@@ -837,7 +918,7 @@ def display_tag_id(tag_id: str) -> str:
     return tag_id[:-1] if tag_id.endswith(':') else tag_id
 
 
-def summarize_tag_value(tag_id: str, raw_frame) -> str:
+def summarize_tag_value(tag_id: str, raw_frame, display: bool = False) -> str:
     """Short display string for a frame's value, tailored to its category (people count, image size,
     star rating, band/gain count, or joined text)."""
     info = get_tag_info(tag_id)
@@ -892,9 +973,12 @@ def summarize_tag_value(tag_id: str, raw_frame) -> str:
             return f"{getattr(raw_frame, 'gain', 0):+g} dB"
         return "—"
 
-    # Generic text (multi-value frames are joined with '; ' for display)
+    # Generic text. Multi-values join with the storage separator by default,
+    # because this summary also seeds editors and the clipboard where it has to
+    # round-trip; `display=True` renders them as a list for the screen instead.
     if hasattr(raw_frame, 'text'):
-        text = "; ".join(str(t).replace("\n", "\\") for t in raw_frame.text)
+        vals = [str(t).replace("\n", "\\") for t in raw_frame.text]
+        text = format_value_list(vals) if display else "; ".join(vals)
         return text[:100]
 
     return str(raw_frame)[:100]

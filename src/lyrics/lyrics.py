@@ -8,8 +8,12 @@ import sys
 import unicodedata
 from pathlib import Path
 
+from src.utils import prompt_core as _pc
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
+# The MD script is overlaid onto the timed transcript by the same alignment the
+# lyrics editor uses, so the player renders the same speakers / directions / text.
+from src.lyrics.md_overlay import build_md_overlay, _reading_time
 
 def normalize_lyric_newlines(text: str) -> str:
     """Normalize CRLF/CR line endings to \\n."""
@@ -120,8 +124,15 @@ def expand_uslt_lines(
 ) -> tuple[list[str], list[tuple]]:
     """Split any USLT line that wraps past max_lines_per_chunk into shorter chunks,
     dividing its time window across the chunks proportionally by word count.
-    Results are cached by (wrap_w, max_lines_per_chunk, id(lines))."""
-    cache_key = (wrap_w, max_lines_per_chunk, id(lines))
+
+    Cached by the *content* of `lines` and `line_times`, never by `id(lines)`:
+    the caller builds a fresh list per track (and another for the SYLT hand-off
+    tail), and CPython readily hands a new list the id of a freed one — which
+    served up the previous track's lyrics on the previous track's timings.  The
+    times are part of the key because the tail reuses the same line text on
+    shifted windows."""
+    cache_key = (wrap_w, max_lines_per_chunk, len(lines),
+                 hash(tuple(lines)), hash(tuple(line_times)))
     if cache_key in _expand_cache:
         return _expand_cache[cache_key]
 
@@ -168,20 +179,81 @@ def _timing_word_count(text: str) -> int:
     return len(text.split())
 
 
+# Shortest window a line may be given.  A one-word line still needs long enough
+# to be read, so proportional allocation alone is not enough.
+_MIN_LINE_S = 0.5
+
+# Speaking rate assumed when the track length is unknown (mutagen gave us
+# nothing and VLC has not been probed yet).  Only reachable in that fallback.
+_FALLBACK_WPS = 2.2
+
+
+def _allocate_line_seconds(counts: list, track_duration: float) -> list:
+    """Split track_duration across lines in proportion to their word counts, with
+    every line getting at least _MIN_LINE_S.
+
+    Lifting a short line up to the floor has to come out of the others, or the
+    windows drift past the end of the track — so the floor is applied by
+    water-filling: pin whatever falls below it, re-divide the time that is left
+    over the lines still free, and repeat until nothing new gets pinned.  The
+    returned durations sum to track_duration.
+    """
+    n = len(counts)
+    if n == 0:
+        return []
+    # Not even the floors fit: the track is too short to read these lines at
+    # all, so divide it evenly and let them fly by.
+    if _MIN_LINE_S * n >= track_duration:
+        return [track_duration / n] * n
+
+    durations = [0.0] * n
+    pinned = [False] * n
+    while True:
+        free = [i for i in range(n) if not pinned[i]]
+        if not free:
+            break
+        free_time = track_duration - sum(durations[i] for i in range(n) if pinned[i])
+        free_words = sum(counts[i] for i in free)
+        if free_words <= 0:                     # only word-less lines left
+            for i in free:
+                durations[i] = free_time / len(free)
+            break
+        newly_pinned = False
+        for i in free:
+            if counts[i] / free_words * free_time < _MIN_LINE_S:
+                durations[i] = _MIN_LINE_S
+                pinned[i] = True
+                newly_pinned = True
+        if not newly_pinned:                    # everything left clears the floor
+            for i in free:
+                durations[i] = counts[i] / free_words * free_time
+            break
+    return durations
+
+
 def build_uslt_line_times(lines: list, track_duration: float) -> list[tuple[float, float]]:
     """Estimate (start, end) windows for untimed USLT lines by allocating
     track_duration proportionally to each line's word count, after stripping
-    a leading speaker label and parenthetical/bracketed asides."""
-    times = []
-    t = 0.0
+    a leading speaker label and parenthetical/bracketed asides.
 
+    The windows are contiguous and end exactly at track_duration, so a long
+    episode's lines stay in step with the audio the whole way through instead of
+    running off the end.  A track_duration of 0 means the length is not known
+    yet; the lines are then paced at _FALLBACK_WPS rather than scaled to fit.
+    """
     counts = [_timing_word_count(line.text if hasattr(line, 'text') else str(line))
               for line in lines]
-    total_words = sum(counts)
-    words_per_second = track_duration / total_words if total_words > 0 else 2.2
+    if not counts:
+        return []
 
-    for n in counts:
-        duration = max(0.5, n / words_per_second)
+    if track_duration and track_duration > 0:
+        durations = _allocate_line_seconds(counts, float(track_duration))
+    else:
+        durations = [max(_MIN_LINE_S, n / _FALLBACK_WPS) for n in counts]
+
+    times = []
+    t = 0.0
+    for duration in durations:
         times.append((t, t + duration))
         t += duration
 
@@ -261,6 +333,105 @@ def _apply_markdown_formatting(text: str, base: str = "",
     text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', f'{em}\\1{close}', text)
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', f'\\1 ({C.DIM}\\2{close})', text)
     return text
+
+
+_ANSI_RE = re.compile(r'\033\[[0-9;]*m')
+
+
+def _md_visible_len(text: str) -> int:
+    """Printed width of a markdown fragment — what it measures after the emphasis
+    markers are consumed.  Derived from the rendered output rather than a marker
+    strip-list, so it can never disagree with `_apply_markdown_formatting` about
+    which characters actually reach the screen."""
+    return len(_ANSI_RE.sub('', _apply_markdown_formatting(text)))
+
+
+def _close_open_md(row: str) -> tuple[str, str]:
+    """Close any emphasis span still open at a row's end.
+
+    Returns (row, reopen) — the row with the outstanding markers appended, and
+    the markers needed to reopen the same spans at the head of the next row, so a
+    **strong** or *emphasised* phrase that wraps keeps its styling on every row
+    instead of leaving a literal `**` on screen.
+    """
+    stack: list[str] = []
+    for m in re.finditer(r'\*\*|\*', row):
+        tok = m.group()
+        if stack and stack[-1] == tok:
+            stack.pop()
+        else:
+            stack.append(tok)
+    if not stack:
+        return row, ''
+    return row + ''.join(reversed(stack)), ''.join(stack)
+
+
+def _md_rows(text: str, width: int, base: str = '', active: bool = False,
+             first_width: int | None = None) -> list[str]:
+    """Wrap `text` to `width` PRINTED columns and render its markdown as ANSI.
+
+    `first_width` narrows only the first row, for a caller that prints something
+    after it (the USLT window's `↕ scroll` hint).
+
+    `textwrap.wrap` cannot be used on already-rendered text: the escape bytes
+    count toward its width, so a styled line wraps far too early.  Here the
+    wrapping measures printed width (`_md_visible_len`) and the styling is applied
+    per row afterwards.
+
+    Emphasis mirrors the editor's `_compose`: **strong** is bold, *emphasis* is
+    italic, and a ♪ is accented on the active row / dim elsewhere so its glyph
+    reads consistently instead of inheriting the row's weight.  Every span
+    restores `base` — the row's own colour — so the emphasis never strips the rest
+    of the line of the row's styling.
+    """
+    words = normalize_lyric_newlines(text).replace('\n', ' ').split()
+    if not words:
+        return []
+
+    rows: list[str] = []
+    cur: list[str] = []
+    cur_w = 0
+    limit = width if first_width is None else max(1, first_width)
+    for word in words:
+        wl = _md_visible_len(word)
+        step = wl if not cur else wl + 1
+        if cur and cur_w + step > limit:
+            rows.append(' '.join(cur))
+            cur, cur_w = [word], wl
+            limit = width
+        else:
+            cur.append(word)
+            cur_w += step
+    if cur:
+        rows.append(' '.join(cur))
+
+    out: list[str] = []
+    carry = ''
+    for row in rows:
+        row = carry + row
+        row, carry = _close_open_md(row)
+        disp = _apply_markdown_formatting(row, base=base, strong=C.BOLD, em=C.ITALIC)
+        if '\u266a' in disp:
+            note_c = C.ACCENT if active else C.DIM
+            disp = disp.replace('\u266a', f"{C.RESET}{note_c}\u266a{C.RESET}{base}")
+        out.append(f"{base}{disp}{C.RESET}" if base else disp)
+    return out
+
+
+def _dir_rows(text: str, width: int, base: str = '', active: bool = False) -> list[str]:
+    """A stage direction as text-column rows: bracketed and italic.
+
+    One place decides how a direction looks, so a cue riding on a line and a
+    direction holding its own beat can never drift apart.  An already-bracketed
+    text isn't double-bracketed.
+    """
+    label = (text or '').strip()
+    if not label:
+        return []
+    if not (label.startswith('(') and label.endswith(')')):
+        label = f"({label})"
+    return [f"{C.ITALIC}{r}{C.RESET}"
+            for r in _md_rows(label, width, base=base, active=active)]
 
 
 def _format_speaker_list(items: list[str]) -> str:
@@ -377,7 +548,7 @@ def expand_dialogue_into_sentences(
             expanded_chunks.append({
                 'parent_idx': idx, 'speaker': '',
                 'stage_dir': line.stage_dir, 'text': '',
-                'is_stage': True,
+                'cues': [], 'is_stage': True, 'is_air': False,
             })
             time_windows.append((gap_start, gap_end))
             # Don't advance total_elapsed — stage directions don't consume time.
@@ -411,7 +582,7 @@ def expand_dialogue_into_sentences(
                 expanded_chunks.append({
                     'parent_idx': idx, 'speaker': line.speaker,
                     'stage_dir': line.stage_dir, 'text': sub_s,
-                    'is_stage': False, 'is_air': False,
+                    'cues': [], 'is_stage': False, 'is_air': False,
                 })
                 time_windows.append((chunk_start, chunk_end))
                 total_elapsed = chunk_end
@@ -450,7 +621,7 @@ def expand_dialogue_into_sentences(
             if gap > _AIR_THRESHOLD:
                 final_chunks.append({
                     'parent_idx': -1, 'speaker': '', 'stage_dir': '',
-                    'text': '', 'is_stage': False, 'is_air': True,
+                    'text': '', 'cues': [], 'is_stage': False, 'is_air': True,
                 })
                 final_times.append((final_times[-1][1], twin[0]))
         final_chunks.append(chunk)
@@ -470,6 +641,10 @@ def draw_dialogue_window(
     line_times: list[tuple[float, float]] | None = None,
 ) -> None:
     """Renders the three-line context window (prev, current, next) with non-current lines dimmed."""
+    # These rows are painted outside any frame — drop the painter's record of
+    # them so the next full redraw repaints rather than trusting stale content.
+    _pc.screen_forget_rows(row, max_row or row)
+
     if not dialogue_lines or not (0 <= current_idx < len(dialogue_lines)):
         return
 
@@ -503,6 +678,7 @@ def draw_dialogue_window(
         text      = chunk.get('text', '').strip()
         is_stage  = chunk.get('is_stage', False)
         is_air    = chunk.get('is_air', False)
+        cues      = [c for c in chunk.get('cues', []) if c and c.strip()]
 
         # Only fired for gaps that weren't covered by an is_air chunk (edge
         # cases). Suppressed when either neighbour is already an air/stage chunk.
@@ -518,14 +694,19 @@ def draw_dialogue_window(
         left_lines: list[str] = []
         right_lines: list[str] = []
 
+        # The row's own colour.  Every markdown span inside the row restores it, so
+        # an emphasised word never strips the rest of the line of its styling —
+        # the same contract the editor's `_compose` uses.
+        base = "" if is_active else C.DIM
+
         if is_air:
             right_lines = [""]
         elif is_stage:
-            label = f"({stage_dir})" if stage_dir else text
-            if is_active:
-                right_lines = textwrap.wrap(_apply_markdown_formatting(label), width=text_width) or [label]
-            else:
-                right_lines = [f"{C.DIM}{s}{C.RESET}" for s in (textwrap.wrap(label, width=text_width) or [label])]
+            # All stage directions read the same way wherever they came from:
+            # bracketed and italic, in the text column, never labelled with a
+            # speaker.  The brackets are what mark it as a direction rather than
+            # something anybody says out loud.
+            right_lines = _dir_rows(stage_dir or text, text_width, base, is_active) or [""]
         else:
             if is_active:
                 show_speaker = bool(speaker)
@@ -535,20 +716,27 @@ def draw_dialogue_window(
             if show_speaker:
                 raw_spk = _strip_markdown(speaker)
                 wrapped_spk = textwrap.wrap(raw_spk, width=speaker_width)
-                if is_active:
-                    left_lines.extend(f"{C.BOLD}{s}{C.RESET}" for s in wrapped_spk)
-                    if stage_dir:
-                        left_lines.extend(f"{C.DIM}{s}{C.RESET}" for s in textwrap.wrap(f"({stage_dir})", width=speaker_width))
-                else:
-                    left_lines.extend(f"{C.DIM}{s}{C.RESET}" for s in wrapped_spk)
-                    if stage_dir:
-                        left_lines.extend(f"{C.DIM}{s}{C.RESET}" for s in textwrap.wrap(f"({stage_dir})", width=speaker_width))
+                spk_c = C.BOLD if is_active else C.DIM
+                left_lines.extend(f"{spk_c}{s}{C.RESET}" for s in wrapped_spk)
+                if stage_dir:
+                    # The line's own aside (from the MD banner, or a direction with
+                    # no silence to occupy) sits under the name, as on the editor's
+                    # speaker banner.
+                    left_lines.extend(
+                        f"{C.DIM}{C.ITALIC}{s}{C.RESET}"
+                        for s in textwrap.wrap(f"({stage_dir})", width=speaker_width))
 
             if text:
-                if is_active:
-                    right_lines = textwrap.wrap(_apply_markdown_formatting(text), width=text_width) or [""]
-                else:
-                    right_lines = [f"{C.DIM}{s}{C.RESET}" for s in (textwrap.wrap(_strip_markdown(text), width=text_width) or [""])]
+                right_lines = _md_rows(text, text_width, base=base, active=is_active) or [""]
+
+        # Directions about the words — a mid-line beat with no silence of its own,
+        # or a standalone event happening over the line — sit under the line in the
+        # TEXT column, bracketed and italic, the way the editor floats a cue.  They
+        # are deliberately NOT put in the speaker column: that is reserved for the
+        # MD banner's aside, which is the only direction that really does describe
+        # the whole line.
+        for cue in cues:
+            right_lines.extend(_dir_rows(cue, text_width, base, is_active))
 
         max_rows = max(len(left_lines), len(right_lines)) if (left_lines or right_lines) else 1
         air_rows = 2 if show_air else 0  # blank row + indicator row
@@ -567,7 +755,7 @@ def draw_dialogue_window(
 
         for i in range(max_rows):
             if i < len(left_lines):
-                clean_len = len(re.sub(r'\033\[[0-9;]*m', '', left_lines[i]))
+                clean_len = len(_ANSI_RE.sub('', left_lines[i]))
                 left_cell = f"{left_lines[i]}{' ' * (speaker_width - clean_len)}"
             else:
                 left_cell = " " * speaker_width
@@ -603,6 +791,10 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
                       width: int | None = None, max_row: int | None = None,
                       col: int = 1, bottom_row: int | None = None) -> None:
     """Render the SYLT lyric window (dimmed prev/next line, bold wrapped current line), clearing the area first."""
+    # These rows are painted outside any frame — drop the painter's record of
+    # them so the next full redraw repaints rather than trusting stale content.
+    _pc.screen_forget_rows(row, max_row or row)
+
     width = width or ui_utils.get_terminal_width()
     _, term_rows = ui_utils.get_terminal_size()
     max_row = max_row or term_rows
@@ -613,16 +805,16 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
     c_raw = sylt_data[current_idx][0] if 0 <= current_idx < len(sylt_data) else ""
     n_raw = sylt_data[current_idx + 1][0] if 0 <= current_idx < len(sylt_data) - 1 else ""
 
-    p_flat = _apply_markdown_formatting(normalize_lyric_newlines(p_raw).replace('\n', ' '))
-    p_wrapped = textwrap.wrap(p_flat, width=wrap_w - 1) if p_flat else []
+    # Wrapping measures PRINTED width, so the emphasis escapes can't eat the
+    # budget and wrap the line early (see `_md_rows`).
+    p_wrapped = _md_rows(p_raw, wrap_w - 1, base=C.DIM)
     p_line = p_wrapped[-1] if p_wrapped else ""
 
-    n_flat = _apply_markdown_formatting(normalize_lyric_newlines(n_raw).replace('\n', ' '))
-    n_wrapped = textwrap.wrap(n_flat, width=wrap_w - 1) if n_flat else []
+    n_wrapped = _md_rows(n_raw, wrap_w - 1, base=C.DIM)
     n_line = n_wrapped[0] if n_wrapped else ""
 
-    c_flat = _apply_markdown_formatting(normalize_lyric_newlines(c_raw).replace('\n', ' '))
-    c_wrapped = textwrap.wrap(c_flat, width=wrap_w - 4)[:max(1, budget - 4)]
+    c_wrapped = _md_rows(c_raw, wrap_w - 4, base=C.BOLD,
+                         active=True)[:max(1, budget - 4)]
 
     clear_end = bottom_row if bottom_row is not None else (row + budget)
     for i in range(row, clear_end + 1):
@@ -633,16 +825,16 @@ def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
     sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
     out_row += 2
 
-    if p_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {p_line}{C.RESET}")
+    if p_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {C.RESET}{p_line}")
     out_row += 2
 
     for i, seg in enumerate(c_wrapped or [""]):
         pfx = "▶ " if i == 0 else "  "
-        if seg: sys.stdout.write(f"\033[{out_row};{col + 1}H  {C.BOLD}{pfx}{seg}{C.RESET}")
+        if seg: sys.stdout.write(f"\033[{out_row};{col + 1}H  {C.BOLD}{pfx}{C.RESET}{seg}")
         out_row += 1
 
     out_row += 1
-    if n_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {n_line}{C.RESET}")
+    if n_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {C.RESET}{n_line}")
     sys.stdout.flush()
 
 
@@ -653,6 +845,10 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
                      col: int = 1, bottom_row: int | None = None) -> None:
     """Render the USLT lyric window (dimmed prev/next line, wrapped current line),
     honoring a manual scroll override via manual_idx over the elapsed-time index."""
+    # These rows are painted outside any frame — drop the painter's record of
+    # them so the next full redraw repaints rather than trusting stale content.
+    _pc.screen_forget_rows(row, max_row or row)
+
     width = width or ui_utils.get_terminal_width()
     wrap_w = max(20, width - 10)
     _, term_rows = ui_utils.get_terminal_size()
@@ -667,22 +863,23 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
 
     budget = max(3, max_row - row - 1)
 
-    prev_flat = _apply_markdown_formatting(prev_text.replace('\n', ' '))
-    curr_flat = _apply_markdown_formatting(curr_text.replace('\n', ' '))
-    next_flat = _apply_markdown_formatting(next_text.replace('\n', ' '))
-
-    curr_wrapped = textwrap.wrap(curr_flat, width=wrap_w - 4) or ['']
-    curr_wrapped = curr_wrapped[:max(1, budget - 4)]
-
-    prev_wrapped = textwrap.wrap(prev_flat, width=wrap_w - 1) if prev_flat else []
-    prev_line = prev_wrapped[-1] if prev_wrapped else ""
-
-    next_wrapped = textwrap.wrap(next_flat, width=wrap_w - 1) if next_flat else []
-    next_line = next_wrapped[0] if next_wrapped else ""
-
     scroll_hint = f" {C.DIM}↕ scroll{C.RESET}"
     hl = C.GREEN if manual_idx is not None else C.ACCENT
     pfx = "● " if manual_idx is not None else "▶ "
+
+    # Wrapping measures PRINTED width, so the emphasis escapes can't eat the
+    # budget and wrap the line early (see `_md_rows`).
+    # The first row shares its line with the scroll hint, so it gets that much
+    # less room — otherwise a full-width line would push the hint off the edge.
+    hint_w = len('↕ scroll') + 1
+    curr_wrapped = (_md_rows(curr_text, wrap_w - 4, base=hl, active=True,
+                             first_width=wrap_w - 4 - hint_w) or [''])[:max(1, budget - 4)]
+
+    prev_wrapped = _md_rows(prev_text, wrap_w - 1, base=C.DIM)
+    prev_line = prev_wrapped[-1] if prev_wrapped else ""
+
+    next_wrapped = _md_rows(next_text, wrap_w - 1, base=C.DIM)
+    next_line = next_wrapped[0] if next_wrapped else ""
 
     clear_end = bottom_row if bottom_row is not None else (row + budget)
     for i in range(row, clear_end + 1):
@@ -693,18 +890,18 @@ def draw_uslt_window(row: int, all_lines: list, line_times: list,
     sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
     out_row += 2
 
-    if prev_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {prev_line}{C.RESET}")
+    if prev_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {C.RESET}{prev_line}")
     out_row += 2
 
     for i, seg in enumerate(curr_wrapped):
         if i == 0:
-            sys.stdout.write(f"\033[{out_row};{col + 1}H  {hl}{pfx}{seg}{C.RESET}{scroll_hint}")
+            sys.stdout.write(f"\033[{out_row};{col + 1}H  {hl}{pfx}{C.RESET}{seg}{scroll_hint}")
         else:
-            sys.stdout.write(f"\033[{out_row};{col + 1}H    {hl}{seg}{C.RESET}")
+            sys.stdout.write(f"\033[{out_row};{col + 1}H    {seg}")
         out_row += 1
 
     out_row += 1
-    if next_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {next_line}{C.RESET}")
+    if next_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {C.RESET}{next_line}")
     sys.stdout.flush()
 
 
@@ -712,6 +909,10 @@ def draw_lyric_initial(row: int, first_line: object, width: int | None = None,
                        max_row: int | None = None, col: int = 1,
                        bottom_row: int | None = None) -> None:
     """Render a one-line preview of the first lyric before playback timing/highlighting begins."""
+    # These rows are painted outside any frame — drop the painter's record of
+    # them so the next full redraw repaints rather than trusting stale content.
+    _pc.screen_forget_rows(row, max_row or row)
+
     width = width or ui_utils.get_terminal_width()
     _, term_rows = ui_utils.get_terminal_size()
     max_row = max_row or term_rows
@@ -734,10 +935,9 @@ def draw_lyric_initial(row: int, first_line: object, width: int | None = None,
         else:
             raw_str = str(first_line)
 
-        flat = _apply_markdown_formatting(normalize_lyric_newlines(raw_str).replace('\n', ' '))
-        preview = textwrap.wrap(flat, width=wrap_w - 4)
-        preview_line = preview[0] if preview else flat
-        sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}  {preview_line}{C.RESET}")
+        preview = _md_rows(raw_str, wrap_w - 4, base=C.DIM)
+        if preview:
+            sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}  {C.RESET}{preview[0]}")
     sys.stdout.flush()
 
 
@@ -906,9 +1106,14 @@ def _parse_word_timings_json(json_path: str) -> list[dict]:
 
 def _find_enriched_transcript(audio_path: str) -> str | None:
     """Find a transcript that still carries the editor's `kind` beats (dead air /
-    stage directions).  Prefers the editor's `.sync.json` sidecar — transcript.json
-    itself is kept as a clean Whisper export — falling back to any transcript that
-    happens to be enriched.  Returns None when no enriched transcript exists."""
+    stage directions), for the fallback path where the transcript has word timings
+    but no segments to overlay the MD onto.
+
+    The editor's `.sync.json` is deliberately SKIPPED: it is a work-in-progress
+    save, so treating it as authoritative would let a half-finished edit change
+    what playback shows.  The MD script is the shared source of truth instead —
+    `_chunks_from_segments` re-derives the speakers and directions from it on every
+    load.  Returns None when no enriched transcript exists."""
     _, json_path = _find_timing_files_for_audio(audio_path)
     parent = Path(audio_path).parent
     candidates: list[Path] = []
@@ -1060,6 +1265,193 @@ def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict],
             line.end = line_end
 
 
+# A queued stage direction needs at least this much silence before the next line
+# to be worth its own beat on screen.  Below it the direction is describing
+# something happening *during* the speech (a bell still dinging, a name being
+# struggled over), so it rides along on the line itself instead of stealing a beat
+# from it.  Set from the gap distribution of real scripts, where the large
+# majority of directions sit in a clear pause and a handful genuinely overlap.
+_SD_MIN_GAP = 0.35
+
+
+def _chunks_from_segments(segs: list[dict], md_path: str,
+                          track_duration: float = 0.0) -> tuple[list[dict], list[tuple[float, float]]]:
+    """Build playback chunks from a timed transcript, overlaid with the MD script.
+
+    The transcript owns the timing; the MD owns everything the timing cannot
+    carry — who is speaking, the script's own punctuation and capitalisation, its
+    markdown emphasis, and the stage directions.  Both are joined by
+    `md_overlay.build_md_overlay`, the SAME single word-level alignment the lyrics
+    editor renders from, so the player and the editor can never disagree about a
+    line's speaker, text or directions.
+
+    A queued direction is given the silence it sits in as its own beat; one with
+    no silence to occupy is attached to the following line (see `_SD_MIN_GAP`).
+    Any silence still unclaimed and longer than `_AIR_THRESHOLD` becomes a dead-air
+    beat, so no line is left on screen — or shown early — while nobody is speaking.
+    `track_duration` extends that to the run-out after the last line; 0 means
+    unknown, which leaves the run-out alone.
+
+    Returns (chunks, line_times) in the shape `draw_dialogue_window` expects.
+    """
+    overlay, quality, links = build_md_overlay(segs, md_path)
+
+    ov_map: dict[int, list] = {}
+    for ov in overlay:
+        ov_map.setdefault(ov['before_si'], []).append(ov)
+
+    # Who speaks each MD line, and the line's own aside.  Attribution is looked up
+    # per segment through `links` (the alignment's seg → MD line pin) rather than
+    # carried forward from the last banner: a segment the MD does not explain gets
+    # no speaker, instead of inheriting whoever spoke last for the rest of the
+    # track.  `line_seen` makes the aside show once, on its line's opening row.
+    speaker_of_line: dict[int, tuple[str, str]] = {}
+    for ov in overlay:
+        if ov['kind'] == 'speaker' and ov.get('line') is not None:
+            speaker_of_line[ov['line']] = (ov['text'], ov.get('stage', '') or '')
+
+    chunks: list[dict] = []
+    times: list[tuple[float, float]] = []
+    line_seen: set[int] = set()
+    pending: list[tuple[str, str]] = []   # (text, lean) awaiting a silence to show in
+
+    def _emit(chunk: dict, window: tuple[float, float]) -> None:
+        """Append a chunk and its time window."""
+        chunks.append(chunk)
+        times.append(window)
+
+    def _prev_end() -> float:
+        """End of the last emitted window (0.0 before anything is emitted)."""
+        return times[-1][1] if times else 0.0
+
+    def _stage(text: str) -> dict:
+        """A direction shown as its own beat."""
+        return {'parent_idx': -1, 'speaker': '', 'stage_dir': text,
+                'text': '', 'cues': [], 'is_stage': True, 'is_air': False}
+
+    def _flush(next_start: float | None) -> list[str]:
+        """Place queued directions in the silence before `next_start`.
+
+        With enough silence each gets a beat of its own.  Without it the direction
+        becomes a CUE on the line it belongs with — an extra bracketed row in the
+        text column, the way the editor floats one, rather than a note hung off the
+        speaker: '*(She pronounces it "roth.")*' describes one word, not the whole
+        line, and the speaker column is reserved for the MD banner's own aside
+        ('**NAME** (exasperated): …'), which really is a whole-line manner note.
+
+        `lean == 'prev'` (a mid-line note sitting after the words it refers to)
+        attaches to the line just gone; the rest are returned for the line ahead.
+        """
+        nonlocal pending
+        if not pending:
+            return []
+        held = pending
+        pending = []
+        if next_start is None:                       # nothing follows — show them out
+            t = _prev_end()
+            for text, _lean in held:
+                span = _reading_time(text)
+                _emit(_stage(text), (t, t + span))
+                t += span
+            return []
+        gap = next_start - _prev_end()
+        if gap >= _SD_MIN_GAP:
+            # Share the silence out by reading time so a long direction gets longer.
+            weights = [_reading_time(text) for text, _ in held]
+            total = sum(weights) or 1.0
+            t = _prev_end()
+            for (text, _lean), w in zip(held, weights):
+                span = gap * (w / total)
+                _emit(_stage(text), (t, t + span))
+                t += span
+            return []
+        forward: list[str] = []
+        for text, lean in held:
+            back = chunks[-1] if chunks else None
+            if lean == 'prev' and back is not None and not back['is_air'] and not back['is_stage']:
+                back['cues'].append(text)
+            else:
+                forward.append(text)
+        return forward
+
+    def _air_if_silent(next_start: float) -> None:
+        """Blank the display through silence that nothing else claimed.
+
+        `find_current_dialogue_line` resolves a moment in a gap to the line that
+        comes NEXT, so without this the upcoming line sits on screen for the whole
+        pause — up to several seconds before anyone says it.  A dead-air beat holds
+        that space instead, drawn as nothing (the previous and next lines stay
+        dimmed either side, so the place in the script is still legible).
+
+        Consecutive silences merge into one beat rather than stacking up, and
+        because the cursor starts at 0.0 this also covers the lead-in before the
+        first line.
+        """
+        start = _prev_end()
+        if next_start <= start:
+            return
+        if chunks and chunks[-1]['is_air']:
+            times[-1] = (times[-1][0], next_start)      # one continuous run
+        elif next_start - start > _AIR_THRESHOLD:
+            _emit({'parent_idx': -1, 'speaker': '', 'stage_dir': '',
+                   'text': '', 'cues': [], 'is_stage': False, 'is_air': True},
+                  (start, next_start))
+
+    for si, seg in enumerate(segs):
+        for ov in ov_map.get(si, []):
+            if ov['kind'] == 'stage_dir':
+                pending.append((ov['text'].strip(), ov.get('lean', 'next')))
+
+        s_start = seg.get('start')
+        s_end = seg.get('end')
+        kind = seg.get('kind')
+
+        if s_start is None or s_end is None:
+            # Untimed beat — keep it out of the timeline rather than parking the
+            # display on a zero-length window.  Anything queued stays queued, to
+            # be placed against the next segment that does carry a time.
+            continue
+        window = (float(s_start), float(s_end))
+
+        # A direction with no silence ahead of it rides along on this beat.
+        carried = _flush(float(s_start))
+        # Directions get first claim on a silence; whatever is left goes dead.
+        _air_if_silent(float(s_start))
+
+        if kind == 'dead_air':
+            # Silence, unless a direction is riding along — then it is silence
+            # with something to say about it.
+            _emit({**_stage(carried[0] if carried else ''), 'parent_idx': si,
+                   'cues': carried[1:], 'is_stage': bool(carried),
+                   'is_air': not carried}, window)
+        elif kind == 'stage_dir':
+            label = seg.get('text', '').strip().strip('()')
+            _emit({**_stage(label), 'parent_idx': si, 'cues': carried}, window)
+        else:
+            mq = quality.get(si) or {}
+            text = (mq.get('md_text') or seg.get('text', '')).strip()
+            line = links.get(si)
+            speaker, stage = speaker_of_line.get(line, ('', '')) if line is not None else ('', '')
+            if line in line_seen:
+                stage = ''          # the line's aside belongs to its opening row
+            elif line is not None:
+                line_seen.add(line)
+            # `stage_dir` is the MD banner's aside and belongs to the speaker;
+            # `cues` are directions about the words, shown in the text column.
+            _emit({'parent_idx': si, 'speaker': speaker, 'stage_dir': stage,
+                   'text': text, 'cues': carried,
+                   'is_stage': False, 'is_air': False}, window)
+
+    for ov in ov_map.get(len(segs), []):             # trailing overlay items
+        if ov['kind'] == 'stage_dir':
+            pending.append((ov['text'].strip(), ov.get('lean', 'next')))
+    _flush(None)
+    if track_duration > 0:
+        _air_if_silent(float(track_duration))        # the run-out after the last line
+
+    return chunks, times
+
+
 class DialoguePlaybackState:
     """Manages sentence-by-sentence narrative dialogue states with timing support."""
 
@@ -1097,38 +1489,24 @@ class DialoguePlaybackState:
                     if json_path:
                         try:
                             word_timings = _parse_word_timings_json(json_path)
-                            # Also load the transcript segments; prefer using them
-                            # verbatim for playback so the player matches the
-                            # editor's segmentation exactly (avoid using *.sync.json).
+                            # Load the transcript's segments too: they own the
+                            # timing, and overlaying the MD onto them (rather than
+                            # re-timing the MD ourselves) is what makes playback
+                            # show the same lines the editor does.
                             try:
                                 with open(json_path, encoding='utf-8') as jf:
                                     jcontainer = json.load(jf)
                                     json_segments = jcontainer.get('segments', [])
-                            except Exception:
+                            except (OSError, ValueError):
                                 json_segments = None
-                            # If transcript segments exist, build playback chunks
-                            # directly from them so timing/segmentation is exact.
                             if json_segments:
-                                self.expanded_chunks = []
-                                self.line_times = []
-                                for si, seg in enumerate(json_segments):
-                                    s_kind = seg.get('kind')
-                                    s_start = seg.get('start')
-                                    s_end = seg.get('end')
-                                    if s_kind == 'stage_dir' or (s_kind is None and seg.get('text') and seg.get('text').startswith('(') and seg.get('text').endswith(')')):
-                                        self.expanded_chunks.append({'parent_idx': si, 'speaker': '', 'stage_dir': seg.get('text', '').strip('()'), 'text': '', 'is_stage': True, 'is_air': False})
-                                    elif s_kind == 'dead_air':
-                                        self.expanded_chunks.append({'parent_idx': si, 'speaker': '', 'stage_dir': seg.get('text', ''), 'text': '', 'is_stage': False, 'is_air': True})
-                                    else:
-                                        self.expanded_chunks.append({'parent_idx': si, 'speaker': '', 'stage_dir': '', 'text': seg.get('text', ''), 'is_stage': False, 'is_air': False})
-                                    if s_start is not None and s_end is not None:
-                                        self.line_times.append((float(s_start), float(s_end)))
-                                    else:
-                                        # Fallback zero-length window to keep indexing stable
-                                        self.line_times.append((0.0, 0.0))
-                                # Done — no further expansion or air-merge needed.
-                                self.load_error = None  # Clear error if we succeeded loading segments
-                                loaded_from_segments = True  # Skip MD expansion
+                                # Segments + MD overlay: exact timing from the
+                                # transcript, speakers / directions / script text
+                                # and emphasis from the markdown.
+                                self.expanded_chunks, self.line_times = _chunks_from_segments(
+                                    json_segments, md_path, track_duration)
+                                self.load_error = None
+                                loaded_from_segments = True   # skip the MD re-timing path
                                 json_segments = None
                                 word_timings = None
                             else:
@@ -1166,7 +1544,7 @@ class DialoguePlaybackState:
             self.line_times.insert(pos, (a_s, a_e))
             self.expanded_chunks.insert(pos, {
                 'parent_idx': -1, 'speaker': '', 'stage_dir': '',
-                'text': '', 'is_stage': False, 'is_air': True,
+                'text': '', 'cues': [], 'is_stage': False, 'is_air': True,
             })
         # Also merge any explicit stage-direction beats so playback matches the
         # editor's standalone directions. Insert them as `is_stage` chunks
@@ -1178,7 +1556,7 @@ class DialoguePlaybackState:
             self.line_times.insert(pos, (s_s, s_e))
             self.expanded_chunks.insert(pos, {
                 'parent_idx': -1, 'speaker': '', 'stage_dir': s_txt,
-                'text': '', 'is_stage': True, 'is_air': False,
+                'text': '', 'cues': [], 'is_stage': True, 'is_air': False,
             })
 
     def is_active(self) -> bool:

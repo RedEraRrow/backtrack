@@ -37,6 +37,10 @@ _VLC_STATE_STOPPED = getattr(vlc.State, 'Stopped', None)
 
 _VLC_PLAY_SETTLE_S = 0.3
 _TICK_INTERVAL_S = 0.1
+# ⏮ grace window: within the first few seconds of a track, previous steps back
+# to the previous queue item; past it, it restarts the current one (the standard
+# music-player behaviour).
+_PREV_RESTART_AFTER_S = 5.0
 
 # Repeat modes for the queue.
 REPEAT_OFF = 'off'
@@ -114,6 +118,29 @@ def _restore_stderr(old_stderr: int) -> None:
 # The session
 # ---------------------------------------------------------------------------
 
+def _load_stored_volume() -> int | None:
+    """The volume saved in config, or None when none is stored / it can't be read."""
+    try:
+        from src.config import load_config
+        raw = load_config().get('volume')
+        return None if raw is None else clamp_volume(raw)
+    except Exception:
+        return None
+
+
+def clamp_volume(value) -> int:
+    """Any reported volume → a sane 0–100 int.
+
+    Guards every display path against VLC's -1 sentinel (and against a snapshot
+    from another window carrying one), so a volume can never render as "-1".
+    """
+    try:
+        v = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, v))
+
+
 class PlaybackSession:
     """Owns the process's VLC player, the current track, and the queue.
 
@@ -133,6 +160,16 @@ class PlaybackSession:
         self.is_grouping: bool = False
         self._history_logged: bool = True    # guard so each track logs at most once
         self._old_stderr: int | None = None
+
+        # Volume is tracked here, not read back from VLC on demand: VLC reports
+        # -1 while it has no audio output open (before playback starts, after a
+        # stop), which is how the player view once came up showing "-1".
+        # A level saved by a previous run is restored and counts as explicit, so
+        # VLC's own default can't quietly replace it.
+        _stored = _load_stored_volume()
+        self._volume: int = 100 if _stored is None else _stored   # 100 = VLC's default
+        self._volume_explicit: bool = _stored is not None
+        self._config: dict | None = None      # the app's live config dict, if bound
 
         # Queue.
         self.queue: list[str] = []           # absolute file paths
@@ -228,6 +265,7 @@ class PlaybackSession:
 
             mp.play()
             _apply_equalizer(mp, audio)     # right after play() so it takes (#74)
+            mp.audio_set_volume(self._volume)   # carry the level across tracks
             self.track_start = time.time()
 
         # Outside the lock: only settle + probe VLC for a length when mutagen
@@ -367,15 +405,58 @@ class PlaybackSession:
             if self.mp is not None:
                 _handle_seek(self.mp, self.elapsed(), self.duration, seconds)
 
+    def bind_config(self, config: dict) -> None:
+        """Adopt the app's live config dict.
+
+        The volume is written into it as well as to disk, so a long-held dict
+        being saved later (on quit, or from the settings menu) can't put a stale
+        level back over the one just chosen.
+        """
+        with self._lock:
+            self._config = config
+            config['volume'] = self._volume
+
+    def _persist_volume(self, vol: int) -> None:
+        """Save the volume for the next launch — best effort: an unwritable config
+        must never interrupt playback."""
+        if self._config is not None:
+            self._config['volume'] = vol
+        try:
+            from src.config import load_config, save_config
+            cfg = load_config()
+            if cfg.get('volume') != vol:
+                cfg['volume'] = vol
+                save_config(cfg)
+        except Exception:
+            pass
+
     def set_volume(self, vol: int) -> int:
         with self._lock:
-            vol = max(0, min(100, int(vol)))
+            vol = clamp_volume(vol)
+            # Remembered even with no player yet, so a level chosen before
+            # playback isn't silently lost — `play` re-applies it.
+            changed = vol != self._volume
+            self._volume = vol
+            self._volume_explicit = True
             if self.mp is not None:
                 self.mp.audio_set_volume(vol)
-            return vol
+        if changed:
+            self._persist_volume(vol)        # outside the lock: it touches disk
+        return vol
 
     def get_volume(self) -> int:
-        return self.mp.audio_get_volume() if self.mp is not None else 0
+        """The current volume, always 0–100.
+
+        Once the user has set a level, that is the truth: re-reading VLC would
+        report -1 whenever its audio output isn't open, and would also lose the
+        level if a set landed before the output was ready. Until then VLC's own
+        reading is adopted, but only when it is actually in range.
+        """
+        if self.mp is not None and not self._volume_explicit:
+            reported = self.mp.audio_get_volume()
+            if isinstance(reported, int) and 0 <= reported <= 100:
+                self._volume = reported
+        return self._volume
 
     def elapsed(self) -> float:
         """Elapsed seconds into the current track (0 if not playing)."""
@@ -430,10 +511,17 @@ class PlaybackSession:
             self.titles.insert(pos, title or self._title_for(path))
 
     def prev(self) -> str | None:
-        """Go to the previous queued track (or restart the current one)."""
+        """⏮: past the first ``_PREV_RESTART_AFTER_S`` seconds, restart the current
+        track; within that window step back to the previous queue item (restarting
+        this one anyway when it is the first). Returns the now-loaded path."""
         with self._lock:
             if not self.queue:
                 return None
+            if (self.index > 0 and self.mp is not None
+                    and self.elapsed() >= _PREV_RESTART_AFTER_S):
+                # Seek rather than reload: no audible gap, and pause state holds.
+                self.mp.set_time(0)
+                return self.file_path
             self.index = max(0, self.index - 1)
             self._load(self.queue[self.index])
             return self.file_path
@@ -497,12 +585,24 @@ class PlaybackSession:
                 return None
             title = artist = album = ''
             if self.audio is not None:
-                t = self.audio.get('TIT2')
-                a = self.audio.get('TPE1')
-                al = self.audio.get('TALB')
-                title = str(t.text[0]) if (t and getattr(t, 'text', None)) else ''
-                artist = str(a.text[0]) if (a and getattr(a, 'text', None)) else ''
-                album = str(al.text[0]) if (al and getattr(al, 'text', None)) else ''
+                def _one(fr) -> str:
+                    """A single-identity frame's value (title, album)."""
+                    return str(fr.text[0]).strip() if (fr and getattr(fr, 'text', None)) else ''
+
+                def _all(fr) -> str:
+                    """Every value of a list-like frame, in storage form ('; '-joined).
+
+                    The UI renders it through `format_tag_values`, so a duet credit
+                    reaches the now-playing bar whole instead of losing everyone
+                    after the first name.
+                    """
+                    if not (fr and getattr(fr, 'text', None)):
+                        return ''
+                    return "; ".join(v for v in (str(x).strip() for x in fr.text) if v)
+
+                title = _one(self.audio.get('TIT2'))
+                artist = _all(self.audio.get('TPE1'))
+                album = _one(self.audio.get('TALB'))
             if not title:
                 title = os.path.splitext(os.path.basename(self.file_path or ''))[0]
             return {
@@ -512,7 +612,7 @@ class PlaybackSession:
                 'elapsed': self.elapsed(),
                 'duration': self.duration,
                 'paused': self.is_paused(),
-                'volume': self.get_volume(),
+                'volume': clamp_volume(self.get_volume()),
                 'index': self.index,
                 'count': len(self.queue),
                 'file_path': self.file_path,
@@ -572,7 +672,7 @@ class RemoteSession:
 
     def get_volume(self) -> int:
         np = self._link.latest()
-        return int(np.get('volume', 0)) if np else 0
+        return clamp_volume(np.get('volume', 0)) if np else 0
 
     def start(self, path: str, queue: list | None = None, titles: list | None = None,
               index: int = 0, mode: str | None = None, is_grouping: bool = False) -> bool:
@@ -601,8 +701,9 @@ class RemoteSession:
         self._link.send('seek', {'delta': seconds})
 
     def set_volume(self, vol: int) -> int:
-        self._link.send('set_volume', {'vol': int(vol)})
-        return int(vol)
+        vol = clamp_volume(vol)
+        self._link.send('set_volume', {'vol': vol})
+        return vol            # the host confirms via the next snapshot
 
     def stop(self) -> None:
         self._link.send('stop')

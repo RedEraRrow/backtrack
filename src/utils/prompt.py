@@ -23,18 +23,19 @@ import subprocess
 from typing import Any, Callable, Literal, overload
 
 from src.utils.prompt_core import (
-    _check_deferred_quit, _IS_WINDOWS, _COLUMNS_MAX_WIDTH, _EDGE_MARGIN,
+    _IS_WINDOWS, _COLUMNS_MAX_WIDTH, _EDGE_MARGIN,
     _get_term_attrs, _set_raw, _restore_term_attrs, _wait_for_keypress,
-    _clrline, _goto, _col, _hint, _render_status_bar,
+    _col, _hint, _render_status_bar,
     Choice, Column,
     _cell_text, _style_cell, _render_cell_segments, _table_widths, _render_table_row,
     separator, _split_columns, _clip_ansi, _render_select_columns, _style_checkbox_label, _norm,
     _read_key, _read_key_raw,
     _visible_rows, _cols, _rows, _hint_lines, _wrap_bordered_input_lines,
     _Widget,
-    add_hint_click_cells, now_playing_click_action, _hint_pin_target,
+    add_hint_click_cells, now_playing_click_action, _hint_pin_target, screen_paint, screen_invalidate, screen_takeover_next,
 )
 from src.utils import ui_utils
+from src.utils import datetime_parse as dtp
 from src import state as _state
 from src.state import QuitToTerminal
 C = ui_utils.Colors
@@ -43,6 +44,18 @@ C = ui_utils.Colors
 # flag around a value edit; the value widgets then treat Ctrl-T as a request to
 # switch modes by returning MODE_TOGGLE, and advertise it in their hint bar.
 MODE_TOGGLE = object()
+
+
+def _with_toggle_hint(pairs, label: str = 'raw text'):
+    """Append the Ctrl-T hint to a widget's hint bar while the per-edit raw-text
+    toggle is live.
+
+    Every widget that *accepts* ^t advertises it through this, so the key is never
+    silently available on one screen and absent from the bar on another. "^t"
+    renders as a clickable hint key too (it synthesises the real control char).
+    """
+    return list(pairs) + [("^t", label)] if _value_toggle_enabled else list(pairs)
+
 _MODE_TOGGLE_KEY = '\x14'          # Ctrl-T
 _value_toggle_enabled = False
 _toggle_hint_label = 'widget'      # what text()'s ^t hint calls the alternate mode
@@ -63,6 +76,130 @@ def set_player_opener(fn) -> None:
     """Register a ``callable()`` that opens the background player's full view."""
     global _player_opener
     _player_opener = fn
+
+
+# --- shared widget chrome -------------------------------------------------
+# Every screen owes the user the same four things: a hint bar pinned above the
+# miniplayer and status bar so its keys never move, those keys clickable, the
+# background-audio transport keys listed whenever the miniplayer is up, and
+# clicks on the miniplayer box itself doing something. These two helpers are
+# that contract in one place — `select` grew all of it first and the rest of the
+# app had drifted, each widget missing a different subset.
+
+CHROME_HANDLED = object()      # the key was consumed; carry on with the loop
+CHROME_REDRAW = object()       # consumed, and the caller should repaint fully
+
+
+def chrome_hint_pairs(pairs) -> list:
+    """A widget's hint pairs plus the transport keys, while audio is playing.
+
+    Only keys that will actually do something are advertised: the transport trio
+    needs a handler installed and ^O needs a player to reopen. `unboxed` covers
+    a terminal too narrow to draw the now-playing box — the keys are still live,
+    so they are still listed.
+    """
+    items = list(pairs.items()) if isinstance(pairs, dict) else [tuple(p) for p in pairs]
+    if ui_utils.now_playing_active() or ui_utils.now_playing_unboxed():
+        if _transport_handler is not None:
+            items += [("^P", "play/pause"), ("^N/^B", "next/prev")]
+        if _player_opener is not None:
+            items += [("^O", "player")]
+    return items
+
+
+def chrome_hint_lines(pairs, *, extra: str = "") -> list:
+    """The hint bar as rendered lines — widgets that size a viewport need the
+    row count before they lay their content out."""
+    return _hint(*chrome_hint_pairs(pairs), extra=extra).splitlines()
+
+
+def append_chrome(out: list, pairs, cells: dict, *, extra: str = "",
+                  pin: bool = True) -> list:
+    """Append the hint bar to a widget's rendered `out` lines, in place.
+
+    Pads down to :func:`_hint_pin_target` so the bar sits just above the
+    miniplayer + status bar and its keys keep the same screen position across
+    redraws — otherwise a repeated click chases the bar as the content changes
+    height. Records each bright key's screen cell in `cells` for
+    :func:`consume_chrome` to look up.
+    """
+    items = chrome_hint_pairs(pairs)
+    hint_lines = _hint(*items, extra=extra).splitlines()
+    if pin:
+        filler = _hint_pin_target() - len(out) - len(hint_lines)
+        if filler > 0:
+            out.extend([""] * filler)
+    out.extend(f"{' ' * ui_utils.MARGIN_H}{h}" for h in hint_lines)
+
+    cells.clear()
+    if hint_lines:
+        start = len(out) - len(hint_lines)
+        for k in range(len(hint_lines)):
+            # `_Widget.render` lays line j at terminal row anchor(1) + MARGIN_V + j.
+            add_hint_click_cells(cells, out[start + k],
+                                 1 + ui_utils.MARGIN_V + (start + k), items)
+    return out
+
+
+def consume_chrome(key: str, cells: dict):
+    """Handle a transport key, a miniplayer click, or a click on a hint key.
+
+    Returns :data:`CHROME_HANDLED` when the key is fully dealt with,
+    :data:`CHROME_REDRAW` when the caller should also repaint, the synthesised
+    key string when a hint was clicked (replay it through the widget's own
+    switch), or None when the key is not ours.
+    """
+    if key == _PLAYER_KEY and _player_opener is not None:
+        _player_opener()
+        if not _IS_WINDOWS:
+            sys.stdout.write("\033[?1000h\033[?1006h")   # the player took the mouse
+        sys.stdout.flush()
+        return CHROME_REDRAW
+    if key == _PLAYPAUSE_KEY and _transport_handler is not None:
+        _transport_handler('playpause')
+        return CHROME_HANDLED
+    if key == _NEXT_KEY and _transport_handler is not None:
+        _transport_handler('next')
+        return CHROME_HANDLED
+    if key == _PREV_KEY and _transport_handler is not None:
+        _transport_handler('prev')
+        return CHROME_HANDLED
+
+    if isinstance(key, str) and key.startswith('MOUSE_CLICK:'):
+        parts = key.split(':')
+        try:
+            row = int(parts[2])
+            col = int(parts[3]) if len(parts) > 3 else 1
+        except (IndexError, ValueError):
+            return None
+        act = now_playing_click_action(row, col)
+        if act == 'open' and _player_opener is not None:
+            _player_opener()
+            if not _IS_WINDOWS:
+                sys.stdout.write("\033[?1000h\033[?1006h")
+            sys.stdout.flush()
+            return CHROME_REDRAW
+        if act in ('playpause', 'next', 'prev') and _transport_handler is not None:
+            _transport_handler(act)
+            return CHROME_HANDLED
+        hit = cells.get((row, col))
+        if hit is not None:
+            return hit                      # replay the clicked hint's key
+    return None
+
+
+def enable_mouse() -> None:
+    """Turn on click + scroll reporting for a widget that wants clickable hints."""
+    if not _IS_WINDOWS:
+        sys.stdout.write("\033[?1000h\033[?1006h")
+        sys.stdout.flush()
+
+
+def disable_mouse() -> None:
+    """Turn click reporting back off on the way out."""
+    if not _IS_WINDOWS:
+        sys.stdout.write("\033[?1000l\033[?1006l")
+        sys.stdout.flush()
 
 
 def set_transport_handler(fn) -> None:
@@ -156,7 +293,6 @@ def select(message: str, choices: list, *,
             list can only move forward (Enter) or quit (q) — used for top-level
             menus that have nowhere to go back to.
     """
-    _check_deferred_quit()
     items = _norm(choices)
     if not items:
         return None
@@ -211,14 +347,14 @@ def select(message: str, choices: list, *,
     # Toggle-all ('a') is offered only where it can't misbehave: multi-select with
     # no category interlock and no caller shortcut already bound to 'a'.
     _toggle_all_ok = multi and interlock_category_callback is None and not (shortcuts and ('a' in shortcuts or 'A' in shortcuts))
-    _back_hint = {"←/b": "back"} if allow_back else {}
+    _back_hint = {"←/b/esc": "back"} if allow_back else {}
     if multi:
-        base_hints = {"↑↓": "move", "space": "toggle", **_back_hint, "q": "quit", "↵": "confirm"}
+        base_hints = {"↑↓": "move", "space": "toggle", **_back_hint, "q": "quit app", "↵": "confirm"}
         if _toggle_all_ok:
             base_hints = {"↑↓": "move", "space": "toggle", "a": "all",
-                          **_back_hint, "q": "quit", "↵": "confirm"}
+                          **_back_hint, "q": "quit app", "↵": "confirm"}
     else:
-        base_hints = {"↑↓": "move", **_back_hint, "q": "quit", "↵": "confirm"}
+        base_hints = {"↑↓": "move", **_back_hint, "q": "quit app", "↵": "confirm"}
 
     if extra_hints:
         combined_hints = {**extra_hints, **base_hints}
@@ -267,16 +403,10 @@ def select(message: str, choices: list, *,
 
         layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
 
-        # Surface the playback hotkeys in the normal hint bar while background
-        # audio is active (recomputed each render so they appear/vanish live).
-        hints_now = combined_hints
-        if ui_utils.now_playing_active():
-            if _transport_handler is not None:
-                hints_now = {**combined_hints,
-                             "^P": "play/pause", "^N/^B": "next/prev"}
-            if _player_opener is not None:
-                hints_now = {**hints_now, "^O": "player"}
-        hint_lines = _hint(*list(hints_now.items()), extra=layout_constraint).splitlines()
+        # The transport keys are surfaced here whenever background audio is
+        # playing (recomputed each render so they appear/vanish live) — see
+        # `chrome_hint_pairs`.
+        hint_lines = chrome_hint_lines(combined_hints, extra=layout_constraint)
 
         # Non-item lines this widget emits: header + message + the two
         # above/below indicator rows (always present) + hints.
@@ -288,6 +418,11 @@ def select(message: str, choices: list, *,
             viewport = cursor
         elif cursor >= viewport + vis:
             viewport = cursor - vis + 1
+        # Growing the window (or deleting rows) leaves the viewport further down
+        # than it needs to be — the list stayed scrolled, showing "N above" with
+        # blank space below, until you navigated. Pull it back so the last row of
+        # the list sits on the last visible row at most.
+        viewport = max(0, min(viewport, n - vis))
 
         out = h_lines[:]
         out.append(f"  {C.DIM}{message}{C.RESET}")
@@ -300,8 +435,10 @@ def select(message: str, choices: list, *,
         if columns:
             eff = min(cols, _COLUMNS_MAX_WIDTH)
             rows_cells = [it.cells for it in items if it.cells]
+            vis_cells = [it.cells for it in items[viewport:viewport + vis] if it.cells]
             col_widths = _table_widths(rows_cells, columns, eff,
-                                       pointer_w=6 if multi else 4, right_margin=_EDGE_MARGIN)
+                                       pointer_w=6 if multi else 4, right_margin=_EDGE_MARGIN,
+                                       visible_cells=vis_cells)
 
         for i in range(viewport, min(viewport + vis, n)):
             if columns and items[i].cells:
@@ -345,24 +482,11 @@ def select(message: str, choices: list, *,
         # centres within _cols() (= width-2*MARGIN_H), so this makes it symmetric.
         # Pin the hint bar to the bottom (just above the miniplayer + status) so
         # its keys keep a fixed screen position across redraws / list sizes.
-        _filler = _hint_pin_target() - len(out) - len(hint_lines)
-        if _filler > 0:
-            out.extend([""] * _filler)
-        out.extend(f"{' ' * ui_utils.MARGIN_H}{h}" for h in hint_lines)
-        # Record the clickable bright-key glyphs on each hint line (the left
-        # inset is already baked into the line, so left_inset stays 0). Rows use
-        # the same anchor math as the mouse-click handler: out-index j is at
-        # terminal row w.row(=1) + MARGIN_V + j.
-        _hint_cells.clear()
-        if hint_lines:
-            _hp = list(hints_now.items())
-            _start = len(out) - len(hint_lines)
-            for _k in range(len(hint_lines)):
-                add_hint_click_cells(_hint_cells, out[_start + _k],
-                                     1 + ui_utils.MARGIN_V + (_start + _k), _hp)
+        append_chrome(out, combined_hints, _hint_cells, extra=layout_constraint)
         # Hard guarantee: no rendered line ever exceeds the terminal width, so
         # the list can never wrap no matter how narrow the window is.
-        return [_clip_ansi(line, ui_utils.get_terminal_width()) for line in out]
+        _w = ui_utils.get_terminal_width()          # once per frame, not per line
+        return [_clip_ansi(line, _w) for line in out]
 
     result = None
     _sel_last_click: int | None = None
@@ -370,14 +494,12 @@ def select(message: str, choices: list, *,
         _set_raw(fd)
         if not _IS_WINDOWS:
             sys.stdout.write("\033[?1000h\033[?1006h")
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        screen_takeover_next()   # paint over the previous screen, no flash
         w.render(_lines())
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 w.render(_lines())
                 continue
@@ -386,31 +508,26 @@ def select(message: str, choices: list, *,
                 continue
 
             key = _read_key(fd)
-            if key.startswith('MOUSE_CLICK:'):
-                # Translate clicks on the now-playing box or a hint glyph before
-                # the normal switch: box → transport/open, hint → replay its key.
-                _mp = key.split(':')
-                _mr = int(_mp[2]); _mc = int(_mp[3]) if len(_mp) > 3 else 1
-                _act = now_playing_click_action(_mr, _mc)
-                if _act == 'open' and _player_opener is not None:
-                    _player_opener()
-                    if not _IS_WINDOWS:
-                        sys.stdout.write("\033[?1000h\033[?1006h")
-                    sys.stdout.flush()
-                    _sel_last_click = None; w.anchor_reset(); w.render(_lines()); continue
-                if _act in ('playpause', 'next') and _transport_handler is not None:
-                    _transport_handler(_act); continue
-                _hk = _hint_cells.get((_mr, _mc))
-                if _hk is not None:
-                    key = _hk            # replay the hint's key through the switch
+            # Transport keys, clicks on the now-playing box, and clicks on our own
+            # hint glyphs are all handled once, here, before the switch below:
+            # box → transport/open, hint → replay its key.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                _sel_last_click = None; w.anchor_reset(); w.render(_lines()); continue
+            if _ch is not None:
+                key = _ch                # replay the hint's key through the switch
             if   key == 'CTRL_C':                break
             elif key == 'FOCUS_IN':
                 # Regained focus: repaint fully in case a background track change
                 # (or the terminal not painting us while unfocused) left the list
-                # or now-playing box stale — no click needed (#14).
-                _sel_last_click = None; w.anchor_reset(); w.render(_lines())
-            elif key in ('UP',   'k'):           cursor = _step(cursor, -1);          _sel_last_click = None; w.render(_lines())
-            elif key in ('DOWN', 'j'):           cursor = _step(cursor, 1);           _sel_last_click = None; w.render(_lines())
+                # or now-playing box stale — no click needed (#14). A refresh, not
+                # a clear: the layout is still valid, so blanking the screen first
+                # would just flash.
+                _sel_last_click = None; w.refresh(); w.render(_lines())
+            elif key == 'UP':           cursor = _step(cursor, -1);          _sel_last_click = None; w.render(_lines())
+            elif key == 'DOWN':           cursor = _step(cursor, 1);           _sel_last_click = None; w.render(_lines())
             elif key == 'HOME':                  cursor = selectable[0];              _sel_last_click = None; w.render(_lines())
             elif key == 'END':                   cursor = selectable[-1];             _sel_last_click = None; w.render(_lines())
             elif key == 'PGUP':                  cursor = _nearest_selectable(max(0, cursor - _visible_rows())); _sel_last_click = None; w.render(_lines())
@@ -436,12 +553,12 @@ def select(message: str, choices: list, *,
                 selectable[:] = [i for i, x in enumerate(items) if not x.disabled or x.checked]
                 _sel_last_click = None
                 w.render(_lines())
-            elif key in ('ENTER', 'RIGHT', 'l'):
+            elif key in ('ENTER', 'RIGHT'):
                 if multi:
                     result = [it.value for it in items if it.checked]; break
                 elif not items[cursor].disabled:
                     result = items[cursor].value; break
-            elif key in ('LEFT', 'b', 'h', 'ESC'):
+            elif key in ('LEFT', 'b', 'ESC'):
                 if allow_back:
                     result = None; break
                 # Top-level menu: no back/cancel — only forward or quit.
@@ -464,22 +581,6 @@ def select(message: str, choices: list, *,
                 row_actions[key](items[cursor].value)
                 _sel_last_click = None
                 w.render(_lines())
-            elif key == _PLAYER_KEY and _player_opener is not None:
-                # Ctrl-O: reopen the background player's full view over this list,
-                # then redraw when it minimises back (mirrors on_inspect).
-                _player_opener()
-                if not _IS_WINDOWS:
-                    sys.stdout.write("\033[?1000h\033[?1006h")
-                sys.stdout.flush()
-                _sel_last_click = None
-                w.anchor_reset()
-                w.render(_lines())
-            elif key == _PLAYPAUSE_KEY and _transport_handler is not None:
-                _transport_handler('playpause')      # Ctrl-P — background audio
-            elif key == _NEXT_KEY and _transport_handler is not None:
-                _transport_handler('next')           # Ctrl-N — skip forward
-            elif key == _PREV_KEY and _transport_handler is not None:
-                _transport_handler('prev')           # Ctrl-B — skip back
             elif shortcuts and key in shortcuts:  result = shortcuts[key]; break
             elif key == 'SCROLL_UP':             cursor = _step(cursor, -1); _sel_last_click = None; w.render(_lines())
             elif key == 'SCROLL_DOWN':           cursor = _step(cursor, 1); _sel_last_click = None; w.render(_lines())
@@ -560,6 +661,7 @@ def select(message: str, choices: list, *,
 
 
 def live_select(message: str, provider: Callable[[str], list], *,
+                count_of: Callable[[], int] | None = None,
                 header: list | None | Callable[[], list[str]] = None,
                 columns: list | None = None,
                 extra_hints: dict[str, str] | None = None,
@@ -573,7 +675,6 @@ def live_select(message: str, provider: Callable[[str], list], *,
     scroll wheel) move through results; Enter selects the highlighted row; Esc
     cancels. Returns the chosen Choice.value, or None.
     """
-    _check_deferred_quit()
     fd  = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w   = _Widget(fd)
@@ -584,7 +685,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
     cursor           = 0
     viewport         = 0
 
-    base_hints = {"type": "search", "↑↓": "results", "esc": "back", "↵": "open"}
+    base_hints = {"type": "search", "↑↓": "results", "esc": "back", "↵": "confirm"}
     if on_cycle is not None:
         base_hints["tab"] = "scope"
     hints = {**(extra_hints or {}), **base_hints}
@@ -628,10 +729,11 @@ def live_select(message: str, provider: Callable[[str], list], *,
         qtext = "".join(query)
         b, a = qtext[:qpos], qtext[qpos:]
         out.append(f"  {C.DIM}{message}{C.RESET} {b}{C.ACCENT}▏{C.RESET}{a}")
-        count = "type to search…" if not qtext else f"{len(items)} result(s)"
+        count = ("type to search…" if not qtext else
+                 ui_utils.plural(len(items) if count_of is None else count_of(), "result"))
         out.append(f"  {C.DIM}{count}{C.RESET}")
 
-        hint_lines = _hint(*list(hints.items())).splitlines()
+        hint_lines = chrome_hint_lines(hints)
         # out already holds header + message + count; +2 for the above/below rows.
         overhead = len(out) + len(hint_lines) + 2
         vis = max(2, _visible_rows() - overhead)
@@ -641,6 +743,11 @@ def live_select(message: str, provider: Callable[[str], list], *,
             viewport = cursor
         elif cursor >= viewport + vis:
             viewport = cursor - vis + 1
+        # Growing the window (or deleting rows) leaves the viewport further down
+        # than it needs to be — the list stayed scrolled, showing "N above" with
+        # blank space below, until you navigated. Pull it back so the last row of
+        # the list sits on the last visible row at most.
+        viewport = max(0, min(viewport, n - vis))
         out.append(f"  {C.DIM}╵ {viewport} above{C.RESET}" if viewport > 0 else "")
 
         eff = min(cols, _COLUMNS_MAX_WIDTH)
@@ -648,8 +755,10 @@ def live_select(message: str, provider: Callable[[str], list], *,
         if columns:
             rows_cells = [it.cells for it in items if it.cells]
             if rows_cells:
+                vis_cells = [it.cells for it in items[viewport:viewport + vis] if it.cells]
                 col_widths = _table_widths(rows_cells, columns, eff,
-                                           pointer_w=4, right_margin=_EDGE_MARGIN)
+                                           pointer_w=4, right_margin=_EDGE_MARGIN,
+                                           visible_cells=vis_cells)
 
         for i in range(viewport, min(viewport + vis, n)):
             it = items[i]
@@ -670,14 +779,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
         _filler = _hint_pin_target() - len(out) - len(hint_lines)
         if _filler > 0:
             out.extend([""] * _filler)
-        out.extend(f"{' ' * ui_utils.MARGIN_H}{h}" for h in hint_lines)
-        _hint_cells.clear()
-        if hint_lines:
-            _hp = list(hints.items())
-            _start = len(out) - len(hint_lines)
-            for _k in range(len(hint_lines)):
-                add_hint_click_cells(_hint_cells, out[_start + _k],
-                                     1 + ui_utils.MARGIN_V + (_start + _k), _hp)
+        append_chrome(out, hints, _hint_cells, pin=False)
         return [_clip_ansi(line, width) for line in out]
 
     result = None
@@ -685,14 +787,12 @@ def live_select(message: str, provider: Callable[[str], list], *,
         _set_raw(fd)
         if not _IS_WINDOWS:
             sys.stdout.write("\033[?1000h\033[?1006h")
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        screen_takeover_next()   # paint over the previous screen, no flash
         w.render(_lines())
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 w.render(_lines())
                 continue
@@ -700,31 +800,28 @@ def live_select(message: str, provider: Callable[[str], list], *,
                 continue
             key = _read_key(fd)
 
-            if key.startswith('MOUSE_CLICK:'):
-                # Clicks on the now-playing box or a hint glyph: box → transport/
-                # open, hint → replay its key. Other clicks are ignored here.
-                _mp = key.split(':')
-                _mr = int(_mp[2]); _mc = int(_mp[3]) if len(_mp) > 3 else 1
-                _act = now_playing_click_action(_mr, _mc)
-                if _act == 'open' and _player_opener is not None:
-                    _player_opener()
-                    if not _IS_WINDOWS:
-                        sys.stdout.write("\033[?1000h\033[?1006h")
-                    sys.stdout.flush()
-                    w.anchor_reset(); w.render(_lines()); continue
-                if _act in ('playpause', 'next') and _transport_handler is not None:
-                    _transport_handler(_act); continue
-                _hk = _hint_cells.get((_mr, _mc))
-                if _hk is not None:
-                    key = _hk            # replay the hint's key through the switch
+            # Transport keys, clicks on the now-playing box, and clicks on our own
+            # hint glyphs — handled once here, before the switch below.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); w.render(_lines()); continue
+            if _ch is not None:
+                key = _ch                # replay the hint's key through the switch
 
             if key == 'CTRL_C':
                 raise QuitToTerminal()
             elif key == 'ESC':
                 result = None
                 break
-            elif key == 'TAB' and on_cycle is not None:
-                on_cycle()
+            elif key in ('TAB', 'BACKTAB') and on_cycle is not None:
+                # Cyclers that take a direction get -1 for Shift+Tab; older
+                # no-argument ones just cycle forward either way.
+                try:
+                    on_cycle(-1 if key == 'BACKTAB' else 1)
+                except TypeError:
+                    on_cycle()
                 _recompute()
                 w.render(_lines())
             elif key == 'ENTER':
@@ -791,18 +888,14 @@ def confirm(message: str, default: bool = False) -> bool:
 
     def _render():
         dflt = "yes" if default else "no"
-        pairs = [("y", "yes"), ("n", "no"), ("↵", f"default ({dflt})")]
+        pairs = [("y", "yes"), ("n", "no"), ("↵", f"default ({dflt})"),
+                 ("esc", "back")]
         head = [
             f"  {C.DIM}{message}{C.RESET}",
             f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}",
         ]
-        hint_lines = _hint(*pairs).splitlines()
-        lines = head + [f"  {s}" for s in hint_lines]
-        _hint_cells.clear()
-        _start = len(lines) - len(hint_lines)
-        for _k in range(len(hint_lines)):
-            add_hint_click_cells(_hint_cells, lines[_start + _k],
-                                 1 + ui_utils.MARGIN_V + (_start + _k), pairs)
+        lines = list(head)
+        append_chrome(lines, pairs, _hint_cells)
         w.render(lines)
 
     try:
@@ -814,6 +907,13 @@ def confirm(message: str, default: bool = False) -> bool:
             if not _wait_for_keypress(0.05):
                 continue
             key = _read_key(fd)
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
             if key.startswith('MOUSE_CLICK:'):
                 _mp = key.split(':')
                 _mr = int(_mp[2]); _mc = int(_mp[3]) if len(_mp) > 3 else 1
@@ -822,6 +922,9 @@ def confirm(message: str, default: bool = False) -> bool:
                     continue             # modal: ignore clicks off the y/n/↵ hints
                 key = _hk                # replay the hint's key
             if   key == 'CTRL_C':    result = False; break
+            # Esc backs out of every other screen, so it must do something here
+            # too — cancelling a yes/no question means "no".
+            elif key == 'ESC':       result = False; break
             elif key == 'ENTER':     result = default; break
             elif key.lower() == 'y': result = True;  break
             elif key.lower() == 'n': result = False; break
@@ -841,6 +944,7 @@ def text(message: str, default: str = "") -> str | None:
     fd     = sys.stdin.fileno()
     old    = _get_term_attrs(fd)
     result = None
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     # Track how many physical lines were drawn to clear them later
     prev_lines = 0
@@ -857,54 +961,64 @@ def text(message: str, default: str = "") -> str | None:
         pre_lines = _wrap_bordered_input_lines(content[:pos], content_width)
         cursor_row = max(0, len(pre_lines) - 1)
         cursor_col = len(pre_lines[-1]) if pre_lines else 0
-        total_rows = len(wrapped_lines)
 
-        if prev_lines > 0:
-            sys.stdout.write(f"\r\033[{prev_lines}A")
-        sys.stdout.write(f"\r\033[J{C.HIDE}")
+        # This prompt owns the screen (it full-clears on entry), so it is laid
+        # out absolutely like every other widget: message, input frame, then the
+        # hint bar pinned above the miniplayer. Unlike the others it keeps a real
+        # terminal caret inside the frame rather than drawing a block, so the
+        # caret is re-homed by absolute position after the bar is written.
+        # No "(^t widget)" suffix on the message: ^t is in the hint bar below,
+        # like every other key. The title says what the screen is, not how to
+        # leave it.
+        out = [f"  {C.DIM}{message}{C.RESET}"]
+        box_first = len(out)
+        for line in wrapped_lines:
+            out.append(f"  {C.DIM}│{C.RESET} {line:<{content_width}} {C.DIM}│{C.RESET}")
 
-        _tog = f"  {C.DIM}(^t {_toggle_hint_label}){C.RESET}" if _value_toggle_enabled else ""
-        sys.stdout.write(f"\r  {C.DIM}{message}{C.RESET}{_tog}\r\n")
+        pairs = [("↵", "save"), ("esc", "back")]
+        if _value_toggle_enabled:
+            pairs.append(("^t", _toggle_hint_label))
+        append_chrome(out, pairs, _hint_cells)
 
-        for i, line in enumerate(wrapped_lines):
-            sys.stdout.write(f"\r  {C.DIM}│{C.RESET} {line:<{content_width}} {C.DIM}│{C.RESET}")
-            if i < total_rows - 1:
-                sys.stdout.write("\r\n")
+        # One diffed frame (no full erase, no newlines): only the rows that
+        # actually changed are written, so typing doesn't repaint the screen.
+        frame = {i + 1: line for i, line in enumerate([""] * ui_utils.MARGIN_V + out)}
+        for r in range(len(frame) + 1, prev_lines + ui_utils.MARGIN_V + 1):
+            frame[r] = ""
+        # Caret: margin(2) + '│'(1) + ' '(1) → first content column is 5.
+        caret_row = 1 + ui_utils.MARGIN_V + box_first + cursor_row
+        screen_paint(frame, cursor=(caret_row, cursor_col + 5))
 
-        rows_to_move_up = (total_rows - 1) - cursor_row
-        if rows_to_move_up > 0:
-            sys.stdout.write(f"\033[{rows_to_move_up}A")
-        col_offset = cursor_col + 4  # 2 spaces + "│ "
-        if col_offset > 0:
-            sys.stdout.write(f"\r\033[{col_offset}C")
-        else:
-            sys.stdout.write("\r")
-
-        sys.stdout.write(C.SHOW)
-        sys.stdout.flush()
-
-        prev_lines = 1 + total_rows
+        prev_lines = len(out)
         _render_status_bar()
 
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        enable_mouse()          # so the hint keys below can be clicked
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 _render()
                 continue
             if not _wait_for_keypress(0.05): continue
             key = _read_key(fd)
+
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                _render(); continue
+            if _ch is not None:
+                key = _ch
 
             if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
                 global _toggle_carry
                 _toggle_carry = "".join(buf)
                 return MODE_TOGGLE  # type: ignore[return-value]
             if   key == 'CTRL_C':             result = None;         break
+            elif key == 'ESC':                result = None;         break
             elif key == 'ENTER':              result = "".join(buf); break
             elif key == 'BACKSPACE' and pos > 0:
                 buf.pop(pos - 1); pos -= 1; _render()
@@ -925,8 +1039,10 @@ def text(message: str, default: str = "") -> str | None:
             elif len(key) == 1 and key.isprintable():
                 buf.insert(pos, key); pos += 1; _render()
     finally:
+        disable_mouse()
         _restore_term_attrs(fd, old)
-        sys.stdout.write("\033[H\033[3J\033[J" + C.SHOW)
+        ui_utils.clear_screen()
+        sys.stdout.write(C.HIDE)   # caret was ours; don't leave it blinking
         sys.stdout.flush()
 
     return result
@@ -945,6 +1061,7 @@ def path(message: str, default: str = "") -> str | None:
     # Tracks the exact number of rows written in the previous render cycle
     # to roll back cleanly without scrolling or flickering the viewport.
     _last_rendered_lines = 1
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     def _completions(current: str) -> list:
         """List non-hidden entries in `current`'s directory matching its basename stub, for Tab completion."""
@@ -978,15 +1095,9 @@ def path(message: str, default: str = "") -> str | None:
 
         cursor_col = len(prefix) + disp_pos
 
-        clear_code = ""
-        if _last_rendered_lines > 1:
-            clear_code += f"\033[{_last_rendered_lines - 1}A"
-        clear_code += "\r"
-
         render_stream = [
-            clear_code,
-            f"\033[K  {C.DIM}{message}{C.RESET}\r\n",
-            f"\033[K  {C.DIM}│{C.RESET} {display:<{max_w}} {C.DIM}│{C.RESET}"
+            f"  {C.DIM}{message}{C.RESET}\r\n",
+            f"  {C.DIM}│{C.RESET} {display:<{max_w}} {C.DIM}│{C.RESET}"
         ]
 
         lines_count = 2
@@ -1039,20 +1150,28 @@ def path(message: str, default: str = "") -> str | None:
             if len(visible_matches) > 5:
                 render_stream.append(f" {C.DIM}(+{len(visible_matches)-5}){C.RESET}")
 
+        _prev_rendered = _last_rendered_lines
         _last_rendered_lines = lines_count
 
-        move_back_lines = lines_count - 2
-        adjust_cursor = f"\033[{move_back_lines}A" if move_back_lines > 0 else ""
+        # Laid out absolutely, like every other screen: the completion tooltip
+        # still rides just under the frame, but the hint bar is pinned above the
+        # miniplayer instead of trailing whatever the tooltip left behind.
+        out = "".join(render_stream).split("\r\n")
+        pairs = [("↵", "save"), ("tab/⇧tab", "complete"), ("esc", "back")]
+        append_chrome(out, pairs, _hint_cells)
 
-        sys.stdout.write(
-            C.HIDE + "".join(render_stream) +
-            adjust_cursor + _col(cursor_col + 1) + C.SHOW
-        )
-        sys.stdout.flush()
+        # One diffed frame — see text() above.
+        frame = {i + 1: line for i, line in enumerate([""] * ui_utils.MARGIN_V + out)}
+        for r in range(len(frame) + 1, _prev_rendered + ui_utils.MARGIN_V + 2):
+            frame[r] = ""
+        # Caret sits on the frame row, one below the message.
+        screen_paint(frame, cursor=(1 + ui_utils.MARGIN_V + 1, cursor_col + 1))
         _render_status_bar()
 
     try:
         _set_raw(fd)
+        enable_mouse()          # so the hint keys below can be clicked
+        screen_takeover_next()   # paint over the previous screen, no flash
         _tab_matches = _completions("".join(buf))
         _render()
 
@@ -1061,18 +1180,30 @@ def path(message: str, default: str = "") -> str | None:
             if not _wait_for_keypress(0.05): continue
             key = _read_key(fd)
 
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                _render(); continue
+            if _ch is not None:
+                key = _ch
+
             if key == 'CTRL_C':
+                result = None; break
+            elif key == 'ESC':
                 result = None; break
             elif key == 'ENTER':
                 result = "".join(buf); break
 
-            elif key == 'TAB':
+            elif key in ('TAB', 'BACKTAB'):
                 current_text = "".join(buf)
                 stub = os.path.basename(current_text) if (current_text and not current_text.endswith('/')) else ""
 
                 visible_matches = [m for m in _tab_matches if os.path.basename(m.rstrip('/')).startswith(stub)] if stub else _tab_matches
 
                 if visible_matches:
+                    if key == 'BACKTAB':
+                        _tab_index -= 2      # step back past the one just offered
                     completed = visible_matches[_tab_index % len(visible_matches)]
                     if os.path.isdir(completed) and not completed.endswith("/"):
                         completed += "/"
@@ -1111,27 +1242,204 @@ def path(message: str, default: str = "") -> str | None:
                 _render()
 
     finally:
+        disable_mouse()
         _restore_term_attrs(fd, old)
-        sys.stdout.write("\033[H\033[3J\033[J" + C.SHOW)
+        ui_utils.clear_screen()
+        sys.stdout.write(C.HIDE)   # caret was ours; don't leave it blinking
         sys.stdout.flush()
 
     return result
 
-def _render_list_edit_cell(text: str, width: int, is_editing: bool, is_active_col: bool, edit_buf: list[str], edit_pos: int) -> str:
-    """Render one table cell, showing the live edit buffer with a cursor block when this is the active editing column."""
+# ---------------------------------------------------------------------------
+# Timestamp cells — a split date/time field inside a list_edit table.
+#
+# The cell is a fixed mask.  Every slot that is still a placeholder letter shows
+# dim, so the shape of what you are filling in is always on screen and only the
+# digits have to be typed.  One caret walks the whole mask and steps over the
+# separators, which is what makes the arrow keys carry from the end of one part
+# straight into the next instead of needing Tab between them.
+# ---------------------------------------------------------------------------
+_TS_MASK  = "YYYY-MM-DD HH:MM:SS"
+_TS_SLOTS = tuple(i for i, ch in enumerate(_TS_MASK) if ch.isalpha())
+# Where each part starts, as an index into _TS_SLOTS: Y, M, D, h, m, s.
+_TS_PARTS = ((0, 4), (4, 6), (6, 8), (8, 10), (10, 12), (12, 14))
+
+
+def _ts_write(buf: list, start_slot: int, digits: str) -> None:
+    """Write `digits` into consecutive mask slots from `start_slot`."""
+    for k, ch in enumerate(digits):
+        idx = start_slot + k
+        if idx < len(_TS_SLOTS):
+            buf[_TS_SLOTS[idx]] = ch
+
+
+def _ts_buffer(value: str) -> list:
+    """A mask buffer seeded from an existing cell value (blank where unknown)."""
+    buf = list(_TS_MASK)
+    parsed = dtp.parse_datetime(value) if value else None
+    if parsed and parsed.date:
+        d = parsed.date
+        if parsed.precision == 'year':
+            _ts_write(buf, 0, f"{d.year:04d}")
+        elif parsed.precision == 'month':
+            _ts_write(buf, 0, f"{d.year:04d}{d.month:02d}")
+        else:
+            _ts_write(buf, 0, f"{d.year:04d}{d.month:02d}{d.day:02d}")
+            if parsed.time:
+                _ts_write(buf, 8, parsed.time.replace(':', ''))
+    return buf
+
+
+def _ts_digits(buf: list) -> str:
+    """The 14 mask slots as digits, with a space wherever one is still unfilled."""
+    return ''.join(buf[i] if buf[i].isdigit() else ' ' for i in _TS_SLOTS)
+
+
+def _ts_value(buf: list) -> str:
+    """Assemble the cell's value at whatever precision has actually been filled.
+
+    Leaving the time blank yields a plain date, which is a valid timestamp in its
+    own right — the field never forces a time it was not given.
+    """
+    d = _ts_digits(buf)
+    if ' ' in d[0:4]:
+        return ''
+    if ' ' in d[4:6]:
+        return d[0:4]
+    if ' ' in d[6:8]:
+        return f"{d[0:4]}-{d[4:6]}"
+    date = f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
+    if ' ' in d[8:12]:
+        return date
+    if ' ' in d[12:14]:
+        return f"{date} {d[8:10]}:{d[10:12]}"
+    return f"{date} {d[8:10]}:{d[10:12]}:{d[12:14]}"
+
+
+def _ts_step(pos: int, delta: int) -> int:
+    """Move the caret one editable slot, hopping the separators between parts."""
+    slots = _TS_SLOTS
+    if pos in slots:
+        k = slots.index(pos)
+    else:                                   # sitting on a separator — snap inward
+        k = 0 if delta > 0 else len(slots) - 1
+    k = max(0, min(len(slots) - 1, k + delta))
+    return slots[k]
+
+
+def _render_timestamp_cell(buf: list, pos: int, width: int, active: bool,
+                           base: str = '') -> str:
+    """Draw a timestamp cell: entered digits bright, unfilled mask slots dim.
+
+    `base` is the styling the surrounding row is already drawn in (the selected
+    row's colour + bold).  Every span closes by resetting AND re-asserting it,
+    because a bare reset would end the row's own styling too — the dim separator
+    after the year would leave the rest of the stamp, and every column after it,
+    unstyled.  Same rule the lyric renderer follows for markdown emphasis.
+    """
+    close = f"{C.RESET}{base}"
+    out = []
+    for i, ch in enumerate(buf):
+        placeholder = not ch.isdigit()
+        if active and i == pos:
+            out.append(f"{C.INVERT}{C.BOLD}{ch}{close}")
+        elif placeholder:
+            # Reset before dimming: on the selected row `base` is bold, and
+            # bold+dim together is contradictory (terminals disagree on which
+            # wins), which left the separators as bold as the digits.
+            out.append(f"{C.RESET}{C.DIM}{ch}{close}")
+        else:
+            out.append(ch)
+    text = "".join(out)
+    return text + " " * max(0, width - len(buf))
+
+
+def _render_list_edit_cell(text: str, width: int, is_editing: bool, is_active_col: bool,
+                           edit_buf: list[str], edit_pos: int,
+                           is_timestamp: bool = False, base: str = '') -> str:
+    """Render one table cell, showing the live edit buffer with a cursor block when this is the active editing column.
+
+    `base` is the row's own styling, re-asserted after any span this cell closes
+    so the rest of the row keeps it (see :func:`_render_timestamp_cell`).
+    """
     if not is_editing or not is_active_col:
+        if is_timestamp:
+            # Always draw the mask, even for an empty cell: it shows the shape
+            # waiting to be filled, and it keeps the cell a fixed width so the
+            # columns after it don't slide left on an empty row.
+            return _render_timestamp_cell(_ts_buffer(text), -1, width, False, base)
         return ui_utils.truncate_text(text, width)
 
+    if is_timestamp:
+        return _render_timestamp_cell(edit_buf, edit_pos, width, True, base)
+
     buf_str = "".join(edit_buf)
+    close = f"{C.RESET}{base}"
 
     if edit_pos >= len(buf_str):
-        display_str = buf_str + f"{C.BACK}█{C.RESET}"
+        display_str = buf_str + f"{C.BACK}█{close}"
     else:
-        display_str = buf_str[:edit_pos] + f"{C.INVERT}{C.BOLD}{buf_str[edit_pos]}{C.RESET}" + buf_str[edit_pos+1:]
+        display_str = buf_str[:edit_pos] + f"{C.INVERT}{C.BOLD}{buf_str[edit_pos]}{close}" + buf_str[edit_pos+1:]
 
     visible_len = len(buf_str) + (1 if edit_pos >= len(buf_str) else 0)
     padding = max(0, width - visible_len)
     return display_str + (" " * padding)
+
+
+def _layout_columns(num_cols: int, avail_w: int, col_ratios=None, col_mins=None) -> list:
+    """Split `avail_w` across the columns, honouring per-column minimums.
+
+    Ratios (or an even split) set the starting widths; any column below its
+    minimum is then raised to it and the difference taken back from whichever
+    columns have the most room to spare.  A minimum is what keeps a fixed-shape
+    cell — a full timestamp, say — readable at any terminal width while the
+    short columns beside it shrink instead.
+    """
+    if col_ratios and len(col_ratios) == num_cols:
+        total = sum(col_ratios) or 1
+        widths = [max(1, int(avail_w * r / total)) for r in col_ratios]
+        widths[-1] = max(1, avail_w - sum(widths[:-1]))
+    else:
+        even = avail_w // num_cols
+        widths = [even] * (num_cols - 1) + [avail_w - even * (num_cols - 1)]
+
+    if not col_mins:
+        return widths
+    mins = list(col_mins)[:num_cols] + [0] * max(0, num_cols - len(col_mins))
+    mins = [max(0, int(m or 0)) for m in mins]
+
+    if sum(mins) >= avail_w:
+        # Too narrow to satisfy every minimum — share it out in their proportion
+        # rather than starving the last column to nothing.
+        total = sum(mins) or 1
+        shared = [max(1, int(avail_w * m / total)) for m in mins]
+        # Hand the truncation remainder to the widest column so the row still
+        # uses the full width instead of leaving a ragged gap.
+        spare = avail_w - sum(shared)
+        if spare > 0:
+            shared[max(range(num_cols), key=lambda i: shared[i])] += spare
+        return shared
+
+    deficit = 0
+    for i, m in enumerate(mins):
+        if widths[i] < m:
+            deficit += m - widths[i]
+            widths[i] = m
+    while deficit > 0:
+        slack = [widths[i] - mins[i] for i in range(num_cols)]
+        best = max(range(num_cols), key=lambda i: slack[i])
+        if slack[best] <= 0:
+            break
+        take = min(deficit, slack[best])
+        widths[best] -= take
+        deficit -= take
+
+    drift = avail_w - sum(widths)
+    if drift:
+        slack = [widths[i] - mins[i] for i in range(num_cols)]
+        target = max(range(num_cols), key=lambda i: slack[i]) if drift < 0 else num_cols - 1
+        widths[target] = max(1, widths[target] + drift)
+    return widths
 
 
 def _build_list_edit_lines(
@@ -1140,7 +1448,8 @@ def _build_list_edit_lines(
     edit_mode: bool, edit_col: int, edit_buf: list[str], edit_pos: int,
     fixed_rows: bool = False,
     barrel_mode: bool = False, barrel_hints: list[str] | None = None, barrel_idx: int = 0,
-    col_ratios: tuple | None = None,
+    col_ratios: tuple | None = None, col_mins: tuple | None = None,
+    col_types: dict | None = None,
 ) -> tuple[list[str], int, int, int]:
     """Lay out the full list_edit screen — header, column-aligned rows (or barrel-mode cell), hints —
     and report the resulting viewport/visible-row/header-row counts."""
@@ -1152,23 +1461,19 @@ def _build_list_edit_lines(
     out = []
 
     if fixed_rows:
-        base_hints = {"↑↓": "move", "e": "edit", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit"}
+        base_hints = {"↑↓": "move", "e": "edit", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit app"}
     else:
-        base_hints = {"↑↓": "move", "a": "add", "e": "edit", "d": "delete", "K/J": "reorder", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit"}
-        if _value_toggle_enabled:
-            base_hints["^t"] = "raw text"
-    edit_hints = {"tab": "next col", "esc": "cancel", "↵": "apply"}
+        base_hints = {"↑↓": "move", "a": "add", "e": "edit", "d": "delete", "K/J": "reorder", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit app"}
+    # Both variants answer ^t (see list_edit's key loop), so both advertise it.
+    if _value_toggle_enabled:
+        base_hints["^t"] = "raw text"
+    edit_hints = {"tab/⇧tab": "column", "esc": "back", "↵": "save"}
 
     out.append(f"  {C.DIM}{message}{C.RESET}")
     out.append(f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}")
 
     avail_w = max(10, inner - 4 - (2 * (num_cols - 1)))
-    if col_ratios and len(col_ratios) == num_cols:
-        ratio_total = sum(col_ratios)
-        col_widths = [max(1, int(avail_w * r / ratio_total)) for r in col_ratios]
-        col_widths[-1] = max(1, avail_w - sum(col_widths[:-1]))
-    else:
-        col_widths = [avail_w // num_cols] * (num_cols - 1) + [avail_w - (avail_w // num_cols) * (num_cols - 1)]
+    col_widths = _layout_columns(num_cols, avail_w, col_ratios, col_mins)
     col_w = col_widths[0] if num_cols > 1 else avail_w
     last_w = col_widths[-1]
 
@@ -1178,16 +1483,28 @@ def _build_list_edit_lines(
         out.append(f"    {C.DIM}{'  '.join(h_parts)}{C.RESET}")
 
         u_parts = ["─" * col_widths[i] for i in range(num_cols - 1)]
-        u_parts.append("─" * last_w)
+        # The last column absorbs whatever width is left over, so rule it to what
+        # it actually holds — otherwise the underline trails far past the content
+        # as a long bar of nothing.
+        _last_content = max([len(headers[-1])] + [
+            len(str((list(it) if isinstance(it, (list, tuple)) else [it])[num_cols - 1]))
+            for it in items
+            if len(list(it) if isinstance(it, (list, tuple)) else [it]) >= num_cols] or [0])
+        u_parts.append("─" * max(1, min(last_w, _last_content)))
         out.append(f"    {'  '.join(u_parts)}")
     else:
         out.append(f"    {C.DIM}{headers[0]}{C.RESET}")
         out.append(f"    {'─' * inner}")
 
+    if edit_mode and (col_types or {}).get(edit_col) == 'timestamp':
+        edit_hints = {"0-9": "fill", "←→": "move part", "tab/⇧tab": "column",
+                      "esc": "back", "↵": "save"}
     if barrel_mode:
-        edit_hints = {"↑↓": "cycle", "↵": "pick", "esc": "cancel"}
-    active_hints = edit_hints if edit_mode else base_hints
-    hint_res = _hint(*active_hints.items())
+        edit_hints = {"↑↓": "cycle", "↵": "confirm", "esc": "back"}
+    # Augment with the transport keys here (not at the call site) so the pairs
+    # handed back for the click map match exactly what was drawn.
+    active_hints = chrome_hint_pairs(edit_hints if edit_mode else base_hints)
+    hint_res = _hint(*active_hints)
     hint_raw = hint_res[0] if isinstance(hint_res, tuple) else hint_res
     hint_lines = hint_raw.split("\n") if hint_raw else []
 
@@ -1201,6 +1518,8 @@ def _build_list_edit_lines(
         viewport = cursor
     elif cursor >= viewport + vis:
         viewport = cursor - vis + 1
+    # See select(): don't leave the list scrolled once more rows fit.
+    viewport = max(0, min(viewport, n - vis))
 
     if n == 0:
         out.append(f"    {C.DIM}(empty list){C.RESET}")
@@ -1265,13 +1584,23 @@ def _build_list_edit_lines(
                     out.append(f"    {sep.join(below_parts)}")
                     continue
 
+                types = col_types or {}
+                # The selected row is wrapped in colour + bold below; cells have
+                # to re-assert that after any span they close, or the row loses
+                # its styling from the first styled character onward.
+                row_base = f"{C.PRIMARY}{C.BOLD}" if (is_sel and not edit_mode) else ''
                 row_parts = []
                 for j in range(num_cols - 1):
                     cw = col_widths[j]
-                    cell_str = _render_list_edit_cell(str(i_vals[j]), cw, row_is_editing, edit_col == j, edit_buf, edit_pos)
-                    row_parts.append(f"{cell_str:<{cw}}" if not (row_is_editing and edit_col == j) else cell_str)
+                    ts = types.get(j) == 'timestamp'
+                    cell_str = _render_list_edit_cell(str(i_vals[j]), cw, row_is_editing,
+                                                      edit_col == j, edit_buf, edit_pos, ts, row_base)
+                    row_parts.append(f"{cell_str:<{cw}}"
+                                     if not ((row_is_editing and edit_col == j) or ts) else cell_str)
 
-                last_cell = _render_list_edit_cell(str(i_vals[-1]), last_w, row_is_editing, edit_col == (num_cols - 1), edit_buf, edit_pos)
+                last_cell = _render_list_edit_cell(str(i_vals[-1]), last_w, row_is_editing,
+                                                   edit_col == (num_cols - 1), edit_buf, edit_pos,
+                                                   types.get(num_cols - 1) == 'timestamp', row_base)
                 row_parts.append(last_cell)
 
                 row_str = "  ".join(row_parts)
@@ -1293,7 +1622,10 @@ def _build_list_edit_lines(
                         out.append(f"    {C.ACCENT}⌄{C.RESET} {C.DIM}{ui_utils.truncate_text(next_text, w - 2)}{C.RESET}")
                     continue
 
-                cell_str = _render_list_edit_cell(val_str, inner - 4, row_is_editing, True, edit_buf, edit_pos)
+                cell_str = _render_list_edit_cell(
+                    val_str, inner - 4, row_is_editing, True, edit_buf, edit_pos,
+                    (col_types or {}).get(0) == 'timestamp',
+                    f"{C.PRIMARY}{C.BOLD}" if (is_sel and not edit_mode) else '')
                 if is_sel and not edit_mode:
                     out.append(f"  {cursor_glyph} {C.PRIMARY}{C.BOLD}{cell_str}{C.RESET}")
                 else:
@@ -1359,12 +1691,22 @@ def _parse_import_rows(text: str, headers: tuple[str, ...]) -> list:
 
 def list_edit(message: str, initial_items: list | None = None, headers: tuple[str, ...] = ("ROLE", "NAME"),
               fixed_rows: bool = False, locked_cols: set | None = None,
-              col_ratios: tuple | None = None, col_hints: object = None) -> list | None:
+              col_ratios: tuple | None = None, col_hints: object = None,
+              col_mins: tuple | None = None, col_types: dict | None = None) -> list | None:
     """Arrow keys navigate, 'a' adds, 'e' edits in-place, 'd' deletes, Enter saves.
 
     Supports in-place cell editing with Tab navigation between columns.
     fixed_rows: disables add/delete (rows can only be edited, not added or removed).
     locked_cols: set of column indices that cannot be edited.
+    col_ratios: relative starting widths for the columns.
+    col_mins:   per-column minimum widths, honoured before the ratios — this is
+                what keeps a fixed-shape cell readable when the table is narrow.
+    col_types:  {column index: type} for cells that edit as something other than
+                free text. ``'timestamp'`` gives a split date/time field masked
+                as ``YYYY-MM-DD HH:MM:SS``: you type only the digits, and the
+                left/right arrows run past the end of one part straight into the
+                next rather than needing Tab. Leaving the time blank keeps the
+                value a plain date.
     """
     items    = list(initial_items) if initial_items else []
     cursor   = 0
@@ -1382,6 +1724,19 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
     barrel_mode  = False
     barrel_idx   = 0
     barrel_hints: list[str] = []
+
+    def _is_ts(col: int) -> bool:
+        """True if `col` edits as a split timestamp rather than free text."""
+        return (col_types or {}).get(col) == 'timestamp'
+
+    def _seed_edit(col: int, value: str) -> tuple:
+        """Opening buffer and caret for editing `col`: a mask for a timestamp
+        column, otherwise the plain text with the caret at its end."""
+        if _is_ts(col):
+            buf = _ts_buffer(value)
+            return buf, _TS_SLOTS[0]
+        buf = list(str(value))
+        return buf, len(buf)
 
     def _get_cell_hints() -> list[str]:
         """Candidate values for the current cell from `col_hints`, or [] if unavailable."""
@@ -1409,14 +1764,14 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
             cursor, viewport,
             edit_mode, edit_col, edit_buf, edit_pos,
             fixed_rows, barrel_mode, barrel_hints, barrel_idx,
-            col_ratios,
+            col_ratios, col_mins, col_types,
         )
         viewport = new_viewport
         _le_vis = new_vis
         _le_header_rows = new_hdr
         _hint_cells.clear()
         if n_hint and not edit_mode:
-            _hp = list(active_hints.items())
+            _hp = list(active_hints)
             _start = len(lines) - n_hint
             for _k in range(n_hint):
                 add_hint_click_cells(_hint_cells, lines[_start + _k],
@@ -1425,7 +1780,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
 
     def _commit_edit_buffer():
         """Write the in-progress edit buffer back into the current row, padding short rows to num_cols."""
-        val = "".join(edit_buf)
+        val = _ts_value(edit_buf) if _is_ts(edit_col) else "".join(edit_buf)
         if num_cols > 1:
             curr = list(items[cursor]) if isinstance(items[cursor], (list, tuple)) else [str(items[cursor])]
             while len(curr) < num_cols: curr.append("")
@@ -1440,14 +1795,12 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
         _set_raw(fd)
         if not _IS_WINDOWS:
             sys.stdout.write("\033[?1000h\033[?1006h")
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 _le_last_click = None
                 _render()
@@ -1461,6 +1814,16 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
             if _value_toggle_enabled and key == _MODE_TOGGLE_KEY and not edit_mode:
                 return MODE_TOGGLE  # type: ignore[return-value]
 
+            # Transport keys and miniplayer/hint clicks work in every mode of
+            # this widget, so they are consumed before the mode switches below.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
+
             if edit_mode and barrel_mode:
                 if key == 'ESC':
                     items[cursor] = edit_backup
@@ -1468,11 +1831,11 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     barrel_mode = False
                     _render()
 
-                elif key in ('UP', 'k') and barrel_hints:
+                elif key == 'UP' and barrel_hints:
                     barrel_idx = (barrel_idx - 1) % len(barrel_hints)
                     _render()
 
-                elif key in ('DOWN', 'j') and barrel_hints:
+                elif key == 'DOWN' and barrel_hints:
                     barrel_idx = (barrel_idx + 1) % len(barrel_hints)
                     _render()
 
@@ -1485,25 +1848,25 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     edit_mode = False
                     _render()
 
-                elif key == 'TAB' and num_cols > 1:
+                elif key in ('TAB', 'BACKTAB') and num_cols > 1:
                     if barrel_hints:
                         edit_buf = list(barrel_hints[barrel_idx])
                         edit_pos = len(edit_buf)
                     _commit_edit_buffer()
                     barrel_mode = False
-                    next_col = (edit_col + 1) % num_cols
+                    _step = -1 if key == 'BACKTAB' else 1
+                    next_col = (edit_col + _step) % num_cols
                     if locked_cols:
                         steps = 0
                         while next_col in locked_cols and steps < num_cols:
-                            next_col = (next_col + 1) % num_cols
+                            next_col = (next_col + _step) % num_cols
                             steps += 1
                     edit_col = next_col
                     curr = items[cursor]
                     i_vals = list(curr) if isinstance(curr, (list, tuple)) else [str(curr)]
                     while len(i_vals) < num_cols: i_vals.append("")
-                    edit_buf = list(str(i_vals[edit_col]))
-                    edit_pos = len(edit_buf)
-                    barrel_hints = _get_cell_hints()
+                    edit_buf, edit_pos = _seed_edit(edit_col, str(i_vals[edit_col]))
+                    barrel_hints = [] if _is_ts(edit_col) else _get_cell_hints()
                     cur_val = "".join(edit_buf)
                     if len(barrel_hints) >= 2 and cur_val in barrel_hints:
                         barrel_mode = True
@@ -1520,6 +1883,82 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     edit_pos = 1
                     _render()
 
+            elif edit_mode and _is_ts(edit_col):
+                # Split timestamp cell: only digits go in, and the caret walks the
+                # whole mask so running off the end of one part lands in the next.
+                if key == 'ESC':
+                    items[cursor] = edit_backup
+                    edit_mode = False
+                    _render()
+
+                elif key == 'ENTER':
+                    _commit_edit_buffer()
+                    edit_mode = False
+                    _render()
+
+                elif key in ('TAB', 'BACKTAB') and num_cols > 1:
+                    _commit_edit_buffer()
+                    _step = -1 if key == 'BACKTAB' else 1
+                    next_col = (edit_col + _step) % num_cols
+                    if locked_cols:
+                        steps = 0
+                        while next_col in locked_cols and steps < num_cols:
+                            next_col = (next_col + _step) % num_cols
+                            steps += 1
+                    edit_col = next_col
+                    curr = items[cursor]
+                    i_vals = list(curr) if isinstance(curr, (list, tuple)) else [str(curr)]
+                    while len(i_vals) < num_cols: i_vals.append("")
+                    edit_buf, edit_pos = _seed_edit(edit_col, str(i_vals[edit_col]))
+                    barrel_hints = [] if _is_ts(edit_col) else _get_cell_hints()
+                    cur_val = "".join(edit_buf)
+                    if len(barrel_hints) >= 2 and cur_val in barrel_hints:
+                        barrel_mode = True
+                        barrel_idx = barrel_hints.index(cur_val)
+                    else:
+                        barrel_mode = False
+                        barrel_idx = 0
+                    _render()
+
+                elif key == 'LEFT':
+                    edit_pos = _ts_step(edit_pos, -1)
+                    _render()
+
+                elif key == 'RIGHT':
+                    edit_pos = _ts_step(edit_pos, 1)
+                    _render()
+
+                elif key == 'HOME':
+                    edit_pos = _TS_SLOTS[0]
+                    _render()
+
+                elif key == 'END':
+                    edit_pos = _TS_SLOTS[-1]
+                    _render()
+
+                elif key == 'BACKSPACE':
+                    # Clear the slot behind the caret and sit on it, so holding
+                    # backspace rubs the stamp out right-to-left.
+                    prev = _ts_step(edit_pos, -1)
+                    if prev != edit_pos or edit_pos == _TS_SLOTS[0]:
+                        target = prev if prev != edit_pos else edit_pos
+                        edit_buf[target] = _TS_MASK[target]
+                        edit_pos = target
+                    _render()
+
+                elif key == 'DELETE':
+                    edit_buf[edit_pos] = _TS_MASK[edit_pos]
+                    _render()
+
+                elif len(key) == 1 and key.isdigit():
+                    edit_buf[edit_pos] = key
+                    nxt = _ts_step(edit_pos, 1)
+                    edit_pos = nxt if nxt != edit_pos else edit_pos
+                    _render()
+
+                # Anything else (letters, punctuation) is simply not accepted —
+                # the mask supplies every separator already.
+
             elif edit_mode:
                 if key == 'ESC':
                     items[cursor] = edit_backup
@@ -1531,15 +1970,16 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     edit_mode = False
                     _render()
 
-                elif key == 'TAB':
+                elif key in ('TAB', 'BACKTAB'):
                     if num_cols > 1:
                         _commit_edit_buffer()
-                        next_col = (edit_col + 1) % num_cols
-                        # Skip locked columns when tabbing.
+                        _step = -1 if key == 'BACKTAB' else 1
+                        next_col = (edit_col + _step) % num_cols
+                        # Skip locked columns when tabbing (either direction).
                         if locked_cols:
                             steps = 0
                             while next_col in locked_cols and steps < num_cols:
-                                next_col = (next_col + 1) % num_cols
+                                next_col = (next_col + _step) % num_cols
                                 steps += 1
                         edit_col = next_col
 
@@ -1547,9 +1987,8 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                         i_vals = list(curr) if isinstance(curr, (list, tuple)) else [str(curr)]
                         while len(i_vals) < num_cols: i_vals.append("")
 
-                        edit_buf = list(str(i_vals[edit_col]))
-                        edit_pos = len(edit_buf)
-                        barrel_hints = _get_cell_hints()
+                        edit_buf, edit_pos = _seed_edit(edit_col, str(i_vals[edit_col]))
+                        barrel_hints = [] if _is_ts(edit_col) else _get_cell_hints()
                         cur_val = "".join(edit_buf)
                         if len(barrel_hints) >= 2 and cur_val in barrel_hints:
                             barrel_mode = True
@@ -1608,7 +2047,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                             sys.stdout.write("\033[?1000h\033[?1006h")
                         sys.stdout.flush()
                         w.anchor_reset(); _le_last_click = None; _render(); continue
-                    if _act in ('playpause', 'next') and _transport_handler is not None:
+                    if _act in ('playpause', 'next', 'prev') and _transport_handler is not None:
                         _transport_handler(_act); continue
                     _hk = _hint_cells.get((_mr, _mc))
                     if _hk is not None:
@@ -1642,11 +2081,11 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                                     _le_last_click = _clicked_idx
                                     cursor = _clicked_idx
                                     _render()
-                elif key in ('UP', 'k'):
+                elif key == 'UP':
                     if items: cursor = (cursor - 1) % len(items)
                     _le_last_click = None
                     _render()
-                elif key in ('DOWN', 'j'):
+                elif key == 'DOWN':
                     if items: cursor = (cursor + 1) % len(items)
                     _le_last_click = None
                     _render()
@@ -1678,12 +2117,12 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                         curr = items[cursor]
                         i_vals = list(curr) if isinstance(curr, (list, tuple)) else [str(curr)]
                         while len(i_vals) < num_cols: i_vals.append("")
-                        edit_buf = list(str(i_vals[edit_col]))
+                        edit_buf, edit_pos = _seed_edit(edit_col, str(i_vals[edit_col]))
                     else:
                         edit_buf = list(str(items[cursor]))
+                        edit_pos = len(edit_buf)
 
-                    edit_pos = len(edit_buf)
-                    barrel_hints = _get_cell_hints()
+                    barrel_hints = [] if _is_ts(edit_col) else _get_cell_hints()
                     cur_val = "".join(edit_buf)
                     if len(barrel_hints) >= 2 and cur_val in barrel_hints:
                         barrel_mode = True
@@ -1737,8 +2176,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                         # Clear to a fresh screen first — path() renders inline from
                         # the cursor, so without this it draws over the list and spills.
                         _restore_term_attrs(fd, old)
-                        sys.stdout.write("\033[H\033[3J\033[J")
-                        sys.stdout.flush()
+                        ui_utils.clear_screen()
                         file_path = path("Import from file:")
                         _set_raw(fd)
                         text_input = None
@@ -1751,8 +2189,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                                 text_input = None
                     if not _IS_WINDOWS:
                         sys.stdout.write("\033[?1000h\033[?1006h")   # re-arm mouse
-                    sys.stdout.write("\033[H\033[3J\033[J")
-                    sys.stdout.flush()
+                    screen_takeover_next()   # paint over the previous screen, no flash
                     w.anchor_reset()
                     if text_input:
                         items.extend(_parse_import_rows(text_input, headers))
@@ -1760,10 +2197,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     _render()
 
                 elif key in ('q', 'Q'):
-                    # Save current state, then quit on the next menu.
-                    _state.QUIT_REQUESTED = True
-                    result = items
-                    break
+                    raise QuitToTerminal()   # q quits the app; never a way out of a widget
 
                 elif key == 'ESC':
                     ui_utils.clear_screen()
@@ -1806,50 +2240,15 @@ def _validate_date(year: int, month: int, day: int) -> bool:
 
 
 def _parse_date(date_str: str) -> tuple[int, int, int] | None:
+    """Parse a typed date to ``(year, month, day)``, or None if unreadable.
+
+    Thin wrapper over the project-wide parser in :mod:`src.utils.datetime_parse`
+    so the calendar and date/time widgets read dates by exactly the same rules as
+    everywhere else.  ``dayfirst=False`` preserves this widget's long-standing
+    reading of an ambiguous ``02/07/2008`` as month-first; a part over 12 still
+    settles the order on its own (``13/07/2008`` is day-first either way).
     """
-    Parse a date string (flexible format).
-    Accepts: YYYY-MM-DD, YYYY/MM/DD, MM/DD/YYYY, etc.
-    Returns (year, month, day) or None if invalid.
-    """
-    if not date_str:
-        return None
-
-    # Remove common separators
-    parts = re.split(r'[-/\s.]', date_str.strip())
-    parts = [p for p in parts if p]
-
-    # Handle partial ISO dates
-    if len(parts) == 1 and len(parts[0]) == 4 and parts[0].isdigit():
-        y = int(parts[0])
-        return (y, 1, 1) if _validate_date(y, 1, 1) else None
-    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-        y, m = int(parts[0]), int(parts[1])
-        if y > 1900 and 1 <= m <= 12:
-            return (y, m, 1)
-
-    if len(parts) != 3:
-        return None
-
-    try:
-        nums = [int(p) for p in parts]
-    except ValueError:
-        return None
-
-    # Detect format based on size and ranges
-    if nums[0] > 1900:  # First is year (YYYY-MM-DD or YYYY/MM/DD)
-        year, month, day = nums[0], nums[1], nums[2]
-    elif nums[2] > 1900:  # Last is year (MM/DD/YYYY or DD/MM/YYYY)
-        # Heuristic: if first <= 12, assume MM/DD/YYYY; else DD/MM/YYYY
-        if nums[0] <= 12:
-            month, day, year = nums[0], nums[1], nums[2]
-        else:
-            day, month, year = nums[0], nums[1], nums[2]
-    else:
-        return None
-
-    if _validate_date(year, month, day):
-        return (year, month, day)
-    return None
+    return dtp.parse_date_parts(date_str, dayfirst=False)
 
 def calendar_select(message: str = "Select date:", initial: str = "") -> str | None:
     """
@@ -1882,6 +2281,7 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w = _Widget(fd)
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     def _render():
         cols = ui_utils.get_terminal_width()
@@ -1924,40 +2324,27 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
         lines.append(f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}")
 
         if not day_mode:
-            shortcuts = _hint(
-                ("↵", "confirm"),
-                ("esc", "back"), ("q", "quit"),
-                ("tab", "switch to day mode"),
-                ("←→", "month"),
-                ("↑↓", "year"),
-                ("m", "manual entry"),
-            )
+            _cal_pairs = [("↵", "save"), ("esc", "back"), ("q", "quit app"),
+                          ("tab", "month/day"), ("←→", "month"),
+                          ("↑↓", "year"), ("m", "manual entry")]
         else:
-            shortcuts = _hint(
-                ("↵", "confirm"),
-                ("esc", "back"), ("q", "quit"),
-                ("tab", "switch to month/year"),
-                ("←→", "±1 day"),
-                ("↑↓", "±7 days"),
-                ("m", "manual entry"),
-            )
+            _cal_pairs = [("↵", "save"), ("esc", "back"), ("q", "quit app"),
+                          ("tab", "month/day"), ("←→", "±1 day"),
+                          ("↑↓", "±7 days"), ("m", "manual entry")]
 
-        shortcuts = shortcuts.splitlines()
-        lines.extend([f"  {s}" for s in shortcuts])
-
+        append_chrome(lines, _with_toggle_hint(_cal_pairs), _hint_cells)
         w.render(lines)
 
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        enable_mouse()          # so the hint keys below can be clicked
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 _render()
                 continue
@@ -1966,6 +2353,15 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                 continue
 
             key = _read_key(fd)
+            # A transport key, a click on the miniplayer, or a click on one of our
+            # own hint keys — handled the same way on every screen.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
 
             if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
                 return MODE_TOGGLE  # type: ignore[return-value]
@@ -1975,12 +2371,10 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
             elif key == 'ESC':
                 break
             elif key in ('q', 'Q'):
-                _state.QUIT_REQUESTED = True
-                result = f"{y:04d}-{m:02d}-{cursor_day:02d}"
-                break
+                raise QuitToTerminal()   # q quits the app; it never just leaves a widget
 
-            elif key == 'TAB':
-                day_mode = not day_mode
+            elif key in ('TAB', 'BACKTAB'):
+                day_mode = not day_mode      # two modes: reverse is the same flip
 
             elif key == 'RIGHT':
                 if not day_mode:
@@ -2050,8 +2444,7 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                     if parsed:
                         y, m, d = parsed
                         cursor_day = d
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
 
             elif key.isdigit():
                 # Accumulate a leading 1/2/3 into a two-digit day (10-31),
@@ -2071,6 +2464,7 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
             _render()
 
     finally:
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 
@@ -2130,6 +2524,7 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
     fd  = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w   = _Widget(fd)
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     def _render():
         cols = ui_utils.get_terminal_width()
@@ -2184,13 +2579,16 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
         h = ""
         if section == 'date':
             if not day_mode:
-                h = _hint(("←→", "month"), ("↑↓", "year"), ("tab", "day mode"), ("↵", "save"), ("esc", "back"), ("q", "quit"))
+                h = [("←→", "month"), ("↑↓", "year"), ("tab/⇧tab", "field"),
+                     ("↵", "save"), ("esc", "back"), ("q", "quit app")]
             else:
-                h = _hint(("←→↑↓", "navigate"), ("tab", "→ time"), ("↵", "save"), ("esc", "back"), ("q", "quit"))
+                h = [("←→↑↓", "navigate"), ("tab/⇧tab", "field"), ("↵", "save"),
+                     ("esc", "back"), ("q", "quit app")]
         elif section == 'time':
-            h = _hint(("←→", "cursor"), ("tab", "next field"), ("↵", "save"), ("esc", "back"), ("q", "quit"))
+            h = [("←→", "cursor"), ("tab/⇧tab", "field"), ("↵", "save"),
+                 ("esc", "back"), ("q", "quit app")]
 
-        lines.extend([f"  {s}" for s in h.splitlines()])
+        append_chrome(lines, _with_toggle_hint(h), _hint_cells)
         w.render(lines)
 
     def _build_result() -> str:
@@ -2210,14 +2608,13 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        enable_mouse()          # so the hint keys below can be clicked
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 _render()
                 continue
@@ -2226,15 +2623,22 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
                 continue
 
             key = _read_key(fd)
+            # A transport key, a click on the miniplayer, or a click on one of our
+            # own hint keys — handled the same way on every screen.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
 
             if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
                 return MODE_TOGGLE  # type: ignore[return-value]
             if key in ('ESC', 'CTRL_C'):
                 break
             if key in ('q', 'Q'):
-                _state.QUIT_REQUESTED = True
-                result = _build_result()
-                break
+                raise QuitToTerminal()   # q quits the app; it never just leaves a widget
 
             if key == 'ENTER':
                 result = _build_result()
@@ -2257,6 +2661,21 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
                         section = 'date'
                         day_mode = False
                         tcursor = 0
+
+            elif key == 'BACKTAB':
+                # The same chain backwards: month/year ← day grid ← time fields.
+                if section == 'date':
+                    if day_mode:
+                        day_mode = False
+                    else:
+                        section = 'time'
+                        tcursor = len(torder) - 1
+                else:
+                    if tcursor > 0:
+                        tcursor -= 1
+                    else:
+                        section = 'date'
+                        day_mode = True
 
             elif section == 'date':
                 if key == 'RIGHT':
@@ -2330,21 +2749,41 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
             _render()
 
     finally:
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 
     return result
 
 
+def _frac_result(buffers: dict, varies: set) -> dict:
+    """Collect the fraction editor's buffers, mapping an untouched *varying*
+    field to None so the caller keeps each file's existing value for it."""
+    out = {}
+    for field in ('current', 'total'):
+        text = "".join(buffers[field])
+        out[field] = None if (not text and field in varies) else text
+    return out
+
+
 def fraction_edit(message: str = "Edit metadata pair:",
-                    tag: str = "TRCK", value: str = "") -> dict | None:
+                    tag: str = "TRCK", value: str = "",
+                    varies: object = ()) -> dict | None:
     """
     In-place editor for an isolated single tag's current/total values.
     Allows integers, floats, spaces, and strings.
 
+    ``varies`` names the fields ('current' / 'total') that differ across a bulk
+    selection.  Those open blank, render as a dim ``──`` placeholder, and come
+    back as ``None`` if left untouched — meaning "keep each file's own value" —
+    so you can set the half the files share without flattening the half they
+    don't.  Typing into such a field turns it into a real value for everything.
+
     Returns:
-        Dict with keys: {'current', 'total'} or None if cancelled
+        Dict with keys: {'current', 'total'} (a value may be None when it
+        varies and was left alone), or None if cancelled
     """
+    varies = {str(v) for v in (varies or ())}
     tag_config = {
         "TRCK": ("Track", "of"),
         "TPOS": ("Disc", "of"),
@@ -2356,6 +2795,12 @@ def fraction_edit(message: str = "Edit metadata pair:",
     parts = str(value).split('/') if '/' in str(value) else str(value).split('⁄') if '⁄' in str(value) else [value, ""] if value else ["", ""]
     curr_val = parts[0].strip()
     tot_val = parts[1].strip() if len(parts) > 1 else ""
+    # A field that varies has no single value to show, so it starts empty and
+    # picks up the dim placeholder below.
+    if 'current' in varies:
+        curr_val = ""
+    if 'total' in varies:
+        tot_val = ""
 
     field_order = ['current', 'total']
     field_labels = {'current': lbl_idx, 'total': lbl_tot}
@@ -2370,6 +2815,7 @@ def fraction_edit(message: str = "Edit metadata pair:",
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w = _Widget(fd)
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     def _render():
         cols = ui_utils.get_terminal_width()
@@ -2399,31 +2845,27 @@ def fraction_edit(message: str = "Edit metadata pair:",
                     row += f"{C.DIM}{label} ──{C.RESET}"
                 else:
                     row += f"{label} {val_str}"
+            if field in varies and not val_str:
+                row += f" {C.DIM}(varies){C.RESET}"
 
         lines.append(row)
         lines.append(f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}")
 
-        shortcuts = _hint(
-            ("↵", "save"),
-            ("tab", "next field"),
-            ("esc", "back"), ("q", "quit"),
-        )
-        shortcuts = shortcuts.splitlines()
-        lines.extend([f"  {s}" for s in shortcuts])
-
+        append_chrome(lines, _with_toggle_hint(
+            [("↵", "save"), ("tab/⇧tab", "field"),
+             ("esc", "back"), ("q", "quit app")]), _hint_cells)
         w.render(lines)
 
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        enable_mouse()          # so the hint keys below can be clicked
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 _render()
                 continue
@@ -2432,6 +2874,15 @@ def fraction_edit(message: str = "Edit metadata pair:",
                 continue
 
             key = _read_key(fd)
+            # A transport key, a click on the miniplayer, or a click on one of our
+            # own hint keys — handled the same way on every screen.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
             if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
                 return MODE_TOGGLE  # type: ignore[return-value]
             current_field = field_order[cursor_field]
@@ -2439,16 +2890,16 @@ def fraction_edit(message: str = "Edit metadata pair:",
             pos = edit_positions[current_field]
 
             if key == 'ENTER':
-                result = {'current': "".join(edit_buffers['current']), 'total': "".join(edit_buffers['total'])}
+                result = _frac_result(edit_buffers, varies)
                 break
             elif key == 'ESC':
                 break
             elif key in ('q', 'Q'):
-                _state.QUIT_REQUESTED = True
-                result = {'current': "".join(edit_buffers['current']), 'total': "".join(edit_buffers['total'])}
-                break
-            elif key == 'TAB':
-                cursor_field = (cursor_field + 1) % len(field_order)
+                raise QuitToTerminal()   # q quits the app; it never just leaves a widget
+            elif key in ('TAB', 'BACKTAB'):
+                # Shift+Tab is Tab in reverse, on every screen that has fields.
+                _step = -1 if key == 'BACKTAB' else 1
+                cursor_field = (cursor_field + _step) % len(field_order)
             elif key == 'BACKSPACE':
                 if pos > 0:
                     buf.pop(pos - 1)
@@ -2467,6 +2918,7 @@ def fraction_edit(message: str = "Edit metadata pair:",
             _render()
 
     finally:
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 
@@ -2523,6 +2975,7 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w = _Widget(fd)
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     def _validate_time() -> bool:
         """True if the current H/M/S fields form a valid time."""
@@ -2567,21 +3020,21 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
 
         lines.append(row)
         lines.append(f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}")
-        lines.extend(_hint(('↵', 'save'), ('tab', 'next field'), ('esc', 'back'), ('q', 'quit')).splitlines())
-
+        append_chrome(lines, _with_toggle_hint(
+            [('↵', 'save'), ('tab/⇧tab', 'field'),
+             ('esc', 'back'), ('q', 'quit app')]), _hint_cells)
         w.render(lines)
 
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        enable_mouse()          # so the hint keys below can be clicked
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 _render()
                 continue
@@ -2590,6 +3043,15 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
                 continue
 
             key = _read_key(fd)
+            # A transport key, a click on the miniplayer, or a click on one of our
+            # own hint keys — handled the same way on every screen.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
             if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
                 return MODE_TOGGLE  # type: ignore[return-value]
             current_field = field_order[cursor_field]
@@ -2610,16 +3072,11 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
             elif key == 'ESC':
                 break
             elif key in ('q', 'Q'):
-                if _validate_time():
-                    h = "".join(fields['hours']).zfill(2)
-                    m = "".join(fields['minutes']).zfill(2)
-                    s = "".join(fields['seconds']).zfill(2)
-                    ms = "".join(fields['millis']).zfill(3)
-                    result = f"{h}:{m}:{s}.{ms}"
-                _state.QUIT_REQUESTED = True
-                break
-            elif key == 'TAB':
-                cursor_field = (cursor_field + 1) % len(field_order)
+                raise QuitToTerminal()   # q quits the app; it never just leaves a widget
+            elif key in ('TAB', 'BACKTAB'):
+                # Shift+Tab is Tab in reverse, on every screen that has fields.
+                _step = -1 if key == 'BACKTAB' else 1
+                cursor_field = (cursor_field + _step) % len(field_order)
             elif key == 'BACKSPACE':
                 if pos > 0:
                     buf.pop(pos - 1)
@@ -2642,6 +3099,7 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
             _render()
 
     finally:
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 
@@ -2701,7 +3159,12 @@ def _eq_render_lines(bands: list, cursor: int, message: str, status: str,
     n = len(bands)
     plot_w = max(10, cols - 5)              # 4 cols for the dB label + 1 gap
     avail = rows - 9
-    half_h = max(3, min(8, avail // 2)) if avail > 6 else 3
+    # Three rows either side of the baseline is the comfortable minimum, but on a
+    # very short terminal — especially with the miniplayer taking rows — holding
+    # that floor pushed the plot over its budget and into the miniplayer. Give
+    # ground to 1 row per side rather than overrun: coarse, but still readable,
+    # and the numbers beside it stay exact.
+    half_h = max(3, min(8, avail // 2)) if avail > 6 else max(1, min(3, avail // 2))
     db_per_row = _EQ_GAIN_MAX / half_h
     baseline = half_h
     total_rows = 2 * half_h + 1
@@ -2794,7 +3257,7 @@ _RVA2_STEP     = 0.5
 _RVA2_COARSE   = 3.0
 
 
-def _rva2_render_lines(gain: float, message: str) -> list[str]:
+def _rva2_render_lines(gain: float, message: str, avail: int | None = None) -> list[str]:
     """Narrow vertical gain meter: 1 row per dB, half-block for 0.5 dB precision.
 
     Each row at integer `db` is centered on that dB value and spans ±0.5 dB:
@@ -2809,22 +3272,38 @@ def _rva2_render_lines(gain: float, message: str) -> list[str]:
         f"{C.DIM}{'─' * 20}{C.RESET}",
     ]
 
-    for db in range(int(_RVA2_GAIN_MAX), -int(_RVA2_GAIN_MAX) - 1, -1):
-        lbl = (f"{db:+d}" if db != 0 else " 0") if db % 6 == 0 else ""
+    # One row per dB is the ideal, but the meter must still fit above the hint
+    # bar and the miniplayer — on a short terminal it would otherwise run off the
+    # bottom and take its own hints with it. Widen the dB-per-row step until the
+    # scale fits, keeping it symmetric so 0 dB always lands on a row.
+    peak = int(_RVA2_GAIN_MAX)
+    step = 1
+    if avail and avail > 0:
+        while 2 * (peak // step) + 1 > avail and step < peak:
+            step += 1
+    ups = list(range(0, peak + 1, step))
+    scale = [d for d in reversed(ups) if d > 0] + [0] + [-d for d in ups if d > 0]
+    half = step / 2.0
+
+    for i, db in enumerate(scale):
+        # Label every other row (and always the ends and 0) so the axis stays
+        # readable whatever step we settled on.
+        show = (db == 0 or i == 0 or i == len(scale) - 1 or (db % (step * 2) == 0))
+        lbl = (f"{db:+d}" if db != 0 else " 0") if show else ""
 
         if db == 0:
             bar = f"{C.DIM}──{C.RESET}"
         elif db > 0:
             if gain >= db:
                 bar = f"{C.ACCENT}██{C.RESET}"
-            elif gain >= db - 0.5:
+            elif gain >= db - half:
                 bar = f"{C.ACCENT}▄▄{C.RESET}"   # bottom half: bar just entered this row
             else:
                 bar = "  "
         else:  # db < 0
             if gain <= db:
                 bar = f"{C.DIM}██{C.RESET}"
-            elif gain <= db + 0.5:
+            elif gain <= db + half:
                 bar = f"{C.DIM}▀▀{C.RESET}"       # top half: bar just entered this row
             else:
                 bar = "  "
@@ -2843,16 +3322,21 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
     fd  = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w   = _Widget(fd)
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     def _clamp(g: float) -> float:
         return max(-_RVA2_GAIN_MAX, min(_RVA2_GAIN_MAX, round(g * 2) / 2))
 
     def _render():
-        lines = _rva2_render_lines(gain, message)
+        # Budget the meter against the rows left once this widget's own chrome
+        # (message, rule, readout, trailing blank) and the hint bar — which grows
+        # by two lines when the transport keys join it — are accounted for.
+        _pairs = [("↑↓", "adjust"), ("⇞⇟", "±3 dB"), ("0", "zero"),
+                  ("↵", "save"), ("esc", "back"), ("q", "quit app")]
+        _avail = _hint_pin_target() - 4 - len(chrome_hint_lines(_pairs))
+        lines = _rva2_render_lines(gain, message, avail=_avail)
         lines.append(f"  {C.ACCENT}▸{C.RESET} {C.BOLD}{gain:+.1f} dB{C.RESET}")
-        lines.extend(_hint(
-            ("↑↓", "adjust"), ("⇞⇟", "±3 dB"), ("0", "zero"), ("↵", "save"), ("q", "quit"),
-        ).splitlines())
+        append_chrome(lines, _pairs, _hint_cells)
         w.render(lines)
 
     result = None
@@ -2860,14 +3344,12 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
         _set_raw(fd)
         if not _IS_WINDOWS:
             sys.stdout.write("\033[?1000h\033[?1006h")
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 _render()
                 continue
@@ -2875,17 +3357,25 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
                 continue
 
             key = _read_key(fd)
+            # A transport key, a click on the miniplayer, or a click on one of our
+            # own hint keys — handled the same way on every screen.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
 
             if key == 'ENTER':
                 result = gain; break
             elif key == 'ESC':
                 result = None; break
             elif key in ('q', 'Q'):
-                _state.QUIT_REQUESTED = True
-                result = gain; break
-            elif key in ('UP', 'k', 'SCROLL_UP'):
+                raise QuitToTerminal()   # q quits the app; it never just leaves a widget
+            elif key in ('UP', 'SCROLL_UP'):
                 gain = _clamp(gain + _RVA2_STEP); _render()
-            elif key in ('DOWN', 'j', 'SCROLL_DOWN'):
+            elif key in ('DOWN', 'SCROLL_DOWN'):
                 gain = _clamp(gain - _RVA2_STEP); _render()
             elif key == 'PGUP':
                 gain = _clamp(gain + _RVA2_COARSE); _render()
@@ -2927,6 +3417,7 @@ def number_edit(message: str = "Edit number:", *, value: int = 0,
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w = _Widget(fd)
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     def _cur() -> int:
         return _clamp(int("".join(buf))) if buf else value
@@ -2940,22 +3431,21 @@ def number_edit(message: str = "Edit number:", *, value: int = 0,
             "",
             f"  {C.ACCENT}▸{C.RESET} {C.BOLD}{shown}{C.RESET}{C.DIM}{unit_s}{C.RESET}   {C.DIM}({bounds}){C.RESET}",
         ]
-        lines.extend(_hint(
-            ("↑↓", "±1"), ("⇞⇟", "±10"), ("0-9", "type"),
-            ("↵", "save"), ("esc", "cancel"), ("q", "quit"),
-        ).splitlines())
+        append_chrome(lines, _with_toggle_hint(
+            [("↑↓", "±1"), ("⇞⇟", "±10"), ("0-9", "type"),
+             ("↵", "save"), ("esc", "back"), ("q", "quit app")]),
+                      _hint_cells)
         w.render(lines)
 
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        enable_mouse()          # so the hint keys below can be clicked
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 _render()
                 continue
@@ -2963,6 +3453,15 @@ def number_edit(message: str = "Edit number:", *, value: int = 0,
                 continue
 
             key = _read_key(fd)
+            # A transport key, a click on the miniplayer, or a click on one of our
+            # own hint keys — handled the same way on every screen.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
             if _value_toggle_enabled and key == _MODE_TOGGLE_KEY:
                 return MODE_TOGGLE
             if key == 'CTRL_C':
@@ -2972,16 +3471,16 @@ def number_edit(message: str = "Edit number:", *, value: int = 0,
             elif key == 'ESC':
                 result = None; break
             elif key in ('q', 'Q'):
-                _state.QUIT_REQUESTED = True; result = _cur(); break
+                raise QuitToTerminal()   # q quits the app; it never just leaves a widget
             elif key.isdigit():
                 if len("".join(buf)) < 12:
                     buf.append(key); _render()
             elif key == 'BACKSPACE':
                 if buf:
                     buf.pop(); _render()
-            elif key in ('UP', 'k'):
+            elif key == 'UP':
                 value = _clamp(_cur() + 1); buf.clear(); _render()
-            elif key in ('DOWN', 'j'):
+            elif key == 'DOWN':
                 value = _clamp(_cur() - 1); buf.clear(); _render()
             elif key == 'PGUP':
                 value = _clamp(_cur() + 10); buf.clear(); _render()
@@ -2990,6 +3489,7 @@ def number_edit(message: str = "Edit number:", *, value: int = 0,
             elif key == 'HOME':
                 value = minimum; buf.clear(); _render()
     finally:
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 
@@ -3017,6 +3517,7 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w = _Widget(fd)
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     def _count() -> int:
         return int("".join(cbuf)) if cbuf else count
@@ -3042,22 +3543,20 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
             f"  {_mark(1)} {_lab(1, 'Plays ')}   {cshown}",
             f"  {_mark(2)} {_lab(2, 'Rater ')}   {rater}",
         ]
-        lines.extend(_hint(
-            ("tab", "field"), ("←→", "adjust"), ("0-5", "stars"),
-            ("↵", "save"), ("esc", "cancel"), ("q", "quit"),
-        ).splitlines())
+        append_chrome(lines, [("tab/⇧tab", "field"), ("←→", "adjust"), ("0-5", "stars"),
+                              ("↵", "save"), ("esc", "back"), ("q", "quit app")],
+                      _hint_cells)
         w.render(lines)
 
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        enable_mouse()          # so the hint keys below can be clicked
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 _render()
                 continue
@@ -3065,29 +3564,39 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
                 continue
 
             key = _read_key(fd)
+            # A transport key, a click on the miniplayer, or a click on one of our
+            # own hint keys — handled the same way on every screen.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
             if key == 'CTRL_C':
                 result = None; break
             elif key == 'ENTER':
                 result = {'stars': stars, 'count': _count(), 'email': email}; break
             elif key == 'ESC':
                 result = None; break
-            elif key == 'TAB':
-                count = _count(); cbuf.clear(); field = (field + 1) % 3; _render()
+            elif key in ('TAB', 'BACKTAB'):
+                count = _count(); cbuf.clear()
+                field = (field + (-1 if key == 'BACKTAB' else 1)) % 3
+                _render()
             # 'q' quits only outside the free-text Rater field (an email may contain 'q').
-            elif key in ('q', 'Q') and field != 2:
-                _state.QUIT_REQUESTED = True
-                result = {'stars': stars, 'count': _count(), 'email': email}; break
+            elif key in ('q', 'Q') and field != 2:   # field 2 is the e-mail text
+                raise QuitToTerminal()   # q quits the app; it never just leaves a widget
             elif field == 0:
-                if key in ('LEFT', 'DOWN', 'j', 'h'):
+                if key in ('LEFT', 'DOWN'):
                     stars = max(0, stars - 1); _render()
-                elif key in ('RIGHT', 'UP', 'k', 'l'):
+                elif key in ('RIGHT', 'UP'):
                     stars = min(5, stars + 1); _render()
                 elif key.isdigit() and 0 <= int(key) <= 5:
                     stars = int(key); _render()
             elif field == 1:
-                if key in ('UP', 'k', 'RIGHT'):
+                if key in ('UP', 'RIGHT'):
                     count = _count() + 1; cbuf.clear(); _render()
-                elif key in ('DOWN', 'j', 'LEFT'):
+                elif key in ('DOWN', 'LEFT'):
                     count = max(0, _count() - 1); cbuf.clear(); _render()
                 elif key == 'PGUP':
                     count = _count() + 10; cbuf.clear(); _render()
@@ -3105,6 +3614,7 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
                 elif len(key) == 1 and key.isprintable():
                     email += key; _render()
     finally:
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 
@@ -3131,6 +3641,7 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
     w = _Widget(fd)
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
     def _clamp(g: float) -> float:
         return max(-_EQ_GAIN_MAX, min(_EQ_GAIN_MAX, g))
@@ -3149,12 +3660,14 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
                 status += f"   {C.DIM}· {note}{C.RESET}"
         else:
             status = f"{C.DIM}no bands — [a] add one{C.RESET}"
-        lines = _eq_render_lines(bands, cursor, message, status, _cols(), _rows())
-        lines.extend(_hint(
-            ("↑↓", "gain"), ("←→", "band"), ("⇞⇟", "±3"), ("a", "add"),
-            ("d", "del"), ("0", "zero"), ("f", "flat"), ("p", "preset"),
-            ("↵", "save"), ("q", "quit"),
-        ).splitlines())
+        # Size the plot to the rows left above the pinned hint bar and the
+        # miniplayer, not to the whole terminal — it used to draw over both.
+        _pairs = [("↑↓", "gain"), ("←→", "band"), ("⇞⇟", "±3"), ("a", "add"),
+                  ("d", "delete"), ("0", "zero"), ("f", "flat"), ("p", "preset"),
+                  ("↵", "save"), ("esc", "back"), ("q", "quit app")]
+        lines = _eq_render_lines(bands, cursor, message, status, _cols(),
+                                 _hint_pin_target() - len(chrome_hint_lines(_pairs)))
+        append_chrome(lines, _pairs, _hint_cells)
         w.render(lines)
 
     result = None
@@ -3162,14 +3675,12 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
         _set_raw(fd)
         if not _IS_WINDOWS:
             sys.stdout.write("\033[?1000h\033[?1006h")
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
         while True:
             if ui_utils.consume_resize():
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                ui_utils.clear_screen()
                 w.anchor_reset()
                 _render()
                 continue
@@ -3177,6 +3688,15 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
                 continue
 
             key = _read_key(fd)
+            # A transport key, a click on the miniplayer, or a click on one of our
+            # own hint keys — handled the same way on every screen.
+            _ch = consume_chrome(key, _hint_cells)
+            if _ch is CHROME_HANDLED:
+                continue
+            if _ch is CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
             n = len(bands)
 
             if key == 'ENTER':
@@ -3184,15 +3704,14 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
             elif key == 'ESC':
                 result = None; break
             elif key in ('q', 'Q'):
-                _state.QUIT_REQUESTED = True
-                result = _save(); break
-            elif key in ('LEFT', 'h') and n:
+                raise QuitToTerminal()   # q quits the app; it never just leaves a widget
+            elif key == 'LEFT' and n:
                 cursor = (cursor - 1) % n; note = ""; _render()
-            elif key in ('RIGHT', 'l') and n:
+            elif key == 'RIGHT' and n:
                 cursor = (cursor + 1) % n; note = ""; _render()
-            elif key in ('UP', 'k') and n:
+            elif key == 'UP' and n:
                 bands[cursor][1] = _clamp(bands[cursor][1] + _EQ_STEP); _render()
-            elif key in ('DOWN', 'j') and n:
+            elif key == 'DOWN' and n:
                 bands[cursor][1] = _clamp(bands[cursor][1] - _EQ_STEP); _render()
             elif key == 'PGUP' and n:
                 bands[cursor][1] = _clamp(bands[cursor][1] + _EQ_COARSE); _render()
@@ -3221,8 +3740,7 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
                 _set_raw(fd)
                 if not _IS_WINDOWS:
                     sys.stdout.write("\033[?1000h\033[?1006h")
-                sys.stdout.write("\033[H\033[3J\033[J")
-                sys.stdout.flush()
+                screen_takeover_next()   # paint over the previous screen, no flash
                 w.anchor_reset()
                 if freq_str:
                     try:
@@ -3282,6 +3800,12 @@ def system_editor_edit(initial_text: str) -> str | None:
     try:
         editor = _find_editor() or 'nano'
         subprocess.run(editor.split() + [temp_path], check=True)
+        # The editor owned the screen and left its own cursor visible: forget what
+        # we thought was on screen and hide the cursor again before the caller
+        # repaints, so no caret is left blinking over our frame.
+        screen_invalidate()
+        sys.stdout.write(C.HIDE)
+        sys.stdout.flush()
         with open(temp_path, 'r', encoding='utf-8') as f:
             result = f.read().strip()
         return result if result else None

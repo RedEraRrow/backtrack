@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TSST, TDRC, TCMP, TSOT, TSOP, TSO2, TSOA  # type: ignore[reportPrivateImportUsage]  # noqa: E501
+from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TSST, TDRC, TCMP, TSOP, TSO2, TSOA  # type: ignore[reportPrivateImportUsage]  # noqa: E501
 from mutagen.mp4 import MP4, MP4Cover  # type: ignore[reportPrivateImportUsage]
 
 # The fields this writer understands (track/disc carry their totals). The
@@ -31,12 +31,19 @@ FIELDS = ('title', 'artist', 'album_artist', 'album', 'track', 'disc',
 # applied. The sort *string* is supplied by the caller as values['<base>_sort']
 # (computed by the smart sort engine); the writer just stores it.
 # base field → (ID3 frame class, MP4 sort atom).
+# Sort tags generated alongside a written field. No title sort: a title sorts on
+# itself, and a stored TSOT is one more value to keep in step for no gain.
 _SORT_MAP = {
-    'title':        (TSOT, 'sonm'),
     'artist':       (TSOP, 'soar'),
     'album_artist': (TSO2, 'soaa'),
     'album':        (TSOA, 'soal'),
 }
+
+def _is_placeholder(value) -> bool:
+    """A name the app derives rather than stores — see id3_tag_handler."""
+    from src.id3.id3_tag_handler import is_placeholder_name
+    return is_placeholder_name(value)
+
 
 _MP3_EXTS = ('.mp3',)
 # Raw .aac (ADTS) is not an MP4 container and has no atoms — MP4() raises on it —
@@ -52,6 +59,7 @@ class WriteResult:
     error: str | None = None
     unsupported: bool = False
     skipped_format: bool = False   # e.g. an MP4 cover that isn't JPEG/PNG
+    skipped_placeholder: list[str] = field(default_factory=list)  # derived-only names
 
     @property
     def changed(self) -> bool:
@@ -171,6 +179,47 @@ def present_fields(path: str) -> dict[str, bool]:
     return {f: False for f in FIELDS}
 
 
+def read_number_pairs(path: str) -> dict:
+    """The track/disc numbering currently stored in the file itself.
+
+    Returns ``{'track', 'total_tracks', 'disc', 'total_discs'}`` as strings, with
+    ``''`` for anything absent.  Read from disk rather than the library cache,
+    because the cache is exactly what is stale in the case that matters most —
+    a disc you have just renumbered by hand, before the next re-scan.  The disc
+    value keeps any fraction (``'1.5'``), which is how a disc gets parked between
+    two others ahead of a reflow.
+    """
+    kind = format_kind(path)
+    out = {'track': '', 'total_tracks': '', 'disc': '', 'total_discs': ''}
+    try:
+        if kind == 'mp3':
+            try:
+                audio = ID3(path)
+            except ID3NoHeaderError:
+                return out
+            for fid, cur, tot in (('TRCK', 'track', 'total_tracks'),
+                                  ('TPOS', 'disc', 'total_discs')):
+                fr = audio.get(fid)
+                if fr is None or not getattr(fr, 'text', None):
+                    continue
+                head, _, tail = str(fr.text[0]).partition('/')
+                out[cur], out[tot] = head.strip(), tail.strip()
+        elif kind == 'mp4':
+            tags = MP4(path).tags or {}
+            for atom, cur, tot in (('trkn', 'track', 'total_tracks'),
+                                   ('disk', 'disc', 'total_discs')):
+                v = tags.get(atom)
+                try:
+                    n, t = v[0][0], v[0][1]          # type: ignore[index]
+                except (IndexError, TypeError):
+                    continue
+                out[cur] = str(n) if n else ''
+                out[tot] = str(t) if t else ''
+    except Exception:
+        pass
+    return out
+
+
 def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False) -> WriteResult:
     """Write the chosen fields to ``path``.
 
@@ -207,6 +256,10 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
             val = values.get(f)
             if val is None or (isinstance(val, str) and not val.strip()):
                 continue                    # nothing derived for this field
+            if f in ('artist', 'album_artist', 'composer') and _is_placeholder(val):
+                # "Various Artists" and friends are derived by the app, not stored.
+                res.skipped_placeholder.append(f)
+                continue
             if present.get(f) and not overwrite:
                 res.skipped_existing.append(f)
                 continue
@@ -236,6 +289,63 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
             if kind == 'mp3':
                 from src.id3.id3_tag_handler import save_id3
                 save_id3(audio, path)   # type: ignore[arg-type]  # ID3 in this branch; v2.4 iff multi-value present
+            else:
+                audio.save()
+    except Exception as e:                  # never let one bad file abort a bulk run
+        return WriteResult(error=str(e))
+
+    return res
+
+
+# Where each clearable field lives, per format — for `clear_fields`.
+_FIELD_HOMES: dict[str, tuple[str, str]] = {
+    'track':       ('TRCK', 'trkn'),
+    'disc':        ('TPOS', 'disk'),
+    'disc_subtitle': ('TSST', ''),
+    'title':       ('TIT2', '\xa9nam'),
+    'artist':      ('TPE1', '\xa9ART'),
+    'album_artist': ('TPE2', 'aART'),
+    'album':       ('TALB', '\xa9alb'),
+}
+
+
+def clear_fields(path: str, fields) -> WriteResult:
+    """Remove the chosen fields from ``path`` entirely (MP3 and MP4).
+
+    `write_fields` can only *set* a value — it skips anything empty — so removing
+    a tag needs its own path. Fields already absent aren't reported as written, so
+    a no-op file isn't rewritten.
+    """
+    kind = format_kind(path)
+    if kind == 'unsupported':
+        return WriteResult(unsupported=True)
+
+    res = WriteResult()
+    try:
+        if kind == 'mp3':
+            try:
+                audio = ID3(path)
+            except ID3NoHeaderError:
+                return res                      # no tags at all: nothing to clear
+        else:
+            audio = MP4(path)
+            if audio.tags is None:
+                return res
+
+        for f in fields:
+            frame, atom = _FIELD_HOMES.get(f, ('', ''))
+            if kind == 'mp3':
+                if frame and audio.getall(frame):
+                    audio.delall(frame)
+                    res.written.append(f)
+            elif atom and atom in audio.tags:
+                del audio.tags[atom]
+                res.written.append(f)
+
+        if res.written:
+            if kind == 'mp3':
+                from src.id3.id3_tag_handler import save_id3
+                save_id3(audio, path)   # type: ignore[arg-type]
             else:
                 audio.save()
     except Exception as e:                  # never let one bad file abort a bulk run
@@ -321,6 +431,47 @@ def has_cover(path: str) -> bool:
     except Exception:
         pass
     return False
+
+
+def retype_cover(path: str, pic_type: int) -> WriteResult:
+    """Set the *picture type* of the art already on ``path``, keeping the image.
+
+    ID3 only: MP4's ``covr`` atom has no picture-type field, so an MP4 comes back
+    `unsupported`. Frames already carrying `pic_type` aren't rewritten, so a
+    second run over the same files is a no-op.
+    """
+    kind = format_kind(path)
+    if kind != 'mp3':
+        return WriteResult(unsupported=True)
+
+    res = WriteResult()
+    try:
+        from src.id3.id3_tag_handler import create_apic_frame, save_id3
+        try:
+            audio = ID3(path)
+        except ID3NoHeaderError:
+            return res                             # no tags: nothing to retype
+
+        frames = [audio[k] for k in list(audio.keys()) if k.startswith('APIC')]
+        stale = [f for f in frames if int(getattr(f, 'type', 3)) != int(pic_type)]
+        if not stale:
+            return res
+        for frame in stale:
+            rebuilt = create_apic_frame(getattr(frame, 'data', b''),
+                                        getattr(frame, 'mime', 'image/jpeg'),
+                                        int(pic_type),
+                                        getattr(frame, 'desc', '') or '')
+            if rebuilt is None:
+                return WriteResult(error='could not rebuild the APIC frame')
+            # Delete by the frame's own key: mutagen keys APIC by description.
+            audio.delall(getattr(frame, 'HashKey', 'APIC'))
+            audio.add(rebuilt)
+            res.written.append('cover_type')
+        save_id3(audio, path)                      # type: ignore[arg-type]
+    except Exception as e:                         # never abort a bulk run
+        return WriteResult(error=str(e))
+
+    return res
 
 
 def write_cover(path: str, data: bytes, mime: str, *, pic_type: int = 3,

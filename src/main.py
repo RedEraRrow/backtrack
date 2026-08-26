@@ -2,7 +2,8 @@
 import os
 import time
 
-from src.config import load_config, save_config
+from src.config import load_config, save_config, music_dirs, set_music_dirs
+from src.playback.session import SESSION
 from src.music_library import (
     build_library, load_library_cache, save_library_cache,
     start_background_sync
@@ -86,13 +87,16 @@ def _maybe_join_session() -> None:
         # Take the player view for this window if it's free (see docstring).
         _take_player_if_free(link, info)
     else:
-        ui_utils.show_status("Couldn't join that session — starting a new one.")
+        ui_utils.show_status("Could not join that session — starting a new one.")
 
 
 def _run(config: dict) -> None:
     """Load or build the library and hand off to the main menu; first run prompts
     for a music directory and builds the cache from scratch."""
     _maybe_join_session()
+    # The player owns the volume: bind the live dict so the level it restores (and
+    # any change made while playing) is what a later save writes.
+    SESSION.bind_config(config)
     config = _init_tag_preferences(config)
     # Persist immediately so first-run tag preferences survive an instant quit;
     # the settings menu also autosaves, so "save & quit" (q) needs nothing more.
@@ -101,7 +105,7 @@ def _run(config: dict) -> None:
     library = load_library_cache()
 
     if library:
-        ui_utils.show_status(f"Library: {len(library)} tracks")
+        ui_utils.show_status(f"Library: {len(library)} tracks.")
         # Keep the cache fresh in the background (adds/removes/edits).
         start_background_sync(library)
 
@@ -112,25 +116,29 @@ def _run(config: dict) -> None:
 
     # First run: prompt for music directory
     ui_utils.clear_screen()
-    root = config.get("music_directory") or prompt.path("Select your Music Directory:")
-    root = os.path.abspath(os.path.expanduser(root)) if root else root
+    roots = music_dirs(config)
+    if not roots:
+        picked = prompt.path("Select your Music Directory:")
+        roots = [os.path.abspath(os.path.expanduser(picked))] if picked else []
 
-    if not root or not os.path.isdir(root):
+    roots = [r for r in roots if os.path.isdir(r)]
+    if not roots:
         ui_utils.show_loading("No valid directory selected.")
         time.sleep(1.5)
         return
 
-    config["music_directory"] = root
+    # More can be added later in Settings → Music Directories.
+    set_music_dirs(config, roots)
     save_config(config)
 
     ui_utils.show_loading("Building library…")
     library = build_library(
-        root,
+        roots,
         ignore_hidden=config.get("ignore_hidden_files", False)
     )
 
     save_library_cache(library, _async=False)
-    ui_utils.show_status(f"Library built: {len(library)} tracks")
+    ui_utils.show_status(f"Library built: {len(library)} tracks.")
 
     start_background_sync(library)
 

@@ -6,6 +6,7 @@ import signal
 import time as _time
 from typing import Any
 import re
+import unicodedata
 from collections import OrderedDict
 
 from src.state import NAV_STACK
@@ -13,13 +14,23 @@ from src.state import NAV_STACK
 _resize_flag = False
 _np_layout_dirty = False
 
+# Memoised terminal size. `get_terminal_size` was an ioctl per call and the render
+# path calls it per *line* (clipping) as well as per frame; the size only changes
+# on SIGWINCH, which clears this. Without SIGWINCH (Windows) it re-reads on a
+# short TTL instead.
+_size_cache: tuple[int, int] | None = None
+_size_cache_at: float = 0.0
+_SIZE_TTL = 0.25
+
 def _sigwinch_handler(signum: int, frame: Any) -> None:
     """Mark that the terminal was resized; consume_resize() picks this up."""
-    global _resize_flag
+    global _resize_flag, _size_cache
     _resize_flag = True
+    _size_cache = None                   # the memoised size is now wrong
 
 # SIGWINCH doesn't exist on Windows — guard so importing ui_utils never raises there.
-if hasattr(signal, "SIGWINCH"):
+_HAS_SIGWINCH = hasattr(signal, "SIGWINCH")
+if _HAS_SIGWINCH:
     signal.signal(signal.SIGWINCH, _sigwinch_handler)
 
 
@@ -46,6 +57,18 @@ def consume_resize() -> bool:
 MARGIN_H = 2   # columns reserved on each horizontal side (left and right)
 MARGIN_V = 1   # rows reserved on each vertical side (top and bottom)
 
+# Now-playing box transport geometry, shared so the three places that depend on
+# it can't drift apart: `playback_ui.format_now_playing_bar` draws the ⏮ ⏸ ⏭
+# glyphs at these content-relative offsets, inlays the B/P/N keys in the top
+# border directly above them, and `prompt_core.now_playing_click_action` maps a
+# click back to the glyph under it. Two spaces between glyphs, so the border
+# rule stays visible between the key letters and reads as running behind them.
+# (start column, width) of ⏮, ⏸/⏵ and ⏭ within the box's content columns. The
+# skip glyphs are two cells wide and the play/pause glyph is one, so they cannot
+# be laid out on an even stride.
+NP_GLYPH_COLS = ((0, 2), (4, 1), (7, 2))
+NP_TITLE_OFFSET = 11           # where the title starts, just past the glyphs
+
 class Colors:
     PRIMARY = "\033[1;37m" # Bold white
     WHITE = "\033[37m" # Normal white
@@ -65,14 +88,38 @@ class Colors:
     SHOW = "\033[?25h"
 
 
+_screen_invalidator = None
+
+
+def set_screen_invalidator(fn) -> None:
+    """Register the painter's "forget what's on screen" hook.
+
+    Registered by `prompt_core` (which can't be imported here — it imports this
+    module), so every existing `clear_screen()` keeps meaning "the screen is now
+    blank" for the diffed painter as well.
+    """
+    global _screen_invalidator
+    _screen_invalidator = fn
+
+
+def _screen_cleared() -> None:
+    """Tell the painter the screen was wiped outside its own frame writes."""
+    if _screen_invalidator is not None:
+        try:
+            _screen_invalidator()
+        except Exception:
+            pass
+
+
 def enter_alt_screen() -> None:
     """Switch to the terminal alternate screen buffer (no scrollback).
 
     Also enables focus in/out reporting (\\033[?1004h) so editors can show a
     hollow cursor when the window loses focus; unsupported terminals ignore it.
     """
-    sys.stdout.write("\033[?1049h\033[?1004h\033[H\033[3J\033[J")
+    sys.stdout.write("\033[?1049h\033[?1004h\033[H\033[3J\033[J" + Colors.HIDE)
     sys.stdout.flush()
+    _screen_cleared()
 
 
 def exit_alt_screen() -> None:
@@ -82,9 +129,15 @@ def exit_alt_screen() -> None:
 
 
 def clear_screen() -> None:
-    """Overwrite screen content from home without triggering scrollback save."""
-    sys.stdout.write("\033[H\033[3J\033[J")
+    """Overwrite screen content from home without triggering scrollback save.
+
+    Leaves the cursor **hidden**: a bare clear parks it at home, where it blinks
+    in the top-left corner until the next frame happens to hide it — during a
+    library build or any slow step, that's a visible flashing caret.
+    """
+    sys.stdout.write("\033[H\033[3J\033[J" + Colors.HIDE)
     sys.stdout.flush()
+    _screen_cleared()
 
 BACKGROUND_TASKS: dict[str, str] = {}
 
@@ -154,7 +207,9 @@ def now_playing_lines(width: int) -> list[str]:
     try:
         lines = _now_playing_provider(width) or []
     except Exception:
-        lines = []
+        # A provider that raised tells us nothing about what's playing — keep the
+        # box exactly as it was rather than blinking it out and back next tick.
+        return _now_playing_lines
     _now_playing_lines = list(lines)
     return _now_playing_lines
 
@@ -162,6 +217,25 @@ def now_playing_lines(width: int) -> list[str]:
 def now_playing_active() -> bool:
     """Whether a now-playing box is currently shown (cached from the last draw)."""
     return bool(_now_playing_lines)
+
+
+# Audio is playing but the box could not be drawn — the terminal is too narrow
+# for it. The box normally advertises the transport keys in its own top border,
+# so this is the one state where the hint bar has to advertise them instead
+# (see `prompt.chrome_hint_pairs`). Deliberately *not* set when the full player
+# view owns the display: that view shows its own transport.
+_np_unboxed: bool = False
+
+
+def set_now_playing_unboxed(value: bool) -> None:
+    """Record whether transport is live with no now-playing box to advertise it."""
+    global _np_unboxed
+    _np_unboxed = bool(value)
+
+
+def now_playing_unboxed() -> bool:
+    """Whether transport is live but no box is drawn to show its keys."""
+    return _np_unboxed
 
 
 def now_playing_height() -> int:
@@ -247,12 +321,28 @@ def get_status_line() -> str:
     return status
 
 def get_terminal_size(default: tuple = (80, 24)) -> tuple:
-    """Terminal (columns, rows), falling back to `default` if the query fails."""
+    """Terminal (columns, rows), falling back to `default` if the query fails.
+
+    Memoised — see `_size_cache`. Call `invalidate_terminal_size()` if something
+    other than a resize could have changed it.
+    """
+    global _size_cache, _size_cache_at
+    if _size_cache is not None:
+        if _HAS_SIGWINCH or (_time.monotonic() - _size_cache_at) < _SIZE_TTL:
+            return _size_cache
     try:
         size = shutil.get_terminal_size()
-        return size.columns, size.lines
     except OSError:
         return default
+    _size_cache = (size.columns, size.lines)
+    _size_cache_at = _time.monotonic()
+    return _size_cache
+
+
+def invalidate_terminal_size() -> None:
+    """Drop the memoised terminal size (next query re-reads it)."""
+    global _size_cache
+    _size_cache = None
 
 def get_terminal_width(default: int = 80) -> int:
     """Terminal width in columns."""
@@ -288,8 +378,62 @@ def strip_ansi(s: str) -> str:
     return re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s)
 
 def visual_len(s: str) -> int:
-    """Length of `s` as displayed, ignoring ANSI escape sequences."""
-    return len(strip_ansi(s))
+    """Columns `s` occupies on screen, ignoring ANSI escapes.
+
+    Not the same as `len`: a presentation selector takes no column, and an
+    emoji-presentation or East-Asian-wide character takes two. The ASCII fast
+    path keeps the common case a plain length — this is called per line in the
+    render path.
+    """
+    t = display_text(s)
+    if t.isascii():
+        return len(t)
+    return sum(char_cols(ch) for ch in t)
+
+
+# Codepoints that occupy no column of their own: the variation selectors that
+# pick a glyph's text/emoji presentation, the zero-width joiner family, and
+# combining marks that stack onto the character before them.
+_ZERO_WIDTH = ('︎', '️', '​', '‌', '‍')
+
+
+
+_ZERO_WIDTH_SET = frozenset(_ZERO_WIDTH)
+
+# Codepoints a terminal draws two cells wide. Two sources: East Asian Wide and
+# Fullwidth (handled below via unicodedata), and emoji-presentation characters,
+# which UTR#51 says to render wide and which every modern terminal does. The
+# media-control glyphs are the app's own case — U+23EE ⏮ and U+23ED ⏭ are
+# emoji-by-default and take two cells, while U+23F8 ⏸ and U+23F5 ⏵ sit right
+# beside them and take one. Nothing in `unicodedata` distinguishes them; all
+# four report east-asian-width N.
+_WIDE_SET = frozenset('⏮⏭⏪⏩⏫⏬⏯⏱⏲⏰')
+
+_cols_cache: dict = {}
+
+
+def char_cols(ch: str) -> int:
+    """How many terminal columns `ch` occupies: 0, 1 or 2."""
+    w = _cols_cache.get(ch)
+    if w is None:
+        if ch in _ZERO_WIDTH_SET:
+            w = 0
+        elif ch in _WIDE_SET or unicodedata.east_asian_width(ch) in ('W', 'F'):
+            w = 2
+        else:
+            w = 1
+        _cols_cache[ch] = w
+    return w
+
+
+def display_text(s: str) -> str:
+    """`s` with ANSI escapes and zero-width codepoints removed — one character
+    per column, so `len()` of the result is the width it will occupy."""
+    out = strip_ansi(s)
+    for z in _ZERO_WIDTH:
+        if z in out:
+            out = out.replace(z, '')
+    return out
 
 
 def clip_ansi(text: str, max_cols: int) -> str:
@@ -323,6 +467,15 @@ def clip_ansi(text: str, max_cols: int) -> str:
     if not clipped.endswith(Colors.RESET):
         clipped += Colors.RESET
     return clipped
+
+
+def plural(n: int, singular: str, many: str | None = None) -> str:
+    """``"1 result"`` / ``"156 results"`` — the count and its noun, agreeing.
+
+    The app used to write "156 result(s)" everywhere. "(s)" is a note to the
+    reader that the program didn't know which it was; it always does.
+    """
+    return f"{n} {singular if abs(n) == 1 else (many or singular + 's')}"
 
 
 def divider(width: int | None = None, char: str = "─") -> str:
@@ -365,53 +518,49 @@ def format_time(seconds: int | float) -> str:
 
 
 def _get_breadcrumb_str(width: int) -> str:
-    """Render NAV_STACK as a '>'-joined breadcrumb, truncated with a leading
-    ellipsis to fit `width`."""
-    if width <= 1:
+    """Render NAV_STACK as a '>'-joined breadcrumb that fits `width`.
+
+    Over-long trails shed whole path components from the front, keeping the
+    deepest ones — those say where you are; the ones above are context you can
+    infer. Slicing the joined string by character instead turned "Bleak
+    Expectations > A Childhood Cruelly Kippered" into "…pectations > A Childhood
+    Cruelly Kippered", where the leading fragment is a word that was never in
+    the path and reads as one.
+
+    The last component is kept whatever it costs: a breadcrumb that has dropped
+    everything still has to name where you are. If it alone doesn't fit, it is
+    truncated at its own end so it starts with something real.
+    """
+    if width <= 1 or not NAV_STACK:
         return ""
 
     sep = " > "
-    full_path = sep.join(NAV_STACK)
-
     max_length = max(0, width - 1)
 
-    if len(full_path) > max_length:
-        available_space = max_length - 3  # Leave 3 spaces for "..."
-        if available_space > 0:
-            full_path = "..." + full_path[-available_space:]
-        else:
-            full_path = full_path[-max_length:]
+    if len(sep.join(NAV_STACK)) <= max_length:
+        return sep.join(NAV_STACK)
 
-    return full_path
+    # Keep the deepest components that fit, prefixed with "… > " to show the
+    # trail was cut. Walk outward from the last one.
+    kept: list[str] = [NAV_STACK[-1]]
+    for name in reversed(NAV_STACK[:-1]):
+        if len("… > " + sep.join([name] + kept)) > max_length:
+            break
+        kept.insert(0, name)
+
+    out = "… > " + sep.join(kept)
+    if len(out) <= max_length:
+        return out
+    # Not even the deepest component fits beside the marker — truncate it from
+    # its end, so what remains is the start of a real name rather than the tail
+    # of one. truncate_text handles a width too small for the ellipsis itself.
+    return truncate_text(NAV_STACK[-1], max_length)
 
 def roman(num):
-    """Convert an integer to a Roman numeral."""
-
-    _roman_map = OrderedDict()
-    _roman_map[1000] = "M"
-    _roman_map[900] = "CM"
-    _roman_map[500] = "D"
-    _roman_map[400] = "CD"
-    _roman_map[100] = "C"
-    _roman_map[90] = "XC"
-    _roman_map[50] = "L"
-    _roman_map[40] = "XL"
-    _roman_map[10] = "X"
-    _roman_map[9] = "IX"
-    _roman_map[5] = "V"
-    _roman_map[4] = "IV"
-    _roman_map[1] = "I"
-
-    def _to_roman(num):
-        """Yield Roman-numeral symbols for `num`, largest value first."""
-        for r in _roman_map.keys():
-            x, y = divmod(num, r)
-            yield _roman_map[r] * x
-            num -= (r * x)
-            if num <= 0:
-                break
-
-    return "".join([a for a in _to_roman(num)])
+    """Convert an integer to a Roman numeral (see `utils.numbering`, which
+    owns the conversion shared with the pattern tools)."""
+    from src.utils.numbering import roman as _roman
+    return _roman(num)
 
 
 def get_progress_bar(progress: float, width: int = 40) -> str:

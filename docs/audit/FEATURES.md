@@ -109,7 +109,7 @@ cache `~/.cache/backtrack/library_cache.json` (`$BACKTRACK_CACHE_DIR`), history
 **`_run(config)`** (`src/main.py:92-137`) — the core flow:
 - `_maybe_join_session()` first, then seed first-run tag-name preferences, `save_config`, load cache.
 - **Cached path:** show status, `start_background_sync`, run `main_menu`, `save_config` on return.
-- **First-run path:** clear screen, prompt for a music directory, validate it is a dir (else a loading
+- **First-run path:** clear screen, prompt for a music directory (more can be added later), validate it is a dir (else a loading
   message + 1.5 s pause and return), persist it, `build_library`, save the cache synchronously, start
   background sync, run `main_menu`.
 
@@ -137,7 +137,9 @@ status-bar **beacon → notification centre** opener (`prompt.set_notification_o
   `$XDG_CONFIG_HOME/backtrack` or `~/.config/backtrack`; `$BACKTRACK_CONFIG_DIR` overrides. Resolved
   once at import.
 - **`DEFAULT_CONFIG`** (`config.py:6-25`) — every default key: `theme` (ANSI codes), `history_enabled`,
-  `search_weights`, `lyric_lead_in` (2.0), `art_width` (80), `music_directory`, `player_view`,
+  `search_weights`, `lyric_lead_in` (2.0), `art_width` (80), `music_directories` (list; the legacy
+  `music_directory` is migrated on load by `load_config` and mirrored back for older builds, with
+  `music_dirs()`/`set_music_dirs()` the accessors), `player_view`,
   `ignore_hidden_files`, `show_metadata_editor`, `show_lyrics_editor`, `tag_name_preferences`,
   `sort_list_delimiter` ("/"), `plain_text_editing`, `autoplay_on_select`. (Several keys are never
   read — ⚠ see AUDIT.)
@@ -153,7 +155,7 @@ status-bar **beacon → notification centre** opener (`prompt.set_notification_o
 
 ## 4. Library: scan, extraction, cache & background sync
 
-`src/music_library.py` — scans the music dir, extracts ID3/MP4 metadata, caches it, and keeps it
+`src/music_library.py` — scans every configured music directory, extracts ID3/MP4 metadata, caches it, and keeps it
 fresh on a background thread.
 
 **Scan & extraction**
@@ -164,7 +166,7 @@ fresh on a background thread.
   dispatches MP3 → `_extract_id3_metadata`, MP4-family → `_extract_mp4_metadata`, then re-opens with
   `mutagen.File` to cache `duration`.
 - `_extract_id3_metadata` (`:266-340`) — maps text frames (TIT2/TPE1/TPE2/TALB/TCON/TDRC/TIT3/TBPM),
-  **joins multi-value frames with `"; "`**, splits TRCK/TPOS/MVIN on `/` (with `⁄`→`/`) into
+  **joins multi-value frames with `"; "`**, loads the TSO\* sort frames, splits TRCK/TPOS/MVIN on `/` (with `⁄`→`/`) into
   number+total, reads MVNM/TSST/TIT1, resolves a `work` fallback chain (TXXX:WORK → grouping), and
   builds people as `"Name (Role)"` from TMCL/TIPL (so roles are searchable/displayable).
 - `_extract_mp4_metadata` (`:343-421`) — the MP4-atom equivalent (`©nam/©ART/aART/©alb/©gen/©day/©wrk`,
@@ -192,17 +194,75 @@ fresh on a background thread.
 - `_reconcile_library` (`:81-119`) — a cheap `os.walk` (no tag parse) diffed against known paths:
   **adds** new files, **drops** vanished ones (so external renames/moves are picked up as
   remove+add), with an **unmount guard** — if the scan is empty but the cache holds entries under the
-  music dir, nothing is removed (a temporarily-missing drive can't wipe the cache).
+  that root, nothing is removed (a temporarily-missing drive can't wipe the cache). The guard is
+  **per root**, and removal is judged against every live root at once, so nesting roots is safe and
+  one absent drive affects neither its own tracks nor anyone else's. `build_library` and
+  `_reconcile_library` both take one directory or a list (`as_dir_list`), and `build_library`
+  de-duplicates so overlapping roots don't scan a file twice.
 
 **Grouping & sorting**
-- `get_grouped_data(library, category)` (`:523-575`) — groups by artist/album/genre/grouping. The
-  artist axis prefers album-artist and now does **per-album compilation detection**: an album with no
-  album-artist but multiple distinct performers groups under **"Various Artists"** (rather than
-  scattering across track artists); a single-performer album groups under that artist. Skips "Unknown"
-  categories and normalises classical multi-name artists (splits on `,`/`&`/`;`).
-- `get_group_sort_key` (`:547-575`) and `sort_library_logic` (`:578-615`) — multi-key ordering
+- `get_grouped_data(library, category)` — groups by artist/album/genre/grouping. The
+  artist axis prefers album-artist and falls back to `derive_album_credit`. Skips "Unknown"
+  categories and normalises classical multi-name artists (splits on `,`/`&`).
+- `derive_album_credit(songs)` — the **anchor rule** for an album with no album-artist tag. Each
+  track's artist tag is one *cast* (a multi-value credit `A; B` is a duo, not two artists); the album
+  is filed under the artists credited on **every** track. So a duet survives a guest on one track,
+  a solo album survives a featured guest, and a panel show files under its recurring host — while a
+  line-up with nobody throughout collapses to **"Various Artists"**. `menus._album_artist_of` calls
+  the same function for the displayed credit, so label and grouping cannot disagree.
+- **Derived names are never written** (`is_placeholder_name` / `strip_placeholder_names`,
+  `id3_tag_handler`): "Various Artists", "VA", "Unknown Artist" and friends are filtered out of
+  TPE1/TPE2/TPE3/TPE4/TCOM and their sort tags by `create_frame` — the choke point for every ID3
+  write — and by `tag_writer.write_fields` (reported as `skipped_placeholder`). `filename_parser`
+  sets `compilation` on a Compilations folder instead of writing the name, and `_sort_value` returns
+  None for one. The name still *appears* everywhere it should: `derive_album_credit` infers it per
+  album from the track casts.
+- **No title sort order**: TSOT is gone from `_SORT_SRC`, `_SORT_BASE`, `tag_writer._SORT_MAP`,
+  `id3_browser._SORT_SOURCES` and the *Apply sort orders* field list. A sort tag equal to its source
+  is never written either — `_sort_candidates` excludes the raw value, so `_sort_value` returns None.
+- **Stored with `'; '`, displayed with `', '`** (`format_tag_values`): the joined string is the
+  storage/round-trip form (cache, editor seeds, clipboard, `summarize_tag_value`'s default `sep`);
+  screens render a comma-separated list instead. Applied at the 12 display sites for
+  artist/album-artist/genre only — never a single-title field, or an album named `Songs; Ohia` would
+  read as two. A value containing its own comma keeps the semicolon separator so the list stays
+  unambiguous. `playback_ui._txts` renders every value of a list-like frame (`_txt` returned only
+  `text[0]`, hiding all but the first artist/genre in the now-playing panel); the bulk-edit summary
+  comma-joins too (it used to concatenate with no separator, summarising a two-genre frame as
+  `PopRock`).
+- **Multi-value genres fan out** (`split_tag_values` / `group_values`): the `'; '`-joined values of a
+  list-like field each become their own group, so a `Pop`+`Rock` album is listed under **both**
+  genres — each entry leading to the same album. Single-title fields (album, grouping) are never
+  split, so an album called `Songs; Ohia` stays intact.
+- **Artist credits stay whole**: two names on one album are a joint *billing*, so the artist axis
+  keys on the entire credit rendered for display — `Herbert von Karajan, Berlin Philharmonic &
+  Friends` is one group, not two. (Classical normalisation — first name before `,`/`&` — therefore
+  applies only to a *single-value* credit that jams several names into one string.) Compilation
+  detection compares distinct **casts** (the set of split names) rather than raw strings, so `A; B`
+  and `B; A` are one duet, not a compilation (see `derive_album_credit` above). A joint group takes
+  its **first** artist's sort name when a paired sort frame exists.
+
+  Deliberately **not** split: casing variants (`Rock` / `rock` stay two groups, so inconsistent tags
+  stay visible), and other taggers' in-value delimiters (`Rock/Pop`, `Pop, Rock` are one genre —
+  splitting them would mangle `R&B/Soul` and `AC/DC`). A single value that *contains* `;` is
+  indistinguishable from two and splits anyway; the joined-string cache format is kept as-is.
+- `year_of(value)` / `album_year(songs)` — the year an album sorts under. `year_of` matches the first
+  four-digit run, so a TDRC **timestamp** (`2005-09-15 18:30:00`) yields 2005; `int(str(value))`
+  raised on those, and every dated file counted as year-less — the bug that dumped 14 dated albums
+  into the year-0 bucket to be ordered alphabetically, in both the album sort and
+  `sort_library_logic`. `album_year` then picks the **earliest corroborated** year: the oldest that
+  two or more tracks share, else the oldest of all. So one stray track can't drag an album backwards,
+  while a series whose episodes all differ still reads as the year it began. (Previously: whichever
+  track happened to sort first.) A placeholder date such as `1899-01-01` is taken at face value —
+  the list stays a faithful view of the tags.
+- `get_group_sort_key` and `sort_library_logic` — multi-key ordering
   (artist-sortable, −year, album, disc, track, movement) with a leading-"The " strip.
-  (An "explicit sort-order tag" priority branch exists but never fires — ⚠ see AUDIT.)
+  The **explicit sort-order tag now takes priority** (it used to be dead code): `_extract_id3_metadata`
+  loads TSOT/TSOP/TSO2/TSOA/TSOC — and `_extract_mp4_metadata` the sonm/soar/soaa/soal/soco atoms —
+  under the friendly names these keys look up, so `DJ Wren` + `TSO2 = "Wren, DJ"` files under **W**.
+  `_tagged_sort_key` pairs a multi-value credit with its multi-value sort frame **by position**
+  (`TPE2 = "Cee Dot"/"Dee Ray"` ↔ `TSO2 = "Dot, Cee"/"Ray, Dee"`), so a split group can never inherit
+  a co-credited artist's sort name; mismatched counts and derived group names ("Various Artists", a
+  classical-normalised surname) fall through to the display name.
 - `sort_album_tracks` (`:618-630`) — within-album (disc, track, movement) ordering.
 - `to_num` (`:50-58`) — leading-number parse handling `'1/12'` fractions.
 
@@ -305,8 +365,20 @@ the queue (paths/titles/index/mode), the track lifecycle, a background tick, and
   duration, creates media/player, `play()`, settles, backfills duration, **applies the stored
   equaliser**, bumps a `generation` counter.
 - Transport: `pause_toggle`, `seek`/`seek_to`/`_handle_seek` (clamps to `[0, duration-0.5]`),
-  `set_volume`/`get_volume` (clamped 0–100), `next`/`prev` (repeat-aware), `enqueue`, `play_next`,
-  `elapsed`/`latest_at` (`:347-429`).
+  `set_volume`/`get_volume`, `next`/`prev` (repeat-aware), `enqueue`, `play_next`,
+  `elapsed`/`latest_at`.
+- **Volume is session state, not a VLC read-back.** `libvlc_audio_get_volume` returns **-1** while no
+  audio output is open (before playback starts, after a stop), which is how the player view could come
+  up reading "-1". The session holds `_volume` (default 100), `set_volume` remembers it even with no
+  player yet — a level chosen before playback used to be dropped — `play` re-applies it to each new
+  track, and `get_volume` adopts VLC's reading only before the user has set a level and only when it
+  is in 0–100. `clamp_volume()` guards every display path (the snapshot published to other windows,
+  the remote proxy's `get_volume`, and the remote render call), and the bar's percentage label is now
+  printed from the same clamped value the fill is drawn from. The level **persists**: `config.volume`
+  is restored in `__init__` (and counts as explicit, so VLC's default can't replace it) and written
+  back by `_persist_volume` on every change — best-effort, so an unwritable config can't interrupt
+  playback. `bind_config` adopts the app's live config dict as well, so a dict held since startup
+  being saved on quit can't write a stale level back over the current one.
 - **Repeat modes** off/one/all (`REPEAT_*`, `:42-44`).
 - `tick()` (`:433-451`) — end-of-track detection + auto-advance; `start_background_tick`/`_tick_loop`
   (`:453-477`) is a daemon that advances the queue and **logs history even with no view attached**, and
@@ -406,14 +478,86 @@ one write.
   with queue/credits; minimal art-or-meta).
 - **Art fitting** — `_get_art_cached` (`:101-117`, mtime-keyed with stale eviction) and
   `_art_width_for_height` (`:150-166`, aspect-aware down-fit to available height).
-- **Full-height volume bar** (`_volume_bar_cells`, `:252-292`) — vertical bar right of the art, clamped
-  so its bottom lines up with the clipped art bottom, `█`/`░` fill, `♪` cap, right-aligned percentage;
-  live redraw via `draw_volume_bar` (`:295-300`).
+## Rendering: the persistent screen model
+
+`prompt_core` keeps one dict of **what is currently on each screen row**, shared by every writer —
+widget frames, the now-playing box, the status bar, and the full player view. Painting a frame writes
+only the rows whose content actually changed, absolutely positioned, in one buffered write:
+
+- `screen_row_paint(row, text, extra)` — the escape string for one row, **empty when it already reads
+  that way**. `extra` is the absolute-overlay layer (the volume bar writes a few columns of the album
+  art's own rows): both layers form the row's identity, so a row repaints when *either* changes, and a
+  row whose overlay went away is erased instead of keeping stale glyphs. **Blank is content** — a row
+  left out of a frame is erased, not left showing the previous screen. `screen_row_segment(row, text)`
+  is the plain-text case. `screen_paint(rows, …)` paints a mapping in one flush; `screen_invalidate()` forgets
+  everything (registered as `ui_utils.set_screen_invalidator`, so every existing `clear_screen()`
+  keeps meaning "the screen is blank now"); `screen_forget_rows` releases rows another writer owns.
+- **No erase-to-end-of-screen, no newlines.** The old frame was `ESC[J` followed by every row with a
+  trailing `\n` — on a tty `sys.stdout` is line-buffered, so each newline flushed and the terminal
+  painted the frame in ~40 pieces, and the wipe took the miniplayer and status bar with it every
+  keystroke. Frames now contain no newlines at all, so one frame is one flush.
+- `screen_takeover_next()` — a new widget's first frame overwrites what it needs and blanks the rest
+  of the previous screen *in the same paint*, so moving between screens no longer flashes blank. The
+  15 widget-entry `clear_screen()` calls became takeovers; a resize still clears (the terminal
+  reflowed, so nothing on screen can be trusted). `_Widget.refresh()` is the same idea for a
+  focus-in repaint.
+- The **now-playing box** and **status bar** are diffed writers too: the 8 Hz idle tick writes
+  **0 bytes** when nothing changed, and `ui_utils.now_playing_lines` keeps its last good rows when the
+  provider raises instead of blinking the box out and back.
+- The **player view** (`_render_frame_buffer`) drops its per-frame clear and diffs as well, so a
+  progress tick repaints the one row that moved instead of the album art. Overlays are layered over
+  their row rather than replacing it, and every row the frame stops using — including one whose
+  overlay vanished — is erased. The player **owns the whole screen**, so a frame also blanks any row
+  the painter still remembers from the screen before it (the menu's miniplayer box, a taller list):
+  the view clears only on *exit*, and without its old per-frame clear a shorter first frame left the
+  previous screen's bottom rows showing. Writers that paint outside a frame (`update_progress_ui`,
+  `draw_volume_bar`, the four lyric-pane drawers) call `screen_forget_rows` for their band, so the
+  model never claims to know a row something else painted.
+- `ui_utils.get_terminal_size` is memoised (invalidated by SIGWINCH; a 0.25 s TTL where SIGWINCH
+  doesn't exist) — it was an ioctl per *line* on the clipping path.
+
+**Cursor visibility.** Hidden by default, everywhere: `clear_screen()` and `enter_alt_screen()` end
+with `?25l` (a bare clear parks the cursor at home, where it blinks in the top-left until some later
+frame happens to hide it — visible during a library build or any slow step), `_Widget.clear()` no
+longer hands back a shown cursor at teardown, and the two caret widgets (`text`, `path`) hide on exit
+instead of showing. Returning from `$EDITOR` invalidates the screen model and re-hides. The only two
+places that show it are a text caret (`screen_paint(cursor=…)`) and `exit_alt_screen()`, where the app
+hands the terminal back.
+
+Measured on a 30-row album list at 100×40: a cursor move went from ~994 bytes and 35 partial-frame
+flushes to **76 bytes, one flush, two rows**; an unchanged frame from a full repaint to **nothing**;
+a player progress tick from 1346 bytes and a screen clear to **36 bytes**.
+
+- **Settings screen** — every row carries its current state in a **left-aligned column just beside
+  the labels** (`✔`/`✘` for the on/off settings, the value itself for the rest), so a setting can be
+  read without toggling it — pinned to the far right, the state was too far from its label to scan;
+  rows dispatch on a stable value rather than their label, and labels/separators are sentence case.
+- **`^t` hint coverage** — `_with_toggle_hint()` in `prompt.py` appends the Ctrl-T pair to a widget's
+  hint bar while the per-edit raw-text toggle is live. Every widget that *answers* `^t`
+  (`text`, `list_edit` — including its fixed-rows variant, which never showed it —
+  `calendar_select`, `datetime_edit`, `fraction_edit`, `time_edit`, `number_edit`) now advertises it,
+  and the hint is clickable: `"^t"` synthesises the real control character via `_hint_key_tokens`.
+- **Full-height volume bar** (`_volume_bar_cells`) — vertical bar right of the art, clamped
+  so its bottom lines up with the clipped art bottom, `█`/`░` fill, `♪` cap, right-aligned percentage
+  taken from the clamped fill percentage (never a raw, possibly-negative reading); live redraw via
+  `draw_volume_bar`.
 - **Progress** — `update_progress_ui` (`:169-190`) draws the horizontal progress bar + `mm:ss / mm:ss`
   aligned to the art.
-- **Metadata line** — `_meta_left_lines` (`:597-680`): title / artist—album / optional extras (year
-  with TDRC→TYER→TDOR→TORY fallbacks, genre, classical work+movement in roman, disc/track), degrading
-  to filename then path.
+- **Settings → Music Directories** (`_music_dirs_menu`, `menus.py`) — add a directory, remove one
+  (confirmed; removing the last one warns that the library will empty), or *Re-scan now*; each change
+  rebuilds the cache over all roots via `_rescan_library` and restarts the background sync. Rows for
+  a root that isn't currently mounted are marked "(not available)".
+- **Metadata line** — `_meta_left_lines`: **TIT2** / **TPE1**(→TPE2)—**TALB**, then behind the `m`
+  toggle: **year only** (TDRC→TYER→TDOR→TORY, 4-digit match so a full date shows just the year),
+  **TCON**, **TSST or else TPOS**, **TRCK** — degrading to filename then path. Artist and genre render
+  every value of a multi-value frame via `_txts`/`format_value_list` (`_txt` returned `text[0]`, so a
+  duet showed one name); TRCK/TPOS render in display form ("Track 3 of 12", "Disc 1 of 2"). **TIT1**
+  (work) and **MVIN** (movement, as a Roman numeral via `_movement_roman` → `utils.numbering`) sit
+  alongside the disc fields, but a movement **suppresses the track number** — it already says where
+  the track sits in the work — so a classical track reads
+  `1963 · Classical · Symphony No. 5 · Movement III` while its unnumbered sibling reads
+  `1963 · Classical · Track 1 of 4`. The whole panel is fed an `ID3` object, so it stays blank for
+  non-MP3 playback.
 - **Panes** — toggleable metadata/credits/lyrics/help/queue flags with a single-key right-pane cycle
   (`cycle_right_pane`, `:420-437`, skipping empty states); a redesigned **UP NEXT** queue pane
   (`_build_queue_lines`, `:483`) — a **columnar** list (title + a **context-aware meta column**)
@@ -576,8 +720,38 @@ modes.
   `prompt_for_value` (sort-tags prefilled by the engine), create + save.
 - Per-tag actions (`:788-865`): Copy / Paste (confirm + recreate) / Edit / Rename / Delete (confirm),
   plus **Import LRC** for USLT/SYLT and **Manage** for images. People frames render a ROLE/NAME table.
-- **APIC management** (`_edit_apic_tag`, `:457-548`) — view art / view info / OS preview / replace
-  image / edit description.
+- **Cover art editor** (`_edit_apic_tag`) — one screen: the art with a facts line above it
+  (`{w}×{h} px · mime · KB · colour mode`), the picture type and description, then the actions —
+  *Open in image viewer*, *Replace image…*, *Type and description…*, *Save a copy…*, *Remove image*,
+  each with a dim note in a right-hand column. Notes on the rework:
+  - The old *View art* / *View info* rows (mutually exclusive, appearing and disappearing from the
+    list) are gone: the facts fit alongside the picture.
+  - **Replace** uses `pick_nearby_cover` — the same ranked picker as the tag editor's image field —
+    instead of demanding a typed path, and **keeps the picture type and description**, which it used
+    to reset to "Cover (front)"/blank on every replace.
+  - **Type and description** reuses `_prompt_for_image_metadata` (one screen for both), and rebuilds
+    the frame so mutagen re-keys it: editing `.desc` in place left the frame under its *old*
+    `APIC:desc` key. The editor then **tracks that key** — deleting by the key it was *called* with
+    matched nothing once the description had changed, so a second edit (setting a description then
+    reverting it) added a frame instead of replacing one and left two near-identical images behind.
+    Replace and Remove use the tracked key too.
+  - *Save a copy* and *Remove image* are new — there was no way to export or delete an image.
+  - Art is cached per (image bytes, width) in `_ART_CACHE` (shared with the single-tag header): a
+    redraw was re-decoding the JPEG every keystroke — 7 ms → 0.006 ms.
+  - The header is **one rounded-box line** — `APIC · Cover (back) · “desc”` bold-left, the facts
+    dim-right — matching this file's track header and the bulk-edit header. Facts shed from the right
+    (colour mode, then format, then weight) rather than wrapping.
+  - **Sizing** (`_art_width` / `_art_lines_boxed`) is driven by the rows left after the screen's
+    chrome, capped at `_ART_MAX_WIDTH` (64 — a comfortable thumbnail, not wallpaper), less
+    `_ART_BREATHING_ROWS`, re-rendered narrower for a portrait image, and drawn **centred** in a
+    rounded box. Below `_MIN_ART_ROWS` (6) the art becomes a dim "— art hidden (window too short) —"
+    line, and below ~14 visible rows the facts and description lines drop too, so the screen degrades
+    instead of overflowing. The old `min(height × 1.5, width)` overflowed any tall window (60 cells
+    wide → 30 art rows plus 14 of chrome on a 37-row screen).
+  - Rows carry **no invented glyphs**: the app's established prefixes are `▸` (play) and `＋` (add),
+    and the neighbouring tag-action rows (Copy / Paste / Edit / Rename / Delete) have none.
+  - Saving is left to the caller's `_save`, which also refreshes the library entry; the editor
+    returns whether anything actually changed, so an unmodified visit writes nothing.
 - **LRC import** (`_parse_lrc_file` `:394-416`, `_import_from_lrc` `:419-454`) — `[mm:ss.fff]` timed →
   SYLT, untimed → USLT.
 
@@ -590,7 +764,10 @@ modes.
   `:99-102`), handle spacing surname prefixes (`von`/`van`/`de`, `_SPACING_PREFIXES` `:78-82`), and
   offer positional right-splits (last-word-as-surname first).
 - `_sort_candidates` (`:257-299`) — top-level generator: splits multi-artist strings on
-  `&/feat./and/with/|/+` (backing-band phrases protected, `_LIST_SPLIT_RE` `:110-122`), sorts each and
+  `&/feat./and/with/|/+` (only *possessive* backing-band phrases protected — "and his/her/their" is
+  not a delimiter, but "& The …" is, so `Jeff Goldblum & The Mildred Snitzer Orchestra` becomes
+  `Goldblum, Jeff/Mildred Snitzer Orchestra, The` rather than being inverted whole into
+  `Orchestra, Jeff Goldblum & The Mildred Snitzer`; `_LIST_SPLIT_RE`), sorts each and
   rejoins with the config delimiter; article-only move for title/album tags; adds ordinal-padded
   variants (`Series 1`→`Series 01`).
 - `_prompt_sort_order` (`:302-333`) — prefill for a simple name; a ranked `select` picker with "type
@@ -670,10 +847,37 @@ scans/` subfolders + the parent album folder above a disc dir (`find_images` `:8
 and five bulk strategies `plan_auto/basename/positional/grouped/best/template` (`:274-504`) with
 confidence labels.
 
-**`bulk_pattern.py`** (pure) — positional assignment: `order_tracks` (`:22-28`), `assign_ranges`
-(`:41-50`, `{n}` = range index), `assign_periodic` (`:53-61`, every-N), `assign_dates` (`:125-143`,
-start + interval + per-group times → ISO timestamps), and `renumber_tracks` (`:81-100`,
-continuous↔per-disc).
+- **Set picture type** (`set_picture_type_op`) — retypes art that's already embedded, without
+  touching the image: rippers routinely tag a front cover as "Other" (type 0), which anything looking
+  specifically for a front cover then misses. Picks the type with the existing
+  `_prompt_for_picture_type` (the header shows what's currently in the selection, e.g.
+  `Other ×495 · Cover (front) ×411`), previews `Other → Cover (front)` per file with already-correct
+  rows unticked, and writes via `tag_writer.retype_cover` — which rebuilds each APIC under its own
+  key, skips frames already of that type, and reports MP4 as unsupported (`covr` has no type field).
+- **Remove single-disc numbering** (`strip_single_disc_op`) — strips `TPOS`/`disk` from tracks that
+  are **disc 1 of 1**, where the tag is noise (it shows up as a disc header in browse lists and in
+  names derived from tags). A bare `1` with no total counts too, but only when nothing else in the
+  selection sits on another disc — on a real multi-disc album an untotalled "1" is meaningful. Same
+  preview-with-ticks flow as the other disc operations; rows say `disc 1/1 → —` or `keeps disc 2/3`
+  so the reasoning is visible. Clearing goes through the new `tag_writer.clear_fields` (MP3 + MP4),
+  since `write_fields` can only *set* a value — it skips anything empty.
+
+**`bulk_pattern.py`** (pure) — positional assignment: `order_tracks`, `assign_ranges`
+(`{n}`/`{r}`/`{en}` = range index), `assign_periodic` (every-N), `assign_dates`
+(start + interval + per-group times → ISO timestamps), and `renumber_tracks`
+(continuous↔per-disc).
+
+**`utils/numbering.py`** (pure) — the three number styles shared by every patterning tool:
+**arabic** (`{n}`, `{n:02d}`), **roman** (`{r}` → III, `{r:l}` → iii) and **written out**
+(`{en}` → Three, plus `:l`/`:u`/`:t` cases). `render` writes them, and `parse`/`from_roman`/
+`from_words` read them back (Roman must be canonical — `IIII` is text, not 4). `ui_utils.roman`
+delegates here, so one implementation owns the conversion. Reaches:
+- `bulk_pattern.fmt_value` — `Series {n}` · `Act {r}` · `Series {en}` in range and every-N values.
+- `file_namer.render` — a style suffix on any numeric token: `%track:r%` → `IV`, `%disc:en%` → `Two`,
+  `%movementno:r:l%` → `iv`; `unknown_tokens` reports a bad style as `track:zz`.
+- `filename_parser.compile_template` — the same suffix on the *parse* side (`Act %track:r%`,
+  `Series %disc:en%`), and `_fields_from_groups` reads a numeric capture in any style, so a raw
+  regex capturing `III` or `three` yields 3.
 
 ---
 

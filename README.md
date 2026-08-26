@@ -44,8 +44,14 @@ lyrics, and includes a full ID3/MP4 tag editor with a suite of bulk-automation t
 - **Derive from filename** — fill tags from file/folder names.
 - **Rename files from tags** — the inverse, collision-safe.
 - **Set album art from files** — embed per-track or per-disc/series covers found beside the tracks.
-- **Apply sort orders**, **Renumber tracks** (disc ↔ continuous), **Assign by range/schedule**,
-  **Copy from first track**, plus set/rename/delete tags across a selection.
+- **Apply sort orders**, **Renumber tracks** (disc ↔ continuous), **Reflow disc numbering**
+  (renumber discs to a dense 1…N after inserting a `1.5`, deleting a disc, or appending one, and
+  fix the totals), **Assign by range/schedule** — including a **per-range schedule** where each
+  disc/series carries its own start date and cadence, entered in a split date/time cell where you
+  type only the digits — **Copy from first track**, plus
+  set/rename/delete tags across a selection.
+- Track/disc **number pairs** edit in bulk without collateral damage: whichever half the files
+  already share is editable, and the half that differs shows as a greyed `──` and is left alone.
 
 **History & settings**
 - Listening history with relative timestamps, and a sectioned settings screen.
@@ -94,7 +100,7 @@ or, if installed as a package:
 backtrack
 ```
 
-On first run, Backtrack asks for your music directory and builds a cached library for faster
+On first run, Backtrack asks for a music directory and builds a cached library for faster
 subsequent startups.
 
 ---
@@ -105,8 +111,8 @@ subsequent startups.
 
 Browse Library · Search · Listening History · Settings · Exit.
 
-Navigation is consistent everywhere: `↑↓`/`jk` move, `→`/`l`/`Enter` confirm, `←`/`b`/`h`/`Esc` go
-back, `q` quits to the terminal (saving any in-progress edit first). Lists never wrap, restore the
+Navigation is consistent everywhere: `↑↓` move, `→`/`Enter` confirm, `←`/`b`/`Esc` go
+back, `q` quits the app from anywhere (it never just closes a widget). Lists never wrap, restore the
 cursor when you back out, and support mouse clicks and `Tab`-based select-all where relevant. The
 hint bar (pinned to the bottom of the screen) is clickable too — click any highlighted key to trigger
 it. When audio is playing, the mini-player's ⏯/⏭ icons are clickable, and clicking anywhere else on it
@@ -161,8 +167,11 @@ Words-by credits.
 From a track, choose **Edit tags** to open the single-track ID3 editor; from **Browse**, choose
 *Edit tags* on an album (or press `e`) for the **bulk** editor. Bulk operations live under a two-level
 menu — **TAGS** (add / set / rename / delete) and **Automation…** (derive, rename files, set album
-art, assign by range/schedule, apply sort orders, renumber tracks, copy from first track). Every
-operation previews its changes and, by default, only fills blank tags.
+art, assign by range/schedule, apply sort orders, renumber tracks, reflow disc numbering, copy from
+first track). Every operation previews its changes and, by default, only fills blank tags.
+
+Disc and track numbering is read from the files themselves rather than the library cache, so
+renumbering and reflowing stay correct even right after you have hand-numbered a disc.
 
 See the guides below to get the most out of tagging and auto-detection.
 
@@ -181,7 +190,10 @@ See the guides below to get the most out of tagging and auto-detection.
 ## Configuration
 
 Settings are managed in-app under **Settings** (playback, library, editors, history) and stored in a
-JSON config created on first run. Notable keys include `music_directory`, `history_enabled`,
+JSON config created on first run. Notable keys include `music_directories` (a list — add or remove
+them under **Settings → Music Directories**; the older single `music_directory` key is migrated
+automatically and kept in step with the first entry), `volume` (restored at launch and saved
+whenever you change it), `history_enabled`,
 `search_weights`, `lyric_lead_in`, and the editor options (sort-list delimiter, plain-text editing,
 auto-play on select, tag-name preferences). Prefer the Settings screen over hand-editing the file.
 

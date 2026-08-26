@@ -4,8 +4,10 @@ import os
 import re
 import sys
 
-from src.music_library import get_metadata
+from src.music_library import get_metadata, format_tag_values, format_value_list
+from src.utils import prompt_core as pc
 from src.utils import ui_utils
+from src.utils import numbering
 from src.art.album_art import get_art
 from src.utils.prompt import _hint
 from src.utils.prompt_core import Column, _table_widths, add_hint_click_cells
@@ -39,22 +41,61 @@ _WIDE_SPLIT_GUTTER = 3
 _ART_SNAP_TO_FULL = 4
 
 
+_player_prev_rows = [0]          # flow-row count of the previous player frame
+_player_overlay_rows = [set()]   # rows the previous frame overlaid
+
+
 def _render_frame_buffer(buf: list, rows: int) -> None:
-    """Flush the assembled frame in one write, positioning relative lines by row
-    while letting absolute-positioned items (volume bar, controls, lyrics) pass through untouched."""
-    parts = [buf[0]]  # clear sequence at row 1
-    # `row` counts only flow (relative) lines; absolute-positioned items (the
-    # volume bar, controls, lyrics) pass through WITHOUT consuming a row slot —
-    # otherwise everything after them (e.g. the metadata) is pushed off-place.
+    """Flush the assembled frame, writing only the rows whose content changed.
+
+    `buf[0]` is a clear sequence, deliberately **dropped**: erasing the whole
+    screen every frame made the player flicker on every progress tick, and with a
+    diffed paint it isn't needed — rows the frame stops using are blanked
+    explicitly, and `ui_utils.clear_screen()` (entry, resize, exit) already drops
+    the painter's model so the next frame repaints in full.
+
+    `row` counts only flow (relative) lines; absolute-positioned items (the
+    volume bar, controls, lyrics) pass through WITHOUT consuming a row slot —
+    otherwise everything after them (e.g. the metadata) is pushed off-place.
+    Their rows are forgotten, so a later flow paint of the same row still lands.
+    """
+    flow: dict[int, str] = {}
+    overlay: dict[int, list[str]] = {}
     row = 0
     for item in buf[1:]:
-        if _ABS_ROW_RE.match(item):
-            parts.append(item)
+        m = _ABS_ROW_RE.match(item)
+        if m:
+            # An overlay: it writes a few columns of a row the art (or another
+            # flow line) also occupies — the volume bar sits to the right of the
+            # art, on the art's own rows. It is layered *over* that row rather
+            # than replacing it; dropping the row's flow content blanked the art.
+            overlay.setdefault(int(m.group(0)[2:-1].split(';')[0]), []).append(item)
         else:
             row += 1
             if row <= rows:
-                parts.append(f"\033[{row};1H\033[K{item}")
-    sys.stdout.write("".join(parts))
+                flow[row] = item
+
+    # Every row this frame could need to touch: its own content, plus rows a
+    # taller previous frame used, plus rows whose overlay has now gone away.
+    # Blank counts as content — a row left out of this frame must be *erased*,
+    # not left showing the previous screen.
+    touched = set(flow) | set(overlay)
+    touched |= {r for r in range(row + 1, _player_prev_rows[0] + 1) if r <= rows}
+    touched |= {r for r in _player_overlay_rows[0] if r not in overlay and r <= rows}
+    # The player owns the whole screen, so anything the painter still remembers
+    # from the screen before it — the menu's miniplayer box, a taller list — is
+    # blanked here. Entry used to rely on a full clear per frame; without one, a
+    # first frame shorter than the previous screen left its bottom rows behind.
+    touched |= {r for r in pc.screen_rows() if r <= rows and r not in touched}
+    _player_prev_rows[0] = row
+    _player_overlay_rows[0] = set(overlay)
+
+    out = "".join(
+        pc.screen_row_paint(r, flow.get(r, ""), "".join(overlay.get(r, ())))
+        for r in sorted(touched)
+    )
+    if out:
+        sys.stdout.write(out)
 
 PLAYER_CREDITS_ROLES = [
     'performer',
@@ -92,6 +133,12 @@ _last_art_top: int | None = None
 _last_art_height: int | None = None
 # Explicit 1-based column where the volume bar is drawn (None = no room / hidden).
 _last_vol_bar_col: int | None = None
+# Progress-bar geometry from the last update_progress_ui: its row, the 1-based
+# column of the bar's first cell (just past the '[' cap), and its width in cells.
+# Used to turn a click on the bar into a seek.
+_last_prog_row: int | None = None
+_last_prog_col: int | None = None
+_last_prog_w: int = 0
 # Right pane geometry when in wide mode (1-based column of start, and width)
 _last_right_left: int | None = None
 _last_right_width: int | None = None
@@ -152,10 +199,19 @@ def _clip_ansi_to_width(text: str, max_cols: int) -> str:
             result.append(text[i:j])
             i = j
         else:
-            if visible >= max_cols:
+            # A zero-width codepoint (a presentation selector, a combining mark)
+            # takes no column and belongs to the glyph before it — it must ride
+            # along without being counted, or a row carrying them gets clipped
+            # short of its own borders.
+            w = ui_utils.char_cols(text[i])
+            if w == 0:
+                result.append(text[i])
+                i += 1
+                continue
+            if visible + w > max_cols:       # never split a 2-cell glyph
                 break
             result.append(text[i])
-            visible += 1
+            visible += w
             i += 1
     return ''.join(result)
 
@@ -192,6 +248,7 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
     timer_text = f" {elapsed_str.rjust(5)} / {duration_str.ljust(5)} "
 
     global _last_art_width, _last_art_left
+    global _last_prog_row, _last_prog_col, _last_prog_w
 
     if _last_art_width and _last_art_width > 0:
         container_w = _last_art_width
@@ -205,7 +262,13 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
     bar = ui_utils.get_progress_bar(percent, bar_width)
     pad = ' ' * left_pad
 
+    # Remember where the bar landed so a click on it can be mapped back to a
+    # position: get_progress_bar brackets the cells, so cell 0 sits one column
+    # past the pad's '[' cap.
+    _last_prog_row, _last_prog_col, _last_prog_w = row, left_pad + 2, bar_width
+
     sys.stdout.write(f"\033[{row};1H\033[K{pad}{bar}{timer_text}")
+    pc.screen_forget_rows(row, row)     # painted outside the frame: model unknown
     sys.stdout.flush()
 
 
@@ -295,7 +358,9 @@ def _volume_bar_cells(volume: int) -> list[str]:
     # field so shorter values (100 → 90 → 0) fully overwrite the previous one.
     cells.append(f"\033[{top};{bar_col}H{C.DIM}♪{C.RESET}")
     label_col = max(1, bar_col - 1)
-    cells.append(f"\033[{top + height};{label_col}H{C.DIM}{int(round(volume)):>3}{C.RESET}")
+    # Label from the clamped percentage the bar itself was drawn from — printing
+    # the raw value showed VLC's "-1" under an empty tube.
+    cells.append(f"\033[{top + height};{label_col}H{C.DIM}{int(round(pct * 100)):>3}{C.RESET}")
     return cells
 
 
@@ -305,6 +370,10 @@ def draw_volume_bar(volume: int) -> None:
     if cells:
         sys.stdout.write("\0337" + "".join(cells) + "\0338")
         sys.stdout.flush()
+        geo = _volume_bar_geometry()
+        if geo:                          # those rows now carry glyphs we didn't
+            _, top, height = geo         # record — let the next frame repaint them
+            pc.screen_forget_rows(top, top + height)
 
 
 def _np_fmt_time(seconds: float) -> str:
@@ -314,32 +383,62 @@ def _np_fmt_time(seconds: float) -> str:
 
 
 def _fit_segments(segs: list, budget: int) -> tuple[str, int]:
-    """Style-render (text, style) segments to fit ``budget`` plain columns,
-    truncating the tail with an ellipsis. Returns (styled_string, plain_width)."""
+    """Style-render (text, style) segments to fit ``budget`` plain **columns**,
+    truncating the tail with an ellipsis. Returns (styled_string, plain_width).
+
+    Widths are counted in columns, not codepoints: the transport glyphs carry a
+    text-presentation selector that occupies no column of its own, so counting
+    codepoints would over-measure them and shrink the title to compensate.
+    Truncation walks the string a column at a time for the same reason — slicing
+    by index could sever a glyph from the selector that decides its width.
+    """
     out = ""
     used = 0
     for text, style in segs:
         if used >= budget:
             break
         remain = budget - used
-        if len(text) > remain:
-            text = text[:max(0, remain - 1)] + "…"
+        if ui_utils.visual_len(text) > remain:
+            text = _clip_to_cols(text, max(0, remain - 1)) + "…"
         out += (f"{style}{text}{C.RESET}" if style else text)
-        used += len(text)
+        used += ui_utils.visual_len(text)
     return out, used
+
+
+def _clip_to_cols(text: str, cols: int) -> str:
+    """First `cols` display columns of `text`, keeping each glyph's zero-width
+    presentation selector attached to it."""
+    if cols <= 0:
+        return ""
+    out = []
+    used = 0
+    for ch in text:
+        w = ui_utils.char_cols(ch)
+        if w == 0:                           # selector — rides with the previous glyph
+            out.append(ch)
+            continue
+        if used + w > cols:                  # a 2-cell glyph needs 2 cells free
+            break
+        out.append(ch)
+        used += w
+    return "".join(out)
 
 
 def format_now_playing_bar(width: int) -> list[str] | None:
     """The background-audio now-playing box (#14), styling only (no colour): a
     rounded box whose bottom border doubles as the progress bar. Row 1 = top
-    border; row 2 = ``⏸ ⏭ Title · Artist · Album … m:ss / m:ss`` (bold
+    border; row 2 = ``⏮ ⏸ ⏭  Title · Artist · Album … m:ss / m:ss`` (bold
     title, dim rest); row 3 = the progress border (heavy ``━`` elapsed / light
-    ``─`` remaining). Returns a list of styled rows, or None when nothing plays
-    or the terminal is too narrow for a box."""
+    ``─`` remaining). The transport keys are advertised in the hint bar with
+    every other key, not on the border.
+
+    Returns a list of styled rows, or None when nothing plays or the terminal is
+    too narrow for a box."""
     from src.playback.session import current_now_playing
     np = current_now_playing()
     if np is None:
         ui_utils.set_now_playing_signature(None)
+        ui_utils.set_now_playing_unboxed(False)
         return None
     # When the full player view is open in ANY window of the session, the player
     # itself is the now-playing display — hide the ambient bar everywhere else so
@@ -347,6 +446,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     # holds the view (broadcast to joined windows), or None when no view is open.
     if np.get('view_holder'):
         ui_utils.set_now_playing_signature(None)
+        ui_utils.set_now_playing_unboxed(False)
         return None
     # Identity of this track for the idle-tick redraw: a change here forces the
     # now-playing box to repaint even if the styled rows happen to match (#14).
@@ -357,21 +457,42 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     mh = 2
     box_w = width - 2 * mh
     inner = box_w - 4                       # content columns between "│ " and " │"
-    if inner < 16:
-        return None                         # too narrow to be worth a box
 
-    # Match the full player's transport glyphs (see _controls_line): the
-    # play/pause glyph shows the action the toggle would take — ⏵ while paused,
-    # ⏸ while playing — followed by the next-track icon (no previous here).
-    pp_icon = '⏵' if np['paused'] else '⏸'
-    icon = f"{pp_icon} ⏭"
+    # The real media glyphs, laid out on their true widths rather than an even
+    # stride: U+23EE ⏮ and U+23ED ⏭ are emoji-presentation and every modern
+    # terminal draws them two cells wide, while U+23F8 ⏸ / U+23F5 ⏵ beside them
+    # are text-presentation and take one. Nothing in unicodedata separates them
+    # — all four are east-asian-width N — so `ui_utils.char_cols` carries the
+    # distinction and every width here is counted in columns, not codepoints.
+    #
+    # An earlier attempt forced text presentation with U+FE0E to make them all
+    # one cell; that cannot work, because a survey of the monospace fonts on a
+    # stock macOS box found none carrying these codepoints at all. There is no
+    # text glyph to ask for. Better to draw them at the width they actually are.
+    pp_icon = '⏵' if np['paused'] else '⏸'    # the action the key would take
+    icon = f"⏮  {pp_icon}  ⏭  "               # 2+2+1+2+2+2 = NP_TITLE_OFFSET cols
     # Just the elapsed/total time; volume + queue position live elsewhere (the
-    # player view and the menu hint bar, which also surfaces the ^O/^P/^N/^B keys).
+    # player view, and the queue pane inside it).
     right = f"{_np_fmt_time(np['elapsed'])} / {_np_fmt_time(np['duration'])}"
 
-    left_segs: list = [(f"{icon}  ", C.BOLD), (np['title'] or '?', C.BOLD)]
+    # How narrow the box may get, in terms of what it is actually being asked to
+    # hold. A fixed threshold can't know: `right` grows with the track (an hour-
+    # long file spends three more columns on the clock), and if the left side is
+    # squeezed past its floor the gap below bottoms out at 1 and the content row
+    # runs *wider than its own border* — a visibly ragged box. Two tiers:
+    # glyphs + a readable stub of title, or no box at all.
+    _MIN_TITLE = 6
+    if inner < ui_utils.visual_len(icon) + _MIN_TITLE + 2 + len(right):
+        # No box — the hint bar advertises the transport keys instead, so they
+        # are never both unadvertised and live.
+        ui_utils.set_now_playing_unboxed(True)
+        return None
+
+    ui_utils.set_now_playing_unboxed(False)
+
+    left_segs: list = [(icon, C.BOLD), (np['title'] or '?', C.BOLD)]
     if np['artist']:
-        left_segs += [("  ·  ", C.DIM), (np['artist'], C.DIM)]
+        left_segs += [("  ·  ", C.DIM), (format_tag_values(np['artist']), C.DIM)]
     if np['album']:
         left_segs += [("  ·  ", C.DIM), (np['album'], C.DIM + C.ITALIC)]
 
@@ -583,14 +704,14 @@ def _queue_meta_value(item: dict, same_album: bool = False, compilation_without_
         if not artist:
             return ''
         if compilation_without_album_artist:
-            return artist
+            return format_tag_values(artist)
         if not album_artist or artist != album_artist:
-            return artist
+            return format_tag_values(artist)
         return ''
 
     pieces = []
     if item.get('artist'):
-        pieces.append(item['artist'])
+        pieces.append(format_tag_values(item['artist']))
     if item.get('album'):
         album = item['album']
         pieces.append(f"{C.DIM}{C.ITALIC}{album}{C.RESET}")
@@ -610,7 +731,7 @@ def _queue_column_specs(columns: list[str]) -> list[Column]:
 
     return [
         Column(style='normal', align='left', flex=False, min_width=6, max_width=40, max_frac=0.65, gap=0),
-        Column(style='normal', align='left', flex=True, min_width=10, max_width=None, max_frac=1.0, gap=2, priority=1),
+        Column(style='normal', align='left', flex=True, min_width=10, max_width=None, max_frac=1.0, priority=1),
     ]
 
 
@@ -810,18 +931,33 @@ def volume_from_click(row: int, col: int) -> int | None:
     return int(round(max(0.0, min(1.0, frac)) * 100))
 
 
+def progress_from_click(row: int, col: int) -> float | None:
+    """If (row, col) lands on the horizontal progress bar, return the fraction of
+    the track that column represents (0.0–1.0); else None. The '[' and ']' caps
+    count as the two ends, so clicking either edge seeks to the start / end."""
+    if _last_prog_row is None or _last_prog_col is None or _last_prog_w <= 0:
+        return None
+    if row != _last_prog_row:
+        return None
+    lo, hi = _last_prog_col - 1, _last_prog_col + _last_prog_w   # include the caps
+    if not (lo <= col <= hi):
+        return None
+    if _last_prog_w <= 1:
+        return 0.0
+    frac = (col - _last_prog_col) / (_last_prog_w - 1)
+    return max(0.0, min(1.0, frac))
+
+
 def hint_click_key(row: int, col: int) -> str | None:
     """The synthesised key for a click on a controls hint glyph, or None."""
     return _last_hint_cells.get((row, col))
 
 
 def _movement_roman(s: str) -> str:
-    """Convert an integer string to Roman numerals; pass non-numeric strings through."""
-    try:
-        n = int(s)
-        return ui_utils.roman(n) if n > 0 else s
-    except (ValueError, TypeError):
-        return s
+    """A movement number as a Roman numeral — the convention for classical
+    movements. Non-numeric (or unnumbered) values pass through unchanged.
+    """
+    return numbering.roman(s) or s
 
 
 def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
@@ -836,6 +972,17 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
         fr = audio.get(frame_id)
         return str(fr.text[0]).strip() if (fr is not None and getattr(fr, 'text', None)) else ""
 
+    def _txts(frame_id: str) -> str:
+        """A list-like frame's values for display, comma-separated.
+
+        `_txt` returns only `text[0]`, which silently hid every value after the
+        first on a duet credit or a two-genre track.
+        """
+        fr = audio.get(frame_id)
+        if fr is None or not getattr(fr, 'text', None):
+            return ""
+        return format_value_list(list(fr.text))
+
     def _frac(frame_id: str) -> tuple[str, str]:
         """Return (current, total) from a fractional frame like '3/12'."""
         clean = re.sub(r'\s+', ' ', _txt(frame_id))
@@ -843,7 +990,7 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
         return (parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
 
     title = _txt('TIT2') or os.path.splitext(os.path.basename(file_path))[0]
-    artist = _txt('TPE1') or _txt('TPE2')
+    artist = _txts('TPE1') or _txts('TPE2')
     album = _txt('TALB')
 
     lines: list[str] = []
@@ -867,7 +1014,7 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
         year_match = re.search(r'\b\d{4}\b', year_src)
         if year_match:
             details.append(year_match.group(0))
-        genre = _txt('TCON')
+        genre = _txts('TCON')
         if genre:
             details.append(genre)
 
@@ -878,26 +1025,30 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
         track, track_total = _frac('TRCK')
 
         def _track_str(t: str, total: str) -> str:
-            """Format a track number, appending the total when known."""
+            """TRCK in display form: 'Track 3 of 12', or 'Track 3' with no total."""
             return f"Track {t} of {total}" if (t and total) else f"Track {t}"
 
         def _disc_str(d: str, total: str) -> str:
-            """Format a disc number, appending the total when known."""
+            """TPOS in display form: 'Disc 1 of 2', or 'Disc 1' with no total."""
             return f"Disc {d} of {total}" if (d and total) else f"Disc {d}"
 
-        if work or movement:
-            # Classical: work + movement (Roman numerals are conventional here).
-            if work:
-                details.append(work)
-            if movement:
-                details.append(f"Movement {_movement_roman(movement)}")
-        elif disc_subtitle or (disc_total.isdigit() and int(disc_total) > 1):
-            # Multi-disc / boxed set: disc (or its subtitle) + track.
-            details.append(disc_subtitle or _disc_str(disc, disc_total))
-            if track:
-                details.append(_track_str(track, track_total))
-        elif track:
-            # Plain single-disc track.
+        # Classical: the work, then its movement in Roman numerals. These sit
+        # alongside the disc/track fields rather than replacing them.
+        if work:
+            details.append(work)
+        if movement:
+            details.append(f"Movement {_movement_roman(movement)}")
+
+        # Which part of the set this is: the disc subtitle names it better than a
+        # number ever does, so TSST wins and TPOS is the fallback.
+        if disc_subtitle:
+            details.append(disc_subtitle)
+        elif disc:
+            details.append(_disc_str(disc, disc_total))
+
+        # A movement number already says where the track sits in the work, so the
+        # track number would only repeat it — show one or the other, never both.
+        if track and not movement:
             details.append(_track_str(track, track_total))
 
         if details:

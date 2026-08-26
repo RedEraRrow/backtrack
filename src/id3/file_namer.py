@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 import re
 
+from src.utils import numbering
+
 from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[attr-defined]
 from mutagen.mp4 import MP4  # type: ignore[reportPrivateImportUsage]
 
@@ -62,6 +64,7 @@ PRESETS: list[tuple[str, str]] = [
     ('%artist% - %title%', 'Artist - Song.mp3'),
     ('%album% - %track% - %title%', 'Album - 01 - Song.mp3'),
     ('%title%', 'Song.mp3'),
+    ('%track:r% - %title%', 'IV - Song.mp3'),
 ]
 
 # Single-text ID3 frames that map one-to-one to a token.
@@ -81,7 +84,8 @@ _MP4_TEXT: dict[str, str] = {
 }
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-_TOKEN_RE = re.compile(r'%([a-zA-Z]+)%')
+# %token%, optionally with a number style and case: %track:r%, %disc:en:u%.
+_TOKEN_RE = re.compile(r'%([a-zA-Z]+)(?::([a-zA-Z]+))?(?::([a-zA-Z]+))?%')
 
 _MP3_EXTS = ('.mp3',)
 # Raw .aac (ADTS) has no MP4 atoms — not tag-writable (see tag_writer).
@@ -213,15 +217,29 @@ def sanitize(name: str) -> str:
 def render(pattern: str, tokens: dict[str, str]) -> str:
     """Expand a %token% pattern with `tokens` and sanitise → a base name (no ext)."""
     def _sub(m: re.Match) -> str:
-        """Look up one %token% match's value, blank if absent."""
-        return tokens.get(m.group(1).lower(), '')
+        """Look up one %token% match's value, blank if absent.
+
+        A trailing style renders a numeric token as roman or words —
+        ``%track:r%`` → IV, ``%disc:en%`` → Two, ``%movementno:r:l%`` → iv.
+        A non-numeric value is returned untouched.
+        """
+        val = tokens.get(m.group(1).lower(), '')
+        style = (m.group(2) or '').lower()
+        if val and style in numbering.STYLES:
+            return numbering.render(val, style, (m.group(3) or '').lower())
+        return val
     return sanitize(_cleanup(_TOKEN_RE.sub(_sub, pattern)))
 
 
 def unknown_tokens(pattern: str) -> list[str]:
     """Tokens in the pattern that aren't recognised (case-insensitive)."""
-    return sorted({m.group(1) for m in _TOKEN_RE.finditer(pattern)
-                   if m.group(1).lower() not in TOKENS})
+    bad = set()
+    for m in _TOKEN_RE.finditer(pattern):
+        if m.group(1).lower() not in TOKENS:
+            bad.add(m.group(1))
+        elif m.group(2) and m.group(2).lower() not in numbering.STYLES:
+            bad.add(f"{m.group(1)}:{m.group(2)}")
+    return sorted(bad)
 
 
 def artists_vary(paths: list[str], token_cache: dict[str, dict] | None = None) -> bool:

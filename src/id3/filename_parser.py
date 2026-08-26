@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import os
 import re
+
+from src.utils import numbering
 from dataclasses import dataclass, field
 
 _AUDIO_EXTS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac', '.flac', '.ogg', '.opus', '.wav', '.wma')
@@ -249,8 +251,10 @@ def parse_one(path: str, known_artist: str | None = None, root: str | None = Non
     # "-" is treated as title punctuation and the whole residual is the title.
     fn_artist, split_title = _split_artist_title(residual)
     if is_comp:
+        # Flag the compilation, but don't *write* "Various Artists": the app
+        # derives that name from the tracks, so storing it would replace an
+        # inference with data — and there's nothing to fill in here anyway.
         d.compilation = True
-        d.album_artist = VARIOUS_ARTISTS
         d.artist = fn_artist                       # per-track artist from the name
         title = split_title
     else:
@@ -360,6 +364,13 @@ _TEMPLATE_TOKENS = {
 }
 
 
+# Number styles a numeric token can match instead of digits.
+_STYLE_FRAGMENTS = {
+    'r': numbering.ROMAN_FRAGMENT,
+    'en': numbering.WORD_FRAGMENT,
+}
+
+
 class TemplateError(ValueError):
     """Raised when a template string is malformed."""
 
@@ -394,10 +405,11 @@ def _fields_from_groups(groups: dict, known_artist: str | None = None) -> Derive
         if field is None:
             continue
         if field in _NUMERIC_FIELDS:
-            try:
-                setattr(d, field, int(val))
-            except (TypeError, ValueError):
-                pass
+            # Digits, a Roman numeral, or words — so a capture of "III" or
+            # "three" lands as 3 whether it came from a template or a raw regex.
+            num = numbering.parse(val)
+            if num is not None:
+                setattr(d, field, num)
         elif field == 'year':
             d.year = val
         else:                                   # title / artist / album_artist / album
@@ -459,7 +471,7 @@ def compile_template(template: str) -> re.Pattern:
     title 'Song'. ``%ignore%`` swallows a run of characters without capturing
     (handy for dates or noise you don't want to keep).
     """
-    parts = re.split(r'(%[a-z]+%)', template)
+    parts = re.split(r'(%[a-z]+(?::[a-z]+)?%)', template)
     used: set[str] = set()
     out = ['^']
     have_token = False
@@ -467,7 +479,7 @@ def compile_template(template: str) -> re.Pattern:
         if not part:
             continue
         if part.startswith('%') and part.endswith('%'):
-            name = part[1:-1]
+            name, _, style = part[1:-1].partition(':')
             if name == 'ignore':
                 out.append(r'.+?')
                 have_token = True
@@ -478,6 +490,12 @@ def compile_template(template: str) -> re.Pattern:
             if group in used:
                 raise TemplateError(f"Token for '{group}' used more than once")
             used.add(group)
+            if style:
+                # A number style makes the token match roman numerals or words
+                # instead of digits ("Act %track:r%", "Series %disc:en%").
+                if group not in _NUMERIC_FIELDS or style not in _STYLE_FRAGMENTS:
+                    raise TemplateError(f"%{name}% takes no '{style}' number style")
+                frag = f'(?P<{group}>{_STYLE_FRAGMENTS[style]})'
             out.append(frag)
             have_token = True
         else:

@@ -11,6 +11,7 @@ if __name__ == '__main__' and __package__ in (None, ''):
     import os
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+from src.utils import prompt as _prompt   # shared widget chrome (hints/transport)
 from src.utils.prompt_core import (
     _Widget, _read_key, _wait_for_keypress,
     _set_raw, _restore_term_attrs, _get_term_attrs,
@@ -1283,7 +1284,7 @@ def timezone_select(initial_offset: str = "") -> str | None:
         ESC (search non-empty): clear search
         BACKSPACE (search non-empty): clear search
         ENTER: confirm, return offset string
-        q/Q: quit (_state.QUIT_REQUESTED = True), return current offset string
+        printable keys: typed into the search box (so 'q' searches, it does not quit)
 
     Returns:
         "Z" for UTC+0, "+05:30" for UTC+5:30, "-08:00" for UTC-8, or None on cancel.
@@ -1409,10 +1410,11 @@ def timezone_select(initial_offset: str = "") -> str | None:
                 lines.append("")
                 zone_rows_emitted += 1
 
-        # Hint bar
-        hint = _hint(("←→", "offset"), ("↑↓", "zone"), ("↵", "confirm"), ("esc", "cancel/clear"))
-        hint_lines = hint.splitlines()
-        hint_line_count = len(hint_lines)
+        # Hint bar — via the shared chrome, so it carries the transport keys
+        # while background audio is playing and its keys are clickable.
+        _tz_pairs = [("←→", "offset"), ("↑↓", "zone"),
+                     ("↵", "confirm"), ("esc", "cancel/clear")]
+        hint_line_count = len(_prompt.chrome_hint_lines(_tz_pairs))
 
         # Map fills remaining rows — search line is always 1 slot (blank when empty)
         fixed_rows = 1 + 1 + MAX_ZONE_ROWS + hint_line_count  # strip + search + zones + hints
@@ -1424,10 +1426,10 @@ def timezone_select(initial_offset: str = "") -> str | None:
         map_lines = _render_world_map(oh, om, tzs, map_cols, map_rows, cur_tz_idx)
         lines.extend(map_lines)
 
-        lines.extend(hint_lines)
-
+        _prompt.append_chrome(lines, _tz_pairs, _hint_cells)
         w.render(lines)
 
+    _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
     result = None
     try:
         _set_raw(fd)
@@ -1448,6 +1450,14 @@ def timezone_select(initial_offset: str = "") -> str | None:
                 continue
 
             key = _read_key(fd)
+
+            _ch = _prompt.consume_chrome(key, _hint_cells)
+            if _ch is _prompt.CHROME_HANDLED:
+                continue
+            if _ch is _prompt.CHROME_REDRAW:
+                w.anchor_reset(); _render(); continue
+            if _ch is not None:
+                key = _ch
 
             if key in ('CTRL_C',):
                 break

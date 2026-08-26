@@ -16,6 +16,7 @@ import mutagen.id3
 from mutagen.id3._frames import APIC, USLT
 
 from src.utils import ui_utils
+from src.utils.prompt_core import _visible_rows
 from src.utils.ui_utils import Colors as C, get_terminal_height, get_terminal_width
 from src.art.album_art import render_album_art
 from src.music_library import refresh_library_entry
@@ -30,7 +31,10 @@ from src.id3.id3_tag_handler import (
     rename_frame,
     save_id3,
     create_apic_frame,
+    pick_nearby_cover,
     _EXT_TO_MIME,
+    _PICTURE_TYPES,
+    _prompt_for_image_metadata,
     parse_composite_tag_id,
 )
 
@@ -44,7 +48,6 @@ _TAG_COLUMNS = [
 
 
 _SORT_SOURCES: dict[str, str] = {
-    'TSOT': 'TIT2',
     'TSOA': 'TALB',
     'TSOP': 'TPE1',
     'TSO2': 'TPE2',
@@ -106,16 +109,20 @@ _NAME_SUFFIXES: frozenset[str] = frozenset({
 _INITIAL_RE = re.compile(r'^[A-Za-zÀ-ÖØ-öø-ÿ]\.$')
 
 # Delimiters that separate multiple artists in a single tag value.
-# NOTE: "and his/her/their/the" is NOT a delimiter — it describes a backing
-# ensemble belonging to the lead artist (e.g. "Paul Tremaine And His Aristocrats").
+# NOTE: "and his/her/their" is NOT a delimiter — a *possessive* names a backing
+# ensemble belonging to the lead artist ("Paul Tremaine And His Aristocrats").
+# "& The …" IS split, though: "The Mildred Snitzer Orchestra" is a named act in
+# its own right, so "Jeff Goldblum & The Mildred Snitzer Orchestra" sorts as
+# "Goldblum, Jeff/Mildred Snitzer Orchestra, The" rather than being inverted
+# whole into "Orchestra, Jeff Goldblum & The Mildred Snitzer".
 _LIST_SPLIT_RE = re.compile(
     r'\s*(?:'
-    r'(?<!\w)&(?!\s*(?:his|her|their|the)\b)'   # & but not "& His/Her/Their/The" (backing band)
+    r'(?<!\w)&(?!\s*(?:his|her|their)\b)'      # & but not "& His/Her/Their" (backing band)
     r'|\|'
     r'|[/\\]'
     r'|\bfeaturing\b|\bfeat\.?\b|\bft\.?\b'
-    r'|\band(?=\s+\w)(?!\s+(?:his|her|their|the)\b)'  # "and X" but not "and his/her/their/the"
-    r'|\bwith(?=\s+\w)(?!\s+(?:his|her|their|the)\b)'
+    r'|\band(?=\s+\w)(?!\s+(?:his|her|their)\b)'  # "and X" but not "and his/her/their"
+    r'|\bwith(?=\s+\w)(?!\s+(?:his|her|their)\b)'
     r'|\bvs\.?\b'
     r'|\+'
     r')\s*',
@@ -420,7 +427,9 @@ def _parse_lrc_file(lrc_path: str) -> list[tuple[str, int | None]]:
 def _import_from_lrc(file_path: str, audio: ID3, tag_id: str) -> None:
     """Import an LRC file's lyrics, writing timed lines to SYLT and/or plain text to USLT."""
     default_lrc = os.path.splitext(file_path)[0] + ".lrc"
-    lrc_path = prompt.text("LRC file path:", default=default_lrc)
+    # prompt.path, not prompt.text: this is a filesystem location, so it gets
+    # Tab-completion against the directory listing like every other path field.
+    lrc_path = prompt.path("LRC file path:", default=default_lrc)
     if not lrc_path or not os.path.exists(lrc_path):
         ui_utils.show_status("File not found." if lrc_path else "Cancelled.")
         return
@@ -455,97 +464,290 @@ def _import_from_lrc(file_path: str, audio: ID3, tag_id: str) -> None:
         ui_utils.show_status("Imported to USLT.")
 
 
-def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC) -> bool:
-    """Interactive loop to view, preview, replace, or re-describe a single APIC (cover art) frame."""
-    view_mode = "viu"
-    cols = get_terminal_width()
+# Rendered art, cached by (image bytes, width): it used to be decoded and
+# re-rendered from the JPEG on every keystroke of the art screens.
+_ART_CACHE: dict[tuple[int, int], str] = {}
+_ART_CACHE_MAX = 8
+
+# Cover-art actions: (value, label, dim note). Glyph + two spaces + sentence
+# case, "…" when the row opens a further prompt.
+# Plain sentence-case labels: the app's only established row glyphs are "▸" for
+# play and "＋" for add, and most action rows (Copy / Paste / Edit / Rename /
+# Delete on the tag screen) carry none at all.
+_APIC_ACTIONS = [
+    ('open',    "Open in image viewer",  "the system default app"),
+    ('replace', "Replace image…",        "pick a nearby file or type a path"),
+    ('meta',    "Type and description…", None),          # note = current type
+    ('export',  "Save a copy…",          None),          # note = file size
+    ('remove',  "Remove image",          "deletes this frame"),
+]
+
+_APIC_ACTION_COLUMNS = [
+    prompt.Column(style='primary', flex=True),                    # action
+    prompt.Column(style='dynamic-dim', align='right', pin=True),  # what it does
+]
+
+
+# A comfortable cover thumbnail: big enough to recognise, never filling the
+# screen (the player view is where full-size art belongs).
+_ART_MAX_WIDTH = 64
+_ART_BREATHING_ROWS = 2          # rows left free below the art box
+# Below this the picture is mush; the facts line says more than it would.
+_MIN_ART_ROWS = 6
+
+
+def _art_rows_available(reserved_rows: int) -> int:
+    """Rows the art box may occupy: what's left after the chrome, less breathing
+    room, so the picture never runs into the first action row."""
+    return _visible_rows() - reserved_rows - 2 - _ART_BREATHING_ROWS   # -2 box edges
+
+
+def _art_width(reserved_rows: int = 0) -> int:
+    """Art width in cells for the space left after `reserved_rows` of chrome.
+
+    Half-block rendering packs two pixel rows into a cell, so a square image is
+    about half as many rows tall as it is wide — hence the doubling. Capped at
+    `_ART_MAX_WIDTH` so a big window gets a comfortable thumbnail rather than
+    wallpaper (the old `height × 1.5` overflowed the screen entirely).
+    """
+    art_rows = max(3, _art_rows_available(reserved_rows))
+    cols = get_terminal_width() - 2 * ui_utils.MARGIN_H - 4     # box + margins
+    return max(12, min(cols, art_rows * 2, _ART_MAX_WIDTH))
+
+
+def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0) -> list[str]:
+    """The art in a rounded box, centred, comfortably sized for what's left.
+
+    Rendered, measured, and re-rendered narrower if it still doesn't fit — the
+    same fit-to-height approach the player view uses.
+    """
+    avail_rows = _art_rows_available(reserved_rows)
+    if avail_rows < _MIN_ART_ROWS:
+        # Not enough height left for art worth looking at — the facts line in the
+        # header carries the detail instead. (This is what the old manual "view
+        # info" mode was for; it now happens by itself.)
+        return [f"{' ' * ui_utils.MARGIN_H}{C.DIM}— art hidden (window too short) —{C.RESET}"]
+
+    width = _art_width(reserved_rows)
+    art = _apic_art(apic_frame, width).splitlines()
+    if len(art) > avail_rows:
+        # Taller than the space at this width (a portrait image): shrink in
+        # proportion to how far over it is, then hard-clip as a backstop.
+        width = max(12, int(width * avail_rows / len(art)))
+        art = _apic_art(apic_frame, width).splitlines()[:avail_rows]
+
+    inner = max((ui_utils.visual_len(l) for l in art), default=width)
+    pad = " " * max(ui_utils.MARGIN_H, (get_terminal_width() - inner - 4) // 2)   # centred
+    return ([f"{pad}{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}"]
+            + [f"{pad}{C.DIM}│{C.RESET} {line}{' ' * (inner - ui_utils.visual_len(line))} "
+               f"{C.DIM}│{C.RESET}" for line in art]
+            + [f"{pad}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}"]
+            + [""] * _ART_BREATHING_ROWS)
+
+
+def _apic_art(apic_frame: APIC, width: int) -> str:
+    """Terminal art for an APIC frame, cached so a redraw costs nothing."""
+    data = getattr(apic_frame, 'data', b"") or b""
+    key = (hash(data), width)
+    art = _ART_CACHE.get(key)
+    if art is None:
+        art = _convert_apic_to_viu(apic_frame, width=width)
+        if len(_ART_CACHE) >= _ART_CACHE_MAX:
+            _ART_CACHE.clear()
+        _ART_CACHE[key] = art
+    return art
+
+
+def _rounded_header(left_styled: str, left_vis: int, right: str) -> list[str]:
+    """A one-line rounded box: styled text left, dim text right, then a blank row.
+
+    The same shape as this file's track header and the bulk-edit header, so the
+    art screen reads as part of the set. `right` is trimmed, then dropped
+    entirely, when the window is too narrow to hold both.
+    """
+    mh = ui_utils.MARGIN_H
+    inner = max(12, get_terminal_width() - 2 * mh - 4)
+    if right and left_vis + len(right) + 2 > inner:
+        right = ""                                  # no room for both
+    gap = max(1, inner - left_vis - len(right))
+    line = f"{left_styled}{' ' * gap}{C.DIM}{right}{C.RESET}"
+    return [
+        f"{' ' * mh}{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}",
+        f"{' ' * mh}{C.DIM}│{C.RESET} {line} {C.DIM}│{C.RESET}",
+        f"{' ' * mh}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}",
+        "",
+    ]
+
+
+def _picture_type_label(pic_type) -> str:
+    """Human label for an APIC picture-type byte."""
+    return dict(_PICTURE_TYPES).get(pic_type, f"type {pic_type}")
+
+
+def _apic_facts(apic_frame: APIC, budget: int = 999) -> str:
+    """What the image *is*, on one line: size, format, weight, colour mode.
+
+    Least useful facts drop first (colour mode, then format, then weight) so the
+    line fits `budget` columns instead of wrapping.
+    """
+    image, mime, img_data = _get_image_from_apic(apic_frame)
+    dims = ""
+    if image is not None:
+        h, w = image.shape[:2]
+        dims = f"{w}×{h} px"
+    kb = f"{len(img_data) / 1024:.0f} KB"
+    fmt = (mime or "").removeprefix("image/").upper() or "?"
+    mode = ""
+    if image is not None:
+        channels = image.shape[2] if len(image.shape) == 3 else 1
+        mode = {1: "greyscale", 3: "RGB", 4: "RGBA"}.get(channels, f"{channels}ch")
+
+    # Most useful first; drop from the end until it fits.
+    bits = [b for b in (dims, fmt, kb, mode) if b]
+    while bits and len(" · ".join(bits)) > budget:
+        bits.pop()
+    return " · ".join(bits)
+
+
+def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
+                   file_path: str = "") -> bool:
+    """View and edit one APIC (cover art) frame. Returns True if anything changed.
+
+    One screen: the art with a facts line above it and the actions below, rather
+    than the old pair of mutually exclusive "View Art" / "View Info" rows — the
+    facts are small enough to show alongside the picture. Saving is left to the
+    caller, which also refreshes the library entry.
+    """
+    changed = False
+    # mutagen keys an APIC frame by its description ("APIC:Back sleeve"), so the
+    # key moves whenever the description changes. Track it: deleting by the key we
+    # were *called* with removed nothing on a second edit and left the earlier
+    # frame behind — you ended up with two near-identical images.
+    key = tag_name
+
+    # Rows this screen spends on anything but the art: the boxed header (3 + a
+    # blank), the prompt message, the two above/below indicators, the actions and
+    # the hint bar. The art gets what's left.
+    _CHROME_ROWS = 4 + 1 + 2 + len(_APIC_ACTIONS) + 2
 
     def _apic_header() -> list[str]:
-        """Build the header lines: title/size line plus rendered art or info block."""
-        art_width = min(round(get_terminal_height()*1.5),get_terminal_width())
-        art = _convert_apic_to_viu(apic_frame, width=art_width)
-        image, mime, img_data = _get_image_from_apic(apic_frame)
-        h = w = 0
-        if image is not None:
-            h, w = image.shape[:2]
-        kb = len(img_data) / 1024
-        info = f"{w}×{h}px  {mime}  {kb:.0f} KB"
+        """One boxed line of everything the image is, then the centred art."""
+        pic_type = _picture_type_label(getattr(apic_frame, 'type', 3))
+        desc = (getattr(apic_frame, 'desc', '') or "").strip()
 
-        lines = [
-            f"  {C.BOLD}{tag_name}{C.RESET}",
-            f"  {C.DIM}{info}{C.RESET}",
-            f"{C.DIM}{'─' * cols}{C.RESET}"
-        ]
+        # The base frame id only: mutagen keys APIC frames by description, so
+        # display_tag_id(tag_name) would print the description a second time.
+        tag_txt = parse_composite_tag_id(key)[0] or "APIC"
+        left_plain = f"{tag_txt} · {pic_type}" + (f" · “{desc}”" if desc else "")
+        left = (f"{C.BOLD}{tag_txt}{C.RESET}{C.DIM} · {pic_type}{C.RESET}"
+                + (f"{C.DIM} · “{desc}”{C.RESET}" if desc else ""))
 
-        if view_mode == "viu":
-            lines.extend(art.splitlines())
-        elif view_mode == "info":
-            if image is not None:
-                h, w = image.shape[:2]
-                channels = image.shape[2] if len(image.shape) == 3 else 1
-                color_mode = {1: "Grayscale", 3: "RGB", 4: "RGBA"}.get(channels, f"{channels}ch")
-                size_kb = len(getattr(apic_frame, 'data', b"")) / 1024
-                lines += [
-                    f"  Description : {getattr(apic_frame, 'desc', '') or '(none)'}",
-                    f"  Dimensions  : {w} × {h} px",
-                    f"  Color mode  : {color_mode}",
-                    f"  File size   : {size_kb:.1f} KB",
-                ]
-
-        lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+        inner = max(12, get_terminal_width() - 2 * ui_utils.MARGIN_H - 4)
+        lines = _rounded_header(left, len(left_plain),
+                               _apic_facts(apic_frame, max(0, inner - len(left_plain) - 2)))
+        if _visible_rows() >= 14:
+            lines.extend(_art_lines_boxed(apic_frame, _CHROME_ROWS))
         return lines
 
+    def _replace_frame(data: bytes, mime: str, pic_type: int, desc: str) -> bool:
+        """Swap this frame for a rebuilt one, re-keying it (mutagen keys APIC
+        frames by description, so editing `.desc` in place left a stale key)."""
+        nonlocal apic_frame, key
+        new_frame = create_apic_frame(data, mime, pic_type, desc)
+        if new_frame is None:
+            ui_utils.show_status("Could not build the image frame.")
+            return False
+        audio_obj.delall(key)
+        audio_obj.add(new_frame)
+        apic_frame = new_frame
+        key = getattr(new_frame, 'HashKey', key)     # follow the frame's new key
+        return True
+
     while True:
-        actions = []
-        if view_mode != "viu":
-            actions.append("View Art")
-        if view_mode != "info":
-            actions.append("View Info")
-        actions.extend(["Open Preview", "Replace", "Edit Description"])
+        kb = len(getattr(apic_frame, 'data', b"") or b"") / 1024
+        notes = {'meta': _picture_type_label(getattr(apic_frame, 'type', 3)),
+                 'export': f"{kb:.0f} KB"}
+        choices = [prompt.Choice(title=label, value=value,
+                                 cells=[label, note or notes.get(value, "")])
+                   for value, label, note in _APIC_ACTIONS]
 
-        action = prompt.select("Action:", choices=actions, header=_apic_header)
+        action = prompt.select("Cover art:", choices=choices,
+                               columns=_APIC_ACTION_COLUMNS, header=_apic_header)
 
-        if action == "View Art":
-            view_mode = "viu"
-        elif action == "View Info":
-            view_mode = "info"
-        elif action == "Open Preview":
+        if not action:
+            return changed
+
+        if action == 'open':
             if _open_apic_preview(apic_frame):
-                ui_utils.show_status("Opening...")
+                ui_utils.show_status("Opening…")
             else:
-                ui_utils.show_status("Could not open preview.")
-        elif action == "Replace":
-            img_path = prompt.path("Path to new image:")
-            if img_path and os.path.isfile(img_path):
-                try:
-                    with open(img_path, 'rb') as f:
-                        new_data = f.read()
-                    ext = os.path.splitext(img_path)[1].lower()
-                    mime = _EXT_TO_MIME.get(ext, 'image/jpeg')
-                    new_frame = create_apic_frame(
-                        new_data, mime, 3,
-                        getattr(apic_frame, 'desc', '')
-                    )
-                    if new_frame is not None:
-                        audio_obj.delall(tag_name)
-                        audio_obj.add(new_frame)
-                        apic_frame = new_frame
-                    ui_utils.show_status("Image replaced.")
-                except (OSError, IOError) as e:
-                    ui_utils.show_status(f"Error: {e}")
-            elif img_path:
+                ui_utils.show_status("Could not open the image.")
+
+        elif action == 'replace':
+            # The same ranked picker the tag editor's image field uses: nearby
+            # covers first, with a "type a path" escape — rather than demanding
+            # a full path typed from memory.
+            img_path = pick_nearby_cover(file_path) if file_path else prompt.path("Image file:")
+            if not isinstance(img_path, str) or not img_path:
+                continue
+            if not os.path.isfile(img_path):
                 ui_utils.show_status("File not found.")
-        elif action == "Edit Description":
-            new_desc = prompt.text(
-                f"Description:",
-                default=getattr(apic_frame, 'desc', '')
-            )
-            if new_desc is not None:
-                apic_frame.desc = new_desc
-                ui_utils.show_status("Updated.")
-        elif not action:
-            save_id3(audio_obj)
-            return True
+                continue
+            try:
+                with open(img_path, 'rb') as f:
+                    new_data = f.read()
+            except OSError as e:
+                ui_utils.show_status(f"Could not read the image: {e}")
+                continue
+            mime = _EXT_TO_MIME.get(os.path.splitext(img_path)[1].lower(), 'image/jpeg')
+            # Keep the type and description — replacing the picture used to
+            # silently reset both (every image became "Cover (front)").
+            if _replace_frame(new_data, mime,
+                              getattr(apic_frame, 'type', 3),
+                              getattr(apic_frame, 'desc', '') or ''):
+                changed = True
+                ui_utils.show_status("Image replaced.")
+
+        elif action == 'meta':
+            meta = _prompt_for_image_metadata(
+                initial_type=getattr(apic_frame, 'type', 3),
+                initial_desc=getattr(apic_frame, 'desc', '') or '',
+                header=_apic_header)
+            if meta is None:
+                continue
+            pic_type, desc = meta
+            if _replace_frame(getattr(apic_frame, 'data', b""),
+                              getattr(apic_frame, 'mime', 'image/jpeg'),
+                              pic_type, desc):
+                changed = True
+                ui_utils.show_status(f"{_picture_type_label(pic_type)} · "
+                                     f"{desc if desc else 'no description'}")
+
+        elif action == 'export':
+            data = getattr(apic_frame, 'data', b"") or b""
+            mime = getattr(apic_frame, 'mime', 'image/jpeg')
+            ext = next((e for e, m in _EXT_TO_MIME.items() if m == mime), '.jpg')
+            default = os.path.join(os.path.dirname(file_path) if file_path else os.getcwd(),
+                                   f"cover{ext}")
+            dest = prompt.path("Save the image to:", default=default)
+            if not dest:
+                continue
+            dest = os.path.abspath(os.path.expanduser(dest))
+            if os.path.exists(dest) and not prompt.confirm(
+                    f"Overwrite {os.path.basename(dest)}?"):
+                continue
+            try:
+                with open(dest, 'wb') as f:
+                    f.write(data)
+                ui_utils.show_status(f"Saved to {os.path.basename(dest)}.")
+            except OSError as e:
+                ui_utils.show_status(f"Could not save the image: {e}")
+
+        elif action == 'remove':
+            if prompt.confirm(f"Remove {display_tag_id(key)}? Cannot be undone."):
+                audio_obj.delall(key)
+                ui_utils.show_status("Image removed.")
+                return True
 
 
 def inspect_tag_loop(
@@ -674,7 +876,7 @@ def inspect_tag_loop(
             info = get_tag_info(tag_id)
             friendly = f" ({info.name[0]})" if info else ""
             category = get_tag_category(tag_id)
-            val = summarize_tag_value(tag_id, audio[tag_id])
+            val = summarize_tag_value(tag_id, audio[tag_id], display=True)
             return [[(display_tag_id(tag_id), 'primary'), (friendly, 'dynamic-dim')], category, val]
 
         # Read-only filesystem path row — "⌁ File path" white (bold when active),
@@ -765,10 +967,10 @@ def inspect_tag_loop(
                 ]
 
                 if category == 'image':
-                    art_width = min(round(get_terminal_height()*1.5),get_terminal_width())
-                    art = _convert_apic_to_viu(raw_val, width=art_width)
-                    lines.extend(art.splitlines())
-                    lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
+                    # 2 header lines + message + indicators + up to 6 action rows
+                    # + hints. A literal, not len(actions): this closure is defined
+                    # before that list is built.
+                    lines.extend(_art_lines_boxed(raw_val, 2 + 1 + 2 + 6 + 2))
 
                 if category == 'people':
                     people = getattr(raw_val, 'people', [])
@@ -798,7 +1000,7 @@ def inspect_tag_loop(
             action = prompt.select("Action:", choices=actions, header=_tag_header)
 
             if action == "Manage" and category == 'image':
-                if _edit_apic_tag(audio, choice, raw_val):
+                if _edit_apic_tag(audio, choice, raw_val, file_path):
                     _save(audio)
                 break
 
@@ -824,7 +1026,7 @@ def inspect_tag_loop(
                         _save(audio)
                         ui_utils.show_status("Updated.")
                     else:
-                        ui_utils.show_status("Could not create frame - wrong data type for this tag.")
+                        ui_utils.show_status("Could not create frame — wrong data type for this tag.")
 
             elif action == "Rename":
                 new_id = prompt.text("New tag ID:")
@@ -849,7 +1051,7 @@ def inspect_tag_loop(
                         _save(audio)
                         ui_utils.show_status("Updated.")
                     else:
-                        ui_utils.show_status("Could not create frame - check data format.")
+                        ui_utils.show_status("Could not create frame — check data format.")
                     break
 
             elif action == "Delete":

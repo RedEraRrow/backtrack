@@ -12,7 +12,7 @@ from src.utils import ui_utils
 from src.music_library import (
     build_library, save_library_cache,
     start_background_sync,
-    get_grouped_data, get_group_sort_key, sort_library_logic,
+    get_grouped_data, get_group_sort_key, sort_library_logic, derive_album_credit, format_tag_values, album_year,
     to_num
 )
 from src.history import get_history, clear_history, get_recent_paths
@@ -20,7 +20,7 @@ from src import search as _search
 from src.playback.playback import music_player
 from src.playback.session import REPEAT_OFF, REPEAT_ONE, REPEAT_ALL, active_session, is_client
 from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
-from src.config import load_config, save_config
+from src.config import load_config, save_config, music_dirs, set_music_dirs
 from src.state import NAV_STACK
 from src.id3.id3_browser import inspect_tag_loop
 from src.id3.bulk_id3_manager import bulk_id3_manager
@@ -30,12 +30,12 @@ from src.id3.tag_registry import TAG_REGISTRY
 # carries explicit `cells`).
 _TRACK_COLUMNS = [
     prompt.Column(style='primary', max_frac=0.5),                # title (truncates)
-    prompt.Column(style='dynamic-dim', flex=True, align='left', gap=3, priority=1),  # featured artist — drops first when narrow
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=3),  # duration (pinned right, kept)
+    prompt.Column(style='dynamic-dim', flex=True, align='left', priority=1),  # featured artist — drops first when narrow
+    prompt.Column(style='dynamic-dim', align='right', pin=True),  # duration (pinned right, kept)
 ]
 _ALBUM_COLUMNS = [
     prompt.Column(style='primary', flex=True),                   # album name
-    prompt.Column(style='dynamic-dim', flex=True, align='left', gap=3),  # album artist
+    prompt.Column(style='dynamic-dim', flex=True, align='left'),  # album artist
 ]
 
 def _idx_of(choices: list, value, default: int = 0) -> int:
@@ -77,22 +77,21 @@ _ALBUM_SORTS = [("name", "Name (A–Z)"), ("year_new", "Year (newest)"), ("year_
 
 
 def _year_of(songs: list) -> int:
-    """First usable release year among a group's songs, else 0."""
-    for s in songs:
-        try:
-            y = int(str(s.get('year')))
-        except (ValueError, TypeError):
-            continue
-        if y:
-            return y
-    return 0
+    """The year an album sorts under — see `music_library.album_year`.
+
+    Was "the first song with an int-parseable year", which meant a dated file
+    ('2005-09-15 18:30:00') counted as year-less and a compilation inherited
+    whichever track happened to sort first.
+    """
+    return album_year(songs)
 
 
 def _album_artist_of(songs: list) -> str:
     """First non-empty album artist among a group's songs.
 
-    If no album artist exists and the group contains multiple distinct
-    track artists, treat it as a compilation and return Various Artists.
+    With no album artist, fall back to the credit derived from the track casts —
+    the same anchor rule the artist grouping uses, so the displayed credit and
+    the group a track is filed under can never disagree.
     """
     album_artists = [
         (s.get('album_artist') or '').strip()
@@ -102,15 +101,7 @@ def _album_artist_of(songs: list) -> str:
     if album_artists:
         return album_artists[0]
 
-    artists = [
-        (s.get('artist') or '').strip()
-        for s in songs
-        if s.get('artist')
-    ]
-    unique_artists = {a.lower() for a in artists if a}
-    if len(unique_artists) > 1:
-        return "Various Artists"
-    return next((a for a in artists if a), '')
+    return derive_album_credit(songs)
 
 
 def _sort_groups(names: list, grouped: dict, cat_key: str, mode: str) -> list:
@@ -156,8 +147,8 @@ _SEARCH_COLUMNS = [
     prompt.Column(style='dynamic-dim', max_frac=0.20, priority=5),
     prompt.Column(style='dynamic-dim', max_frac=0.20, priority=4),
     prompt.Column(style='dynamic-dim', max_frac=0.22, priority=1),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=2),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=3),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=2),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=3),
 ]
 
 
@@ -215,7 +206,7 @@ def _search_result_cells(result, tokens: list) -> list:
     """Build the columned, highlighted cells for one search result row."""
     s = result.song
     title = _hl_segments(s.get('title', ''), tokens, 'primary')
-    artist = _hl_segments(s.get('artist', ''), tokens, 'dynamic-dim')
+    artist = _hl_segments(format_tag_values(s.get('artist', '')), tokens, 'dynamic-dim')
     album = _hl_segments(s.get('album', ''), tokens, 'dynamic-dim')
     # Only fill the people column when people was the field that actually matched
     # (avoids weak subsequence hits populating it on a title/artist search).
@@ -226,7 +217,8 @@ def _search_result_cells(result, tokens: list) -> list:
     if 'genre' in result.matched_fields and not people and not any(
             _search.highlight_spans(str(s.get(f, '') or ''), tokens)
             for f in ('title', 'artist', 'album')):
-        album = album + [("  · ", 'dim')] + _hl_segments(str(s.get('genre', '') or ''), tokens, 'dynamic-dim')
+        album = album + [("  · ", 'dim')] + _hl_segments(
+            format_tag_values(s.get('genre', '')), tokens, 'dynamic-dim')
     dur = s.get('duration') or 0
     dur_str = ui_utils.format_time(int(dur)) if dur else ""
     return [title, artist, album, people, _disc_track_cell(s), dur_str]
@@ -252,9 +244,9 @@ def handle_search(library: list) -> str | None:
         mode = _SCOPE_CYCLE[scope['i']]
         return _ALL_SEARCH_FIELDS if mode == 'all' else [mode]
 
-    def _cycle() -> None:
-        """Advance the search scope to the next field in the cycle."""
-        scope['i'] = (scope['i'] + 1) % len(_SCOPE_CYCLE)
+    def _cycle(step: int = 1) -> None:
+        """Move the search scope along the cycle — Shift+Tab passes step=-1."""
+        scope['i'] = (scope['i'] + step) % len(_SCOPE_CYCLE)
 
     # Live fuzzy search: results re-rank on every keystroke, matched characters
     # highlighted, richer rows (title · artist · album · people · disc/track · dur).
@@ -268,7 +260,8 @@ def handle_search(library: list) -> str | None:
         choices: list = []
         if _show_editor and results:
             choices.append(prompt.Choice(
-                title=f"Edit tags — all {len(results)} results", value="__bulk_edit__"))
+                title=f"Edit tags — all {ui_utils.plural(len(results), 'result')}",
+                value="__bulk_edit__"))
         for r in results:
             choices.append(prompt.Choice(title=r.song.get('title', ''), value=r.song['path'],
                                          cells=_search_result_cells(r, tokens)))
@@ -277,11 +270,12 @@ def handle_search(library: list) -> str | None:
     def _hdr() -> list:
         mode = _SCOPE_CYCLE[scope['i']]
         label = "all fields" if mode == 'all' else mode
-        return _menu_header("Search", f"scope: {label} · Tab to change")()
+        return _menu_header("Search", f"scope: {label} · Tab / Shift+Tab to change")()
 
     selected = prompt.live_select(
         "Search:", _provider, columns=_SEARCH_COLUMNS,
-        header=_hdr, on_cycle=_cycle)
+        header=_hdr, on_cycle=_cycle,
+        count_of=lambda: len(_last['results']))
     if not selected:
         return None
 
@@ -294,9 +288,9 @@ def handle_search(library: list) -> str | None:
 
     _action_choices = ["Play"]
     if _show_lyrics and find_lyrics(selected):
-        _action_choices.append("Edit Lyrics")
+        _action_choices.append("Edit lyrics")
     if _show_editor:
-        _action_choices.append("Edit Metadata")
+        _action_choices.append("Edit metadata")
     _action_choices += _queue_action_choices()
 
     if len(_action_choices) == 1 or _autoplay():
@@ -316,11 +310,11 @@ def handle_search(library: list) -> str | None:
             return "QUIT_ALL"
     elif _handle_queue_action(action, selected, track_title):
         pass
-    elif action == "Edit Lyrics":
+    elif action == "Edit lyrics":
         ui_utils.clear_screen()
         lyrics_editor(selected)
         ui_utils.clear_screen()
-    elif action == "Edit Metadata":
+    elif action == "Edit metadata":
         ui_utils.clear_screen()
         inspect_tag_loop(selected, library_metadata=song_meta, library=library)
         ui_utils.clear_screen()
@@ -335,8 +329,8 @@ _HISTORY_COLUMNS = [
     prompt.Column(style='primary', flex=True),
     prompt.Column(style='dynamic-dim', max_frac=0.24, priority=4),
     prompt.Column(style='dynamic-dim', max_frac=0.24, priority=1),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=3),
-    prompt.Column(style='dynamic-dim', align='right', pin=True, gap=2, priority=2),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=3),
+    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=2),
 ]
 
 
@@ -403,7 +397,7 @@ def handle_history(library: list) -> str | None:
         song = next((s for s in library if s['path'] == path), None)
         if song:
             title = song.get('title') or os.path.splitext(os.path.basename(path))[0]
-            artist = (song.get('artist') or '').strip()
+            artist = format_tag_values(song.get('artist'))
             album = (song.get('album') or '').strip()
             artist = '' if artist == 'Unknown Artist' else artist
             album = '' if album == 'Unknown Album' else album
@@ -430,9 +424,9 @@ def handle_history(library: list) -> str | None:
     _cfg = load_config()
     _action_choices = ["Play"]
     if _cfg.get("show_lyrics_editor", True) and find_lyrics(selected):
-        _action_choices.append("Edit Lyrics")
+        _action_choices.append("Edit lyrics")
     if _cfg.get("show_metadata_editor", True):
-        _action_choices.append("Edit Metadata")
+        _action_choices.append("Edit metadata")
 
     if len(_action_choices) == 1 or _autoplay():
         action = "Play"
@@ -449,11 +443,11 @@ def handle_history(library: list) -> str | None:
         ui_utils.clear_screen()
         if res and res.get("status") == "QUIT_ALL":
             return "QUIT_ALL"
-    elif action == "Edit Lyrics":
+    elif action == "Edit lyrics":
         ui_utils.clear_screen()
         lyrics_editor(selected)
         ui_utils.clear_screen()
-    elif action == "Edit Metadata":
+    elif action == "Edit metadata":
         ui_utils.clear_screen()
         inspect_tag_loop(selected, library_metadata=song_meta, library=library)
         ui_utils.clear_screen()
@@ -503,36 +497,148 @@ def _handle_tag_name_preferences() -> None:
     ui_utils.show_status(f"Tag name preferences saved ({changed} changed).")
 
 
+def _rescan_library(config: dict, library_ref: list) -> int:
+    """Rebuild the cache from every configured directory and restart the sync."""
+    ui_utils.show_status("Re-scanning library…")
+    new_lib = build_library(
+        music_dirs(config),
+        ignore_hidden=config.get("ignore_hidden_files", False),
+    )
+    save_library_cache(new_lib, _async=False)
+    existing = library_ref[0]
+    existing.clear()
+    existing.extend(new_lib)
+    start_background_sync(existing)
+    return len(new_lib)
+
+
+def _music_dirs_menu(config: dict, library_ref: list) -> None:
+    """Add / remove the directories the library is built from.
+
+    Several roots are supported (a local folder plus an external drive, say);
+    they may nest, and a root that is temporarily missing keeps its tracks in the
+    cache rather than losing them.
+    """
+    _cursor = 0
+    while True:
+        dirs = music_dirs(config)
+        _choices: list = [prompt.Choice(title="＋  Add a directory…", value="__add__")]
+        for d in dirs:
+            missing = "" if os.path.isdir(d) else "  (not available)"
+            _choices.append(prompt.Choice(title=f"{d}{missing}", value=d))
+        if dirs:
+            _choices.append(prompt.separator())
+            _choices.append(prompt.Choice(title="Re-scan now", value="__rescan__"))
+
+        _sub = f"{len(dirs)} director{'y' if len(dirs) == 1 else 'ies'}"
+        choice = prompt.select("Music directories:", choices=_choices,
+                               header=_menu_header("Music Directories", _sub),
+                               index=_cursor)
+        if not choice:
+            return
+
+        _cursor = _idx_of(_choices, choice)
+
+        if choice == "__add__":
+            new_root = prompt.path("Directory to add:")
+            if not new_root:
+                continue
+            full = os.path.abspath(os.path.expanduser(new_root))
+            if not os.path.isdir(full):
+                ui_utils.show_status("Not a directory.")
+                continue
+            if any(os.path.normcase(full) == os.path.normcase(d) for d in dirs):
+                ui_utils.show_status("Already in the list.")
+                continue
+            set_music_dirs(config, dirs + [full])
+            save_config(config)
+            n = _rescan_library(config, library_ref)
+            ui_utils.show_status(f"Added — {n} tracks.")
+            continue
+
+        if choice == "__rescan__":
+            n = _rescan_library(config, library_ref)
+            ui_utils.show_status(f"Done — {n} tracks.")
+            continue
+
+        # An existing directory row: remove it (its tracks leave the library).
+        if choice in dirs:
+            if len(dirs) == 1 and not prompt.confirm(
+                    "That's the only directory — remove it and empty the library?"):
+                continue
+            if len(dirs) > 1 and not prompt.confirm(f"Remove {os.path.basename(choice) or choice}?"):
+                continue
+            set_music_dirs(config, [d for d in dirs if d != choice])
+            save_config(config)
+            n = _rescan_library(config, library_ref)
+            ui_utils.show_status(f"Removed — {n} tracks.")
+
+
+# Settings rows carry their current state in a right-hand column, so every
+# setting can be read without changing it: a tick/cross for the on/off ones, the
+# value itself for the rest. Labels are sentence case, like every other screen.
+_SETTINGS_COLUMNS = [
+    prompt.Column(style='primary'),                 # label — sized to its content
+    prompt.Column(style='dynamic-dim', flex=True),  # state, left-aligned just after
+]
+
+# The app's one tick and one cross: U+2714 HEAVY CHECK MARK and U+2718 HEAVY
+# BALLOT X — a matched heavy pair, the same tick the sort picker, multi-select
+# rows and "Save changes" already use. (U+2717, the old cross, is drawn
+# brush-style in most fonts and read as a different kind of mark.)
+# A filled/hollow pair, not a tick and a cross: ✘ reads as *invalid* rather
+# than *off*, and the two glyphs it paired with differed in meaning as well as
+# in shape. ● and ○ differ only in fill, which is exactly the difference.
+ON_GLYPH, OFF_GLYPH = "●", "○"
+
+
+def _state_glyph(value) -> str:
+    """Tick or cross for a boolean setting's current state."""
+    return ON_GLYPH if value else OFF_GLYPH
+
+
 def handle_settings(library_ref: list) -> None:
     """Run the interactive settings menu loop, applying and persisting each toggled option."""
     config = load_config()
     _cursor = 0
 
     while True:
-        _choices: list = [
-            prompt.separator("PLAYBACK"),
-            "Adjust Lyric Lead-in Time",
-            "Toggle Auto-play on Select",
-            prompt.separator("LIBRARY"),
-            "Update Music Directory",
-            "Activity Centre",
+        def _bool(key: str, default: bool) -> str:
+            """Right-column glyph for an on/off setting."""
+            return _state_glyph(config.get(key, default))
+
+        _tasks = len(ui_utils.BACKGROUND_TASKS)
+        _prefs = len(config.get("tag_name_preferences") or {})
+        _hist = len(get_history(limit=10 ** 9))
+
+        # (value, label, current state) — separators are plain strings.
+        _rows: list = [
+            prompt.separator("Playback"),
+            ("lead_in",      "Lyric lead-in…",       f"{float(config.get('lyric_lead_in', 2.0)):g}s"),
+            ("autoplay",     "Auto-play on select",  _bool("autoplay_on_select", False)),
+            prompt.separator("Library"),
+            ("music_dirs",   "Music directories…",   ui_utils.plural(len(music_dirs(config)), "folder")),
+            ("activity",     "Activity centre…",     f"{_tasks} running" if _tasks else "idle"),
+            ("hidden",       "Hidden file filter",   _bool("ignore_hidden_files", False)),
+            prompt.separator("Editors"),
+            ("meta_editor",  "Metadata editor",      _bool("show_metadata_editor", True)),
+            ("lyrics_editor", "Lyrics editor",       _bool("show_lyrics_editor", True)),
+            ("plain_text",   "Plain-text editing",   _bool("plain_text_editing", False)),
+            ("tag_names",    "Tag name preferences…", ui_utils.plural(_prefs, "override") if _prefs else "none"),
+            ("delimiter",    "Sort list delimiter…", config.get("sort_list_delimiter", "/")),
+            prompt.separator("History"),
+            ("history",      "Listening history",    _bool("history_enabled", True)),
+            ("clear_history", "Clear history log…",  ui_utils.plural(_hist, "entry", "entries")),
         ]
-        _choices += [
-            "Toggle Hidden Files",
-            prompt.separator("EDITORS"),
-            "Toggle Metadata Editor",
-            "Toggle Lyrics Editor",
-            "Toggle Plain-text Editing",
-            "Tag Name Preferences",
-            "Sort List Delimiter",
-            prompt.separator("HISTORY"),
-            "Toggle Listening History",
-            "Clear History Log",
-        ]
+        _labels = {r[0]: r[1] for r in _rows if isinstance(r, tuple)}
+        _choices = [r if not isinstance(r, tuple)
+                    else prompt.Choice(title=r[1], value=r[0], cells=[r[1], r[2]])
+                    for r in _rows]
 
         choice = prompt.select(
-            "Settings:",
+            "",
             choices=_choices,
+            columns=_SETTINGS_COLUMNS,
             header=_menu_header("Settings"),
             index=_cursor,
         )
@@ -541,63 +647,55 @@ def handle_settings(library_ref: list) -> None:
             break
 
         # Stay on the row that was just acted on, rather than jumping to the top.
-        _cursor = next((i for i, c in enumerate(_choices)
-                        if not isinstance(c, prompt.Choice) and c == choice), _cursor)
+        _cursor = _idx_of(_choices, choice, _cursor)
 
-        if choice == "Activity Centre":
+        def _toggled(key: str, default: bool, note: str = "") -> None:
+            """Flip an on/off setting and report its new state the same way everywhere."""
+            config[key] = not config.get(key, default)
+            glyph = _state_glyph(config[key])
+            ui_utils.show_status(f"{_labels[choice]} {glyph}{note}")
+
+        if choice == "activity":
             notification_centre()
 
-        elif choice == "Toggle Listening History":
-            config["history_enabled"] = not config.get("history_enabled", True)
-            ui_utils.show_status(f"History: {'ENABLED' if config['history_enabled'] else 'DISABLED'}")
+        elif choice == "history":
+            _toggled("history_enabled", True)
 
-        elif choice == "Clear History Log":
-            entry_count = len(get_history(limit=10 ** 9))
-            if entry_count == 0:
+        elif choice == "clear_history":
+            if _hist == 0:
                 ui_utils.show_status("History is already empty.")
-            elif prompt.confirm(f"Delete all {entry_count} history entries? Cannot be undone."):
-                ui_utils.show_status("History cleared." if clear_history() else "Failed to clear history.")
+            elif prompt.confirm(f"Delete all {_hist} history entries? Cannot be undone."):
+                ui_utils.show_status("History cleared." if clear_history()
+                                     else "Could not clear history.")
 
-        elif choice == "Toggle Auto-play on Select":
-            config["autoplay_on_select"] = not config.get("autoplay_on_select", False)
-            if config["autoplay_on_select"]:
-                ui_utils.show_status("Auto-play: ON — selecting a track plays it immediately.")
-            else:
-                ui_utils.show_status("Auto-play: OFF — selecting shows the Play / Edit menu.")
+        elif choice == "autoplay":
+            _toggled("autoplay_on_select", False)
 
-        elif choice == "Adjust Lyric Lead-in Time":
+        elif choice == "lead_in":
             val = prompt.text("Lead-in seconds:", default=str(config.get("lyric_lead_in", 2.0)))
             if val is not None:
                 try:
                     seconds = round(max(0.0, float(val)), 2)
                     config["lyric_lead_in"] = seconds
-                    ui_utils.show_status(f"Lyric lead-in set to {seconds:g}s")
+                    ui_utils.show_status(f"Lyric lead-in set to {seconds:g}s.")
                 except ValueError:
                     ui_utils.show_status("Enter a number (e.g. 2 or 1.5).")
 
-        elif choice == "Toggle Metadata Editor":
-            config["show_metadata_editor"] = not config.get("show_metadata_editor", True)
-            state = "VISIBLE" if config["show_metadata_editor"] else "HIDDEN"
-            ui_utils.show_status(f"Metadata editor: {state}")
+        elif choice == "meta_editor":
+            _toggled("show_metadata_editor", True)
 
-        elif choice == "Toggle Lyrics Editor":
-            config["show_lyrics_editor"] = not config.get("show_lyrics_editor", True)
-            state = "VISIBLE" if config["show_lyrics_editor"] else "HIDDEN"
-            ui_utils.show_status(f"Lyrics editor: {state}")
+        elif choice == "lyrics_editor":
+            _toggled("show_lyrics_editor", True)
 
-        elif choice == "Toggle Plain-text Editing":
-            config["plain_text_editing"] = not config.get("plain_text_editing", False)
-            if config["plain_text_editing"]:
-                ui_utils.show_status("Plain-text editing: ON — raw text instead of the smart widgets.")
-            else:
-                ui_utils.show_status("Plain-text editing: OFF — smart date/fraction/people widgets.")
+        elif choice == "plain_text":
+            _toggled("plain_text_editing", False)
 
-        elif choice == "Tag Name Preferences":
+        elif choice == "tag_names":
             _handle_tag_name_preferences()
             config = load_config()  # pick up changes written by the sub-handler
             continue
 
-        elif choice == "Sort List Delimiter":
+        elif choice == "delimiter":
             current = config.get("sort_list_delimiter", "/")
             picked = prompt.select(
                 f"Delimiter for multi-artist sort values (current: {current!r}):",
@@ -608,30 +706,12 @@ def handle_settings(library_ref: list) -> None:
                 config["sort_list_delimiter"] = delim
                 ui_utils.show_status(f"Sort list delimiter set to {delim!r}.")
 
-        elif choice == "Update Music Directory":
-            new_root = prompt.path("Music directory:")
-            if new_root and os.path.isdir(os.path.expanduser(new_root)):
-                new_root = os.path.abspath(os.path.expanduser(new_root))
-                config["music_directory"] = new_root
-                ui_utils.show_status("Re-scanning library...")
-                new_lib = build_library(
-                    new_root,
-                    ignore_hidden=config.get("ignore_hidden_files", False),
-                )
-                save_library_cache(new_lib, _async=False)
-                existing_lib = library_ref[0]
-                existing_lib.clear()
-                existing_lib.extend(new_lib)
-                start_background_sync(existing_lib)
-                ui_utils.show_status(f"Done — {len(new_lib)} tracks.")
+        elif choice == "music_dirs":
+            _music_dirs_menu(config, library_ref)
 
-        elif choice == "Toggle Hidden Files":
-            config["ignore_hidden_files"] = not config.get("ignore_hidden_files", False)
-            # Single message: the "ON" hint used to be immediately overwritten.
-            if config["ignore_hidden_files"]:
-                ui_utils.show_status("Hidden file filter: ON — rebuild via Update Music Directory to apply.")
-            else:
-                ui_utils.show_status("Hidden file filter: OFF")
+        elif choice == "hidden":
+            # Both states need a re-scan before the library reflects the change.
+            _toggled("ignore_hidden_files", False, " — re-scan to apply.")
 
         save_config(config)
 
@@ -742,7 +822,7 @@ def _handle_queue_action(action: str | None, path: str | list[str], title: str,
         if len(paths) == 1:
             ui_utils.show_status(f"Playing next: {title}")
         else:
-            ui_utils.show_status(f"Playing next: {len(paths)} tracks")
+            ui_utils.show_status(f"Playing next: {len(paths)} tracks.")
     else:
         if len(paths) == 1:
             n = a.enqueue(paths[0], title)
@@ -750,7 +830,7 @@ def _handle_queue_action(action: str | None, path: str | list[str], title: str,
         else:
             for p in paths:
                 a.enqueue(p, None)
-            ui_utils.show_status(f"Added {len(paths)} tracks to queue")
+            ui_utils.show_status(f"Added {len(paths)} tracks to queue.")
     return True
 
 
@@ -801,7 +881,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
 
             # Hybrid header: Play all stays visible (also `p`); secondary actions
             # live in the hint bar (`s` sort, `e` edit, `/` toggle view).
-            _play_label = f"▸  Play all {cat_choice.lower()}"
+            _play_label = "▸  Play all"          # scope is in the header above
             _sc: dict = {"p": "__play_all__"}
             _eh: dict = {"p": "play all"}
             if _show_editor:
@@ -834,7 +914,8 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                 if cat_choice == "Albums":
                     for _a in names:
                         _choices.append(prompt.Choice(
-                            title=_a, value=_a, cells=[_a, _album_artist_of(grouped[_a])]))
+                            title=_a, value=_a,
+                            cells=[_a, format_tag_values(_album_artist_of(grouped[_a]))]))
                     _group_cols = _ALBUM_COLUMNS
                 else:
                     _choices += names
@@ -880,7 +961,10 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                 continue
 
             if selection == "__play_all__":
-                paths = [s['path'] for name in names for s in grouped[name]]
+                # dict.fromkeys: a track under two groups (multi-value genre/artist)
+                # is one entry here, not one per group it appears in.
+                paths = list(dict.fromkeys(
+                    s['path'] for name in names for s in grouped[name]))
                 res = play_queue(paths, library=library)
                 if res == "QUIT_ALL":
                     NAV_STACK.clear()
@@ -889,7 +973,10 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                 continue
 
             if selection == "__bulk_edit__":
-                paths = [s['path'] for name in names for s in grouped[name]]
+                # dict.fromkeys: a track under two groups (multi-value genre/artist)
+                # is one entry here, not one per group it appears in.
+                paths = list(dict.fromkeys(
+                    s['path'] for name in names for s in grouped[name]))
                 bulk_id3_manager(library, paths=paths)
                 continue
 
@@ -922,7 +1009,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     _asc: dict = {}
                     _aeh: dict = {}
                     if not _single_album:
-                        _alb_choices.append(prompt.Choice(title=f"▸  Play all — {selection}", value="__play_all__"))
+                        _alb_choices.append(prompt.Choice(title="▸  Play all", value="__play_all__"))
                         _asc["p"] = "__play_all__"; _aeh["p"] = "play all"
                         if len(_ALBUM_SORTS) > 1:
                             _asc["s"] = "__sort__"; _aeh["s"] = "sort"
@@ -931,9 +1018,13 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     # Show the album artist (dimmed) when it differs from the
                     # artist/genre we're browsing under (#33).
                     for _a in album_list:
-                        _aa = _album_artist_of(albums[_a])
+                        # Compare the *displayed* credit with the group we're under:
+                        # an artist group is now named after the whole billing, so
+                        # "Ada Lark, Bo Vale" matches and the column stays empty.
+                        _aa = format_tag_values(_album_artist_of(albums[_a]))
                         _aa = _aa if (_aa and _aa.lower() != selection.lower()) else ""
-                        _alb_choices.append(prompt.Choice(title=_a, value=_a, cells=[_a, _aa]))
+                        _alb_choices.append(prompt.Choice(
+                            title=_a, value=_a, cells=[_a, _aa]))
 
                     if _album_cursor is None:        # start on the first real album
                         _album_cursor = 0 if _single_album else 1
@@ -1041,7 +1132,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
 
                         track_choices.append(prompt.Choice(
                             title=label, value=t['path'],
-                            cells=[label, _artist, _dur_str]))
+                            cells=[label, format_tag_values(_artist), _dur_str]))
 
                     _track_context = NAV_STACK[-1] if NAV_STACK else selection
                     _show_editor   = _cfg.get("show_metadata_editor", True)
@@ -1054,14 +1145,14 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         _track_header_choices = []
                     else:
                         _track_header_choices = [
-                            prompt.Choice(title=f"▸  Play all — {_track_context}", value="__play_all__")
+                            prompt.Choice(title="▸  Play all", value="__play_all__")
                         ]
                         _tsc["p"] = "__play_all__"; _teh["p"] = "play all"
                         if _show_editor:
                             _tsc["e"] = "__bulk_edit__"; _teh["e"] = "edit tags"
 
                     # Album artist shown in the header subtitle (#33).
-                    _album_artist = _album_artist_of(final_tracks)
+                    _album_artist = format_tag_values(_album_artist_of(final_tracks))
                     _subtitle = _album_artist or (selection if _track_context != selection else cat_choice)
 
                     _all_track_choices = _track_header_choices + track_choices
@@ -1157,16 +1248,17 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     # LEVEL 5: Track action
                     selected_track = next((t for t in final_tracks if t['path'] == path_choice_obj), None)
                     track_title    = selected_track['title'] if selected_track else os.path.basename(path_choice_obj)
-                    track_artist   = selected_track.get('artist', '') if selected_track else ''
+                    track_artist   = (format_tag_values(selected_track.get('artist'))
+                                      if selected_track else '')
                     NAV_STACK.append(track_title)
 
                     _cfg_track = load_config()
                     while True:
                         _action_choices = ["Play"]
                         if _cfg_track.get("show_lyrics_editor", True) and find_lyrics(path_choice_obj):
-                            _action_choices.append("Edit Lyrics")
+                            _action_choices.append("Edit lyrics")
                         if _cfg_track.get("show_metadata_editor", True):
-                            _action_choices.append("Edit Metadata")
+                            _action_choices.append("Edit metadata")
 
                         if len(_action_choices) == 1 or _autoplay():
                             action = "Play"
@@ -1189,12 +1281,12 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                             if len(_action_choices) == 1 or _autoplay():
                                 break
 
-                        elif action == "Edit Lyrics":
+                        elif action == "Edit lyrics":
                             ui_utils.clear_screen()
                             lyrics_editor(path_choice_obj)
                             ui_utils.clear_screen()
 
-                        elif action == "Edit Metadata":
+                        elif action == "Edit metadata":
                             ui_utils.clear_screen()
                             inspect_tag_loop(path_choice_obj, library_metadata=selected_track, library=library)
                             ui_utils.clear_screen()
@@ -1257,14 +1349,21 @@ def notification_centre() -> None:
         else:
             out.append(f"   {C.DIM}Nothing running right now.{C.RESET}\n")
         body = "".join(out) + "\n\n"
-        hint = prompt._hint(*_hint_pairs)
-        sys.stdout.write(body + hint)
+        # Pin the hints to the bottom, above the miniplayer and status bar, so
+        # their keys hold a fixed position as the running-task list grows and
+        # shrinks underneath them — and pick up the transport keys while audio
+        # is playing, like every other screen.
+        pairs = prompt.chrome_hint_pairs(_hint_pairs)
+        hint = prompt._hint(*pairs)
+        hint_lines = hint.split('\n')
+        used = body.count('\n')
+        pad = max(0, prompt._hint_pin_target() - used - len(hint_lines))
+        sys.stdout.write(body + "\n" * pad + hint)
         sys.stdout.flush()
-        # Record the clickable 'esc/b' glyphs (the hint sits just below `body`).
         hint_cells.clear()
-        first_row = 1 + body.count('\n')
-        for k, line in enumerate(hint.split('\n')):
-            prompt.add_hint_click_cells(hint_cells, line, first_row + k, _hint_pairs)
+        first_row = 1 + used + pad
+        for k, line in enumerate(hint_lines):
+            prompt.add_hint_click_cells(hint_cells, line, first_row + k, pairs)
 
     with raw_mode(sys.stdin):
         sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse

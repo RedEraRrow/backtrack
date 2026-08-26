@@ -1,10 +1,11 @@
-"""Shared global state: the navigation breadcrumb and the quit-to-terminal signal."""
-NAV_STACK = ["Home"]
+"""Shared global state: the navigation breadcrumb and the quit-to-terminal signal.
 
-# Set by value editors when the user presses `q` (save-current-state-and-quit):
-# the editor commits its value as normal, then the next navigation menu sees
-# this flag and unwinds to the terminal — so the in-progress edit is saved first.
-QUIT_REQUESTED = False
+`q` quits the application from anywhere by raising :class:`QuitToTerminal` on the
+spot. There is deliberately no "leave this widget and quit later" flag: `q` is
+never a way out of a widget — Esc (and ←/b where the widget has no other use for
+them) is what backs out.
+"""
+NAV_STACK = ["Home"]
 
 
 class QuitToTerminal(BaseException):
