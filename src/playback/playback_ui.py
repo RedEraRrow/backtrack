@@ -458,19 +458,13 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     box_w = width - 2 * mh
     inner = box_w - 4                       # content columns between "│ " and " │"
 
-    # The real media glyphs, laid out on their true widths rather than an even
-    # stride: U+23EE ⏮ and U+23ED ⏭ are emoji-presentation and every modern
-    # terminal draws them two cells wide, while U+23F8 ⏸ / U+23F5 ⏵ beside them
-    # are text-presentation and take one. Nothing in unicodedata separates them
-    # — all four are east-asian-width N — so `ui_utils.char_cols` carries the
-    # distinction and every width here is counted in columns, not codepoints.
-    #
-    # An earlier attempt forced text presentation with U+FE0E to make them all
-    # one cell; that cannot work, because a survey of the monospace fonts on a
-    # stock macOS box found none carrying these codepoints at all. There is no
-    # text glyph to ask for. Better to draw them at the width they actually are.
-    pp_icon = '⏵' if np['paused'] else '⏸'    # the action the key would take
-    icon = f"⏮  {pp_icon}  ⏭  "               # 2+2+1+2+2+2 = NP_TITLE_OFFSET cols
+    # Play/pause then next. The glyph shows the action the key would take — ⏵
+    # while paused, ⏸ while playing. Widths come from ui_utils.char_cols, which
+    # deliberately over-estimates these: no monospace font carries them, so the
+    # terminal draws them from a fallback whose advance width this process
+    # cannot know, and over-estimating is the direction that fails safely.
+    pp_icon = '⏵' if np['paused'] else '⏸'
+    icon = f"{pp_icon}  ⏭  "                  # NP_TITLE_OFFSET columns wide               # 2+2+1+2+2+2 = NP_TITLE_OFFSET cols
     # Just the elapsed/total time; volume + queue position live elsewhere (the
     # player view, and the queue pane inside it).
     right = f"{_np_fmt_time(np['elapsed'])} / {_np_fmt_time(np['duration'])}"
@@ -497,13 +491,23 @@ def format_now_playing_bar(width: int) -> list[str] | None:
         left_segs += [("  ·  ", C.DIM), (np['album'], C.DIM + C.ITALIC)]
 
     left_budget = max(6, inner - len(right) - 2)
-    left_styled, left_used = _fit_segments(left_segs, left_budget)
-    gap = max(1, inner - left_used - len(right))
-    content = f"{left_styled}{' ' * gap}{C.DIM}{right}{C.RESET}"
+    left_styled, _left_used = _fit_segments(left_segs, left_budget)
 
     pad = ' ' * mh
     top = f"{pad}{C.DIM}╭{'─' * (box_w - 2)}╮{C.RESET}"
-    mid = f"{pad}{C.DIM}│{C.RESET} {content} {C.DIM}│{C.RESET}"
+
+    # The clock and the closing border are placed by absolute column (CSI G)
+    # rather than by counting what precedes them. Everything left of the clock
+    # contains transport glyphs whose real width is a fallback font's business,
+    # not this process's — so a row built purely by counting puts its right-hand
+    # border wherever that guess happened to land. Pinning both to the columns
+    # they belong in makes the box square whatever the glyphs turn out to be;
+    # the only thing that varies is the size of the gap before the clock.
+    pipe_col = mh + box_w                    # 1-based column of the closing │
+    time_col = pipe_col - 1 - len(right)
+    mid = (f"{pad}{C.DIM}│{C.RESET} {left_styled}"
+           f"\033[{time_col}G{C.DIM}{right}{C.RESET}"
+           f"\033[{pipe_col}G{C.DIM}│{C.RESET}")
 
     # Progress along the bottom border: heavy ━ for the elapsed fraction, light ─
     # for the rest (the join to the rounded corners is intentionally light).

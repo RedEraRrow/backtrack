@@ -125,6 +125,35 @@ def _detail_view(path, derived, plan: dict, present: dict, apply_fields: set,
                   header=header('Full derivation'))
 
 
+# Sentinel: this step does not apply to the answers so far — step over it,
+# whichever way the walk is going.
+_SKIP = object()
+
+
+def _walk(steps: list) -> bool:
+    """Walk a bulk operation's screens, forwards on ↵ and backwards on back.
+
+    Each step is a callable that asks its question and returns True to advance,
+    False to go back one screen, or `_SKIP` when the answers so far make it
+    irrelevant (a template question after choosing regex detection). Back out of
+    the first screen and the whole walk returns False: the operation is off. Any
+    other back returns to the screen before, which still holds what was decided
+    there — an accidental ↵ costs one keystroke, not the whole automation.
+
+    Skipped steps are stepped over in the direction of travel, so a question that
+    does not apply never traps the walk going forwards or back.
+    """
+    i, direction = 0, 1
+    while 0 <= i < len(steps):
+        result = steps[i]()
+        if result is _SKIP:
+            i += direction                 # keep going whichever way we were
+            continue
+        direction = 1 if result else -1
+        i += direction
+    return i >= len(steps)
+
+
 def _num_pair(num, total) -> str:
     """Format a "num/total" string, or just "num" when total is falsy."""
     return f"{num}/{total}" if total else f"{num}"
@@ -535,149 +564,202 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         return
 
     # 1) Which fields to write (Title on by default — the automatic baseline).
-    field_choices = [
-        prompt.Choice(title="Title  — from file name", value="title", checked=True),
-        prompt.Choice(title="Track number (+ total)", value="track"),
-        prompt.Choice(title="Disc number (+ total)", value="disc"),
-        prompt.Choice(title="Disc subtitle — from folder (MP3 only)", value="disc_subtitle"),
-        prompt.Choice(title="Album — from folder", value="album"),
-        prompt.Choice(title="Album artist — from parent folder", value="album_artist"),
-        prompt.Choice(title="Track artist — from file name / folder", value="artist"),
-        prompt.Choice(title="Year / date — from folder or file name", value="year"),
-        prompt.Choice(title="Sort-order tags — for the fields ticked above", value="sort"),
-    ]
-    chosen = prompt.select("Fields to derive & write:", choices=field_choices,
-                           header=header(), multi=True)
-    if not chosen:
-        return
-    apply_fields = set(chosen)
+    _FIELDS = [("title", "Title  — from file name"),
+               ("track", "Track number (+ total)"),
+               ("disc", "Disc number (+ total)"),
+               ("disc_subtitle", "Disc subtitle — from folder (MP3 only)"),
+               ("album", "Album — from folder"),
+               ("album_artist", "Album artist — from parent folder"),
+               ("artist", "Track artist — from file name / folder"),
+               ("year", "Year / date — from folder or file name"),
+               ("sort", "Sort-order tags — for the fields ticked above")]
+    _MODES = ["Fill blanks only", "Overwrite existing"]
+    _DETECTS = ["Auto-detect", "Use a naming template", "Use a regex"]
+    _TARGETS = ["File name", "Folder path"]
 
-    # 2) Conflict policy.
-    mode = prompt.select("When a tag already has a value:",
-                         choices=["Fill blanks only", "Overwrite existing"],
-                         header=header())
-    if not mode:
-        return
-    overwrite = (mode == "Overwrite existing")
+    # Every answer lives here so a screen reopened by going back shows what it
+    # was left holding.
+    state: dict = {'fields': {'title'}, 'mode': _MODES[0], 'detect': _DETECTS[0],
+                   'target': _TARGETS[0], 'template': '', 'regex': '', 'apply_paths': None}
 
-    # 3) Auto-detect, a naming template, or a raw regex.
-    template = None
-    regex = None
-    regex_base = None
-    detect = prompt.select("Detection:",
-                           choices=["Auto-detect", "Use a naming template", "Use a regex"],
-                           header=header())
-    if not detect:
-        return
-    if detect == "Use a naming template":
-        raw = prompt.text("Template (e.g. %disc%-%track% %title%; tokens: %track% "
-                          "%disc% %title% %artist% %albumartist% %album% %year% %date% "
-                          "%season% %episode% %ignore%):")
-        if not raw:
-            return
-        try:
-            fp.compile_template(raw)
-        except fp.TemplateError as e:
-            ui_utils.show_status(f"Invalid template: {e}")
-            return
-        template = raw
-    elif detect == "Use a regex":
+    def _ask_fields() -> bool:
+        """Which tags to derive."""
+        picked = prompt.select(
+            "Fields to derive & write:", multi=True, header=header(),
+            choices=[prompt.Choice(title=label, value=f, checked=f in state['fields'])
+                     for f, label in _FIELDS])
+        if not picked:
+            return False
+        state['fields'] = set(picked)
+        return True
+
+    def _ask_mode() -> bool:
+        """Fill blanks, or overwrite what is already there."""
+        picked = prompt.select("When a tag already has a value:", choices=_MODES,
+                               index=_MODES.index(state['mode']), header=header())
+        if not picked:
+            return False
+        state['mode'] = picked
+        return True
+
+    def _ask_detect() -> bool:
+        """How to read the names: guess, a template, or a regex."""
+        picked = prompt.select("Detection:", choices=_DETECTS,
+                               index=_DETECTS.index(state['detect']), header=header())
+        if not picked:
+            return False
+        state['detect'] = picked
+        return True
+
+    def _ask_template():
+        """The naming template — only for that detection mode."""
+        if state['detect'] != "Use a naming template":
+            return _SKIP
+        while True:
+            raw = prompt.text("Template (e.g. %disc%-%track% %title%; tokens: %track% "
+                              "%disc% %title% %artist% %albumartist% %album% %year% "
+                              "%date% %season% %episode% %ignore%):",
+                              default=state['template'])
+            if not raw:
+                return False
+            state['template'] = raw          # kept even when it needs fixing
+            try:
+                fp.compile_template(raw)
+            except fp.TemplateError as e:
+                ui_utils.show_status(f"Invalid template: {e}")
+                continue                     # ask again, don't leave the screen
+            return True
+
+    def _ask_regex_target():
+        """File name or folder path — only for regex detection."""
+        if state['detect'] != "Use a regex":
+            return _SKIP
         # A vs B: match the file name, or the path from the library root so the
         # regex can capture folder levels (Artist/Album/…).
-        target = prompt.select("Match regex against:",
-                               choices=["File name", "Folder path"], header=header())
-        if not target:
-            return
-        if target == "Folder path":
-            regex_base = _derive_regex_base(writable)
-        sample = fp._regex_target(writable[0], regex_base)
-        raw = prompt.text(
-            rf"Regex, named groups (matches e.g. '{sample}'; use / between folders); "
-            "groups: track disc title artist albumartist album year date season episode:")
-        if not raw:
-            return
-        try:
-            compiled = fp.compile_regex(raw)
-        except fp.TemplateError as e:
-            ui_utils.show_status(f"Invalid regex: {e}")
-            return
-        unknown = fp.unrecognised_regex_groups(compiled)
-        if unknown:
-            ui_utils.show_status(f"Ignoring unrecognised group(s): {', '.join(unknown)}")
-        regex = raw
+        picked = prompt.select("Match regex against:", choices=_TARGETS,
+                               index=_TARGETS.index(state['target']), header=header())
+        if not picked:
+            return False
+        state['target'] = picked
+        return True
 
-    # Derive + plan.
-    derived = fp.derive_all(writable, template=template, regex=regex, regex_base=regex_base)
-    present_cache = {p: tw.present_fields(p) for p in writable}
-    plans = {p: _plan_write(derived[p], apply_fields, overwrite, present_cache[p], p)
-             for p in writable}
-    to_write = [p for p in writable if plans[p]]
+    def _ask_regex():
+        """The regex itself — only for regex detection."""
+        if state['detect'] != "Use a regex":
+            return _SKIP
+        base = _derive_regex_base(writable) if state['target'] == "Folder path" else None
+        sample = fp._regex_target(writable[0], base)
+        while True:
+            raw = prompt.text(
+                rf"Regex, named groups (matches e.g. '{sample}'; use / between folders); "
+                "groups: track disc title artist albumartist album year date season episode:",
+                default=state['regex'])
+            if not raw:
+                return False
+            state['regex'] = raw             # kept even when it needs fixing
+            try:
+                compiled = fp.compile_regex(raw)
+            except fp.TemplateError as e:
+                ui_utils.show_status(f"Invalid regex: {e}")
+                continue                     # ask again, don't leave the screen
+            unknown = fp.unrecognised_regex_groups(compiled)
+            if unknown:
+                ui_utils.show_status(
+                    f"Ignoring unrecognised group(s): {', '.join(unknown)}")
+            return True
 
-    if not to_write:
-        ui_utils.show_status("Nothing to write — selected fields are already set "
-                             "(try Overwrite).")
+    def _ask_preview() -> bool:
+        """Derive everything, then show what each file would get."""
+        apply_fields = state['fields']
+        overwrite = (state['mode'] == "Overwrite existing")
+        template = state['template'] if state['detect'] == "Use a naming template" else None
+        regex = state['regex'] if state['detect'] == "Use a regex" else None
+        regex_base = (_derive_regex_base(writable)
+                      if state['detect'] == "Use a regex" and state['target'] == "Folder path"
+                      else None)
+        derived = fp.derive_all(writable, template=template, regex=regex, regex_base=regex_base)
+        present_cache = {p: tw.present_fields(p) for p in writable}
+        plans = {p: _plan_write(derived[p], apply_fields, overwrite, present_cache[p], p)
+                 for p in writable}
+        to_write = [p for p in writable if plans[p]]
+
+        if not to_write:
+            ui_utils.show_status("Nothing to write — selected fields are already set "
+                                 "(try Overwrite).")
+            return False                     # back to the questions, not out
+
+        # 4) Preview. Fields whose value is identical across every changed file are
+        # lifted into the header (shown once); only the *varying* fields become
+        # per-row columns, so wide rows don't overflow. `d` opens a full detail view.
+        field_vals: dict = {}
+        for p in to_write:
+            for f, v in plans[p].items():
+                field_vals.setdefault(f, set()).add(v)
+        any_comp = any(derived[p].compilation for p in to_write) and 'album_artist' in apply_fields
+        uniform = {f for f, vals in field_vals.items() if len(vals) == 1}
+        varying = [f for f in tw.FIELDS if f in field_vals and f not in uniform]
+
+        # Header: uniform fields + counts.
+        header_bits = [ui_utils.plural(len(to_write), "file")]
+        for f in tw.FIELDS:
+            if f in uniform:
+                header_bits.append(f"{_DERIVE_LABELS[f]}: {next(iter(field_vals[f]))}")
+        if any_comp:
+            header_bits.append("compilation")
+        n_skip_existing = sum(
+            1 for p in writable for f in apply_fields
+            if present_cache[p].get(f) and not overwrite
+            and derived[p].as_dict().get(f) not in (None, ""))
+        if n_skip_existing and not overwrite:
+            header_bits.append(f"{n_skip_existing} existing kept")
+        if skipped_fmt:
+            header_bits.append(f"{skipped_fmt} non-MP3/MP4 skipped")
+        # Called out explicitly (not silent): disc subtitle can't be stored on MP4.
+        if 'disc_subtitle' in apply_fields:
+            n_mp4 = sum(1 for p in writable if tw.format_kind(p) == 'mp4')
+            if n_mp4:
+                header_bits.append(f"disc subtitle N/A on {ui_utils.plural(n_mp4, 'MP4 file')}")
+        if 'sort' in apply_fields:
+            header_bits.append("+ sort orders")
+        sub = " · ".join(header_bits)
+
+        # Columns: file name + one truncating column per varying field.
+        prev_cols = [prompt.Column(style='primary', max_frac=0.35)]
+        for f in varying:
+            prev_cols.append(prompt.Column(**_DERIVE_FIELD_COL.get(
+                f, {'style': 'dynamic-dim', 'max_frac': 0.3})))
+
+        preview_choices = []
+        for p in to_write:
+            cells = [os.path.basename(p)] + [plans[p].get(f, "") for f in varying]
+            preview_choices.append(prompt.Choice(
+                title=os.path.basename(p), value=p, cells=cells,
+                checked=state['apply_paths'] is None or p in state['apply_paths']))
+
+        def _show_detail(path) -> None:
+            """Open the full derivation detail view for one previewed file."""
+            _detail_view(path, derived[path], plans[path], present_cache[path],
+                         apply_fields, overwrite, header)
+
+        selected = prompt.select(
+            "Preview — ↵ applies:",
+            choices=preview_choices, columns=prev_cols,
+            header=header(sub), multi=True,
+            extra_hints={'d': 'details'}, on_inspect=_show_detail)
+        if selected is None:
+            return False
+        state.update(derived=derived, plans=plans, to_write=to_write,
+                     apply_paths=set(selected))
+        return True
+
+    if not _walk([_ask_fields, _ask_mode, _ask_detect, _ask_template,
+                  _ask_regex_target, _ask_regex, _ask_preview]):
         return
 
-    # 4) Preview. Fields whose value is identical across every changed file are
-    # lifted into the header (shown once); only the *varying* fields become
-    # per-row columns, so wide rows don't overflow. `d` opens a full detail view.
-    field_vals: dict = {}
-    for p in to_write:
-        for f, v in plans[p].items():
-            field_vals.setdefault(f, set()).add(v)
-    any_comp = any(derived[p].compilation for p in to_write) and 'album_artist' in apply_fields
-    uniform = {f for f, vals in field_vals.items() if len(vals) == 1}
-    varying = [f for f in tw.FIELDS if f in field_vals and f not in uniform]
-
-    # Header: uniform fields + counts.
-    header_bits = [ui_utils.plural(len(to_write), "file")]
-    for f in tw.FIELDS:
-        if f in uniform:
-            header_bits.append(f"{_DERIVE_LABELS[f]}: {next(iter(field_vals[f]))}")
-    if any_comp:
-        header_bits.append("compilation")
-    n_skip_existing = sum(
-        1 for p in writable for f in apply_fields
-        if present_cache[p].get(f) and not overwrite
-        and derived[p].as_dict().get(f) not in (None, ""))
-    if n_skip_existing and not overwrite:
-        header_bits.append(f"{n_skip_existing} existing kept")
-    if skipped_fmt:
-        header_bits.append(f"{skipped_fmt} non-MP3/MP4 skipped")
-    # Called out explicitly (not silent): disc subtitle can't be stored on MP4.
-    if 'disc_subtitle' in apply_fields:
-        n_mp4 = sum(1 for p in writable if tw.format_kind(p) == 'mp4')
-        if n_mp4:
-            header_bits.append(f"disc subtitle N/A on {ui_utils.plural(n_mp4, 'MP4 file')}")
-    if 'sort' in apply_fields:
-        header_bits.append("+ sort orders")
-    sub = " · ".join(header_bits)
-
-    # Columns: file name + one truncating column per varying field.
-    prev_cols = [prompt.Column(style='primary', max_frac=0.35)]
-    for f in varying:
-        prev_cols.append(prompt.Column(**_DERIVE_FIELD_COL.get(
-            f, {'style': 'dynamic-dim', 'max_frac': 0.3})))
-
-    preview_choices = []
-    for p in to_write:
-        cells = [os.path.basename(p)] + [plans[p].get(f, "") for f in varying]
-        preview_choices.append(prompt.Choice(
-            title=os.path.basename(p), value=p, checked=True, cells=cells))
-
-    def _show_detail(path) -> None:
-        """Open the full derivation detail view for one previewed file."""
-        _detail_view(path, derived[path], plans[path], present_cache[path],
-                     apply_fields, overwrite, header)
-
-    selected = prompt.select(
-        "Preview — ↵ applies:",
-        choices=preview_choices, columns=prev_cols,
-        header=header(sub), multi=True,
-        extra_hints={'d': 'details'}, on_inspect=_show_detail)
-    if selected is None:
-        return
-    apply_paths = set(selected)
+    apply_fields = state['fields']
+    overwrite = (state['mode'] == "Overwrite existing")
+    derived, plans = state['derived'], state['plans']
+    to_write, apply_paths = state['to_write'], state['apply_paths']
     if not apply_paths:
         ui_utils.show_status("No files selected.")
         return
@@ -732,14 +814,9 @@ _PATTERN_COLUMNS = [
 _SORT_SRC = [
     ('artist',       'TPE1', 'TSOP'),
     ('album_artist', 'TPE2', 'TSO2'),
+    ('composer',     'TCOM', 'TSOC'),
     ('album',        'TALB', 'TSOA'),
 ]
-
-_SORT_APPLY_COLUMNS = [
-    prompt.Column(style='primary', flex=True, max_frac=0.45),
-    prompt.Column(style='dynamic-dim', flex=True),
-]
-
 
 _RENUMBER_COLUMNS = [
     prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),  # position (index) — drops first
@@ -767,30 +844,48 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("No MP3/MP4 tracks to renumber.")
         return
 
-    mode_sel = prompt.select(
-        "Renumber to:",
-        choices=["Continuous (album-relative) — 1…N across all discs",
-                 "Per-disc (disc-relative) — restart at 1 each disc"],
-        header=header(f"{len(writable)} tracks in disc/track order"))
-    if not mode_sel:
-        return
-    mode = 'continuous' if mode_sel.startswith("Continuous") else 'per_disc'
-    plan = bp.renumber_tracks(writable, mode)        # {path: (track, total)}
+    _MODES = ["Continuous (album-relative) — 1…N across all discs",
+              "Per-disc (disc-relative) — restart at 1 each disc"]
+    state: dict = {'mode_sel': _MODES[0]}
 
-    pos = {s['path']: i + 1 for i, s in enumerate(writable)}
-    choices = []
-    for s in writable:
-        trk, total = plan[s['path']]
-        old = str(s.get('track', '') or '?')
-        choices.append(prompt.Choice(
-            title=os.path.basename(s['path']), value=s['path'], checked=True,
-            cells=[str(pos[s['path']]), os.path.basename(s['path']), f"{old} → {trk}/{total}"]))
-    sub = ui_utils.plural(len(choices), "file") + (f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
-                        columns=_RENUMBER_COLUMNS, header=header(sub), multi=True)
-    if sel is None:
+    def _ask_mode() -> bool:
+        """Which numbering to lay down."""
+        sel = prompt.select("Renumber to:", choices=_MODES,
+                            index=_MODES.index(state['mode_sel']),
+                            header=header(f"{len(writable)} tracks in disc/track order"))
+        if not sel:
+            return False
+        state['mode_sel'] = sel
+        return True
+
+    def _ask_preview() -> bool:
+        """Show what each file becomes and take the selection."""
+        mode = 'continuous' if state['mode_sel'].startswith("Continuous") else 'per_disc'
+        plan = bp.renumber_tracks(writable, mode)    # {path: (track, total)}
+        state['plan'] = plan
+        pos = {s['path']: i + 1 for i, s in enumerate(writable)}
+        choices = []
+        for s in writable:
+            trk, total = plan[s['path']]
+            was = str(s.get('track', '') or '?')
+            choices.append(prompt.Choice(
+                title=os.path.basename(s['path']), value=s['path'],
+                checked=s['path'] in state.get('apply_set', {s['path']}),
+                cells=[str(pos[s['path']]), os.path.basename(s['path']),
+                       f"{was} → {trk}/{total}"]))
+        sub = ui_utils.plural(len(choices), "file") + (
+            f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
+        sel = prompt.select("Preview — ↵ applies:", choices=choices,
+                            columns=_RENUMBER_COLUMNS, header=header(sub), multi=True)
+        if sel is None:
+            return False
+        state['apply_set'] = set(sel)
+        return True
+
+    if not _walk([_ask_mode, _ask_preview]):
         return
-    apply_set = set(sel)
+    plan = state['plan']
+    apply_set = state['apply_set']
     if not apply_set:
         ui_utils.show_status("No files selected.")
         return
@@ -1193,54 +1288,75 @@ def rename_files_op(paths: list, library: list, header) -> None:
     vary = fnm.artists_vary(writable, tokens)
     default_pattern = '%track% %artist% - %title%' if vary else '%track% %title%'
 
-    pattern: str | None = None
-    while pattern is None:
-        choices: list = []
-        for pat, example in fnm.PRESETS:
-            tail = f"e.g. {example}" + ("   ★ suggested" if pat == default_pattern else "")
-            choices.append(prompt.Choice(title=pat, value=pat, cells=[pat, tail]))
-        choices.append(prompt.separator())
-        choices.append(prompt.Choice(title="Custom pattern…", value="__custom__",
-                                     cells=["Custom pattern…", "type your own %token% pattern"]))
-        choices.append(prompt.Choice(title="Show all tokens", value="__tokens__",
-                                     cells=["Show all tokens", f"{len(fnm.TOKENS)} available"]))
-        default_idx = next((i for i, (pat, _) in enumerate(fnm.PRESETS)
-                            if pat == default_pattern), 0)
-        sub = ui_utils.plural(len(writable), "file") + (" · artists vary → artist suggested" if vary else "")
-        sel = prompt.select("File-name pattern:", choices=choices,
-                            columns=_RENAME_PICK_COLUMNS, header=header(sub), index=default_idx)
-        if not sel:
-            return
-        if sel == "__tokens__":
-            _show_tokens(header)
-            continue
-        if sel == "__custom__":
-            raw = prompt.text("Pattern (e.g. %disc%-%track% %title% — 'Show all tokens' lists them):",
-                              default=default_pattern)
-            if not raw:
+    state: dict = {'pattern': None, 'apply_set': None}
+
+    def _ask_pattern() -> bool:
+        """Pick a preset, type a pattern, or browse the token reference."""
+        while True:
+            choices: list = []
+            for pat, example in fnm.PRESETS:
+                tail = f"e.g. {example}" + ("   ★ suggested" if pat == default_pattern else "")
+                choices.append(prompt.Choice(title=pat, value=pat, cells=[pat, tail]))
+            choices.append(prompt.separator())
+            choices.append(prompt.Choice(title="Custom pattern…", value="__custom__",
+                                         cells=["Custom pattern…", "type your own %token% pattern"]))
+            choices.append(prompt.Choice(title="Show all tokens", value="__tokens__",
+                                         cells=["Show all tokens", f"{len(fnm.TOKENS)} available"]))
+            # Reopen on whatever was chosen last, else on the suggested preset.
+            _prev = state['pattern']
+            default_idx = next((i for i, (pat, _) in enumerate(fnm.PRESETS)
+                                if pat == (_prev or default_pattern)), 0)
+            sub = ui_utils.plural(len(writable), "file") + (
+                " · artists vary → artist suggested" if vary else "")
+            sel = prompt.select("File-name pattern:", choices=choices,
+                                columns=_RENAME_PICK_COLUMNS, header=header(sub),
+                                index=default_idx)
+            if not sel:
+                return False
+            if sel == "__tokens__":
+                _show_tokens(header)
                 continue
-            unk = fnm.unknown_tokens(raw)
-            if unk:
-                ui_utils.show_status(f"Unknown token(s) will render blank: {', '.join(unk)}")
-            pattern = raw
-        else:
-            pattern = sel
+            if sel == "__custom__":
+                raw = prompt.text(
+                    "Pattern (e.g. %disc%-%track% %title% — 'Show all tokens' lists them):",
+                    default=_prev or default_pattern)
+                if not raw:
+                    continue                 # back out of typing → the preset list
+                unk = fnm.unknown_tokens(raw)
+                if unk:
+                    ui_utils.show_status(
+                        f"Unknown token(s) will render blank: {', '.join(unk)}")
+                state['pattern'] = raw
+            else:
+                state['pattern'] = sel
+            return True
 
-    plan = fnm.plan_renames(writable, pattern, tokens)     # [(path, old, new)]
-    changed = [(p, o, n) for (p, o, n) in plan if o != n]
-    if not changed:
-        ui_utils.show_status("File names already match the pattern.")
-        return
+    def _ask_preview() -> bool:
+        """Show old → new for every file the pattern changes."""
+        plan = fnm.plan_renames(writable, state['pattern'], tokens)   # [(path, old, new)]
+        changed = [(p, o, n) for (p, o, n) in plan if o != n]
+        state['changed'] = changed
+        if not changed:
+            ui_utils.show_status("File names already match the pattern.")
+            return False                     # back to the pattern, not out
+        keep = state['apply_set']
+        choices = [prompt.Choice(title=os.path.basename(p), value=p,
+                                 checked=keep is None or p in keep,
+                                 cells=[str(i + 1), o, n])
+                   for i, (p, o, n) in enumerate(changed)]
+        sub = f"{len(changed)} to rename" + (
+            f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
+        sel = prompt.select("Preview — ↵ renames:", choices=choices,
+                            columns=_RENAME_COLUMNS, header=header(sub), multi=True)
+        if sel is None:
+            return False
+        state['apply_set'] = set(sel)
+        return True
 
-    choices = [prompt.Choice(title=os.path.basename(p), value=p, checked=True,
-                             cells=[str(i + 1), o, n])
-               for i, (p, o, n) in enumerate(changed)]
-    sub = f"{len(changed)} to rename" + (f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
-    sel = prompt.select("Preview — ↵ renames:", choices=choices,
-                        columns=_RENAME_COLUMNS, header=header(sub), multi=True)
-    if sel is None:
+    if not _walk([_ask_pattern, _ask_preview]):
         return
-    apply_set = set(sel)
+    changed = state['changed']
+    apply_set = state['apply_set']
     if not apply_set:
         ui_utils.show_status("No files selected.")
         return
@@ -1378,205 +1494,240 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         return
     n_images = len({img for imgs in dir_images.values() for img in imgs})
 
-    # 1) Matching strategy.
-    mode = prompt.select("Match cover images to tracks by:", choices=[
-        "Auto-detect (recommended)",
-        "One cover per disc / series / work",
-        "Matching file name",
-        "Track number / order",
-        "Name pattern (%token%)",
-    ], header=header(f"{n_images} image(s) found"))
-    if not mode:
-        return
-    pattern = None
-    group_by = 'auto'
-    grouped = mode.startswith("One cover per")
-    if grouped:
-        gb = prompt.select("Group tracks by:", choices=[
-            "Auto (disc, else series, else work)",
-            "Disc number",
-            "Series / season (SxxExx)",
-            "Work / grouping",
-        ], header=header())
-        if not gb:
-            return
-        group_by = {"Auto (disc, else series, else work)": 'auto',
-                    "Disc number": 'disc',
-                    "Series / season (SxxExx)": 'season',
-                    "Work / grouping": 'work'}[gb]
-    elif mode == "Name pattern (%token%)":
-        pattern = _cover_pattern_prompt(header)
-        if pattern is None:
-            return
+    # 1) Matching strategy. Each answer is kept in `state`, so a screen reopened
+    # by walking back holds what it was left holding — including covers chosen by
+    # hand in the preview, which survive the plan being rebuilt.
+    _MODES = ["Auto-detect (recommended)",
+              "One cover per disc / series / work",
+              "Matching file name",
+              "Track number / order",
+              "Name pattern (%token%)"]
+    _GROUPS = {"Auto (disc, else series, else work)": 'auto',
+               "Disc number": 'disc',
+               "Series / season (SxxExx)": 'season',
+               "Work / grouping": 'work'}
+    _POLICIES = ["Fill blanks only", "Overwrite existing"]
+    state: dict = {'mode': _MODES[0], 'group': list(_GROUPS)[0], 'pattern': None,
+                   'policy': _POLICIES[0], 'manual': {}, 'apply_paths': None}
 
-    # 2) Build the plan per directory, so images only pair with tracks beside them.
-    by_dir: dict[str, list] = {}
-    for p in writable:
-        by_dir.setdefault(os.path.dirname(os.path.abspath(p)), []).append(p)
-    plan: dict = {}
-    for d, group in by_dir.items():
-        imgs = dir_images[d]
-        if not imgs:
-            plan.update({p: None for p in group})
-        elif grouped:
-            plan.update(cm.plan_grouped(group, imgs, group_by, tokens))
-        elif mode.startswith("Auto"):
-            plan.update(cm.plan_best(group, imgs, tokens))
-        elif mode == "Matching file name":
-            plan.update(cm.plan_basename(group, imgs, tokens))
-        elif mode == "Track number / order":
-            plan.update(cm.plan_positional(group, imgs, tokens))
-        else:
-            plan.update(cm.plan_template(group, imgs, pattern or '', tokens))
+    def _ask_mode() -> bool:
+        """How images pair with tracks."""
+        picked = prompt.select("Match cover images to tracks by:", choices=_MODES,
+                               index=_MODES.index(state['mode']),
+                               header=header(f"{n_images} image(s) found"))
+        if not picked:
+            return False
+        state['mode'] = picked
+        return True
 
-    # 3) Default policy — sets the initial checkbox state (the checkboxes decide).
-    policy = prompt.select("For tracks that already have art:",
-                           choices=["Fill blanks only", "Overwrite existing"],
-                           header=header())
-    if not policy:
-        return
-    overwrite_default = (policy == "Overwrite existing")
-    existing_art = {p: tw.has_cover(p) for p in writable}
+    def _ask_group():
+        """What counts as a group — only when one cover covers a group."""
+        if not state['mode'].startswith("One cover per"):
+            return _SKIP
+        picked = prompt.select("Group tracks by:", choices=list(_GROUPS),
+                              index=list(_GROUPS).index(state['group']), header=header())
+        if not picked:
+            return False
+        state['group'] = picked
+        return True
 
-    # Only tracks whose folder has images are actionable (the rest have nothing
-    # to pair with, auto or by hand).
-    shown = [p for p in writable if dir_images[os.path.dirname(os.path.abspath(p))]]
-
-    # A cover shared by 2+ tracks is group art — badge every one of its rows with
-    # the group (disc/season/work) so the column stays consistent, instead of one
-    # row flipping to "high" just because its track number happens to match the
-    # cover's number. Per-track (unique) covers keep the match-confidence label.
-    shared = {img for img, n in Counter(v for v in plan.values() if v).items() if n >= 2}
-
-    def _conf(p: str) -> str:
-        """Confidence/group label for a track's planned cover, or '' if unmatched."""
-        img = plan.get(p)
-        if not img:
-            return ''
-        if grouped or img in shared:
-            return cm.group_label(p, tokens[p], group_by)
-        return cm.confidence(cm.score_match(p, tokens[p], img))
-
-    def _cover_cell(p: str):
-        """Cell text for a track's planned cover: label, plus a "has art" badge if replacing."""
-        img = plan.get(p)
-        if not img:
-            return "— none (d to choose) —"
-        label = _img_label(img, os.path.dirname(os.path.abspath(p)))
-        if existing_art[p]:
-            return [(label, 'normal'), ('  · has art', 'static-dim')]
-        return label
-
-    def _checked(p: str) -> bool:
-        """Default tick state: matched, and either overwriting or no existing art."""
-        return bool(plan.get(p)) and (overwrite_default or not existing_art[p])
-
-    choice_by_path: dict = {}
-    preview_choices: list = []
-    for p in shown:
-        ch = prompt.Choice(title=os.path.basename(p), value=p, checked=_checked(p),
-                           cells=[os.path.basename(p), _cover_cell(p), _conf(p)])
-        choice_by_path[p] = ch
-        preview_choices.append(ch)
-
-    def _set_cover(p: str, img) -> None:
-        """Point track ``p`` at ``img`` (or None) and refresh its preview row."""
-        ch = choice_by_path[p]
-        if img is None:
-            plan[p] = None
-            ch.cells = [os.path.basename(p), "— none (d to choose) —", '']
-            ch.checked = False
-        else:
-            plan[p] = img
-            ch.cells = [os.path.basename(p), _cover_cell(p), _conf(p)]
-            ch.checked = True               # an explicit pick means write it
-
-    def _copy_scope(picked: str, path: str) -> list | None:
-        """Ask how far a hand-picked cover should carry, and return the tracks it
-        applies to (None if the user backed out).
-
-        A cover chosen for an unmatched track is usually right for its
-        neighbours too, but not always for the whole selection — a box set
-        changes art per disc.  So the choice is: every track, everything from
-        here down, a counted run from here, or this track alone.
-        """
-        below = shown[shown.index(path):]
-        choices = [prompt.Choice(title=f"All {len(shown)} tracks", value="all")]
-        if len(below) > 1 and len(below) != len(shown):
-            choices.append(prompt.Choice(
-                title=f"This track and the {len(below) - 1} below it", value="down"))
-        if len(below) > 1:
-            choices.append(prompt.Choice(title="This track and the next N…", value="count"))
-        choices.append(prompt.Choice(title="Just this track", value="one"))
-
-        scope = prompt.select(f"Apply {os.path.basename(picked)} to:", choices=choices,
-                              header=header("apply cover"))
-        if scope is None:
-            return None                     # backed out — leave the row unchanged
-        if scope == "all":
-            return shown
-        if scope == "down":
-            return below
-        if scope == "count":
-            raw = prompt.text(f"How many tracks from here (1-{len(below)}):",
-                              default=str(len(below)))
-            if raw is None:
-                return None
-            try:
-                n = int(raw.strip())
-            except ValueError:
-                ui_utils.show_status("Not a number — applied to this track only.")
-                return [path]
-            n = max(1, min(n, len(below)))
-            return below[:n]
-        return [path]
-
-    def _reassign(path: str) -> None:
-        """Let the user pick/clear the cover for one track, then choose how far
-        that cover carries down the selection."""
-        d = os.path.dirname(os.path.abspath(path))
-        picked = pick_nearby_cover(path, tokens=tokens[path], images=dir_images[d],
-                                   current=plan.get(path), allow_none=True, header=header)
+    def _ask_pattern():
+        """The image-name pattern — only for pattern matching."""
+        if state['mode'] != "Name pattern (%token%)":
+            return _SKIP
+        picked = _cover_pattern_prompt(header)
         if picked is None:
-            return                          # backed out, no change
-        if picked is CLEAR_COVER or not isinstance(picked, str):
-            _set_cover(path, None)
-            return
-        targets = [path]
-        if len(shown) > 1:
-            targets = _copy_scope(picked, path)
-            if targets is None:
+            return False
+        state['pattern'] = picked
+        return True
+
+    def _ask_policy() -> bool:
+        """Whether tracks that already have art start ticked."""
+        picked = prompt.select("For tracks that already have art:", choices=_POLICIES,
+                               index=_POLICIES.index(state['policy']), header=header())
+        if not picked:
+            return False
+        state['policy'] = picked
+        return True
+
+    def _ask_preview() -> bool:
+        """Pair everything up, then show it — `d` re-chooses one track's cover."""
+        mode, pattern = state['mode'], state['pattern']
+        grouped = mode.startswith("One cover per")
+        group_by = _GROUPS[state['group']]
+        overwrite_default = (state['policy'] == "Overwrite existing")
+
+        # Build the plan per directory, so images only pair with tracks beside them.
+        by_dir: dict[str, list] = {}
+        for p in writable:
+            by_dir.setdefault(os.path.dirname(os.path.abspath(p)), []).append(p)
+        plan: dict = {}
+        for d, group in by_dir.items():
+            imgs = dir_images[d]
+            if not imgs:
+                plan.update({p: None for p in group})
+            elif grouped:
+                plan.update(cm.plan_grouped(group, imgs, group_by, tokens))
+            elif mode.startswith("Auto"):
+                plan.update(cm.plan_best(group, imgs, tokens))
+            elif mode == "Matching file name":
+                plan.update(cm.plan_basename(group, imgs, tokens))
+            elif mode == "Track number / order":
+                plan.update(cm.plan_positional(group, imgs, tokens))
+            else:
+                plan.update(cm.plan_template(group, imgs, pattern or '', tokens))
+        # Covers chosen by hand in a previous pass through this screen win over
+        # whatever the matcher would pair now.
+        plan.update(state['manual'])
+
+        existing_art = {p: tw.has_cover(p) for p in writable}
+
+        # Only tracks whose folder has images are actionable (the rest have nothing
+        # to pair with, auto or by hand).
+        shown = [p for p in writable if dir_images[os.path.dirname(os.path.abspath(p))]]
+
+        # A cover shared by 2+ tracks is group art — badge every one of its rows with
+        # the group (disc/season/work) so the column stays consistent, instead of one
+        # row flipping to "high" just because its track number happens to match the
+        # cover's number. Per-track (unique) covers keep the match-confidence label.
+        shared = {img for img, n in Counter(v for v in plan.values() if v).items() if n >= 2}
+
+        def _conf(p: str) -> str:
+            """Confidence/group label for a track's planned cover, or '' if unmatched."""
+            img = plan.get(p)
+            if not img:
+                return ''
+            if grouped or img in shared:
+                return cm.group_label(p, tokens[p], group_by)
+            return cm.confidence(cm.score_match(p, tokens[p], img))
+
+        def _cover_cell(p: str):
+            """Cell text for a track's planned cover: label, plus a "has art" badge if replacing."""
+            img = plan.get(p)
+            if not img:
+                return "— none (d to choose) —"
+            label = _img_label(img, os.path.dirname(os.path.abspath(p)))
+            if existing_art[p]:
+                return [(label, 'normal'), ('  · has art', 'static-dim')]
+            return label
+
+        def _checked(p: str) -> bool:
+            """Default tick state: matched, and either overwriting or no existing art."""
+            return bool(plan.get(p)) and (overwrite_default or not existing_art[p])
+
+        choice_by_path: dict = {}
+        preview_choices: list = []
+        for p in shown:
+            ch = prompt.Choice(title=os.path.basename(p), value=p, checked=_checked(p),
+                               cells=[os.path.basename(p), _cover_cell(p), _conf(p)])
+            choice_by_path[p] = ch
+            preview_choices.append(ch)
+
+        def _set_cover(p: str, img) -> None:
+            """Point track ``p`` at ``img`` (or None) and refresh its preview row."""
+            ch = choice_by_path[p]
+            state['manual'][p] = img        # remembered if this screen is revisited
+            if img is None:
+                plan[p] = None
+                ch.cells = [os.path.basename(p), "— none (d to choose) —", '']
+                ch.checked = False
+            else:
+                plan[p] = img
+                ch.cells = [os.path.basename(p), _cover_cell(p), _conf(p)]
+                ch.checked = True               # an explicit pick means write it
+
+        def _copy_scope(picked: str, path: str) -> list | None:
+            """Ask how far a hand-picked cover should carry, and return the tracks it
+            applies to (None if the user backed out).
+
+            A cover chosen for an unmatched track is usually right for its
+            neighbours too, but not always for the whole selection — a box set
+            changes art per disc.  So the choice is: every track, everything from
+            here down, a counted run from here, or this track alone.
+            """
+            below = shown[shown.index(path):]
+            choices = [prompt.Choice(title=f"All {len(shown)} tracks", value="all")]
+            if len(below) > 1 and len(below) != len(shown):
+                choices.append(prompt.Choice(
+                    title=f"This track and the {len(below) - 1} below it", value="down"))
+            if len(below) > 1:
+                choices.append(prompt.Choice(title="This track and the next N…", value="count"))
+            choices.append(prompt.Choice(title="Just this track", value="one"))
+
+            scope = prompt.select(f"Apply {os.path.basename(picked)} to:", choices=choices,
+                                  header=header("apply cover"))
+            if scope is None:
+                return None                     # backed out — leave the row unchanged
+            if scope == "all":
+                return shown
+            if scope == "down":
+                return below
+            if scope == "count":
+                raw = prompt.text(f"How many tracks from here (1-{len(below)}):",
+                                  default=str(len(below)))
+                if raw is None:
+                    return None
+                try:
+                    n = int(raw.strip())
+                except ValueError:
+                    ui_utils.show_status("Not a number — applied to this track only.")
+                    return [path]
+                n = max(1, min(n, len(below)))
+                return below[:n]
+            return [path]
+
+        def _reassign(path: str) -> None:
+            """Let the user pick/clear the cover for one track, then choose how far
+            that cover carries down the selection."""
+            d = os.path.dirname(os.path.abspath(path))
+            picked = pick_nearby_cover(path, tokens=tokens[path], images=dir_images[d],
+                                       current=plan.get(path), allow_none=True, header=header)
+            if picked is None:
+                return                          # backed out, no change
+            if picked is CLEAR_COVER or not isinstance(picked, str):
+                _set_cover(path, None)
                 return
-        for tp in targets:
-            _set_cover(tp, picked)
+            targets = [path]
+            if len(shown) > 1:
+                targets = _copy_scope(picked, path)
+                if targets is None:
+                    return
+            for tp in targets:
+                _set_cover(tp, picked)
 
-    n_match = sum(1 for p in shown if plan.get(p))
-    n_nodir = len(writable) - len(shown)
+        n_match = sum(1 for p in shown if plan.get(p))
+        n_nodir = len(writable) - len(shown)
 
-    # Rebuilt on every render (select calls the header each frame), so the ticked
-    # count tracks live as you Space/'a'/'d' through the list.
-    def _preview_header():
-        """Build the live status line (matched/ticked/skipped counts) for the cover preview."""
-        nk = sum(1 for ch in preview_choices if ch.checked)
-        bits = [ui_utils.plural(len(shown), "track"), f"{n_match} matched"]
-        if n_nodir:
-            bits.append(f"{n_nodir} without images")
-        if skipped_fmt:
-            bits.append(f"{skipped_fmt} unsupported skipped")
-        if nk:
-            bits.append(f"{nk} ticked")
-        elif n_match:
-            bits.append("0 ticked — existing art; Overwrite or Space/a to tick")
-        return header(" · ".join(bits))()
+        # Rebuilt on every render (select calls the header each frame), so the ticked
+        # count tracks live as you Space/'a'/'d' through the list.
+        def _preview_header():
+            """Build the live status line (matched/ticked/skipped counts) for the cover preview."""
+            nk = sum(1 for ch in preview_choices if ch.checked)
+            bits = [ui_utils.plural(len(shown), "track"), f"{n_match} matched"]
+            if n_nodir:
+                bits.append(f"{n_nodir} without images")
+            if skipped_fmt:
+                bits.append(f"{skipped_fmt} unsupported skipped")
+            if nk:
+                bits.append(f"{nk} ticked")
+            elif n_match:
+                bits.append("0 ticked — existing art; Overwrite or Space/a to tick")
+            return header(" · ".join(bits))()
 
-    sel = prompt.select(
-        "Preview — ↵ applies:",
-        choices=preview_choices, columns=_COVER_PREVIEW_COLUMNS,
-        header=_preview_header, multi=True,
-        extra_hints={'d': 'choose cover'}, on_inspect=_reassign)
-    if sel is None:
+        sel = prompt.select(
+            "Preview — ↵ applies:",
+            choices=preview_choices, columns=_COVER_PREVIEW_COLUMNS,
+            header=_preview_header, multi=True,
+            extra_hints={'d': 'choose cover'}, on_inspect=_reassign)
+        if sel is None:
+            return False
+        state.update(plan=plan, shown=shown, apply_paths=set(sel))
+        return True
+
+    if not _walk([_ask_mode, _ask_group, _ask_pattern, _ask_policy, _ask_preview]):
         return
-    apply_paths = set(sel)
+    plan, shown = state['plan'], state['shown']
+    apply_paths = state['apply_paths']
     if not apply_paths:
         ui_utils.show_status("No tracks selected.")
         return
@@ -1622,86 +1773,401 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     ui_utils.show_status(msg)
 
 
-def apply_sort_orders(paths: list, library: list, header) -> None:
-    """Generate smart sort-order tags (TSOP/TSO2/TSOA) from each file's existing
-    artist/album-artist/album, via the #42 engine. MP3/ID3 only.
+_SORT_VALUE_COLUMNS = [
+    prompt.Column(style='primary', flex=True, max_frac=0.4),                      # the name itself
+    prompt.Column(style='dynamic-dim', flex=True),                                # sort order
+    prompt.Column(style='dynamic-dim', max_width=22, priority=2),                 # where it came from
+    prompt.Column(style='dynamic-dim', align='right', max_width=9, priority=1),   # how many files
+]
 
-    No title sort: a title sorts on itself, so TSOT is never generated. Nor is a
-    sort tag whose value would equal its source — the engine returns None there,
-    so nothing is written where sorting wouldn't change.
+_SORT_PERSON_COLUMNS = [
+    prompt.Column(style='primary', flex=True, max_frac=0.45),
+    prompt.Column(style='dynamic-dim', flex=True),
+]
+
+_SPLIT_COLUMNS = [
+    prompt.Column(style='primary', flex=True, max_frac=0.4),                      # the value as tagged
+    prompt.Column(style='dynamic-dim', flex=True),                                # the names in it
+    prompt.Column(style='dynamic-dim', max_width=8, priority=2),                  # how many
+    prompt.Column(style='dynamic-dim', align='right', max_width=9, priority=1),   # how many files
+]
+
+_SORT_TAG_LABEL = {'TSOP': 'artist', 'TSO2': 'album artist',
+                   'TSOC': 'composer', 'TSOA': 'album'}
+
+
+class _SortPlan:
+    """What a bulk sort-order run will write, keyed by source value, not by file.
+
+    One row per distinct artist/album value however many tracks carry it, so a
+    decision made once covers all of them. Decisions are held per *person*
+    rather than per value: settling "Somebody Else" as "Else, Somebody" in one
+    collaboration settles it in every other value that person appears in, and on
+    their solo tracks — which is the copying-down that makes reviewing a library
+    of repeats bearable.
     """
-    field_choices = [
-        prompt.Choice(title="Artist sort (TSOP)", value='artist', checked=True),
-        prompt.Choice(title="Album-artist sort (TSO2)", value='album_artist', checked=True),
-        prompt.Choice(title="Album sort (TSOA)", value='album', checked=True),
-    ]
-    chosen = prompt.select("Sort tags to generate:", choices=field_choices,
-                           header=header(), multi=True)
-    if not chosen:
-        return
-    chosen = set(chosen)
-    mode = prompt.select("When a sort tag already has a value:",
-                         choices=["Fill blanks only", "Overwrite existing"], header=header())
-    if not mode:
-        return
-    overwrite = (mode == "Overwrite existing")
 
+    def __init__(self, entries: dict, delim: str) -> None:
+        from src.id3 import id3_browser
+        self._nb = id3_browser                 # lazy: id3_browser is the caller
+        self.entries = entries                 # (sort_tag, raw) → [paths]
+        self.delim = delim
+        self.chosen: dict[str, str] = {}       # person → the sort text they were given
+        self.splits: dict[str, list] = {}      # raw → the names it was verified to hold
+        self.custom: dict[tuple, str] = {}     # entry → a whole value typed by hand
+
+    # ── Splitting a value into people ──────────────────────────────────────
+    def split_options(self, sort_tag: str, raw: str) -> list:
+        """The ways this value could be read as a list of names (album tags: none)."""
+        if sort_tag not in self._nb._NAME_SORT_TAGS:
+            return []
+        return self._nb.split_options(raw)
+
+    def people(self, sort_tag: str, raw: str) -> list:
+        """The individuals in one value — as verified, else as the engine reads it."""
+        options = self.split_options(sort_tag, raw)
+        if not options:
+            return []
+        return self.splits.get(raw) or options[0]
+
+    def set_split(self, raw: str, people: list) -> None:
+        """Record how a value really divides (the verification step's whole job)."""
+        self.splits[raw] = list(people)
+
+    # ── Sort values ────────────────────────────────────────────────────────
+    def candidates(self, person: str) -> list:
+        """Ranked sort orders offered for one person, their current pick first."""
+        cur = self.person_sort(person)
+        out = [cur]
+        for c in self._nb._sort_single_name(person):
+            if c not in out:
+                out.append(c)
+        if person not in out:
+            out.append(person)                 # "leave it alone" is always an option
+        return out
+
+    def person_sort(self, person: str) -> str:
+        """How one person sorts: their decision if made, else the engine's pick."""
+        if person in self.chosen:
+            return self.chosen[person]
+        if self._nb._looks_inverted(person):
+            return person                      # already in sort order
+        return (self._nb._sort_single_name(person) or [person])[0]
+
+    def value(self, sort_tag: str, raw: str) -> str:
+        """The sort string this entry would write."""
+        typed = self.custom.get((sort_tag, raw))
+        if typed:
+            return typed
+        people = self.people(sort_tag, raw)
+        if not people:
+            return _sort_value(sort_tag, raw) or raw
+        return self.delim.join(self.person_sort(p) for p in people)
+
+    def writes(self, sort_tag: str, raw: str) -> bool:
+        """Whether this entry still has something worth writing."""
+        v = self.value(sort_tag, raw)
+        return bool(v) and v != raw
+
+
+def _split_keys(plan: _SortPlan) -> list:
+    """Values that could be read more than one way — the only ones worth checking."""
+    keys = [k for k in plan.entries if len(plan.split_options(*k)) > 1]
+    keys.sort(key=lambda k: k[1].lower())
+    return keys
+
+
+def _verify_splits(plan: _SortPlan, header, note: str = "") -> bool:
+    """Confirm how each value divides into names, before any of them is sorted.
+
+    Splitting is guesswork — an ampersand joins two artists in one credit and is
+    part of one act's name in the next, and a comma does three different jobs —
+    and every sort order downstream is built on the answer. So the guesses come
+    first, one row per value that could be read more than one way, and `e` cycles
+    the readings: the engine's, the value whole as a single name, the maximal
+    split, or one typed by hand with " / " between the names.
+
+    Values with only one reading never appear; nor do albums, which hold nobody.
+    Returns False if the step was abandoned.
+    """
+    keys = _split_keys(plan)
+    if not keys:
+        return True
+
+    def _shown(people: list) -> str:
+        return " / ".join(people)
+
+    def _cells(key: tuple) -> list:
+        people = plan.people(*key)
+        return [key[1], _shown(people),
+                ui_utils.plural(len(people), 'name'),
+                ui_utils.plural(len(plan.entries[key]), 'file')]
+
+    rows = {k: prompt.Choice(title=k[1], value=k, cells=_cells(k)) for k in keys}
+
+    def _options(key: tuple) -> list:
+        return [_shown(o) for o in plan.split_options(*key)]
+
+    def _commit(key: tuple, text: str) -> None:
+        """Take the chosen (or typed) splitting for this value."""
+        people = [p.strip() for p in re.split(r'\s*[/·]\s*', text) if p.strip()]
+        if people:
+            plan.set_split(key[1], people)
+            rows[key].cells = _cells(key)
+
+    sub = f"{ui_utils.plural(len(keys), 'value')} to check{note}"
+    sel = prompt.select("Do these divide correctly? — ↵ continues:",
+                        choices=[rows[k] for k in keys], columns=_SPLIT_COLUMNS,
+                        header=header(sub), row_edit=_options,
+                        row_edit_commit=_commit, row_edit_col=1)
+    return sel is not None
+
+
+def _review_sort_people(plan: _SortPlan, header, note: str = "") -> set | None:
+    """One flat list of everything that needs a sort order, each thing once.
+
+    Not one row per tag value but one per *individual*: an artist, an album
+    artist and a composer with the same name are one person and one decision,
+    however many tracks and however many collaborations they turn up in. Albums,
+    having nobody in them, are rows of their own. Who the people are was settled
+    in the split-verification step before this one.
+
+    `e` cycles a row's sort order through its candidates in place, one press per
+    option, with one step past the last being a text field to type your own — no
+    second screen for any of it. ↵ writes the checked rows; unchecking a person
+    leaves every value they appear in alone.
+    """
+    def _index() -> tuple:
+        """Group the entries into people and albums."""
+        people: dict = {}
+        albums = []
+        for key, paths in plan.entries.items():
+            sort_tag, raw = key
+            if not plan.split_options(sort_tag, raw):
+                albums.append(key)
+                continue
+            for person in plan.people(sort_tag, raw):
+                rec = people.setdefault(person, {'paths': set(), 'tags': set()})
+                rec['paths'].update(paths)
+                rec['tags'].add(_SORT_TAG_LABEL.get(sort_tag, sort_tag))
+        return people, albums
+
+    def _rows() -> list:
+        """The flat list: people, then albums."""
+        people, albums = _index()
+        out = []
+        for name in sorted(people, key=str.lower):
+            rec = people[name]
+            out.append((('person', name),
+                        [name, plan.person_sort(name),
+                         " · ".join(sorted(rec['tags'])),
+                         ui_utils.plural(len(rec['paths']), 'file')]))
+        for key in sorted(albums, key=lambda k: k[1].lower()):
+            out.append((('album', key),
+                        [key[1], plan.value(*key), 'album',
+                         ui_utils.plural(len(plan.entries[key]), 'file')]))
+        return out
+
+    # Rows are rebuilt on every edit, but Choice objects are reused where the row
+    # survives, so checkbox state and the cursor stay put.
+    made: dict = {}
+
+    def _choices() -> list:
+        out = []
+        for rid, cells in _rows():
+            choice = made.get(rid)
+            if choice is None:
+                choice = made[rid] = prompt.Choice(title=cells[0], value=rid, checked=True)
+            choice.cells = cells
+            out.append(choice)
+        return out
+
+    def _options(rid: tuple) -> list:
+        """What `e` cycles this row through, its current value first."""
+        kind, payload = rid
+        if kind == 'person':
+            return plan.candidates(payload)
+        return [plan.value(*payload)] + list(plan._nb._sort_candidates(*payload))
+
+    def _commit(rid: tuple, text: str) -> None:
+        """Record one row's choice, then refresh them all — a person reaches many."""
+        kind, payload = rid
+        if kind == 'person':
+            plan.chosen[payload] = text
+        else:
+            plan.custom[payload] = text
+        for rid_, cells in _rows():
+            if rid_ in made:
+                made[rid_].cells = cells
+
+    choices = _choices()
+    files = len({p for ps in plan.entries.values() for p in ps})
+    sub = f"{ui_utils.plural(len(choices), 'name')} · {ui_utils.plural(files, 'file')}{note}"
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+                        columns=_SORT_VALUE_COLUMNS, header=header(sub), multi=True,
+                        row_edit=_options, row_edit_commit=_commit, row_edit_col=1)
+    return None if sel is None else set(sel)
+
+
+def apply_sort_orders(paths: list, library: list, header) -> None:
+    """Generate smart sort-order tags (TSOP/TSO2/TSOC/TSOA) from each file's
+    existing artist/album-artist/composer/album, via the #42 engine. MP3/ID3 only.
+
+    Runs as a sequence of screens you can walk backwards through: back on the
+    first one leaves, and back on any other returns to the one before it with
+    everything you had already decided still there. Splits are confirmed before
+    sort orders (see _verify_splits), then reviewed one individual at a time
+    (_review_sort_people). No title sort: a title sorts on itself, so TSOT is
+    never generated. Nor is a sort tag whose value would equal its source.
+    """
     mp3s = [p for p in paths if p.lower().endswith('.mp3')]
     skipped_fmt = len(paths) - len(mp3s)
+    note = f" · {skipped_fmt} non-MP3 skipped" if skipped_fmt else ""
 
-    plan: dict = {}                                  # path → [(sort_tag, sort_value)]
-    for p in mp3s:
-        try:
-            audio = ID3(p)
-        except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
+    from src.config import load_config
+    from src.id3 import id3_browser as nb
+    delim = load_config().get('sort_list_delimiter', '/')
+
+    _FIELDS = [('artist', "Artist sort (TSOP)"), ('album_artist', "Album-artist sort (TSO2)"),
+               ('composer', "Composer sort (TSOC)"), ('album', "Album sort (TSOA)")]
+    _MODES = ["Fill blanks only", "Overwrite existing"]
+
+    chosen: set = {f for f, _ in _FIELDS}
+    mode = _MODES[0]
+    plan: _SortPlan | None = None
+    scanned_for: tuple | None = None       # what the current plan was scanned for
+    checked: set = set()
+
+    def _scan(overwrite: bool) -> dict:
+        """Read the selection into (sort_tag, raw) → paths."""
+        entries: dict = {}
+        for p in mp3s:
+            try:
+                audio = ID3(p)
+            except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
+                continue
+            for field, src, sort_tag in _SORT_SRC:
+                if field not in chosen:
+                    continue
+                fr = audio.get(src)
+                # A source frame can hold several values — TCOM takes one
+                # composer each — while the sort frame is single, so they join on
+                # the delimiter and the engine reads them straight back as a list.
+                vals = [str(t).strip() for t in fr.text if str(t).strip()] if (
+                    fr and getattr(fr, 'text', None)) else []
+                raw = delim.join(vals)
+                if not raw:
+                    continue
+                # A value that sorts as itself is still worth carrying when it
+                # could be split more than one way: that judgement is the
+                # verification step's to confirm, and "Blank & Jones" needing no
+                # tag is exactly the sort of guess someone may want to overrule.
+                if not _sort_value(sort_tag, raw) and not (
+                        sort_tag in nb._NAME_SORT_TAGS and len(nb.split_options(raw)) > 1):
+                    continue
+                ex = audio.get(sort_tag)
+                if not overwrite and ex is not None and getattr(ex, 'text', None) \
+                        and str(ex.text[0]).strip():
+                    continue
+                entries.setdefault((sort_tag, raw), []).append(p)
+        return entries
+
+    def _ask_fields() -> bool:
+        """Which sort frames to generate."""
+        nonlocal chosen
+        picked = prompt.select(
+            "Sort tags to generate:", multi=True, header=header(),
+            choices=[prompt.Choice(title=label, value=f, checked=f in chosen)
+                     for f, label in _FIELDS])
+        if not picked:
+            return False                   # first screen: back leaves the op
+        chosen = set(picked)
+        return True
+
+    def _ask_mode() -> bool:
+        """Fill blanks, or overwrite what is already there."""
+        nonlocal mode
+        picked = prompt.select("When a sort tag already has a value:", choices=_MODES,
+                               index=_MODES.index(mode), header=header())
+        if not picked:
+            return False
+        mode = picked
+        return True
+
+    def _read_files():
+        """Not a screen: re-read the files when an answer above has changed.
+
+        Transparent to the walk in both directions — it steps aside once the plan
+        matches the answers — but reports a back when the selection turns up
+        nothing, so the walk lands on the question worth changing.
+        """
+        nonlocal plan, scanned_for
+        overwrite = (mode == "Overwrite existing")
+        if scanned_for == (frozenset(chosen), overwrite):
+            return _SKIP
+        entries = _scan(overwrite)
+        if not entries:
+            ui_utils.show_status("No sort orders to write — already set, or none needed.")
+            return False
+        # Carry every decision across the rescan: they are keyed by person and by
+        # value, so they outlive the entries they were made against.
+        fresh = _SortPlan(entries, delim)
+        if plan is not None:
+            fresh.chosen.update(plan.chosen)
+            fresh.splits.update(plan.splits)
+            fresh.custom.update(plan.custom)
+        plan = fresh
+        scanned_for = (frozenset(chosen), overwrite)
+        return _SKIP
+
+    def _ask_verify():
+        """Confirm who the people are — skipped when nothing reads two ways."""
+        assert plan is not None
+        if not _split_keys(plan):
+            return _SKIP
+        return _verify_splits(plan, header, note)
+
+    def _ask_review() -> bool:
+        """The flat list of individuals, and what gets written."""
+        nonlocal checked
+        assert plan is not None
+        got = _review_sort_people(plan, header, note)
+        if got is None:
+            return False
+        checked = got
+        return True
+
+    if not _walk([_ask_fields, _ask_mode, _read_files, _ask_verify, _ask_review]):
+        return
+
+    if not checked:
+        ui_utils.show_status("Nothing selected.")
+        return
+    assert plan is not None
+
+    # Rows are people; values are what gets written. A value goes out when
+    # everyone in it is checked — unchecking one person leaves every value they
+    # appear in untouched rather than half-sorted.
+    per_path: dict = {}
+    for key in plan.entries:
+        sort_tag, raw = key
+        people = plan.people(sort_tag, raw)
+        if people:
+            if any(('person', person) not in checked for person in people):
+                continue
+        elif ('album', key) not in checked:
             continue
-        entries = []
-        for field, src, sort_tag in _SORT_SRC:
-            if field not in chosen:
-                continue
-            fr = audio.get(src)
-            raw = str(fr.text[0]).strip() if (fr and getattr(fr, 'text', None)) else ""
-            if not raw:
-                continue
-            sv = _sort_value(sort_tag, raw)          # top candidate, or None if none needed
-            if not sv:
-                continue
-            ex = audio.get(sort_tag)
-            if not overwrite and ex is not None and getattr(ex, 'text', None) and str(ex.text[0]).strip():
-                continue
-            entries.append((sort_tag, sv))
-        if entries:
-            plan[p] = entries
-
-    if not plan:
-        ui_utils.show_status("No sort orders to write — already set, or none needed.")
-        return
-
-    choices = []
-    for p in mp3s:
-        if p not in plan:
+        if not plan.writes(sort_tag, raw):
             continue
-        summary = " · ".join(f"{t}={v}" for t, v in plan[p])
-        choices.append(prompt.Choice(title=os.path.basename(p), value=p, checked=True,
-                                     cells=[os.path.basename(p), summary]))
-    sub = ui_utils.plural(len(choices), "file") + (f" · {skipped_fmt} non-MP3 skipped" if skipped_fmt else "")
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
-                        columns=_SORT_APPLY_COLUMNS, header=header(sub), multi=True)
-    if sel is None:
-        return
-    apply_set = set(sel)
-    if not apply_set:
-        ui_utils.show_status("No files selected.")
-        return
+        for p in plan.entries[key]:
+            per_path.setdefault(p, []).append((sort_tag, plan.value(sort_tag, raw)))
 
     count = errors = 0
-    for p in mp3s:
-        if p not in plan or p not in apply_set:
-            continue
+    for p, writes in per_path.items():
         try:
             audio = ID3(p)
             changed = False
-            for sort_tag, sv in plan[p]:
+            for sort_tag, sv in writes:
                 audio.delall(sort_tag)
                 frame = create_frame(sort_tag, sv)
                 if frame is not None:
@@ -1748,24 +2214,46 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         return
     n = len(ordered)
 
-    raw = prompt.text("Tag to assign (e.g. TSST, TIT1, TDRC):")
-    if not raw:
-        return
-    tag_id = raw.strip().upper()
-    info = get_tag_info(tag_id)
-    if not info:
-        ui_utils.show_status(f"Unknown tag: {tag_id}")
-        return
-    is_date = info.format_spec == 'ISO8601'
+    # Every answer is kept here, so a screen reopened by walking back holds what
+    # it was left holding — typed rows and schedules included.
+    state: dict = {'tag': '', 'mode': None, 'rows': [], 'sched': None, 'gs': '',
+                   'tmpl': '', 'mode2': "Fill blanks only", 'apply_set': None}
 
-    modes = ["Ranges (from–to → value)", "Every N tracks → value"]
-    if is_date:
-        modes.append("Date schedule")
-        modes.append("Schedule per range (own start + interval)")
-    mode = prompt.select("Assignment mode:", choices=modes,
-                         header=header(f"{tag_id} · {n} tracks in disc/track order"))
-    if not mode:
-        return
+    def _ask_tag() -> bool:
+        """Which frame to assign. A name that isn't a frame is asked again here
+        rather than reported as a back, which on the first screen would end the
+        operation over a typo."""
+        while True:
+            raw = prompt.text("Tag to assign (e.g. TSST, TIT1, TDRC):",
+                              default=state['tag'])
+            if not raw:
+                return False
+            tag_id = raw.strip().upper()
+            if get_tag_info(tag_id):
+                state['tag'] = tag_id
+                return True
+            ui_utils.show_status(f"Unknown tag: {tag_id}")
+            state['tag'] = tag_id            # so the typo is there to correct
+
+    def _modes() -> list:
+        """The assignment modes this tag supports (schedules need a date frame)."""
+        info = get_tag_info(state['tag'])
+        modes = ["Ranges (from–to → value)", "Every N tracks → value"]
+        if info and info.format_spec == 'ISO8601':
+            modes += ["Date schedule", "Schedule per range (own start + interval)"]
+        return modes
+
+    def _ask_mode() -> bool:
+        """Ranges, every N, or a date schedule."""
+        modes = _modes()
+        idx = modes.index(state['mode']) if state['mode'] in modes else 0
+        picked = prompt.select(
+            "Assignment mode:", choices=modes, index=idx,
+            header=header(f"{state['tag']} · {n} tracks in disc/track order"))
+        if not picked:
+            return False
+        state['mode'] = picked
+        return True
 
     def _int(s, what):
         """Parse s as an int, or show a status error naming `what` and return None."""
@@ -1775,172 +2263,213 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             ui_utils.show_status(f"{what} must be a number.")
             return None
 
-    assignments: dict = {}
-    if mode.startswith("Ranges"):
-        rows = prompt.list_edit(f"Ranges for {tag_id} (positions 1–{n}; range no. as "
-                                f"{{n}} 3 / {{r}} III / {{en}} Three):",
-                                [], ("FROM", "TO", "VALUE"))
-        if not rows:
-            return
-        ranges = []
-        for r in rows:
-            cells = list(r) if isinstance(r, (list, tuple)) else [r]
-            if len(cells) < 3:
-                continue
-            lo, hi = _int(cells[0], "FROM"), _int(cells[1], "TO")
-            if lo is None or hi is None:
-                return
-            ranges.append((lo, hi, str(cells[2]).strip()))
-        assignments = bp.assign_ranges(ordered, ranges)
-    elif mode.startswith("Every"):
-        gs = _int(prompt.text("Group size (N tracks per group):"), "Group size")
-        if gs is None:
-            return
-        tmpl = prompt.text("Value — group number as {n} 3, {r} III or {en} Three "
-                           "(e.g. Series {n}, Act {r}, Series {en}):")
-        if tmpl is None:
-            return
-        assignments = bp.assign_periodic(ordered, gs, tmpl)
-    elif mode.startswith("Schedule per range"):
-        # Seeded with one row per disc — the common case is "each disc/series has
-        # its own start date and cadence", so the positions are filled in from
-        # the real disc boundaries and only START/EVERY need typing.
-        runs = bp.disc_ranges(ordered)
-        seeded = [[str(lo), str(hi), '', '7', 'track'] for lo, hi, _ in runs]
+    def _ask_spec() -> bool:
+        """Ask whatever the chosen mode needs, and build the assignments.
 
-        labels = [lab for _, _, lab in runs]
-        shown = ', '.join(labels[:6]) + ('…' if len(labels) > 6 else '')
+        One step rather than one per question: these sub-flows loop and branch
+        (a time per range, a group size only for "per group"), and threading a
+        walk through them would tangle more than it helps. A back inside returns
+        to the mode question, with typed rows kept for the next attempt.
+        """
+        tag_id = state['tag']
+        mode = state['mode']
+        assignments: dict = {}
+        if mode.startswith("Ranges"):
+            rows = prompt.list_edit(f"Ranges for {tag_id} (positions 1–{n}; range no. as "
+                                    f"{{n}} 3 / {{r}} III / {{en}} Three):",
+                                    state['rows'], ("FROM", "TO", "VALUE"))
+            if not rows:
+                return False
+            state['rows'] = rows              # kept, in case this is walked back to
+            ranges = []
+            for r in rows:
+                cells = list(r) if isinstance(r, (list, tuple)) else [r]
+                if len(cells) < 3:
+                    continue
+                lo, hi = _int(cells[0], "FROM"), _int(cells[1], "TO")
+                if lo is None or hi is None:
+                    return False
+                ranges.append((lo, hi, str(cells[2]).strip()))
+            assignments = bp.assign_ranges(ordered, ranges)
+        elif mode.startswith("Every"):
+            gs = _int(prompt.text("Group size (N tracks per group):",
+                                  default=state['gs']), "Group size")
+            if gs is None:
+                return False
+            state['gs'] = str(gs)
+            tmpl = prompt.text("Value — group number as {n} 3, {r} III or {en} Three "
+                               "(e.g. Series {n}, Act {r}, Series {en}):",
+                               default=state['tmpl'])
+            if tmpl is None:
+                return False
+            state['tmpl'] = tmpl
+            assignments = bp.assign_periodic(ordered, gs, tmpl)
+        elif mode.startswith("Schedule per range"):
+            # Seeded with one row per disc — the common case is "each disc/series has
+            # its own start date and cadence", so the positions are filled in from
+            # the real disc boundaries and only START/EVERY need typing.
+            runs = bp.disc_ranges(ordered)
+            seeded = [[str(lo), str(hi), '', '7', 'track'] for lo, hi, _ in runs]
 
-        def _sched_hints(col: int, row: list) -> list:
-            """Barrel-pickable values for the STEP column."""
-            return ['track', 'disc'] if col == 4 else []
+            labels = [lab for _, _, lab in runs]
+            shown = ', '.join(labels[:6]) + ('…' if len(labels) > 6 else '')
 
-        rows = prompt.list_edit(
-            f"Per-range {tag_id} schedule — a row per disc ({shown}); "
-            f"type digits into START, EVERY = days, STEP = track/disc:",
-            seeded, ("FROM", "TO", "START", "EVERY", "STEP"),
-            col_hints=_sched_hints,
-            # START edits as a split date/time field and is given the width to
-            # show a whole stamp; the short numeric columns give way to it.
-            col_types={2: 'timestamp'},
-            col_mins=_SCHEDULE_COL_MINS,
-            col_ratios=_SCHEDULE_COL_RATIOS)
-        if not rows:
-            return
+            def _sched_hints(col: int, row: list) -> list:
+                """Barrel-pickable values for the STEP column."""
+                return ['track', 'disc'] if col == 4 else []
 
-        # Every row is checked before anything is written, and a bad one is named
-        # rather than quietly dropping out of the result.
-        specs, row_errors = bp.validate_schedule_rows(rows, n)
-        if row_errors:
-            ui_utils.show_status("  ·  ".join(row_errors[:3])
-                                 + (f"  (+{len(row_errors) - 3} more)"
-                                    if len(row_errors) > 3 else ""), duration=5.0)
+            rows = prompt.list_edit(
+                f"Per-range {tag_id} schedule — a row per disc ({shown}); "
+                f"type digits into START, EVERY = days, STEP = track/disc:",
+                state['sched'] or seeded, ("FROM", "TO", "START", "EVERY", "STEP"),
+                col_hints=_sched_hints,
+                # START edits as a split date/time field and is given the width to
+                # show a whole stamp; the short numeric columns give way to it.
+                col_types={2: 'timestamp'},
+                col_mins=_SCHEDULE_COL_MINS,
+                col_ratios=_SCHEDULE_COL_RATIOS)
+            if not rows:
+                return False
+            state['sched'] = rows             # kept, in case this is walked back to
+
+            # Every row is checked before anything is written, and a bad one is named
+            # rather than quietly dropping out of the result.
+            specs, row_errors = bp.validate_schedule_rows(rows, n)
+            if row_errors:
+                ui_utils.show_status("  ·  ".join(row_errors[:3])
+                                     + (f"  (+{len(row_errors) - 3} more)"
+                                        if len(row_errors) > 3 else ""), duration=5.0)
+                if not specs:
+                    return False
+                if not prompt.confirm(f"{len(row_errors)} row(s) unusable — "
+                                      f"apply the other {len(specs)}?"):
+                    return False
             if not specs:
-                return
-            if not prompt.confirm(f"{len(row_errors)} row(s) unusable — "
-                                  f"apply the other {len(specs)}?"):
-                return
-        if not specs:
-            ui_utils.show_status("No usable schedule rows.")
-            return
+                ui_utils.show_status("No usable schedule rows.")
+                return False
 
-        # A time typed into START is kept per range. Only when no row carried one
-        # is a time worth asking about — and "No time" sits first, so Enter
-        # accepts the plain dates most archives want.
-        if not any(spec[3] for spec in specs):
-            tchoices = ["No time", "Same time for all"]
-            if 1 < len(specs) <= 12:
-                tchoices.append("Per range")
-            tsel = prompt.select("Time of day:", choices=tchoices, header=header())
-            if not tsel:
-                return
-            if tsel == "Same time for all":
-                tval = bp.norm_time(prompt.text("Time (HH:MM, 24-hour):"))
-                if not tval:
-                    ui_utils.show_status("Not a valid 24-hour time.")
-                    return
-                specs = [(lo, hi, st, tval, ev, sp) for lo, hi, st, _, ev, sp in specs]
-            elif tsel == "Per range":
-                filled = []
-                for lo, hi, st, _, ev, sp in specs:
-                    raw = prompt.text(f"Time for positions {lo}-{hi} "
-                                      f"(HH:MM, blank = none):")
-                    if raw is None:
-                        return
-                    filled.append((lo, hi, st, bp.norm_time(raw), ev, sp))
-                specs = filled
+            # A time typed into START is kept per range. Only when no row carried one
+            # is a time worth asking about — and "No time" sits first, so Enter
+            # accepts the plain dates most archives want.
+            if not any(spec[3] for spec in specs):
+                tchoices = ["No time", "Same time for all"]
+                if 1 < len(specs) <= 12:
+                    tchoices.append("Per range")
+                tsel = prompt.select("Time of day:", choices=tchoices, header=header())
+                if not tsel:
+                    return False
+                if tsel == "Same time for all":
+                    tval = bp.norm_time(prompt.text("Time (HH:MM, 24-hour):"))
+                    if not tval:
+                        ui_utils.show_status("Not a valid 24-hour time.")
+                        return False
+                    specs = [(lo, hi, st, tval, ev, sp) for lo, hi, st, _, ev, sp in specs]
+                elif tsel == "Per range":
+                    filled = []
+                    for lo, hi, st, _, ev, sp in specs:
+                        raw = prompt.text(f"Time for positions {lo}-{hi} "
+                                          f"(HH:MM, blank = none):")
+                        if raw is None:
+                            return False
+                        filled.append((lo, hi, st, bp.norm_time(raw), ev, sp))
+                    specs = filled
 
-        assignments = bp.assign_range_schedules(ordered, specs)
-    else:                                            # Date schedule (ISO8601 tags)
-        start = prompt.calendar_select("Start date:")
-        if not start:
-            return
-        iv = _int(prompt.text("Interval in days (7 = weekly):", default="7"), "Interval")
-        if iv is None:
-            return
-        gsel = prompt.select("Step the date:",
-                             choices=["Per track", "Per disc", "Per group of N"])
-        if not gsel:
-            return
-        gran, gsize = 'track', 1
-        if gsel.startswith("Per disc"):
-            gran = 'disc'
-        elif gsel.startswith("Per group"):
-            gsize = _int(prompt.text("Group size (N):"), "Group size")
-            if gsize is None:
-                return
-            gran = 'group'
+            assignments = bp.assign_range_schedules(ordered, specs)
+        else:                                            # Date schedule (ISO8601 tags)
+            start = prompt.calendar_select("Start date:")
+            if not start:
+                return False
+            iv = _int(prompt.text("Interval in days (7 = weekly):", default="7"), "Interval")
+            if iv is None:
+                return False
+            gsel = prompt.select("Step the date:",
+                                 choices=["Per track", "Per disc", "Per group of N"])
+            if not gsel:
+                return False
+            gran, gsize = 'track', 1
+            if gsel.startswith("Per disc"):
+                gran = 'disc'
+            elif gsel.startswith("Per group"):
+                gsize = _int(prompt.text("Group size (N):"), "Group size")
+                if gsize is None:
+                    return False
+                gran = 'group'
 
-        # Optional time of day → full ISO timestamps. Per-group times (e.g. each
-        # series at a different time) are offered when the groups are few.
-        times = None
-        tmode_choices = ["No time", "Same time for all"]
-        groups = bp.date_groups(ordered, gran, gsize)
-        if gran != 'track' and 1 < len(groups) <= 12:
-            tmode_choices.append("Per group")
-        tmode = prompt.select("Time of day:", choices=tmode_choices, header=header())
-        if not tmode:
-            return
-        if tmode == "Same time for all":
-            times = prompt.text("Time (HH:MM, 24-hour):")
-            if not times:
-                return
-        elif tmode == "Per group":
-            times = {}
-            for g in groups:
-                t = prompt.text(f"Time for group {g} (HH:MM, blank = none):")
-                if t:
-                    times[g] = t
-        assignments = bp.assign_dates(ordered, start, iv, gran, gsize, times=times)
+            # Optional time of day → full ISO timestamps. Per-group times (e.g. each
+            # series at a different time) are offered when the groups are few.
+            times = None
+            tmode_choices = ["No time", "Same time for all"]
+            groups = bp.date_groups(ordered, gran, gsize)
+            if gran != 'track' and 1 < len(groups) <= 12:
+                tmode_choices.append("Per group")
+            tmode = prompt.select("Time of day:", choices=tmode_choices, header=header())
+            if not tmode:
+                return False
+            if tmode == "Same time for all":
+                times = prompt.text("Time (HH:MM, 24-hour):")
+                if not times:
+                    return False
+            elif tmode == "Per group":
+                times = {}
+                for g in groups:
+                    t = prompt.text(f"Time for group {g} (HH:MM, blank = none):")
+                    if t:
+                        times[g] = t
+            assignments = bp.assign_dates(ordered, start, iv, gran, gsize, times=times)
 
-    assignments = {p: v for p, v in assignments.items() if v}
-    if not assignments:
-        ui_utils.show_status("Nothing to assign — check the ranges/positions.")
+        assignments = {p: v for p, v in assignments.items() if v}
+        if not assignments:
+            ui_utils.show_status("Nothing to assign — check the ranges/positions.")
+            return False
+        state['assignments'] = assignments
+        return True
+
+    _MODE2 = ["Fill blanks only", "Overwrite existing"]
+
+    def _ask_mode2() -> bool:
+        """Fill blanks, or overwrite what is already there."""
+        picked = prompt.select("When the tag already has a value:", choices=_MODE2,
+                               index=_MODE2.index(state['mode2']), header=header())
+        if not picked:
+            return False
+        state['mode2'] = picked
+        return True
+
+    def _ask_preview() -> bool:
+        """Show the value each track would get, and take the selection."""
+        tag_id, assignments = state['tag'], state['assignments']
+        pos = {s['path']: i + 1 for i, s in enumerate(ordered)}
+        targets = [s for s in ordered if s['path'] in assignments]
+        n_mp4 = sum(1 for s in targets if not s['path'].lower().endswith('.mp3'))
+        keep = state['apply_set']
+        choices = [
+            prompt.Choice(title=os.path.basename(s['path']), value=s['path'],
+                          checked=keep is None or s['path'] in keep,
+                          cells=[str(pos[s['path']]), os.path.basename(s['path']),
+                                 assignments[s['path']]])
+            for s in targets if s['path'].lower().endswith('.mp3')
+        ]
+        if not choices:
+            ui_utils.show_status("No MP3s to assign (this operation is MP3-only).")
+            return False
+        sub = f"{tag_id} · {ui_utils.plural(len(choices), 'file')}" + (
+            f" · {n_mp4} non-MP3 skipped" if n_mp4 else "")
+        sel = prompt.select("Preview — ↵ applies:", choices=choices,
+                            columns=_PATTERN_COLUMNS, header=header(sub), multi=True)
+        if sel is None:
+            return False
+        state['targets'] = targets
+        state['apply_set'] = set(sel)
+        return True
+
+    if not _walk([_ask_tag, _ask_mode, _ask_spec, _ask_mode2, _ask_preview]):
         return
 
-    mode2 = prompt.select("When the tag already has a value:",
-                          choices=["Fill blanks only", "Overwrite existing"], header=header())
-    if not mode2:
-        return
-    overwrite = (mode2 == "Overwrite existing")
-
-    pos = {s['path']: i + 1 for i, s in enumerate(ordered)}
-    targets = [s for s in ordered if s['path'] in assignments]
-    n_mp4 = sum(1 for s in targets if not s['path'].lower().endswith('.mp3'))
-    choices = [
-        prompt.Choice(title=os.path.basename(s['path']), value=s['path'], checked=True,
-                      cells=[str(pos[s['path']]), os.path.basename(s['path']), assignments[s['path']]])
-        for s in targets if s['path'].lower().endswith('.mp3')
-    ]
-    if not choices:
-        ui_utils.show_status("No MP3s to assign (this operation is MP3-only).")
-        return
-    sub = f"{tag_id} · {ui_utils.plural(len(choices), 'file')}" + (f" · {n_mp4} non-MP3 skipped" if n_mp4 else "")
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
-                        columns=_PATTERN_COLUMNS, header=header(sub), multi=True)
-    if sel is None:
-        return
-    apply_set = set(sel)
+    tag_id = state['tag']
+    assignments = state['assignments']
+    targets = state['targets']
+    apply_set = state['apply_set']
+    overwrite = (state['mode2'] == "Overwrite existing")
     if not apply_set:
         ui_utils.show_status("No files selected.")
         return

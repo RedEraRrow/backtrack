@@ -48,7 +48,14 @@ def _idx_of(choices: list, value, default: int = 0) -> int:
 
 
 def _menu_header(title: str, subtitle: str | None = None):
-    """Return a lazy header builder callable for prompt.select's header= parameter."""
+    """Return a lazy header builder callable for prompt.select's header= parameter.
+
+    The header names the screen, so the accompanying select() message is left
+    empty ("") whenever it would only say the same thing one line further down
+    ("Albums" over "Albums:"). Pass a message only when it tells you something
+    the header does not — "Action:" under a track title, "Sort by:" over a list
+    of sort modes.
+    """
 
     def _build() -> list[str]:
         cols = ui_utils.get_terminal_width()
@@ -132,8 +139,8 @@ def _pick_sort(current: str, options: list, header) -> str:
 
 
 # Search scope cycled with Tab in the live search screen (default: all fields).
-_ALL_SEARCH_FIELDS = ['title', 'artist', 'album', 'genre', 'people']
-_SCOPE_CYCLE = ['all', 'title', 'artist', 'album', 'genre', 'people']
+_ALL_SEARCH_FIELDS = ['title', 'artist', 'album', 'composer', 'lyricist', 'genre', 'people']
+_SCOPE_CYCLE = ['all', 'title', 'artist', 'album', 'composer', 'lyricist', 'genre', 'people']
 
 # Columns for live search results: title (matched chars accented) · artist ·
 # album · people (whoever matched) · disc/track · duration. `title` flexes;
@@ -212,21 +219,53 @@ def _search_result_cells(result, tokens: list) -> list:
     # (avoids weak subsequence hits populating it on a title/artist search).
     people = (_people_cell(str(s.get('people', '') or ''), tokens)
               if 'people' in result.matched_fields else "")
-    # A genre hit has no column of its own; tag it onto the album when nothing
-    # else in the row is highlighted, so it's still clear why the row matched.
-    if 'genre' in result.matched_fields and not people and not any(
+    # Composer, lyricist and genre have no column of their own. When one of them
+    # is why the row matched, and nothing visible in the row is highlighted to
+    # show it, tag it onto the album so the row still explains itself. Order is
+    # most specific first — a writing credit says more than a genre.
+    if not people and not any(
             _search.highlight_spans(str(s.get(f, '') or ''), tokens)
             for f in ('title', 'artist', 'album')):
-        album = album + [("  · ", 'dim')] + _hl_segments(
-            format_tag_values(s.get('genre', '')), tokens, 'dynamic-dim')
+        for extra in ('composer', 'lyricist', 'genre'):
+            if extra in result.matched_fields:
+                album = album + [("  · ", 'dim')] + _hl_segments(
+                    format_tag_values(s.get(extra, '')), tokens, 'dynamic-dim')
+                break
     dur = s.get('duration') or 0
     dur_str = ui_utils.format_time(int(dur)) if dur else ""
     return [title, artist, album, people, _disc_track_cell(s), dur_str]
 
 
+# Sections, in the order they appear. Each caps at a handful of rows with a
+# "show all" row beneath, so the whole shape of a result set stays above the
+# fold instead of the first type of match filling the screen.
+_SECTIONS = (('artist', 'ARTISTS', 'artist'), ('album', 'ALBUMS', 'album'),
+             ('composer', 'COMPOSERS', 'composer'),
+             ('lyricist', 'LYRICISTS', 'lyricist'),
+             ('genre', 'GENRES', 'genre'), ('people', 'PEOPLE', 'person'))
+_SECTION_CAP = 4
+# Below this many characters, only entities are listed. Short prefixes match a
+# huge number of tracks and almost none of them usefully; the artist or album
+# you are heading for is nearly always what you meant by "jo".
+_ENTITY_ONLY_UNTIL = 3
+
+
+def _entity_cells(ent, tokens: list) -> list:
+    """Cells for an entity row: name (highlighted) · what it is · size."""
+    name = _hl_segments(ent.name, tokens, 'primary')
+    sub = ent.subtitle or ''
+    return [name, ent.kind, sub, "", "", ui_utils.plural(len(ent.tracks), 'track')]
+
+
 def handle_search(library: list) -> str | None:
     """Run the live fuzzy search screen; on selecting a track, offer play/edit
-    actions (or play immediately if autoplay is on or there's only one option)."""
+    actions (or play immediately if autoplay is on or there's only one option).
+
+    Results are grouped by what they are — artists, albums, genres, then the
+    tracks themselves — rather than listed as one flat run. A query like "john"
+    matches every episode of a series; collapsed, that is one artist row saying
+    42 tracks instead of 42 rows saying the same thing in different words.
+    """
     if not library:
         ui_utils.show_status("Library is empty. Scan a directory first.")
         return None
@@ -236,48 +275,109 @@ def handle_search(library: list) -> str | None:
     _show_lyrics = _cfg.get("show_lyrics_editor", True)
     recent = get_recent_paths()
 
-    # Search scope, cycled in-screen with Tab (default: all fields).
-    scope = {'i': 0}   # index into _SCOPE_CYCLE
+    scope = {'i': 0}                       # index into _SCOPE_CYCLE
+    expanded = {'kind': None}              # a section shown in full, or None
 
     def _fields() -> list:
-        """Return the field(s) to search under the current scope."""
+        """The field(s) to search under the current scope."""
         mode = _SCOPE_CYCLE[scope['i']]
         return _ALL_SEARCH_FIELDS if mode == 'all' else [mode]
 
     def _cycle(step: int = 1) -> None:
-        """Move the search scope along the cycle — Shift+Tab passes step=-1."""
+        """Move the search scope along the cycle."""
         scope['i'] = (scope['i'] + step) % len(_SCOPE_CYCLE)
+        expanded['kind'] = None
 
-    # Live fuzzy search: results re-rank on every keystroke, matched characters
-    # highlighted, richer rows (title · artist · album · people · disc/track · dur).
-    _last: dict = {'results': []}
+    _last: dict = {'results': [], 'entities': {}, 'counts': {}}
 
     def _provider(query: str) -> list:
-        """Run the search for query and build the live-select choices with highlighted matches."""
-        results = _search.search(library, query, _fields(), recent=recent, limit=200)
-        _last['results'] = [r.song for r in results]
+        """Search, group into sections, and build the rows for the whole screen."""
+        results = _search.search(library, query, _fields(), recent=recent)
         tokens = _search.tokenize(query)
+        ents = _search.collect_entities(results, tokens)
+        _last['results'] = [r.song for r in results]
+        _last['entities'] = ents
+        _last['counts'] = {k: len(v) for k, v in ents.items()}
+        _last['counts']['track'] = len(results)
+
         choices: list = []
-        if _show_editor and results:
+        show = expanded['kind']
+
+        def _section(kind: str, label: str, singular: str, rows: list, build) -> None:
+            """Append one section: heading, capped rows, and a 'show all' row."""
+            if not rows or (show is not None and show != kind):
+                return
+            choices.append(prompt.separator(f"{label}  {len(rows)}"))
+            cap = len(rows) if show == kind else _SECTION_CAP
+            for item in rows[:cap]:
+                choices.append(build(item))
+            if len(rows) > cap:
+                choices.append(prompt.Choice(
+                    title=f"    show all {ui_utils.plural(len(rows), singular)}",
+                    value=("__expand__", kind)))
+
+        # Top result: the single best thing across every kind, so the most likely
+        # answer is always the first row rather than buried in whichever section
+        # happens to sort first.
+        best = max((e for v in ents.values() for e in v),
+                   key=lambda e: e.score, default=None)
+        if show is None and best is not None:
+            choices.append(prompt.separator("TOP RESULT"))
+            choices.append(prompt.Choice(title=best.name, value=("__entity__", best),
+                                         cells=_entity_cells(best, tokens)))
+        else:
+            best = None
+
+        for kind, label, singular in _SECTIONS:
+            rows = [e for e in ents.get(kind, []) if e is not best]
+            _section(kind, label, singular, rows,
+                     lambda e: prompt.Choice(title=e.name, value=("__entity__", e),
+                                             cells=_entity_cells(e, tokens)))
+
+        # Tracks last: with the entities above them, the track list is for when
+        # you want a specific recording rather than a body of work.
+        tracks_shown = (len(query) >= _ENTITY_ONLY_UNTIL or not any(ents.values()))
+        if tracks_shown:
+            _section('track', 'TRACKS', 'track', results,
+                     lambda r: prompt.Choice(title=r.song.get('title', ''),
+                                             value=r.song['path'],
+                                             cells=_search_result_cells(r, tokens)))
+        if _show_editor and results and tracks_shown and show in (None, 'track'):
             choices.append(prompt.Choice(
-                title=f"Edit tags — all {ui_utils.plural(len(results), 'result')}",
+                title=f"    edit tags — all {ui_utils.plural(len(results), 'result')}",
                 value="__bulk_edit__"))
-        for r in results:
-            choices.append(prompt.Choice(title=r.song.get('title', ''), value=r.song['path'],
-                                         cells=_search_result_cells(r, tokens)))
         return choices
 
     def _hdr() -> list:
         mode = _SCOPE_CYCLE[scope['i']]
         label = "all fields" if mode == 'all' else mode
-        return _menu_header("Search", f"scope: {label} · Tab / Shift+Tab to change")()
+        singular = {kind: sing for kind, _lbl, sing in _SECTIONS}
+        bits = [ui_utils.plural(v, singular.get(k, k))
+                for k, v in _last['counts'].items() if v]
+        sub = " · ".join(bits) if bits else f"{ui_utils.plural(len(library), 'track')} indexed"
+        return _menu_header("Search", f"{sub}    ^f scope: {label}")()
 
-    selected = prompt.live_select(
-        "Search:", _provider, columns=_SEARCH_COLUMNS,
-        header=_hdr, on_cycle=_cycle,
-        count_of=lambda: len(_last['results']))
-    if not selected:
-        return None
+    while True:
+        selected = prompt.live_select(
+            "", _provider, columns=_SEARCH_COLUMNS,
+            header=_hdr, on_cycle=_cycle, cycle_key='\x06',   # ^F cycles scope
+            section_nav=True,
+            count_of=lambda: len(_last['results']))
+        if not selected:
+            return None
+        if isinstance(selected, tuple):
+            # Structured rows carry (kind, payload). An unrecognised one is
+            # ignored rather than falling through to the track path, where it
+            # would be handed to os.path.basename as if it were a file.
+            kind = selected[0]
+            if kind == "__expand__":
+                expanded['kind'] = selected[1]
+            elif kind == "__entity__":
+                if _play_entity(selected[1], library) == "QUIT_ALL":
+                    return "QUIT_ALL"
+            continue
+        expanded['kind'] = None
+        break
 
     if selected == "__bulk_edit__":
         bulk_id3_manager(library, paths=[s['path'] for s in _last['results']])
@@ -319,6 +419,32 @@ def handle_search(library: list) -> str | None:
         inspect_tag_loop(selected, library_metadata=song_meta, library=library)
         ui_utils.clear_screen()
 
+    return None
+
+
+def _play_entity(ent, library: list) -> str | None:
+    """Open a chosen artist/album/genre: list its tracks and act on one."""
+    tracks = ent.tracks
+    choices = [prompt.Choice(title=f"▸  Play all — {ent.name}", value="__play_all__")]
+    for s in tracks:
+        choices.append(prompt.Choice(
+            title=s.get('title', ''), value=s['path'],
+            cells=[s.get('title', ''), format_tag_values(s.get('artist', '')),
+                   s.get('album', ''), "", _disc_track_cell(s),
+                   ui_utils.format_time(int(s.get('duration') or 0)) if s.get('duration') else ""]))
+    sub = ui_utils.plural(len(tracks), 'track')
+    pick = prompt.select(f"{ent.kind.title()}:", choices=choices,
+                         columns=_SEARCH_COLUMNS,
+                         header=_menu_header(ent.name, sub))
+    if not pick:
+        return None
+    if pick == "__play_all__":
+        return play_queue([s['path'] for s in tracks], library=library)
+    ui_utils.clear_screen()
+    res = music_player(pick)
+    ui_utils.clear_screen()
+    if res and res.get("status") == "QUIT_ALL":
+        return "QUIT_ALL"
     return None
 
 
@@ -409,7 +535,7 @@ def handle_history(library: list) -> str | None:
             cells=[title, artist, album, _relative_time(ts, now), _nice_dur(dur)]))
 
     selected = prompt.select(
-        "History:",
+        "",
         choices=choices,
         columns=_HISTORY_COLUMNS,
         header=_menu_header("Listening History", f"{len(history_entries)} recent"),
@@ -531,7 +657,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
             _choices.append(prompt.Choice(title="Re-scan now", value="__rescan__"))
 
         _sub = f"{len(dirs)} director{'y' if len(dirs) == 1 else 'ies'}"
-        choice = prompt.select("Music directories:", choices=_choices,
+        choice = prompt.select("", choices=_choices,
                                header=_menu_header("Music Directories", _sub),
                                index=_cursor)
         if not choice:
@@ -927,7 +1053,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                 _group_cursor = 1 if len(_choices) > 1 else 0
 
             selection = prompt.select(
-                f"{cat_choice}:",
+                "",
                 choices=_choices,
                 header=_header,
                 columns=_group_cols,
@@ -1207,7 +1333,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                             disc_action = "__play_all__"
                         else:
                             disc_action = prompt.select(
-                                "Disc:",
+                                "",
                                 choices=_disc_choices,
                                 header=_menu_header(disc_label, _track_context),
                             )
@@ -1233,7 +1359,7 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                             work_action = "__play_all__"
                         else:
                             work_action = prompt.select(
-                                "Work:",
+                                "",
                                 choices=_work_choices,
                                 header=_menu_header(work_name, _track_context),
                             )
@@ -1312,7 +1438,7 @@ def handle_browse(library_ref: list) -> str | None:
     _opts = ["Artists", "Albums", "Genres"]
     while True:
         choice = prompt.select(
-            "Browse by:",
+            "",
             choices=_opts,
             header=_menu_header("Browse"),
             index=_cursor,
@@ -1399,7 +1525,7 @@ def main_menu(library_ref: list) -> None:
     _opts = ["Browse", "Search", "Listening History", "Settings", "Exit"]
     while True:
         choice = prompt.select(
-            "Main Menu:",
+            "",
             choices=_opts,
             header=_menu_header("Music Player"),
             index=_cursor,

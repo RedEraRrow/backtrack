@@ -87,6 +87,7 @@ backtrack/
 │       ├── tz_widget.py        # Full-screen world-map timezone picker (runnable standalone)
 │       ├── terminal_input.py   # Non-blocking key reads for the playback loop
 │       ├── datetime_parse.py   # the one date/time parser (precision-aware, human errors)
+│       ├── keyboard.py         # Detects the keyboard layout family (typo scoring in search.py)
 │       └── ui_utils.py         # ANSI helpers, terminal size, margins, breadcrumb status bar
 └── docs/                       # This guide + user docs
 ```
@@ -97,6 +98,7 @@ backtrack/
 |---|---|---|
 | Config | `~/.config/backtrack/config.json` | `$BACKTRACK_CONFIG_DIR` |
 | Library cache | `~/.cache/backtrack/library_cache.json` | `$BACKTRACK_CACHE_DIR` |
+| Keyboard layout | detected from the OS (typo scoring) | `$BACKTRACK_KEYBOARD` (`qwerty`/`qwertz`/`azerty`/`dvorak`/`colemak`) |
 | History | `~/.config/backtrack/history.log` (`timestamp | duration | path`) | (follows `CONFIG_DIR`) |
 
 The env overrides make **isolated live testing** possible — point them at a temp dir to run the real
@@ -140,6 +142,15 @@ A fuzzy matcher/ranker: tiered exact → prefix → word-boundary → substring 
 Levenshtein typo, scored by field weight × match geometry with recency/play-count boosts, returning
 match spans. `prompt.live_select` re-runs it per keystroke and highlights matched characters.
 
+The typo tier is keyboard-aware: at equal edit distance, a slip onto a neighbouring key
+("radiohesd") outranks the same distance reached with an unrelated letter ("radiohepd").
+`utils/keyboard.py` detects the layout family at startup — macOS via the HIToolbox plist, Linux via
+`setxkbmap`/`localectl`/`/etc/default/keyboard`, Windows via `GetKeyboardLayout` — and hands the key
+rows to `search.use_layout()`, keeping `search.py` itself free of I/O. Only letter positions matter,
+so British/US/Canadian/ABC are all one QWERTY; the families that differ are QWERTZ, AZERTY, Dvorak
+and Colemak. Anything unrecognised stays QWERTY, and `$BACKTRACK_KEYBOARD` overrides detection —
+the only thing that can be right over SSH, where the keyboard is on the *other* machine.
+
 ### Tag editing — `id3/`
 
 - **`tag_registry.py`** — `TAG_REGISTRY`: the frame catalogue.
@@ -151,12 +162,28 @@ match spans. `prompt.live_select` re-runs it per keystroke and highlights matche
   Multi-value (#60) support and the POPM 0–5★ ↔ 0–255 (WMP-scale) mapping live here.
 - **`id3_browser.py`** — the single-track editor UI, and the **sort-order engine** (`_sort_single_name`
   / `_sort_candidates`): pure heuristics (initials/Celtic merges, honorific & suffix strip, spacing
-  prefixes, article move, positional split) that offer ranked candidates. No name corpus — anything
-  it gets wrong the user fixes by picking a candidate or "type custom".
+  prefixes, article move, positional split, ensembles as-is, commas read from context) that offer
+  ranked candidates. No name corpus — anything it gets wrong the user fixes by picking a candidate or
+  "type custom". Bulk **Apply sort orders** runs in two passes over the same engine: `_verify_splits`
+  confirms how each value divides into names (`split_options` offers the engine's reading, the value
+  whole, and the maximal split), then `_review_sort_people` lists the resulting individuals flat —
+  one row per person across `TSOP`/`TSO2`/`TSOC`, so each is decided once and the decision reaches
+  every value they appear in. `_SortPlan` holds both the values and the decisions.
 - **`bulk_id3_manager.py`** — the bulk editor: a two-level menu, **TAGS** (add/set/rename/delete) and
   **Automation…** (derive, rename files, set album art, assign by range/schedule, apply sort orders,
   renumber tracks, copy from first track). Each automation op builds a preview then applies via the
   pure modules + `tag_writer`.
+- **Walkable screens (`_walk`).** The six multi-screen automations — derive, rename files, album art,
+  assign by pattern, renumber, apply sort orders — hand `_walk` a list of steps, each a callable
+  returning True to advance, False to go back one screen, or `_SKIP` when the answers so far make it
+  irrelevant (the template question after choosing regex detection). Back leaves the operation only
+  from the first screen; anywhere else it returns to the screen before, which still holds what was
+  decided there. Every answer lives in a `state` dict so a reopened screen is re-seeded — typed
+  patterns, `list_edit` rows, hand-picked covers, and the sort-order flow's per-person decisions
+  (carried across a rescan, being keyed by person and value rather than by row). A step that only
+  does work — sort orders' file scan — returns `_SKIP` once its output matches the answers, so it is
+  transparent in both directions. Validation failures re-ask on the spot rather than reporting a
+  back, which on the first screen would end the operation over a typo.
 
 ### Dates and times — `utils/datetime_parse.py`
 
@@ -186,6 +213,12 @@ builds the widgets:
 
 - `select` — the one list widget (single-select; `multi=True` is the old checkbox; `columns=` for
   structured rows; `on_inspect`/`inspect_key` for a `d`-style detail view; `a` toggles all in multi).
+  `row_edit`/`row_edit_commit` add an **in-place cell edit**: the key (default `e`) cycles the row
+  through the values the callback offers, one press per option, and one step past the last is a text
+  field seeded from where the cycle left off. While it is live the edit owns every key — `q` and the
+  cycle key included, since a name may contain either — so ↑↓/↵/Esc are the only ways out. The cell
+  is handed back as styled segments, never raw ANSI: the table measures a cell by its text length
+  and would count escape codes as visible.
 - `live_select` (incremental search), `text`, `path` (tab-completion), `confirm`, `list_edit`.
 - `list_edit` cell types: a column can be plain text (default), a **barrel** field (`col_hints`
   supplies candidate values to cycle through), or a **timestamp** field (`col_types={i: 'timestamp'}`)
@@ -196,6 +229,12 @@ builds the widgets:
 - Value editors: `calendar_select`, `datetime_edit` (+ `tz_widget.timezone_select`), `time_edit`,
   `fraction_edit`, `number_edit` (bounded int spinner), `rating_edit` (POPM stars + count + email),
   `rva2_edit` (dB meter), `equaliser_edit` (graphic EQ), `system_editor_edit`.
+- **One caret, drawn not borrowed:** every typable field marks its position with
+  `prompt_core.block_cursor()` — reverse video *on* the character (a white block at the end of the
+  text, where there is nothing left to move). A bar drawn between two characters costs a column, so
+  the line slides sideways on every keystroke; `block_cursor_width()` gives callers the padding
+  arithmetic. `text`/`path` draw it too rather than positioning the terminal's own cursor, which is
+  a thin bar or invisible depending on the terminal.
 - **Raw↔widget toggle:** value editors return the `MODE_TOGGLE` sentinel on **Ctrl-T** so
   `prompt_for_value` can flip between the smart widget and a plain text field (#62).
 - **Key convention:** `q` **quits the application** — it raises `QuitToTerminal` (a `BaseException`,

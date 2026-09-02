@@ -105,6 +105,20 @@ _NAME_SUFFIXES: frozenset[str] = frozenset({
     'phd', 'md', 'esq',
 })
 
+# An ensemble is a body, not a person: it sorts under its own first word, with
+# only a leading article moved. "Orchestra, Berlin Philharmonic" files a real
+# orchestra under a word that is not its name. None of these double as parts of
+# a personal name, so a generous list costs nothing.
+_ENSEMBLE_WORDS: frozenset[str] = frozenset({
+    'orchestra', 'orchestras', 'orchestre', 'orquesta', 'philharmonic',
+    'philharmonia', 'symphony', 'symphonietta', 'sinfonia', 'sinfonietta',
+    'band', 'bigband', 'quartet', 'quartette', 'quintet', 'sextet', 'septet',
+    'octet', 'trio', 'duo', 'ensemble', 'choir', 'chorus', 'chorale', 'choral',
+    'singers', 'players', 'consort', 'collective', 'camerata', 'academy',
+    'capella', 'cappella', 'soloists', 'allstars', 'all-stars', 'society',
+    'club', 'brass', 'quire', 'orchestrina',
+})
+
 # Single-letter initial pattern: "J." or "J" alone.
 _INITIAL_RE = re.compile(r'^[A-Za-zÀ-ÖØ-öø-ÿ]\.$')
 
@@ -115,19 +129,33 @@ _INITIAL_RE = re.compile(r'^[A-Za-zÀ-ÖØ-öø-ÿ]\.$')
 # its own right, so "Jeff Goldblum & The Mildred Snitzer Orchestra" sorts as
 # "Goldblum, Jeff/Mildred Snitzer Orchestra, The" rather than being inverted
 # whole into "Orchestra, Jeff Goldblum & The Mildred Snitzer".
-_LIST_SPLIT_RE = re.compile(
-    r'\s*(?:'
-    r'(?<!\w)&(?!\s*(?:his|her|their)\b)'      # & but not "& His/Her/Their" (backing band)
-    r'|\|'
+# The ampersand is kept apart from the rest because it is the one delimiter that
+# is often part of a name rather than between two: see _DUO_RE.
+_AMP_ALTS = (
+    r'(?<!\w)&(?!\s*(?:his|her|their)\b)'          # & but not "& His/Her/Their"
+    r'|\band(?=\s+\w)(?!\s+(?:his|her|their)\b)'  # "and X" but not "and his/her/their"
+)
+_OTHER_ALTS = (
+    r'\|'
     r'|[/\\]'
     r'|\bfeaturing\b|\bfeat\.?\b|\bft\.?\b'
-    r'|\band(?=\s+\w)(?!\s+(?:his|her|their)\b)'  # "and X" but not "and his/her/their"
     r'|\bwith(?=\s+\w)(?!\s+(?:his|her|their)\b)'
     r'|\bvs\.?\b'
     r'|\+'
-    r')\s*',
-    re.IGNORECASE,
 )
+_LIST_SPLIT_RE  = re.compile(rf'\s*(?:{_AMP_ALTS}|{_OTHER_ALTS})\s*', re.IGNORECASE)
+_AMP_SPLIT_RE   = re.compile(rf'\s*(?:{_AMP_ALTS})\s*', re.IGNORECASE)
+_OTHER_SPLIT_RE = re.compile(rf'\s*(?:{_OTHER_ALTS})\s*', re.IGNORECASE)
+
+# "Blank & Jones", "Hall & Oates", "Above & Beyond" — an ampersand between two
+# single words is the name of one act, and it sorts under its own first word.
+# Two artists collaborating are credited by their full names either side
+# ("Ariana Grande & Justin Bieber"), which is what tells them apart. Two mononyms
+# who really are collaborating are read as an act and so get no sort tag at all —
+# the safe way to be wrong, since nothing incorrect is written.
+
+_DUO_RE = re.compile(r'^[^\s&/]+\s*(?:&|\band\b)\s*[^\s&/]+$', re.IGNORECASE)
+
 
 # Integers (1–99) that benefit from zero-padding when used as ordinals.
 _ORDINAL_RE = re.compile(r'(?<!\d)([1-9]\d?)(?!\d)')
@@ -186,6 +214,156 @@ def _merge_joining_prefixes(words: list[str]) -> list[str]:
     return result
 
 
+# A comma does two jobs in a name tag, and which one it is depends on the
+# company it keeps: it separates people ("Emerson, Lake & Palmer") and it marks
+# a name already written in sort order ("Ahlert, Fred E.").
+_COMMA_SPLIT_RE = re.compile(r'\s*,\s*')
+_STRAY_LEAD_RE  = re.compile(r'^[^\w\s]+')
+# "E." / "J.S." — a forename side made only of these is a strong sign the comma
+# before it inverted a name rather than separated two people.
+_INITIALS_RE = re.compile(r'^[A-Za-zÀ-ÖØ-öø-ÿ](?:\.[A-Za-zÀ-ÖØ-öø-ÿ])*\.?$')
+
+
+def _clean_part(part: str) -> str:
+    """Trim the stray punctuation delimiter tokenisation leaves behind (the "." of "Feat.").
+
+    A trailing "." straight after a letter is kept: that is an initial or an
+    abbreviation ("Ahlert, Fred E.", "J.S.", "Jr."), not debris.
+    """
+    part = _STRAY_LEAD_RE.sub('', part).strip()
+    while part and not part[-1].isalnum() and not (
+            part[-1] == '.' and len(part) > 1 and part[-2].isalpha()):
+        part = part[:-1].rstrip()
+    return part
+
+
+# "Al Jackson, Jr." — this comma is punctuation inside one name, neither a list
+# separator nor an inversion, so it goes before either question is asked.
+_SUFFIX_COMMA_RE = re.compile(
+    r',\s*(?=(?:' + '|'.join(sorted(_NAME_SUFFIXES, key=len, reverse=True)) + r')\b\.?)',
+    re.IGNORECASE,
+)
+
+
+def _forename_is_initials(part: str) -> bool:
+    """Whether the side after the comma is nothing but initials ("Bach, J.S.")."""
+    right = part.partition(',')[2].strip()
+    return bool(right) and all(_INITIALS_RE.match(w) for w in right.split())
+
+
+def _looks_inverted(part: str) -> bool:
+    """Whether one part reads as a single name already in "Surname, Forename" order.
+
+    One comma, and a forename side short enough to *be* a forename: "Ahlert,
+    Fred E." inverts, but "Miles Davis, John Coltrane" — two full names either
+    side — is two people who happen to be separated by a comma.
+    """
+    left, sep, right = part.partition(',')
+    if not sep or ',' in right:
+        return False
+    left, right = left.strip(), right.strip()
+    if not left or not right:
+        return False
+    return not (len(left.split()) >= 2 and len(right.split()) >= 2)
+
+
+def _name_readings(raw: str) -> list[list[str]]:
+    """The plausible ways to read a value as a list of people, best first.
+
+    Splitting on "&"/"and"/"feat." is unambiguous; the comma is not, so it is
+    read from context:
+
+    * "Somebody, Somebody Else & A Third Person" — one part has a comma and
+      another does not, which is how English writes a list. Three people.
+    * "Bach, Johann Sebastian & Mozart, Wolfgang Amadeus" — *every* part carries
+      one comma and each reads as inverted. Two people, already sorted.
+    * "Lennon, John" on its own — one inverted name, left exactly as it is.
+    * "Miles Davis, John Coltrane" — a full name either side of the comma, so a
+      list of two despite there being no other delimiter.
+
+    Where a value reads both ways ("Bach, J.S. & Handel" is a list of three under
+    the first rule and a pair under the second), both readings come back and the
+    editor offers each; a part left holding its comma is already in sort order
+    and is passed through untouched rather than inverted again.
+    """
+    raw = _SUFFIX_COMMA_RE.sub(' ', raw)
+    # Everything but the ampersand splits first; each piece is then broken on the
+    # ampersand *unless* it is a duo's name, so "Blank & Jones feat. Bernard
+    # Sumner" is the act and its guest rather than three artists.
+    split: list = []
+    for piece in _OTHER_SPLIT_RE.split(raw):
+        if _DUO_RE.match(piece.strip()):
+            split.append(piece)
+        else:
+            split.extend(_AMP_SPLIT_RE.split(piece))
+    if len(split) == 1 and ',' not in raw:
+        # Nothing was tokenised, so there is no delimiter debris to tidy — and a
+        # value that is all punctuation ("!!!") keeps every bit of it.
+        return [[raw.strip()]] if raw.strip() else []
+    parts = [p for p in (_clean_part(x) for x in split) if p]
+    if not parts:
+        return []
+    if len(parts) == 1 and ',' not in raw:
+        # Tidying dropped everything but one person, so the delimiter was part of
+        # the name after all ("...And You Will Know Us by the Trail of Dead"):
+        # hand back the value whole rather than the tidied fragment.
+        return [[raw.strip()]]
+
+    with_comma = [p for p in parts if ',' in p]
+    if not with_comma:
+        return [parts]
+
+    def _by_comma(items: list[str]) -> list[str]:
+        """Break every part on its commas too."""
+        return [c for p in items
+                for c in (_clean_part(x) for x in _COMMA_SPLIT_RE.split(p)) if c]
+
+    all_inverted = len(with_comma) == len(parts) and all(map(_looks_inverted, parts))
+    if len(parts) > 1:
+        if all_inverted:
+            return [parts]                       # a list of already-sorted names
+        # A comma beside a comma-less part is a list — that is what the mix
+        # means, and second-guessing it flags half a library as ambiguous.
+        # Initials are the one thing that outweighs it: "J.S." is a forename and
+        # never a person in a list, so "Bach, J.S. & Handel" really is a pair,
+        # and only there is the other reading worth offering as well.
+        if all(map(_looks_inverted, with_comma)) and any(map(_forename_is_initials, with_comma)):
+            return [parts, _by_comma(parts)]
+        return [_by_comma(parts)]
+
+    return [parts] if all_inverted else [_by_comma(parts)]
+
+
+def _is_ensemble(words: list[str]) -> bool:
+    """Whether a name reads as a group rather than a person."""
+    return any(w.strip('.,()').lower() in _ENSEMBLE_WORDS for w in words)
+
+
+def split_options(raw: str) -> list[list[str]]:
+    """Every plausible way to read one tag value as a list of names, best first.
+
+    The engine's own reading leads; then the value whole, as a single name; then
+    the maximal split, every delimiter honoured — duos, backing bands and commas
+    included. A heuristic that guessed wrong is then overruled by picking one of
+    these rather than by retyping the names, which is what the split-verification
+    step in bulk cycles through.
+    """
+    out: list[list[str]] = []
+
+    def _add(people: list) -> None:
+        """Append a splitting if it is new and non-empty."""
+        cleaned = [p for p in (_clean_part(x) for x in people) if p]
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
+
+    for reading in _name_readings(raw):
+        _add(reading)
+    _add([raw])
+    flat = _SUFFIX_COMMA_RE.sub(' ', raw)
+    _add([c for part in _LIST_SPLIT_RE.split(flat) for c in _COMMA_SPLIT_RE.split(part)])
+    return out or [[raw]]
+
+
 def _sort_single_name(name: str) -> list[str]:
     """
     Return sort-order candidates for a single name string, ordered by confidence.
@@ -213,6 +391,12 @@ def _sort_single_name(name: str) -> list[str]:
         art  = _ARTICLE_MAP[words[0].lower()]
         rest = ' '.join(words[1:])
         return [f"{rest}, {art}"]
+
+    # ── Ensemble / duo ─────────────────────────────────────────────────────
+    # A group sorts as itself — no surname to bring to the front. (Any leading
+    # article was already moved above, so "The E Street Band" got there first.)
+    if _is_ensemble(words) or _DUO_RE.match(name.strip()):
+        return [name]
 
     candidates: list[str] = []
     seen: set[str] = set()
@@ -277,20 +461,25 @@ def _sort_candidates(base_id: str, raw: str) -> list[str]:
             candidates.append(c)
 
     if base_id in _NAME_SORT_TAGS:
-        parts = _LIST_SPLIT_RE.split(raw)
-        # Strip stray punctuation left by delimiter tokenisation (e.g. trailing "." from "Feat.").
-        parts = [re.sub(r'^[^\w\s]+|[^\w\s]+$', '', p).strip() for p in parts]
-        parts = [p for p in parts if p]
+        readings = _name_readings(raw)
 
-        if len(parts) > 1:
-            # Multi-entity list: sort each part, join with the configured delimiter.
+        if len(readings) == 1 and len(readings[0]) == 1:
+            # A single person: offer the full ranked list of splits to pick from.
+            # One already in sort order ("Ahlert, Fred E.") sorts as itself, so it
+            # yields only the raw value and is dropped as redundant below.
+            only = readings[0][0]
+            for c in ([only] if _looks_inverted(only) else _sort_single_name(only)):
+                _add(c)
+        else:
+            # One candidate per reading: sort each person, join with the
+            # configured delimiter. A person still holding a comma is already
+            # inverted and passes through as-is.
             from src.config import load_config
             delim = load_config().get('sort_list_delimiter', '/')
-            best_parts = [(_sort_single_name(p) or [p])[0] for p in parts]
-            _add(delim.join(best_parts))
-        else:
-            for c in _sort_single_name(raw):
-                _add(c)
+            for people in readings:
+                _add(delim.join(p if _looks_inverted(p)
+                                else (_sort_single_name(p) or [p])[0]
+                                for p in people))
     else:
         # Title / album: strip leading article only.
         words = raw.split()
@@ -319,7 +508,12 @@ def _prompt_sort_order(base_id: str, audio: ID3) -> str | None:
     frame = audio.get(source_id)
     if not frame or not getattr(frame, 'text', None):
         return None
-    raw = str(frame.text[0]).strip()
+    # A source frame can hold several values (TCOM takes one composer each) while
+    # the sort frame is single: join them on the configured delimiter, which is
+    # also what the engine splits them back on.
+    from src.config import load_config
+    delim = load_config().get('sort_list_delimiter', '/')
+    raw = delim.join(v for v in (str(t).strip() for t in frame.text) if v)
     if not raw:
         return None
 

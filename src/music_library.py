@@ -24,7 +24,7 @@ SYNC_INTERVAL_SECONDS = 30
 # tag: cached entries carrying an older version are re-read on the next sync even
 # though their mtime hasn't moved. (Before this, each new field needed its own
 # `'field' not in track` special case.)
-METADATA_VERSION = 2
+METADATA_VERSION = 4
 
 
 def _default_cache_dir() -> Path:
@@ -255,6 +255,8 @@ def _get_default_metadata(file_path: str) -> dict:
         "disc_subtitle": "",
         "path": file_path,
         "genre": "Unknown Genre",
+        "composer": "",
+        "lyricist": "",
         "year": "Unknown Year",
         "grouping": "",
         "work": "",
@@ -340,6 +342,8 @@ def _extract_id3_metadata(tags: ID3) -> dict:
         'TPE2': 'album_artist',
         'TALB': 'album',
         'TCON': 'genre',
+        'TCOM': 'composer',
+        'TEXT': 'lyricist',
         'TDRC': 'year',
         'TIT3': 'work',
         'TBPM': 'bpm',
@@ -426,6 +430,7 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
         'aART': 'album_artist',
         '\xa9alb': 'album',
         '\xa9gen': 'genre',
+        '\xa9wrt': 'composer',
         '\xa9day': 'year',
         '\xa9wrk': 'work',
         'tmpo': 'bpm',
@@ -453,6 +458,25 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
                     if text:
                         result[field] = str(text).strip()
         except (KeyError, IndexError, TypeError):
+            continue
+
+    # Freeform ('----') atoms. MP4 has no standard atom for some fields the ID3
+    # side covers, and iTunes puts them here instead. Values come back as bytes,
+    # so they are decoded rather than str()'d — str() on bytes yields "b'...'".
+    freeform_map = {
+        '----:com.apple.iTunes:LYRICIST': 'lyricist',
+    }
+    for atom, field in freeform_map.items():
+        try:
+            if atom in tags and tags[atom] and not result.get(field):
+                parts = []
+                for v in tags[atom]:
+                    text = v.decode('utf-8', 'replace') if isinstance(v, bytes) else str(v)
+                    if text.strip():
+                        parts.append(text.strip())
+                if parts:
+                    result[field] = "; ".join(parts)
+        except (KeyError, IndexError, TypeError, UnicodeDecodeError):
             continue
 
     # Track number with total (preserve X/Total format)
@@ -636,7 +660,7 @@ def refresh_library_entry(library: list, file_path: str) -> dict:
 # under a merged "Pop; Rock" pseudo-genre — both entries lead to the same album.
 # Fields whose text is one single title (album, grouping) are never split: a
 # semicolon there belongs to the name.
-_LIST_FIELDS = frozenset({'artist', 'album_artist', 'genre', 'composer'})
+_LIST_FIELDS = frozenset({'artist', 'album_artist', 'genre', 'composer', 'lyricist'})
 
 
 def split_tag_values(value: Any) -> list[str]:
@@ -662,7 +686,7 @@ def format_tag_values(value: Any) -> str:
     what round-trips through the editors) and only *displayed* comma-separated,
     which reads as a list rather than as machine output.
 
-    Only for list-like fields — artist, album artist, genre, composer, people.
+    Only for list-like fields — artist, album artist, genre, composer, lyricist, people.
     Never pass a single-title field: an album really called "Songs; Ohia" would
     come back as "Songs, Ohia".
 

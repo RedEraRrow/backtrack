@@ -29,6 +29,7 @@ from src.utils.prompt_core import (
     Choice, Column,
     _cell_text, _style_cell, _render_cell_segments, _table_widths, _render_table_row,
     separator, _split_columns, _clip_ansi, _render_select_columns, _style_checkbox_label, _norm,
+    block_cursor, block_cursor_width,
     _read_key, _read_key_raw,
     _visible_rows, _cols, _rows, _hint_lines, _wrap_bordered_input_lines,
     _Widget,
@@ -262,6 +263,10 @@ def select(message: str, choices: list, *,
            inspect_key: str = 'd',
            row_actions: dict[str, Callable[[Any], None]] | None = None,
            row_action_hints: dict[str, str] | None = None,
+           row_edit: Callable[[Any], list] | None = None,
+           row_edit_commit: Callable[[Any, str], None] | None = None,
+           row_edit_col: int = 1,
+           row_edit_key: str = 'e',
            allow_back: bool = True,
            ) -> str | list[Any] | None:
     """Arrow keys / jk to navigate; Enter / → to confirm; ← / b / Esc / q → None.
@@ -289,6 +294,15 @@ def select(message: str, choices: list, *,
             the callback against the highlighted row and stays in the list (like
             on_inspect, but any number of keys) — e.g. queue the current track.
         row_action_hints: key→label map surfaced in the hint bar for row_actions.
+        row_edit:   row value → the values `row_edit_key` cycles that row through,
+            its current one first. Each press steps to the next, and one step past
+            the last is an inline text field seeded from where you left off, so a
+            value that isn't on the list can just be typed. ↑↓ cycle too (a way
+            back out of the field), ↵ commits, Esc abandons. Columns-only, since
+            the edit happens inside a cell.
+        row_edit_commit: called with (row value, chosen text) on ↵.
+        row_edit_col: which cell of the row the editing happens in.
+        row_edit_key: the key that opens the cycle and advances it (default 'e').
         allow_back: when False, the cancel keys (←/b/h/Esc) are ignored so the
             list can only move forward (Enter) or quit (q) — used for top-level
             menus that have nowhere to go back to.
@@ -366,6 +380,21 @@ def select(message: str, choices: list, *,
         combined_hints = {**{k: v for k, v in combined_hints.items() if k not in base_hints},
                           **row_action_hints, **base_hints}
 
+    # Inline row edit (opt-in, see row_edit): the cycle sits at _edit_i over
+    # _edit_opts, with one position past the end being the text field. While
+    # typing, every key belongs to the buffer — including 'q' and the cycle key
+    # itself, which is why leaving the field is ↑↓/↵/Esc and nothing else.
+    _edit_on    = False
+    _edit_opts: list = []
+    _edit_i     = 0
+    _edit_buf: list = []
+    _edit_pos   = 0
+    _edit_hints = {row_edit_key: "next", "↑↓": "cycle", "type": "custom",
+                   "↵": "set", "esc": "cancel"}
+    if row_edit is not None:
+        combined_hints = {row_edit_key: "edit",
+                          **{k: v for k, v in combined_hints.items() if k != row_edit_key}}
+
     _last_hlen = [0]
     # Maps a visible item index → its ANSI-stripped rendered text, so a mouse
     # click can tell whether it landed on a printed character or blank space.
@@ -381,6 +410,25 @@ def select(message: str, choices: list, *,
         if header is None:
             return []
         return header() if callable(header) else list(header)
+
+    def _editing_text() -> bool:
+        """Whether the cycle has stepped past its options into the text field."""
+        return _edit_i >= len(_edit_opts)
+
+    def _edit_cell() -> list:
+        """The cell under edit, as styled segments: a cycled option, or the live
+        text field. Segments rather than raw ANSI — the table measures a cell by
+        the length of its text, so escape codes inside one would be counted as
+        visible and the cell truncated to nothing."""
+        if not _editing_text():
+            # ▾ marks a value being stepped through rather than one already set.
+            return [("▾ ", 'accent'), (_edit_opts[_edit_i], 'primary')]
+        text = "".join(_edit_buf)
+        head = [("✎ ", 'accent')]
+        if _edit_pos >= len(text):
+            return head + [(text, 'primary'), (" ", 'cursor')]
+        return head + [(text[:_edit_pos], 'primary'), (text[_edit_pos], 'cursor'),
+                       (text[_edit_pos + 1:], 'primary')]
 
     def _lines():
         nonlocal viewport
@@ -406,7 +454,10 @@ def select(message: str, choices: list, *,
         # The transport keys are surfaced here whenever background audio is
         # playing (recomputed each render so they appear/vanish live) — see
         # `chrome_hint_pairs`.
-        hint_lines = chrome_hint_lines(combined_hints, extra=layout_constraint)
+        # One source for both the row budget below and the bar actually painted
+        # at the end of this function — they must agree or the list mis-sizes.
+        hints_now  = _edit_hints if _edit_on else combined_hints
+        hint_lines = chrome_hint_lines(hints_now, extra=layout_constraint)
 
         # Non-item lines this widget emits: header + message + the two
         # above/below indicator rows (always present) + hints.
@@ -432,10 +483,20 @@ def select(message: str, choices: list, *,
         # Rows without cells (headings/separators) fall back to plain rendering.
         eff: int = 0
         col_widths: list[int] = []
+
+        def _cells_of(i: int) -> list:
+            """A row's cells, with the edited one swapped in while it is live."""
+            cells = items[i].cells
+            if _edit_on and i == cursor and cells and 0 <= row_edit_col < len(cells):
+                cells = list(cells)
+                cells[row_edit_col] = _edit_cell()
+            return cells
+
         if columns:
             eff = min(cols, _COLUMNS_MAX_WIDTH)
-            rows_cells = [it.cells for it in items if it.cells]
-            vis_cells = [it.cells for it in items[viewport:viewport + vis] if it.cells]
+            rows_cells = [_cells_of(i) for i in range(len(items)) if items[i].cells]
+            vis_cells = [_cells_of(i) for i in range(viewport, min(viewport + vis, len(items)))
+                         if items[i].cells]
             col_widths = _table_widths(rows_cells, columns, eff,
                                        pointer_w=6 if multi else 4, right_margin=_EDGE_MARGIN,
                                        visible_cells=vis_cells)
@@ -443,7 +504,7 @@ def select(message: str, choices: list, *,
         for i in range(viewport, min(viewport + vis, n)):
             if columns and items[i].cells:
                 out.append(_render_table_row(
-                    items[i].cells, columns, i == cursor, col_widths, eff, _EDGE_MARGIN,
+                    _cells_of(i), columns, i == cursor, col_widths, eff, _EDGE_MARGIN,
                     is_checked=items[i].checked if multi else None,
                     disabled=items[i].disabled))
                 _row_plain[i] = _plain(out[-1])
@@ -482,7 +543,7 @@ def select(message: str, choices: list, *,
         # centres within _cols() (= width-2*MARGIN_H), so this makes it symmetric.
         # Pin the hint bar to the bottom (just above the miniplayer + status) so
         # its keys keep a fixed screen position across redraws / list sizes.
-        append_chrome(out, combined_hints, _hint_cells, extra=layout_constraint)
+        append_chrome(out, hints_now, _hint_cells, extra=layout_constraint)
         # Hard guarantee: no rendered line ever exceeds the terminal width, so
         # the list can never wrap no matter how narrow the window is.
         _w = ui_utils.get_terminal_width()          # once per frame, not per line
@@ -518,7 +579,60 @@ def select(message: str, choices: list, *,
                 _sel_last_click = None; w.anchor_reset(); w.render(_lines()); continue
             if _ch is not None:
                 key = _ch                # replay the hint's key through the switch
+            if _edit_on:
+                # Editing owns every key: nothing here may fall through to the
+                # list's own navigation, and while the text field is live that
+                # includes 'q' and the cycle key (an artist name may contain
+                # either). ↑↓ step the cycle, which is also the way back out of
+                # the field and on to the next option.
+                if key == 'ESC':
+                    _edit_on = False
+                elif key == 'ENTER':
+                    chosen = ("".join(_edit_buf) if _editing_text()
+                              else _edit_opts[_edit_i]).strip()
+                    if chosen and row_edit_commit is not None:
+                        row_edit_commit(items[cursor].value, chosen)
+                    _edit_on = False
+                elif key in ('UP', 'DOWN') or (key == row_edit_key and not _editing_text()):
+                    step = -1 if key == 'UP' else 1
+                    was = (_edit_opts[_edit_i] if not _editing_text()
+                           else "".join(_edit_buf))
+                    _edit_i = (_edit_i + step) % (len(_edit_opts) + 1)
+                    if _editing_text():
+                        # Seed the field from wherever the cycle left off, so it
+                        # opens on something to amend rather than empty.
+                        _edit_buf = list(was)
+                        _edit_pos = len(_edit_buf)
+                elif _editing_text():
+                    if key == 'BACKSPACE':
+                        if _edit_pos > 0:
+                            del _edit_buf[_edit_pos - 1]; _edit_pos -= 1
+                    elif key == 'DELETE':
+                        if _edit_pos < len(_edit_buf):
+                            del _edit_buf[_edit_pos]
+                    elif key == 'LEFT':   _edit_pos = max(0, _edit_pos - 1)
+                    elif key == 'RIGHT':  _edit_pos = min(len(_edit_buf), _edit_pos + 1)
+                    elif key == 'HOME':   _edit_pos = 0
+                    elif key == 'END':    _edit_pos = len(_edit_buf)
+                    elif key == 'SPACE':
+                        _edit_buf.insert(_edit_pos, ' '); _edit_pos += 1
+                    elif len(key) == 1 and key.isprintable():
+                        _edit_buf.insert(_edit_pos, key); _edit_pos += 1
+                _sel_last_click = None
+                w.render(_lines())
+                continue
+
             if   key == 'CTRL_C':                break
+            elif key == row_edit_key and row_edit is not None and not items[cursor].disabled:
+                # Open the cycle on the row's current value; a second press steps
+                # to the next option (see the edit block above).
+                _edit_opts = [str(o) for o in (row_edit(items[cursor].value) or []) if str(o)]
+                _edit_i = 0
+                _edit_buf = list(_edit_opts[0]) if _edit_opts else []
+                _edit_pos = len(_edit_buf)
+                _edit_on = True
+                _sel_last_click = None
+                w.render(_lines())
             elif key == 'FOCUS_IN':
                 # Regained focus: repaint fully in case a background track change
                 # (or the terminal not painting us while unfocused) left the list
@@ -666,6 +780,9 @@ def live_select(message: str, provider: Callable[[str], list], *,
                 columns: list | None = None,
                 extra_hints: dict[str, str] | None = None,
                 on_cycle: Callable[[], None] | None = None,
+                cycle_key: str | None = None,
+                section_nav: bool = False,
+                placeholder: str = "type to search…",
                 initial_query: str = "") -> Any:
     """Incremental "search box + live results" widget.
 
@@ -674,6 +791,9 @@ def live_select(message: str, provider: Callable[[str], list], *,
     Letters/digits type into the query; ← → move the query caret; ↑ ↓ (and the
     scroll wheel) move through results; Enter selects the highlighted row; Esc
     cancels. Returns the chosen Choice.value, or None.
+
+    `placeholder` is greyed out inside the empty field, behind the caret, and
+    goes as soon as there is a query to show in its place.
     """
     fd  = sys.stdin.fileno()
     old = _get_term_attrs(fd)
@@ -681,12 +801,14 @@ def live_select(message: str, provider: Callable[[str], list], *,
 
     query: list[str] = list(initial_query)
     qpos             = len(query)
-    items: list      = list(provider("".join(query))) if query else []
+    items: list      = list(provider("".join(query)))
     cursor           = 0
     viewport         = 0
 
     base_hints = {"type": "search", "↑↓": "results", "esc": "back", "↵": "confirm"}
-    if on_cycle is not None:
+    if section_nav:
+        base_hints["tab"] = "section"
+    if on_cycle is not None and cycle_key is None:
         base_hints["tab"] = "scope"
     hints = {**(extra_hints or {}), **base_hints}
     # Maps an absolute (row, col) on a hint line → the key clicking it replays.
@@ -709,11 +831,60 @@ def live_select(message: str, provider: Callable[[str], list], *,
             return sel[(idx + direction) % len(sel)]
         return sel[0] if direction > 0 else sel[-1]
 
+    def _headings() -> list[int]:
+        """Indices of the section heading rows (disabled rows carrying a title)."""
+        return [i for i, it in enumerate(items) if it.disabled and it.title]
+
+    def _owners() -> list[int]:
+        """Per row, the index of the heading that owns it (-1 above the first).
+
+        Built in one pass and reused for the whole frame — resolving each row
+        against the heading list separately is quadratic, and this runs on every
+        keystroke of a live search.
+        """
+        out: list[int] = []
+        cur = -1
+        for i, it in enumerate(items):
+            if it.disabled and it.title:
+                cur = i
+            out.append(cur)
+        return out
+
+    def _section_of(idx: int) -> int:
+        """Index of the heading that owns row `idx`, or -1 above the first one."""
+        owners = _owners()
+        return owners[idx] if 0 <= idx < len(owners) else -1
+
+    def _jump_section(direction: int) -> int:
+        """First selectable row of the next/previous section, wrapping around."""
+        heads = _headings()
+        if not heads:
+            return cursor
+        here = _section_of(cursor)
+        order = [-1] + heads if _section_of(0) == -1 and heads[0] > 0 else heads
+        try:
+            pos = order.index(here)
+        except ValueError:
+            pos = 0
+        target = order[(pos + direction) % len(order)]
+        start = 0 if target == -1 else target + 1
+        for i in range(start, len(items)):
+            if items[i].disabled:
+                if i in heads and i != target:
+                    break
+                continue
+            return i
+        return cursor
+
     def _recompute() -> None:
         """Re-run the provider for the current query and reset cursor/viewport onto the new results."""
         nonlocal items, cursor, viewport
+        # Called for the empty query too: the provider owns what a query yields,
+        # including "nothing", and anything it reported for the previous one
+        # (result counts, section tallies) has to be cleared rather than left
+        # standing over an empty box.
         try:
-            items = list(provider("".join(query))) if query else []
+            items = list(provider("".join(query)))
         except Exception:
             items = []
         cursor = _step(-1, 1) if items else 0
@@ -727,11 +898,23 @@ def live_select(message: str, provider: Callable[[str], list], *,
         out = _header_lines()
 
         qtext = "".join(query)
-        b, a = qtext[:qpos], qtext[qpos:]
-        out.append(f"  {C.DIM}{message}{C.RESET} {b}{C.ACCENT}▏{C.RESET}{a}")
-        count = ("type to search…" if not qtext else
+        # An empty message means the header already names the screen — the query
+        # then starts at the normal margin rather than behind a stray space.
+        _label = f"{C.DIM}{message}{C.RESET} " if message else ""
+        # A block cursor sitting on the character, not a bar drawn between two:
+        # the query stays still as the caret walks it. Empty, the block sits on
+        # the placeholder's first letter — where typing will start — with the
+        # rest of the hint dimmed behind it.
+        if qtext:
+            _field = block_cursor(qtext, qpos)
+        elif placeholder:
+            _field = block_cursor(placeholder, 0, base=C.DIM) + C.RESET
+        else:
+            _field = block_cursor("", 0)
+        out.append(f"  {_label}{_field}")
+        count = ("" if not qtext else
                  ui_utils.plural(len(items) if count_of is None else count_of(), "result"))
-        out.append(f"  {C.DIM}{count}{C.RESET}")
+        out.append(f"  {C.DIM}{count}{C.RESET}" if count else "")
 
         hint_lines = chrome_hint_lines(hints)
         # out already holds header + message + count; +2 for the above/below rows.
@@ -760,11 +943,14 @@ def live_select(message: str, provider: Callable[[str], list], *,
                                            pointer_w=4, right_margin=_EDGE_MARGIN,
                                            visible_cells=vis_cells)
 
+        owners = _owners() if section_nav else []
+        focus = (owners[cursor] if section_nav and 0 <= cursor < len(owners) else None)
         for i in range(viewport, min(viewport + vis, n)):
             it = items[i]
             if columns and it.cells:
                 out.append(_render_table_row(it.cells, columns, i == cursor,
-                                             col_widths, eff, _EDGE_MARGIN))
+                                             col_widths, eff, _EDGE_MARGIN,
+                                             dim=section_nav and owners[i] != focus))
             elif it.disabled:
                 out.append(f"  {C.DIM}{C.BOLD}{it.title}{C.RESET}" if it.title else "")
             elif i == cursor:
@@ -815,7 +1001,17 @@ def live_select(message: str, provider: Callable[[str], list], *,
             elif key == 'ESC':
                 result = None
                 break
-            elif key in ('TAB', 'BACKTAB') and on_cycle is not None:
+            elif key in ('TAB', 'BACKTAB') and section_nav:
+                cursor = _jump_section(-1 if key == 'BACKTAB' else 1)
+                w.render(_lines())
+            elif cycle_key is not None and key == cycle_key and on_cycle is not None:
+                try:
+                    on_cycle(1)
+                except TypeError:
+                    on_cycle()
+                _recompute()
+                w.render(_lines())
+            elif key in ('TAB', 'BACKTAB') and on_cycle is not None and cycle_key is None:
                 # Cyclers that take a direction get -1 for Shift+Tab; older
                 # no-argument ones just cycle forward either way.
                 try:
@@ -964,16 +1160,21 @@ def text(message: str, default: str = "") -> str | None:
 
         # This prompt owns the screen (it full-clears on entry), so it is laid
         # out absolutely like every other widget: message, input frame, then the
-        # hint bar pinned above the miniplayer. Unlike the others it keeps a real
-        # terminal caret inside the frame rather than drawing a block, so the
-        # caret is re-homed by absolute position after the bar is written.
+        # hint bar pinned above the miniplayer. The caret is drawn as a block on
+        # the character, like every other field — a real terminal caret is at the
+        # mercy of the terminal's own cursor style, and could be a thin bar or
+        # invisible where the block always reads.
         # No "(^t widget)" suffix on the message: ^t is in the hint bar below,
         # like every other key. The title says what the screen is, not how to
         # leave it.
         out = [f"  {C.DIM}{message}{C.RESET}"]
-        box_first = len(out)
-        for line in wrapped_lines:
-            out.append(f"  {C.DIM}│{C.RESET} {line:<{content_width}} {C.DIM}│{C.RESET}")
+        rows = (wrapped_lines if cursor_row < len(wrapped_lines)
+                else wrapped_lines + [""])          # caret parked on a fresh wrap
+        for i, line in enumerate(rows):
+            shown, used = ((block_cursor(line, cursor_col), block_cursor_width(line, cursor_col))
+                           if i == cursor_row else (line, len(line)))
+            out.append(f"  {C.DIM}│{C.RESET} {shown}{' ' * max(0, content_width - used)} "
+                       f"{C.DIM}│{C.RESET}")
 
         pairs = [("↵", "save"), ("esc", "back")]
         if _value_toggle_enabled:
@@ -985,9 +1186,7 @@ def text(message: str, default: str = "") -> str | None:
         frame = {i + 1: line for i, line in enumerate([""] * ui_utils.MARGIN_V + out)}
         for r in range(len(frame) + 1, prev_lines + ui_utils.MARGIN_V + 1):
             frame[r] = ""
-        # Caret: margin(2) + '│'(1) + ' '(1) → first content column is 5.
-        caret_row = 1 + ui_utils.MARGIN_V + box_first + cursor_row
-        screen_paint(frame, cursor=(caret_row, cursor_col + 5))
+        screen_paint(frame)          # the caret is drawn, not the terminal's own
 
         prev_lines = len(out)
         _render_status_bar()
@@ -1086,18 +1285,22 @@ def path(message: str, default: str = "") -> str | None:
         # cols-4 makes the '  │ … │' frame span the inter-margin width (even 2/2).
         max_w   = max(1, cols - 4)
 
-        if pos > max_w:
-            display  = content[pos - max_w: pos]
-            disp_pos = max_w
+        if pos >= max_w:
+            # Scrolled: keep one column spare so the block has somewhere to sit
+            # rather than straddling the frame's right border.
+            display  = content[pos - max_w + 1: pos]
+            disp_pos = len(display)
         else:
             display  = content[:max_w]
             disp_pos = pos
 
         cursor_col = len(prefix) + disp_pos
+        shown = block_cursor(display, disp_pos)
+        pad   = max(0, max_w - block_cursor_width(display, disp_pos))
 
         render_stream = [
             f"  {C.DIM}{message}{C.RESET}\r\n",
-            f"  {C.DIM}│{C.RESET} {display:<{max_w}} {C.DIM}│{C.RESET}"
+            f"  {C.DIM}│{C.RESET} {shown}{' ' * pad} {C.DIM}│{C.RESET}"
         ]
 
         lines_count = 2
@@ -1164,8 +1367,7 @@ def path(message: str, default: str = "") -> str | None:
         frame = {i + 1: line for i, line in enumerate([""] * ui_utils.MARGIN_V + out)}
         for r in range(len(frame) + 1, _prev_rendered + ui_utils.MARGIN_V + 2):
             frame[r] = ""
-        # Caret sits on the frame row, one below the message.
-        screen_paint(frame, cursor=(1 + ui_utils.MARGIN_V + 1, cursor_col + 1))
+        screen_paint(frame)          # the caret is drawn, not the terminal's own
         _render_status_bar()
 
     try:
@@ -1374,15 +1576,8 @@ def _render_list_edit_cell(text: str, width: int, is_editing: bool, is_active_co
         return _render_timestamp_cell(edit_buf, edit_pos, width, True, base)
 
     buf_str = "".join(edit_buf)
-    close = f"{C.RESET}{base}"
-
-    if edit_pos >= len(buf_str):
-        display_str = buf_str + f"{C.BACK}█{close}"
-    else:
-        display_str = buf_str[:edit_pos] + f"{C.INVERT}{C.BOLD}{buf_str[edit_pos]}{close}" + buf_str[edit_pos+1:]
-
-    visible_len = len(buf_str) + (1 if edit_pos >= len(buf_str) else 0)
-    padding = max(0, width - visible_len)
+    display_str = block_cursor(buf_str, edit_pos, base)
+    padding = max(0, width - block_cursor_width(buf_str, edit_pos))
     return display_str + (" " * padding)
 
 
@@ -2562,10 +2757,7 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
             val = "".join(tfields[field])
             pos = tpos[field]
             if section == 'time' and i == tcursor:
-                if pos >= len(val):
-                    cell = val + f"{C.BACK}█{C.RESET}"
-                else:
-                    cell = val[:pos] + f"{C.INVERT}{C.BOLD}{val[pos]}{C.RESET}" + val[pos+1:]
+                cell = block_cursor(val, pos)
             else:
                 cell = f"{C.DIM}{val.ljust(tmaxlen[field], '0')}{C.RESET}"
             row += cell
@@ -2834,12 +3026,7 @@ def fraction_edit(message: str = "Edit metadata pair:",
             val_str = "".join(edit_buffers[field])
 
             if i == cursor_field:
-                pos = edit_positions[field]
-                if pos >= len(val_str):
-                    display = val_str + f"{C.BACK}█{C.RESET}"
-                else:
-                    display = val_str[:pos] + f"{C.INVERT}{C.BOLD}{val_str[pos]}{C.RESET}" + val_str[pos+1:]
-                row += f"{label} {display}"
+                row += f"{label} {block_cursor(val_str, edit_positions[field])}"
             else:
                 if not val_str:
                     row += f"{C.DIM}{label} ──{C.RESET}"
@@ -3002,10 +3189,7 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
             pos = positions[field]
 
             if i == cursor_field:
-                if pos >= len(value):
-                    display = value + f"{C.BACK}█{C.RESET}"
-                else:
-                    display = value[:pos] + f"{C.INVERT}{C.BOLD}{value[pos]}{C.RESET}" + value[pos+1:]
+                display = block_cursor(value, pos)
             else:
                 display = value.ljust(field_maxlen[field], '0')
 
@@ -3423,7 +3607,9 @@ def number_edit(message: str = "Edit number:", *, value: int = 0,
         return _clamp(int("".join(buf))) if buf else value
 
     def _render():
-        shown = "".join(buf) if buf else str(value)
+        # While digits are being typed the block marks the live field; the
+        # resting value carries no caret, so the screen isn't blinking at you.
+        shown = block_cursor("".join(buf), len(buf)) if buf else str(value)
         unit_s = f" {unit}" if unit else ""
         bounds = f"min {minimum}" + ("" if maximum is None else f", max {maximum}")
         lines = [
@@ -3527,8 +3713,18 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
         filled = f"{C.ACCENT}{'★' * stars}{C.RESET}"
         empty = f"{C.DIM}{'☆' * (5 - stars)}{C.RESET}"
         rlabel = "unrated" if stars == 0 else f"{stars}/5"
+        # Plays and Rater take typing but drew nothing to type against — the
+        # block shows which field has the keyboard and where the next character
+        # lands. Both append at the end, so the block rides there.
         cshown = "".join(cbuf) if cbuf else str(count)
-        rater = email if email else f"{C.DIM}(default){C.RESET}"
+        if field == 1:
+            cshown = block_cursor(cshown, len(cshown))
+        if field == 2:
+            rater = block_cursor(email, len(email))
+        elif email:
+            rater = email
+        else:
+            rater = f"{C.DIM}(default){C.RESET}"
 
         def _mark(i: int) -> str:
             return f"{C.ACCENT}▸{C.RESET}" if field == i else " "

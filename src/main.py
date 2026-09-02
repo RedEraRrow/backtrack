@@ -145,6 +145,16 @@ def _run(config: dict) -> None:
     main_menu([library])
 
 
+def _wire_keyboard() -> None:
+    """Teach the search matcher which keyboard is in front of the user, so a typo
+    that lands on a neighbouring key ranks above one that needs an unrelated
+    letter. Best-effort: unknown or unreadable settings leave it on QWERTY, and
+    BACKTRACK_KEYBOARD overrides both (the only thing that works over SSH)."""
+    from src.utils import keyboard
+    from src import search
+    search.use_layout(keyboard.rows())
+
+
 def _wire_playback() -> None:
     """Register the now-playing bar provider, the Ctrl-O player opener, and the
     Ctrl-P/N/B transport hotkeys (#14), so menus/browse can show background audio
@@ -201,6 +211,7 @@ def main() -> None:
         pass
 
     config = load_config()
+    _wire_keyboard()
     _wire_playback()
     ui_utils.enter_alt_screen()
     try:

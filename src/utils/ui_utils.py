@@ -57,17 +57,16 @@ def consume_resize() -> bool:
 MARGIN_H = 2   # columns reserved on each horizontal side (left and right)
 MARGIN_V = 1   # rows reserved on each vertical side (top and bottom)
 
-# Now-playing box transport geometry, shared so the three places that depend on
-# it can't drift apart: `playback_ui.format_now_playing_bar` draws the ⏮ ⏸ ⏭
-# glyphs at these content-relative offsets, inlays the B/P/N keys in the top
-# border directly above them, and `prompt_core.now_playing_click_action` maps a
-# click back to the glyph under it. Two spaces between glyphs, so the border
-# rule stays visible between the key letters and reads as running behind them.
-# (start column, width) of ⏮, ⏸/⏵ and ⏭ within the box's content columns. The
-# skip glyphs are two cells wide and the play/pause glyph is one, so they cannot
-# be laid out on an even stride.
-NP_GLYPH_COLS = ((0, 2), (4, 1), (7, 2))
-NP_TITLE_OFFSET = 11           # where the title starts, just past the glyphs
+# Now-playing box transport geometry, shared so both places that depend on it
+# can't drift apart: `playback_ui.format_now_playing_bar` draws the glyphs here
+# and `prompt_core.now_playing_click_action` maps a click back to the one under
+# the pointer. (start column, width) of ⏸/⏵ and ⏭ in the box's content columns.
+#
+# No previous-track button: the box is an ambient reminder of what is playing,
+# and stepping backwards from it is a rarer thing to want than the space a third
+# control costs. ^B still works, and is still advertised in the hint bar.
+NP_GLYPH_COLS = ((0, 2), (4, 2))
+NP_TITLE_OFFSET = 8            # where the title starts, just past the glyphs
 
 class Colors:
     PRIMARY = "\033[1;37m" # Bold white
@@ -403,11 +402,18 @@ _ZERO_WIDTH_SET = frozenset(_ZERO_WIDTH)
 # Codepoints a terminal draws two cells wide. Two sources: East Asian Wide and
 # Fullwidth (handled below via unicodedata), and emoji-presentation characters,
 # which UTR#51 says to render wide and which every modern terminal does. The
-# media-control glyphs are the app's own case — U+23EE ⏮ and U+23ED ⏭ are
-# emoji-by-default and take two cells, while U+23F8 ⏸ and U+23F5 ⏵ sit right
-# beside them and take one. Nothing in `unicodedata` distinguishes them; all
-# four report east-asian-width N.
-_WIDE_SET = frozenset('⏮⏭⏪⏩⏫⏬⏯⏱⏲⏰')
+# media-control glyphs are the app's own case, and their true width is not
+# knowable from Unicode alone. U+23EE ⏮ and U+23ED ⏭ are emoji-by-default; U+23F8
+# ⏸ and U+23F5 ⏵ are text-by-default and "should" be one cell — but no monospace
+# font on a stock macOS box carries any of them, so they are drawn by whichever
+# fallback font does, and Apple Color Emoji (which has ⏮ ⏸ ⏭) draws two cells
+# wide whatever the default presentation says. All four report east-asian-width
+# N, so nothing available here can tell them apart.
+#
+# They are listed as wide deliberately, as an over-estimate. Reserving two cells
+# and getting one leaves a small gap; reserving one and getting two overruns
+# whatever sits to the right — and that is the miniplayer's closing border.
+_WIDE_SET = frozenset('⏮⏭⏸⏵⏪⏩⏫⏬⏯⏱⏲⏰')
 
 _cols_cache: dict = {}
 

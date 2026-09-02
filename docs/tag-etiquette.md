@@ -256,14 +256,68 @@ world-map picker returning an ISO offset.
 | `TSOP` | Artist (`TPE1`) | Name-inverted ("Paul McCartney" → "McCartney, Paul"). |
 | `TSO2` | Album artist (`TPE2`) | |
 | `TSOA` | Album (`TALB`) | Article moved to end ("The Wall" → "Wall, The"). |
-| `TSOC` | Composer (`TCOM`) | |
+| `TSOC` | Composer (`TCOM`) | Name-inverted, same engine as `TSOP`. `TCOM` holds one composer per value while `TSOC` is single, so the values join on the sort delimiter: `Fred E. Ahlert` + `Roy Turk` → `Ahlert, Fred E./Turk, Roy`. |
 
 Backtrack **generates these heuristically**: it merges initials (`J. S.` → `J.S.`), joins Celtic
 prefixes (`O' Connor` → `O'Connor`), strips honorifics (`Dr.`/`MC`) and suffixes (`Jr.`), handles
-spacing prefixes (`von`/`van`/`de`), and moves leading articles. A simple name resolves to one
+spacing prefixes (`von`/`van`/`de`), and moves leading articles.
+
+**A duo's name is not a list.** An ampersand between two single words is one act — `Blank & Jones`,
+`Hall & Oates`, `Simon & Garfunkel`, `Above & Beyond` — so it sorts under its own first word and
+gets no tag. Two artists collaborating are credited with full names either side
+(`Ariana Grande & Justin Bieber`), which is what separates the two cases, and the act survives a
+guest credit: `Blank & Jones feat. Bernard Sumner` → `Blank & Jones/Sumner, Bernard`. Two mononyms
+who really are collaborating read as an act and get no sort tag — the safe way to be wrong, since
+nothing incorrect is written; add one by hand in the editor if you want it.
+
+**Ensembles sort as themselves.** An orchestra, band, quartet, choir or club is a body, not a
+person, so there is no surname to bring to the front: `Berlin Philharmonic Orchestra` and
+`Glenn Miller Orchestra` keep their order and get no sort tag at all, while `The E Street Band`
+becomes `E Street Band, The` — the article still moves. Inside a list they pass through unchanged:
+`Yo-Yo Ma & Kronos Quartet` → `Ma, Yo-Yo/Kronos Quartet`.
+
+**Commas are read from context**, since one does three different jobs in a name tag:
+
+| Value | Read as | Why |
+|---|---|---|
+| `Somebody, Somebody Else & A Third Person` | three people | one part has a comma, another doesn't — that's how English writes a list |
+| `Bach, Johann Sebastian & Mozart, Wolfgang Amadeus` | two, already sorted | *every* part carries one comma, each an inversion |
+| `Ahlert, Fred E.` | one, already sorted | a forename short enough to be one — nothing is written, it sorts as itself |
+| `Miles Davis, John Coltrane` | two people | a full name either side, so a list despite no other delimiter |
+| `Al Jackson, Jr.` | one name | the comma belongs to the suffix |
+
+A comma sitting beside a comma-less part is a list, and that is the end of it — second-guessing it
+would flag half a library as ambiguous. **Initials are the one exception**: `J.S.` is a forename and
+never a person in a list, so `Bach, J.S. & Handel` really could be a pair or a trio, and only there
+are both readings offered for you to pick between. Bulk **Apply sort orders** takes the first. A simple name resolves to one
 suggestion (silently prefilled); an ambiguous multi-word name offers a ranked list to pick from, and
 **"type custom"** is always available. Nothing is written when a value already sorts as itself
-(e.g. `Radiohead`). Available as **Add sort tag** in the editor and **Apply sort orders** in bulk.
+(e.g. `Radiohead`). Available as **Add sort tag** in the editor and **Apply sort orders** in bulk,
+which offers artist, album-artist, composer and album.
+
+**Back steps back, it doesn't leave.** Every multi-screen bulk automation is a sequence you can walk
+in both directions: `←`/`b`/`esc` on the first one leaves the automation, and on any other returns to the
+screen before it with every split and sort order you had already settled still in place. Changing
+one of the first two answers re-reads the files; the decisions are keyed by person and by value, so
+they survive that too.
+
+**Bulk asks who the people are before it sorts them.** Splitting is guesswork — an ampersand joins
+two artists in one credit and is part of one act's name in the next, and a comma does three
+different jobs — and every sort order downstream is built on the answer. So the first screen is one
+row per value that could be read more than one way, showing the names the engine found in it; `e`
+cycles the readings (the engine's, the value whole as one name, the maximal split) or lets you type
+your own with ` / ` between the names. Values with only one possible reading never appear. A value
+that needs no tag but *could* be split differently is carried through anyway, so a guess like
+`Blank & Jones` being one act is yours to overrule.
+
+**Then the review is one flat list of individuals.** Not a row per file, nor per tag value, but one per
+*person*: an artist, an album artist and a composer of the same name are one row and one decision,
+however many tracks and collaborations they turn up in. Albums, having nobody in them, are rows of
+their own, and a value whose commas read two ways sits above the people it produces — settle it and
+they re-form under the reading you chose. `e` cycles a row's sort order through its candidates in
+place — one press per option, with one step past the last being a text field to type your own, no
+second screen for any of it; `↵` writes. Unchecking a person leaves **every value they appear in** alone rather than
+writing it half-inverted.
 
 ### Numeric / technical
 

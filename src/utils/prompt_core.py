@@ -561,7 +561,7 @@ def _hint_pin_target() -> int:
 def _np_glyph_cols() -> list[tuple[str, int, int]]:
     """(action, first_col, last_col) for each transport glyph in the box."""
     base = ui_utils.MARGIN_H + 3
-    actions = ('prev', 'playpause', 'next')
+    actions = ('playpause', 'next')
     # A glyph claims its own cells plus the space after it, so a click just to
     # the right of a narrow glyph still lands on it.
     return [(a, base + start, base + start + width)
@@ -677,6 +677,10 @@ def _style_cell(text: str, style: str, is_current: bool) -> str:
         return f"{C.ACCENT}{text}{C.RESET}"
     if style == 'primary':
         return f"{C.BOLD}{text}{C.RESET}" if is_current else text
+    if style == 'cursor':
+        # The block cursor as a cell segment — see block_cursor(), which does the
+        # same thing where a whole line rather than a table cell is being drawn.
+        return f"{C.INVERT}{C.BOLD}{text}{C.RESET}"
     return text  # 'normal'
 
 
@@ -867,9 +871,15 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
 def _render_table_row(cells: list, columns: list, is_current: bool,
                       widths: list[int], eff: int, right_margin: int,
                       is_checked: bool | None = None,
-                      disabled: bool = False) -> str:
+                      disabled: bool = False, dim: bool = False) -> str:
     """Render one table row, laying out left-aligned and right-pinned columns
-    and applying pointer/check/disabled styling."""
+    and applying pointer/check/disabled styling.
+
+    `dim` greys a row that is selectable but not in focus — used by the sectioned
+    search to quiet every section except the one the cursor is in. Unlike
+    `disabled` it keeps the normal row prefix, so columns stay aligned with the
+    focused section above and below it.
+    """
     if disabled:
         # Match enabled non-current prefix exactly so columns stay aligned.
         if is_checked is not None:
@@ -901,18 +911,43 @@ def _render_table_row(cells: list, columns: list, is_current: bool,
     for i, col in enumerate(columns):
         if not col.pin and widths[i] >= 0:
             left += " " * col.gap + _render_cell_segments(
-                cells[i] if i < len(cells) else "", col.style, is_current, widths[i], col.align)
+                cells[i] if i < len(cells) else "", col.style, is_current, widths[i], col.align,
+                force_dim=dim)
 
     right = ""
     for i, col in enumerate(columns):
         if col.pin and widths[i] >= 0:
             right += " " * col.gap + _render_cell_segments(
-                cells[i] if i < len(cells) else "", col.style, is_current, widths[i], col.align)
+                cells[i] if i < len(cells) else "", col.style, is_current, widths[i], col.align,
+                force_dim=dim)
 
     if right:
         gap = max(2, (eff - right_margin) - ui_utils.visual_len(left) - ui_utils.visual_len(right))
         return left + " " * gap + right + " " * right_margin
     return left
+
+
+def block_cursor(text: str, pos: int, base: str = '') -> str:
+    """`text` with a white block cursor sitting *on* the character at `pos`.
+
+    Reverse video on the character itself, never a bar drawn between two of
+    them: a drawn bar occupies a column of its own, so every keystroke and every
+    arrow press shifts the rest of the line sideways under the reader's eye.
+    Past the end of the text the block sits on a space — the one place it does
+    add a column, and there is nothing to its right to shift.
+
+    `base` is re-asserted after the block so a caller's row styling survives the
+    RESET that closes it.
+    """
+    close = f"{C.RESET}{base}"
+    if pos >= len(text):
+        return f"{text}{C.BACK}█{close}"
+    return f"{text[:pos]}{C.INVERT}{C.BOLD}{text[pos]}{close}{text[pos + 1:]}"
+
+
+def block_cursor_width(text: str, pos: int) -> int:
+    """Columns `block_cursor` will occupy — one more than the text at its end."""
+    return len(text) + (1 if pos >= len(text) else 0)
 
 
 def separator(title: str = "") -> Choice:
