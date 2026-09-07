@@ -27,6 +27,10 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio",
     "Topic :: Terminals",
 ]
+# backbone: shared back* suite UI helpers - not on PyPI yet, installed from
+# its sibling checkout (swap for a git+https URL once that repo exists).
+# Declared here for packaging/auto-install only; backtrack's own ui_utils.py
+# is unchanged for now - migrating it onto backbone is future work.
 dependencies = [
     "opencv-python>=4.13.0.92",
     "mutagen>=1.47.0",
@@ -34,6 +38,7 @@ dependencies = [
     "pyperclip>=1.8.2",
     "python-vlc>=3.0.21203",
     "colorama>=0.4.6",
+    "backbone @ file:///Users/local/backbone",
 ]
 
 [project.scripts]
