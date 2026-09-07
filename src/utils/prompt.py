@@ -404,7 +404,13 @@ def select(message: str, choices: list, *,
     _hint_cells: dict[tuple[int, int], str] = {}
 
     def _plain(s: str) -> str:
-        return re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s)
+        """The row's printed characters, one entry per *terminal column*.
+
+        A two-cell glyph is repeated so that an index into the result is the
+        column it sits in — which is what the click hit-test below assumes when
+        it asks whether column `col` holds a character or blank padding.
+        """
+        return "".join(ch * ui_utils.char_cols(ch) for ch in ui_utils.display_text(s))
 
     def _header_lines() -> list[str]:
         if header is None:
@@ -444,10 +450,9 @@ def select(message: str, choices: list, *,
 
         max_header_w = 0
         for hl in h_lines:
-            plain_hl = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', hl)
+            plain_hl = ui_utils.strip_ansi(hl)
             plain_hl = re.sub(r'[╭─│╰╮╯┌┐└┘├┤┬┴┼═║╔╗╚╝]', '', plain_hl).strip()
-            if len(plain_hl) > max_header_w:
-                max_header_w = len(plain_hl)
+            max_header_w = max(max_header_w, ui_utils.visual_len(plain_hl))
 
         layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
 

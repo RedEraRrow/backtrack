@@ -1,6 +1,6 @@
 """Single source of truth for ID3v2.4 frames: the tag registry and lookups."""
 from dataclasses import dataclass
-from typing import Dict, Type, Literal, Optional
+from typing import Dict, NamedTuple, Type, Literal, Optional
 
 from mutagen.id3 import *  # type: ignore[reportWildcardImportFromLibrary]
 from mutagen.id3._frames import *  # type: ignore[reportWildcardImportFromLibrary]
@@ -376,3 +376,40 @@ def get_preferred_tag_name(tag_id: str) -> str:
         return prefs[base_id]
     info = TAG_REGISTRY.get(base_id)
     return info.name[0] if info and info.name else base_id
+
+
+# ---------------------------------------------------------------------------
+# Sort-order tags — the canonical mapping.
+#
+# The TSOP/TSO2/TSOC/TSOA relationship used to be spelled out in five places
+# (the writer, two tables in the bulk manager, two in the browser) and they had
+# already drifted apart. Everything that needs any part of it derives it from
+# this one table.
+#
+# There is deliberately no title row: a title sorts on itself, and a stored TSOT
+# is one more value to keep in step for no gain.
+# ---------------------------------------------------------------------------
+
+class SortTag(NamedTuple):
+    """One text frame and the sort frame that orders it."""
+    field: str      # base field name, as the writer and derive engine spell it
+    source: str     # ID3 text frame the sort string is computed from
+    frame: str      # ID3 sort frame written
+    atom: str       # the MP4 equivalent atom
+    label: str      # human-readable name for previews and summaries
+    is_name: bool   # a person's name (invert it) rather than a title (move the article)
+    auto: bool      # generated alongside its base field on an ordinary write
+
+
+SORT_TAGS: tuple[SortTag, ...] = (
+    SortTag('artist',       'TPE1', 'TSOP', 'soar', 'artist',       True,  True),
+    SortTag('album_artist', 'TPE2', 'TSO2', 'soaa', 'album artist', True,  True),
+    # Composer is never derived from a filename and is not written alongside a
+    # base field — it is offered only by the standalone "apply sort orders" op.
+    SortTag('composer',     'TCOM', 'TSOC', 'soco', 'composer',     True,  False),
+    SortTag('album',        'TALB', 'TSOA', 'soal', 'album',        False, True),
+)
+
+SORT_BY_FRAME: Dict[str, SortTag] = {t.frame: t for t in SORT_TAGS}
+SORT_SOURCE_OF: Dict[str, str] = {t.frame: t.source for t in SORT_TAGS}
+NAME_SORT_FRAMES = frozenset(t.frame for t in SORT_TAGS if t.is_name)

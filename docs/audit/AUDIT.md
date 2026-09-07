@@ -29,7 +29,7 @@
 
 ---
 
-## Remediation status (updated 2026-08-12)
+## Remediation status (updated 2026-09-02)
 
 A remediation pass is underway. All fixes below were verified with `pyright src` at **0 errors /
 0 warnings**, `compileall`, full-module import, and targeted headless round-trips.
@@ -59,10 +59,62 @@ the pre-existing `prompt_core.py:564` pyright error and the wrong `create_frame`
   these near-atomic; a real fix needs invasive reader-side locking) and the `list_sessions` probe
   briefly inflating `peer_count` (sub-millisecond window; a fix needs a protocol change).
 
-**⏳ In progress / remaining:** Chapter B dead code, the Chapter C consolidations (ANSI/width,
-tag_writer routing, widget driver), Chapter G doc/packaging drift, Chapter H magic numbers, and the
-`tz_widget` zoneinfo rework. Findings below are kept as originally written for the record; consult
-this status block for what's already resolved.
+**✅ Fixed — dead code & docs (Chapters B & G), 2026-08-24 → 08-26:**
+Chapter B is substantially cleared: `search_library`, the legacy bulk entry path, and the per-module
+dead functions/constants (`get_official_category`, `tags_by_type`, `tags_by_ui_category`,
+`_volume_slider`, `get_ui_state`, `_ART_INNER_MARGIN`, `_format_queue_row`, `_toggle_hint`,
+`wrap_text`, `check_for_dialogue_files`, `get_dialogue_file_info`, `_RATING_STAR_BYTES`,
+`_sort_label`, `_TS_W`, `_TAP_HEADER_MAX_LEN`) are gone; the dead config keys are out of
+`DEFAULT_CONFIG`; `terminal_input` now terminates on `~` so PgUp/Del are no longer swallowed.
+Chapter G: the README playback table, the pyproject classifiers, the `main.py` docstring and the dual
+colorama init are all corrected. `_parse_date` now delegates to a shared `src/utils/datetime_parse`
+with an explicit `dayfirst`, and the magic `1900` bound is gone.
+
+**✅ Fixed — consolidation & tuning (C1, C5, C7, C8, C10, H), 2026-09-02:**
+- **C1 + C8** — one ANSI scanner and one column table for the whole app, in `ui_utils`
+  (`_ANSI_RE`/`_scan`/`strip_ansi`/`display_text`/`visual_len`/`clip_ansi`/`truncate_text`). The five
+  divergent implementations in `playback_ui`, `prompt_core`, `prompt`, `lyrics` and `lyrics_editor`
+  now delegate to it. This fixed three real bugs the duplication was hiding: `truncate_text` measured
+  codepoints, so a CJK string clipped to 10 columns returned 16; `prompt_core._clip_ansi` did the
+  same; and `visual_len` counted `\033[?25l` as 4 visible columns because its terminator class
+  omitted private CSI parameters. `clip_ansi` never splits a two-cell glyph, and `select`'s click
+  hit-test maps columns rather than codepoints.
+- **C5** — `SORT_TAGS` in `tag_registry` is the one sort-frame mapping; `tag_writer._SORT_MAP`,
+  `bulk_id3_manager._SORT_BASE`/`_SORT_SRC`/`_SORT_TAG_LABEL` and `id3_browser._SORT_SOURCES`/
+  `_NAME_SORT_TAGS` all derive from it and reproduce their previous contents exactly.
+- **C7** — new `src/lyrics/lyrics_text.py` holds one word normalizer (`norm`/`norm_words`/`matchable`),
+  one line normalizer, one spoken-text stripper, one stage-direction pattern and one `find_current_line`.
+  `md_overlay`, `lyrics` and `lyrics_editor` all route through it; `find_current_uslt_line` and
+  `find_current_dialogue_line` are now two names for one function. Unifying the stage-direction pattern
+  fixed a genuine disagreement: `*She pauses (softly)*` counted as dialogue when aligning but not when
+  timing. `_word_streams`' MD side is memoised on the script's mtime+size.
+- **C10** — one `_STRUCTURED` table in `id3_tag_handler` replaces the three hand-synced chains in
+  `prompt_for_value`, `create_frame` and `summarize_tag_value`; `_FORMAT_HINTS` replaces the
+  format_spec list that `has_widget_toggle` duplicated.
+- **H** — `src/tuning.py` centralises every timing/threshold/weight (38 constants) across session, IPC,
+  the player loop, search ranking, lyric timing and pane estimates, at identical values. POPM now
+  writes back the exact byte it read unless the user actually changed the star rating, so another
+  player's rating no longer shifts on an unrelated edit. `score_match` gained a stop-word filter, so a
+  shared "the" on a two-word title can no longer reach `MATCH_FLOOR` by itself.
+  `set_album_art_op` passes "fill blanks only" as a hard flag and reports what it kept.
+  `tz_widget`'s table was validated row-by-row against stdlib `zoneinfo`: **42 wrong UTC offsets, one
+  dead zone name (`Europe/Pristina`), eight wrong coordinate pairs and two bogus rows** (a "Palau"
+  city at Hong Kong's coordinates, and a duplicate Yekaterinburg at the wrong offset) are corrected —
+  all 363 remaining rows now agree with `zoneinfo`. Its stale "72×36, 5°/pixel" raster comment is
+  fixed (the data is 2880×1440 at 0.125°).
+
+**⏳ Remaining:** C2 (route bulk writes through `tag_writer`), C3/C4 (shared preview→apply and widget
+event-loop drivers), C6 (the two key decoders), C9 (smaller duplications), and B1's `tz_widget`, which
+is corrected but still unwired — the decision to wire it in, replace it with `zoneinfo`, or drop it is
+open. `format_time`'s 30-day month / 365-day year is deliberately left as-is (rarely reached).
+Findings below are kept as originally written for the record; consult this status block for what's
+already resolved.
+
+**Verification for the 2026-09-02 pass:** `pyright src` at 89 errors / 0 warnings — **identical to the
+pre-change baseline**, so nothing new was introduced (note: the "0 errors" claimed above no longer
+reproduces on the current pyright/config; 89 is the standing baseline on both sides). `compileall`
+clean, all 30 modules import, and the Gdańsk MD+transcript fixture still aligns at mean score 1.0000
+with 4417/4417 words matched and 0 discrepancies.
 
 ---
 

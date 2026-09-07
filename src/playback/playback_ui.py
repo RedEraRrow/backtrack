@@ -12,6 +12,7 @@ from src.art.album_art import get_art
 from src.utils.prompt import _hint
 from src.utils.prompt_core import Column, _table_widths, add_hint_click_cells
 from src.utils.ui_utils import Colors as C
+from src import tuning as tune
 
 ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
 
@@ -21,14 +22,6 @@ ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
 # treat art lines as absolute (row-less), so metadata flowed to the top and drew
 # ABOVE the art in standard/minimal layouts.
 _ABS_ROW_RE = re.compile(r'^\033\[\d+;\d+H')
-
-_ANSI_RE = re.compile(
-    r'(\x1b\[[0-9;?]*[ -/]*[@-~])|'
-    r'(\x1b_G[^\x1b]*\x1b\\)|'
-    r'(\x1b\][^\x1b]*\x1b\\)|'
-    r'(\x1b[PX^_].*?\x1b\\)|'
-    r'(\x1b.)'
-)
 
 _WIDE_SPLIT_GUTTER = 3
 
@@ -178,42 +171,12 @@ def _get_art_cached(file_path: str, width: int) -> str:
 
 
 def _clip_ansi_to_width(text: str, max_cols: int) -> str:
-    """Truncate text to max_cols visible columns, preserving embedded ANSI escapes intact."""
-    visible = 0
-    result: list[str] = []
-    i = 0
-    while i < len(text):
-        if text[i] == '\x1b':
-            j = i + 1
-            if j < len(text) and text[j] == '[':
-                # CSI sequence: skip the '[' then scan to the final byte
-                # (0x40–0x7E) *after* the parameter bytes — otherwise '[' itself
-                # (0x5B) is mistaken for the terminator, leaving "7m"/"2m" visible.
-                j += 1
-                while j < len(text) and not (0x40 <= ord(text[j]) <= 0x7E):
-                    j += 1
-                if j < len(text):
-                    j += 1
-            elif j < len(text):
-                j += 1                      # short escape (e.g. \x1bX)
-            result.append(text[i:j])
-            i = j
-        else:
-            # A zero-width codepoint (a presentation selector, a combining mark)
-            # takes no column and belongs to the glyph before it — it must ride
-            # along without being counted, or a row carrying them gets clipped
-            # short of its own borders.
-            w = ui_utils.char_cols(text[i])
-            if w == 0:
-                result.append(text[i])
-                i += 1
-                continue
-            if visible + w > max_cols:       # never split a 2-cell glyph
-                break
-            result.append(text[i])
-            visible += w
-            i += 1
-    return ''.join(result)
+    """Truncate text to max_cols visible columns, preserving embedded ANSI escapes.
+
+    The player composes a clipped line into a wider row (borders, padding), so
+    it asks for no trailing reset — the caller closes its own styling.
+    """
+    return ui_utils.clip_ansi(text, max_cols, reset=False)
 
 
 def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
@@ -273,10 +236,8 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
 
 
 def _visible_len(text: str) -> int:
-    """Return the length of text ignoring ANSI escape sequences."""
-    if not text:
-        return 0
-    return len(_ANSI_RE.sub('', text))
+    """Columns `text` occupies, ignoring ANSI escapes."""
+    return ui_utils.visual_len(text)
 
 
 def _get_people(audio, tag_key: str) -> list[tuple[str, str]]:
@@ -1311,8 +1272,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         _, temp_shortcuts = _controls_line(is_uslt_track, is_paused, volume, toast, width=cols, has_lyrics=has_lyrics, has_credits=has_cast)
         control_rows = 2 + len(temp_shortcuts.splitlines() or [""])
 
-        credits_est = 5 if (has_cast and _ui_state['show_credits']) else 0
-        lyrics_est = 6 if _ui_state['show_lyrics'] else 0
+        credits_est = tune.PANE_CREDITS_EST_ROWS if (has_cast and _ui_state['show_credits']) else 0
+        lyrics_est = tune.PANE_LYRICS_EST_ROWS if _ui_state['show_lyrics'] else 0
         reserved_rows = len(left_col) + control_rows + credits_est + lyrics_est + 2
         max_art_h = max(3, rows - reserved_rows - 2 * ui_utils.MARGIN_V)
 

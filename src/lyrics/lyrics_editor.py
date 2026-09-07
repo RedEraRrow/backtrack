@@ -30,6 +30,7 @@ Stage directions (on a stage-direction row in SEG) — press x to cycle the kind
 """
 from __future__ import annotations
 import sys, os, json, time, re
+from src import tuning as tune
 
 from src.music_library import format_value_list
 from src.utils import ui_utils
@@ -99,9 +100,6 @@ def _dur(s_t, e_t) -> str:
     return f"{max(0.0, (e_t or 0) - (s_t or 0)):.1f}s".rjust(_DUR_W)
 
 
-_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
-
-
 def _clip(s: str, width: int, ell: str = "…") -> str:
     """Truncate an ANSI-coloured string to `width` VISIBLE columns.
 
@@ -113,19 +111,8 @@ def _clip(s: str, width: int, ell: str = "…") -> str:
         return ""
     if ui_utils.visual_len(s) <= width:
         return s
-    budget = max(0, width - len(ell))
-    out, vis, i, n = [], 0, 0, len(s)
-    while i < n and vis < budget:
-        m = _ANSI_RE.match(s, i)
-        if m:
-            out.append(m.group()); i = m.end(); continue
-        out.append(s[i]); vis += 1; i += 1
-    # copy any trailing escapes so styling closes cleanly
-    while i < n:
-        m = _ANSI_RE.match(s, i)
-        if not m: break
-        out.append(m.group()); i = m.end()
-    return "".join(out) + ell + C.RESET
+    budget = max(0, width - ui_utils.visual_len(ell))
+    return ui_utils.clip_ansi(s, budget, reset=False) + ell + C.RESET
 
 
 def _fit_body_footer(out: list, footer: list, avail: int) -> list:
@@ -507,7 +494,8 @@ def _load(mp3_path: str) -> tuple[list, str, dict] | None:
             entries = sylt[0].text  # [(text, ms), ...]
             segs = []
             for i, (text, start_ms) in enumerate(entries):
-                end_ms = entries[i + 1][1] if i + 1 < len(entries) else start_ms + 5000
+                end_ms = (entries[i + 1][1] if i + 1 < len(entries)
+                          else start_ms + tune.LYRIC_FABRICATED_END_MS)
                 # Reconstruct the stage_dir marker that do_save wraps as *(...)*
                 # so the overlay's reconciliation recognises it as materialized
                 # (otherwise it round-trips as a plain seg and re-duplicates).
@@ -1142,6 +1130,47 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
 _AIR_GAP_THRESHOLD = _AIR_THRESHOLD   # use the shared threshold from src.lyrics.lyrics
 
 
+# The MD side of `_word_streams`, memoised on the script's mtime+size. Verify and
+# speaker-split both ask for it, and each ran the whole read-and-parse again — on
+# a long episode that is the pause you feel before the report appears. The JSON
+# side is not cached: `segs` is the live, edited state.
+_MD_TOKS_CACHE: dict[str, tuple[tuple, list]] = {}
+
+
+def _md_word_stream(md_path: str) -> list[tuple]:
+    """MD dialogue words as ``(token, line_id, speaker)``.
+
+    `line_id` is the 0-based dialogue-line index — the SAME id space as the
+    overlay's `line_ref`, so a computed split can pin each piece directly.
+    """
+    from src.lyrics.lyrics import _parse_markdown_dialogue
+    try:
+        st = os.stat(md_path)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    hit = _MD_TOKS_CACHE.get(md_path)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+
+    with open(md_path, encoding='utf-8') as fh:
+        dl = _parse_markdown_dialogue(fh.read())
+
+    md_toks: list[tuple] = []
+    lid = 0
+    for item in dl:
+        if item.is_empty() or item.is_stage_direction():
+            continue
+        spk = " & ".join(sp.strip() for sp in item.speakers) if item.speakers else "?"
+        for tok in _norm_words(_spoken_text(item.text)):
+            md_toks.append((tok, lid, spk))
+        lid += 1
+
+    if key is not None:
+        _MD_TOKS_CACHE[md_path] = (key, md_toks)
+    return md_toks
+
+
 def _word_streams(segs: list, md_path: str):
     """Shared word-level alignment core for verification and speaker-splitting.
 
@@ -1155,20 +1184,8 @@ def _word_streams(segs: list, md_path: str):
     `line_ref`, so a computed split can pin each piece directly.
     """
     import difflib
-    from src.lyrics.lyrics import _parse_markdown_dialogue
 
-    with open(md_path, encoding='utf-8') as fh:
-        dl = _parse_markdown_dialogue(fh.read())
-
-    md_toks: list[tuple] = []
-    lid = 0
-    for item in dl:
-        if item.is_empty() or item.is_stage_direction():
-            continue
-        spk = " & ".join(s.strip() for s in item.speakers) if item.speakers else "?"
-        for tok in _norm_words(_spoken_text(item.text)):
-            md_toks.append((tok, lid, spk))
-        lid += 1
+    md_toks = _md_word_stream(md_path)
 
     js_toks: list[tuple] = []
     for si, s in enumerate(segs):

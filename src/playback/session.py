@@ -23,6 +23,7 @@ import time
 import uuid
 
 import vlc
+from src import tuning as tune
 from mutagen.id3 import ID3
 import mutagen.id3
 
@@ -35,12 +36,12 @@ _VLC_STATE_ERROR = getattr(vlc.State, 'Error', None)
 _VLC_STATE_ENDED = getattr(vlc.State, 'Ended', None)
 _VLC_STATE_STOPPED = getattr(vlc.State, 'Stopped', None)
 
-_VLC_PLAY_SETTLE_S = 0.3
-_TICK_INTERVAL_S = 0.1
+_VLC_PLAY_SETTLE_S = tune.VLC_PLAY_SETTLE_S
+_TICK_INTERVAL_S = tune.TICK_INTERVAL_S
 # ⏮ grace window: within the first few seconds of a track, previous steps back
 # to the previous queue item; past it, it restarts the current one (the standard
 # music-player behaviour).
-_PREV_RESTART_AFTER_S = 5.0
+_PREV_RESTART_AFTER_S = tune.PREV_RESTART_AFTER_S
 
 # Repeat modes for the queue.
 REPEAT_OFF = 'off'
@@ -62,7 +63,8 @@ def _new_instance() -> vlc.Instance:
 
 def _handle_seek(mp, elapsed: float, duration: float, seek_amount: float) -> None:
     """Seek the player by ``seek_amount`` seconds, clamped to the track bounds."""
-    target = max(0.0, min(elapsed + seek_amount, max(duration - 0.5, 0.0)))
+    target = max(0.0, min(elapsed + seek_amount,
+                          max(duration - tune.SEEK_END_MARGIN_S, 0.0)))
     mp.set_time(int(target * 1000))
 
 
@@ -92,7 +94,8 @@ def _apply_equalizer(mp, audio) -> bool:
                 r = band_freqs[k] / freq
                 return r if r >= 1.0 else 1.0 / r
             idx = min(range(count), key=_ratio)
-            eq.set_amp_at_index(float(max(-20.0, min(20.0, gain))), idx)  # type: ignore[reportOptionalMemberAccess]
+            clamped = float(max(-tune.EQ_GAIN_LIMIT_DB, min(tune.EQ_GAIN_LIMIT_DB, gain)))
+            eq.set_amp_at_index(clamped, idx)  # type: ignore[reportOptionalMemberAccess]
         return bool(mp.set_equalizer(eq) == 0)
     except Exception:
         return False
@@ -275,7 +278,7 @@ class PlaybackSession:
         if need_vlc_len:
             time.sleep(_VLC_PLAY_SETTLE_S)
             vlc_len = mp.get_length()
-            d = vlc_len / 1000.0 if vlc_len > 0 else 999.0
+            d = vlc_len / 1000.0 if vlc_len > 0 else tune.DURATION_FALLBACK_S
             with self._lock:
                 if self.generation == gen:   # still the same track
                     self.duration = d
@@ -297,7 +300,7 @@ class PlaybackSession:
             return
         try:
             from src.playback import ipc
-            sid = self._session_id or uuid.uuid4().hex[:8]
+            sid = self._session_id or uuid.uuid4().hex[:tune.ID_SLICE_LEN]
             self._session_id = sid
             self._server = ipc.SessionServer(
                 sid,
@@ -647,7 +650,7 @@ class PlaybackSession:
 SESSION = PlaybackSession()
 
 # A stable per-window identity for the player-view lock (#14 Phase 2c).
-_PROCESS_TOKEN = uuid.uuid4().hex[:8]
+_PROCESS_TOKEN = uuid.uuid4().hex[:tune.ID_SLICE_LEN]
 
 
 def my_token() -> str:
@@ -826,8 +829,8 @@ def _become_host_from(session_id: str, snap: dict | None) -> None:
 def _rejoin_after_handoff(session_id: str, socket_path: str) -> None:
     """Lose the election → wait for the winner to re-host, then reconnect to it."""
     from src.playback import ipc
-    for _ in range(25):                          # ~2.5 s for the winner to rebind
-        time.sleep(0.1)
+    for _ in range(tune.HANDOFF_POLL_TRIES):     # grace period for the winner to rebind
+        time.sleep(tune.HANDOFF_POLL_INTERVAL_S)
         if ipc._connectable(socket_path):
             link = ipc.SessionClient(
                 socket_path,

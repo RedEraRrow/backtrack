@@ -47,9 +47,10 @@ from src.utils.terminal_input import (
     is_arrow_key,
     raw_mode,
 )
+from src import tuning as tune
 
-_KEY_POLL_INTERVAL_S = 0.05
-_LOOP_TICK_S = 0.02
+_KEY_POLL_INTERVAL_S = tune.KEY_POLL_INTERVAL_S
+_LOOP_TICK_S = tune.LOOP_TICK_S
 
 # Translate a clicked hint's synthesised key (from add_hint_click_cells, which
 # speaks the menu vocabulary) into what the player's key switch expects: arrows as
@@ -244,7 +245,7 @@ def open_client_player_view() -> dict:
                     elif key == '.':
                         remote.seek(30)
                     elif key.lower() == 'e':
-                        remote.seek((duration - 35) - elapsed)
+                        remote.seek((duration - tune.NEAR_END_JUMP_S) - elapsed)
                     elif key.lower() == 'j':
                         remote.seek(-1)
                     elif key.lower() == 'l':
@@ -262,7 +263,7 @@ def open_client_player_view() -> dict:
                         # (#14) — the two windows stay specialised until one closes.
                         if has_other_windows():
                             toast = 'Close the other window to leave the player'
-                            toast_expiry = time.time() + 2.0
+                            toast_expiry = time.time() + tune.TOAST_MEDIUM_S
                             last_sig = None
                         else:
                             return {"status": "DETACH"}
@@ -359,7 +360,7 @@ def _player_view_loop() -> dict:
 
         if audio and audio.getall('EQU2'):
             toast_text = "♫ Equaliser applied"
-            toast_expiry = time.time() + 2.5
+            toast_expiry = time.time() + tune.TOAST_LONG_S
 
     def _redraw_full() -> None:
         """Full-screen redraw for the current track + view state; sets row positions."""
@@ -423,7 +424,7 @@ def _player_view_loop() -> dict:
                 elif current_size != pending_size:
                     pending_size = current_size
                     resize_timer = time.time()
-            if resize_pending and (time.time() - resize_timer > 0.15):
+            if resize_pending and (time.time() - resize_timer > tune.RESIZE_DEBOUNCE_S):
                 last_size = pending_size
                 resize_pending = False
                 _redraw_full()
@@ -482,7 +483,7 @@ def _player_view_loop() -> dict:
                         _frac = playback_ui.progress_from_click(_mr, _mc)
                         if _vol is not None:
                             v = SESSION.set_volume(_vol)
-                            toast_text = f'Volume: {v}%'; toast_expiry = time.time() + 1.0
+                            toast_text = f'Volume: {v}%'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                             playback_ui.draw_volume_bar(v); update_ctrl_ui()
                             key = ''
                         elif _frac is not None and duration:
@@ -491,7 +492,7 @@ def _player_view_loop() -> dict:
                             _tgt = _frac * duration
                             SESSION.seek(_tgt - elapsed)
                             toast_text = f'Seek to {ui_utils.format_time(int(_tgt))}'
-                            toast_expiry = time.time() + 1.0
+                            toast_expiry = time.time() + tune.TOAST_SHORT_S
                             update_ctrl_ui()
                             key = ''
                         else:
@@ -510,11 +511,11 @@ def _player_view_loop() -> dict:
                     last_lyric_idx = -1
                 elif arrow == 'C':
                     SESSION.seek(5)
-                    toast_text = 'Seek Forward +5s'; toast_expiry = time.time() + 1.0
+                    toast_text = 'Seek Forward +5s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
                 elif arrow == 'D':
                     SESSION.seek(-5)
-                    toast_text = 'Seek Backward -5s'; toast_expiry = time.time() + 1.0
+                    toast_text = 'Seek Backward -5s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
                 elif arrow in ('A', 'B') and (is_uslt or in_uslt_tail):
                     current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
@@ -524,23 +525,23 @@ def _player_view_loop() -> dict:
                     arrow_key_time = time.time()
                 elif key == ',':
                     SESSION.seek(-30)
-                    toast_text = 'Seek Backward -30s'; toast_expiry = time.time() + 1.0
+                    toast_text = 'Seek Backward -30s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
                 elif key == '.':
                     SESSION.seek(30)
-                    toast_text = 'Seek Forward +30s'; toast_expiry = time.time() + 1.0
+                    toast_text = 'Seek Forward +30s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
-                elif key.lower() == 'e':          # TEMP: jump to last 35 seconds
-                    SESSION.seek((duration - 35) - elapsed)
-                    toast_text = 'Skip to last 35s'; toast_expiry = time.time() + 1.0
+                elif key.lower() == 'e':          # TEMP: jump to near the end
+                    SESSION.seek((duration - tune.NEAR_END_JUMP_S) - elapsed)
+                    toast_text = f'Skip to last {tune.NEAR_END_JUMP_S}s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
                 elif key.lower() == 'j':
                     SESSION.seek(-1)
-                    toast_text = 'Seek Backward -1s'; toast_expiry = time.time() + 1.0
+                    toast_text = 'Seek Backward -1s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
                 elif key.lower() == 'l':
                     SESSION.seek(1)
-                    toast_text = 'Seek Forward +1s'; toast_expiry = time.time() + 1.0
+                    toast_text = 'Seek Forward +1s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
                 elif key == ']':                  # NEXT track (skip), stay in the view
                     if SESSION.next(manual=True) is None:
@@ -555,7 +556,7 @@ def _player_view_loop() -> dict:
                     # the two windows stay specialised until one closes (#14).
                     if has_other_windows():
                         toast_text = 'Close the other window to leave the player'
-                        toast_expiry = time.time() + 2.0
+                        toast_expiry = time.time() + tune.TOAST_MEDIUM_S
                         update_ctrl_ui(); continue
                     return {"status": "DETACH"}
                 elif key.lower() == 's':          # STOP playback
@@ -565,12 +566,12 @@ def _player_view_loop() -> dict:
                     return {"status": "QUIT_ALL"}
                 elif key in ('=', '+'):
                     v = SESSION.set_volume(SESSION.get_volume() + 5)
-                    toast_text = f'Volume: {v}%'; toast_expiry = time.time() + 1.0
+                    toast_text = f'Volume: {v}%'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     playback_ui.draw_volume_bar(v)
                     update_ctrl_ui()
                 elif key in ('-', '_'):
                     v = SESSION.set_volume(SESSION.get_volume() - 5)
-                    toast_text = f'Volume: {v}%'; toast_expiry = time.time() + 1.0
+                    toast_text = f'Volume: {v}%'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     playback_ui.draw_volume_bar(v)
                     update_ctrl_ui()
                 elif key.lower() == 'i':
@@ -612,7 +613,7 @@ def _player_view_loop() -> dict:
                         last_lyric_idx = -1
 
                     if is_uslt or in_uslt_tail:
-                        if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > 4.0:
+                        if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > tune.MANUAL_LYRIC_REVERT_S:
                             manual_line_index = None
                         current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
                         display_idx = min(current_idx, len(exp_lines) - 1)

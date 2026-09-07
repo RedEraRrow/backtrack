@@ -27,6 +27,7 @@ from src.id3.id3_tag_handler import (
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import filename_parser as fp
 from src.id3 import tag_writer as tw
+from src.id3 import tag_registry as _reg
 from src.id3 import file_namer as fnm
 from src.id3 import cover_matcher as cm
 from src import bulk_pattern as bp
@@ -159,9 +160,10 @@ def _num_pair(num, total) -> str:
     return f"{num}/{total}" if total else f"{num}"
 
 
-# base field → sort frame id, used to compute sort-order strings via the #42 engine.
-_SORT_BASE = [('artist', 'TSOP'), ('album_artist', 'TSO2'),
-              ('album', 'TSOA')]          # no title sort — a title sorts on itself
+# base field → sort frame id, used to compute sort-order strings via the #42
+# engine. The `auto` rows of the canonical table: the fields a derive/write run
+# produces, so composer (never derived from a filename) is not among them.
+_SORT_BASE = [(t.field, t.frame) for t in _reg.SORT_TAGS if t.auto]
 
 
 def _sort_value(base_id: str, raw: str) -> str | None:
@@ -810,13 +812,9 @@ _PATTERN_COLUMNS = [
 ]
 
 
-# source text frame → sort frame, for the standalone "apply sort orders" op.
-_SORT_SRC = [
-    ('artist',       'TPE1', 'TSOP'),
-    ('album_artist', 'TPE2', 'TSO2'),
-    ('composer',     'TCOM', 'TSOC'),
-    ('album',        'TALB', 'TSOA'),
-]
+# source text frame → sort frame, for the standalone "apply sort orders" op —
+# every sort tag, composer included.
+_SORT_SRC = [(t.field, t.source, t.frame) for t in _reg.SORT_TAGS]
 
 _RENUMBER_COLUMNS = [
     prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),  # position (index) — drops first
@@ -1732,9 +1730,13 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("No tracks selected.")
         return
 
-    # 4) Apply. The checkbox is explicit consent, so writes replace any existing
-    #    art (fill-blanks was already honoured by the default check state).
-    count = errors = mp4_skipped = 0
+    # 4) Apply. "Fill blanks only" is a hard flag here, as it is for derive /
+    #    sort / assign — not merely the state the checkboxes opened in. Ticking
+    #    a row by hand (or with 'a') under that policy no longer overwrites the
+    #    art it was chosen to preserve; those tracks are counted and reported
+    #    rather than silently passed over.
+    overwrite = state['policy'] == "Overwrite existing"
+    count = errors = mp4_skipped = kept = 0
     img_cache: dict[str, tuple | None] = {}
     for p in shown:
         if p not in apply_paths:
@@ -1749,9 +1751,12 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             errors += 1
             continue
         data, mime = read
-        r = tw.write_cover(p, data, mime, pic_type=3, desc='', overwrite=True)
+        r = tw.write_cover(p, data, mime, pic_type=3, desc='', overwrite=overwrite)
         if r.skipped_format:
             mp4_skipped += 1
+            continue
+        if r.skipped_existing:
+            kept += 1
             continue
         if r.error:
             errors += 1
@@ -1764,6 +1769,8 @@ def set_album_art_op(paths: list, library: list, header) -> None:
                 pass
 
     msg = f"Set album art on {count} track(s)."
+    if kept:
+        msg += f" {kept} kept existing art (fill blanks only)."
     if mp4_skipped:
         msg += f" {mp4_skipped} MP4 skipped (cover needs JPEG/PNG)."
     if skipped_fmt:
@@ -1792,8 +1799,7 @@ _SPLIT_COLUMNS = [
     prompt.Column(style='dynamic-dim', align='right', max_width=9, priority=1),   # how many files
 ]
 
-_SORT_TAG_LABEL = {'TSOP': 'artist', 'TSO2': 'album artist',
-                   'TSOC': 'composer', 'TSOA': 'album'}
+_SORT_TAG_LABEL = {t.frame: t.label for t in _reg.SORT_TAGS}
 
 
 class _SortPlan:

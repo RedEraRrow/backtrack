@@ -5,7 +5,6 @@ import json
 import re
 import textwrap
 import sys
-import unicodedata
 from pathlib import Path
 
 from src.utils import prompt_core as _pc
@@ -14,6 +13,8 @@ from src.utils.ui_utils import Colors as C
 # The MD script is overlaid onto the timed transcript by the same alignment the
 # lyrics editor uses, so the player renders the same speakers / directions / text.
 from src.lyrics.md_overlay import build_md_overlay, _reading_time
+from src.lyrics import lyrics_text as _lt
+from src import tuning as tune
 
 def normalize_lyric_newlines(text: str) -> str:
     """Normalize CRLF/CR line endings to \\n."""
@@ -181,11 +182,11 @@ def _timing_word_count(text: str) -> int:
 
 # Shortest window a line may be given.  A one-word line still needs long enough
 # to be read, so proportional allocation alone is not enough.
-_MIN_LINE_S = 0.5
+_MIN_LINE_S = tune.LYRIC_MIN_LINE_S
 
 # Speaking rate assumed when the track length is unknown (mutagen gave us
 # nothing and VLC has not been probed yet).  Only reachable in that fallback.
-_FALLBACK_WPS = 2.2
+_FALLBACK_WPS = tune.LYRIC_FALLBACK_WPS
 
 
 def _allocate_line_seconds(counts: list, track_duration: float) -> list:
@@ -260,11 +261,10 @@ def build_uslt_line_times(lines: list, track_duration: float) -> list[tuple[floa
     return times
 
 
-def find_current_uslt_line(line_times: list[tuple[float, float]], elapsed: float) -> int:
-    """Binary-search line_times for the line covering elapsed, clamped to range."""
-    ends = [t[1] for t in line_times]
-    idx = bisect.bisect_right(ends, elapsed)
-    return min(idx, max(0, len(line_times) - 1))
+# USLT lines and dialogue chunks are both sorted runs of (start, end) windows, so
+# they ask `lyrics_text.find_current_line` the same question. The two names are
+# kept because the call sites read better for saying which stream they mean.
+find_current_uslt_line = _lt.find_current_line
 
 
 def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
@@ -335,15 +335,12 @@ def _apply_markdown_formatting(text: str, base: str = "",
     return text
 
 
-_ANSI_RE = re.compile(r'\033\[[0-9;]*m')
-
-
 def _md_visible_len(text: str) -> int:
     """Printed width of a markdown fragment — what it measures after the emphasis
     markers are consumed.  Derived from the rendered output rather than a marker
     strip-list, so it can never disagree with `_apply_markdown_formatting` about
     which characters actually reach the screen."""
-    return len(_ANSI_RE.sub('', _apply_markdown_formatting(text)))
+    return ui_utils.visual_len(_apply_markdown_formatting(text))
 
 
 def _close_open_md(row: str) -> tuple[str, str]:
@@ -467,13 +464,10 @@ class DialogueLine:
         return not self.speakers and not self.text and not self.stage_dir
 
 
-def clean_text_for_timing(text: str) -> str:
-    """Strip stage directions and parenthetical asides so what remains is spoken-only text for word-count/timing use."""
-    cleaned = re.sub(r'\s*\*[^(]*\([^)]*\)\*\s*|\s*\([^)]*\)\s*', ' ', text)
-    return re.sub(r'\s+', ' ', cleaned).strip()
+clean_text_for_timing = _lt.clean_for_timing
 
 
-_AIR_THRESHOLD = 2.0  # seconds of silence that warrants a blank-line gap indicator
+_AIR_THRESHOLD = tune.LYRIC_AIR_THRESHOLD_S
 
 
 def expand_dialogue_into_sentences(
@@ -498,9 +492,10 @@ def expand_dialogue_into_sentences(
     # Monotonic cursor: each sentence scans forward from where the last left off.
     wt_cursor = 0
 
-    def _norm(raw: str) -> str:
-        """Normalize a word for comparison: strip whitespace (Whisper leading space) and punctuation."""
-        return raw.lower().strip().strip(".,!?;:\"'")
+    # The shared word normalizer: both sides of this comparison go through the
+    # same fold as the aligner, so a word that matches when the overlay is built
+    # still matches when the sentence is timed.
+    _norm = _lt.matchable
 
     def get_sentence_timing(sentence_words: list[str]) -> tuple[float, float] | None:
         """Find this sentence's (start, end) by matching its words forward through
@@ -518,7 +513,8 @@ def expand_dialogue_into_sentences(
             if not norm:
                 continue
             # Search forward from local_cursor within a bounded window
-            for i in range(local_cursor, min(local_cursor + 80, len(word_timings))):
+            for i in range(local_cursor,
+                           min(local_cursor + tune.LYRIC_MATCH_WINDOW_WORDS, len(word_timings))):
                 if _norm(word_timings[i].get('word', '')) == norm:
                     if start_time is None:
                         start_time = float(word_timings[i]['start'])
@@ -755,7 +751,7 @@ def draw_dialogue_window(
 
         for i in range(max_rows):
             if i < len(left_lines):
-                clean_len = len(_ANSI_RE.sub('', left_lines[i]))
+                clean_len = ui_utils.visual_len(left_lines[i])
                 left_cell = f"{left_lines[i]}{' ' * (speaker_width - clean_len)}"
             else:
                 left_cell = " " * speaker_width
@@ -775,16 +771,10 @@ def draw_dialogue_window(
     sys.stdout.flush()
 
 
-def find_current_dialogue_line(line_times: list[tuple[float, float]], elapsed: float) -> int:
-    """Binary-search line_times for the chunk covering elapsed, clamped to range."""
-    ends = [t[1] for t in line_times]
-    idx = bisect.bisect_right(ends, elapsed)
-    return min(idx, max(0, len(line_times) - 1))
+find_current_dialogue_line = _lt.find_current_line
 
 
-def _strip_markdown(text: str) -> str:
-    """Strip markdown emphasis/code markers (*_`~) for plain-text display."""
-    return re.sub(r'[*_`~]', '', text)
+_strip_markdown = _lt.strip_markdown
 
 
 def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
@@ -982,7 +972,8 @@ def _parse_uslt(audio) -> list[tuple[str, int]]:
     return [(line.strip(), 0) for line in text.split('\n') if line.strip()]
 
 
-def estimate_sylt_last_line_end(sylt_data: list[tuple[str, int]], duration_ms: float, words_per_second: float = 2.2) -> float:
+def estimate_sylt_last_line_end(sylt_data: list[tuple[str, int]], duration_ms: float,
+                                words_per_second: float = tune.LYRIC_FALLBACK_WPS) -> float:
     """Estimate when the last SYLT line finishes, from its word count and words_per_second, capped at the track duration."""
     if not sylt_data: return 0.0
     last_text, last_ts_ms = sylt_data[-1]
@@ -995,9 +986,7 @@ def estimate_sylt_last_line_end(sylt_data: list[tuple[str, int]], duration_ms: f
 def find_uslt_handoff_index(uslt_lines: list[str], last_sylt_text: str) -> int:
     """Find the USLT index to resume display at after the last SYLT line, matching
     exactly first then falling back to substring containment."""
-    def _norm(s: str) -> str:
-        """Collapse whitespace and lowercase for line-text comparison."""
-        return re.sub(r'\s+', ' ', s.strip().lower())
+    _norm = _lt.norm_line
     target = _norm(last_sylt_text)
     for i, line in enumerate(uslt_lines):
         if _norm(line) == target: return i + 1
@@ -1175,17 +1164,7 @@ def _parse_stage_dirs(json_path: str) -> list[tuple[float, float, str]]:
     return out
 
 
-def _matchable(word: str) -> str:
-    """Reduce a word to bare lowercase letters and digits for fuzzy matching.
-
-    NFKD-decomposes the input so accented/modified letters shed their combining
-    marks, then keeps only characters whose Unicode category starts with ‘L’
-    (letter) or ‘N’ (number).  This handles apostrophes, okinas, curly quotes,
-    hyphens, diacritics, and any other punctuation-adjacent characters without
-    maintaining an explicit strip-list.
-    """
-    decomposed = unicodedata.normalize('NFKD', word.lower())
-    return ''.join(c for c in decomposed if unicodedata.category(c)[0] in ('L', 'N'))
+_matchable = _lt.matchable
 
 
 def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict], json_segments: list[dict] | None = None) -> None:
@@ -1519,7 +1498,7 @@ class DialoguePlaybackState:
         if raw_dialogue_lines and not loaded_from_segments:
             total_words = sum(max(1, len(clean_text_for_timing(line.text).split()))
                               for line in raw_dialogue_lines if not line.is_empty())
-            dynamic_wps = total_words / track_duration if track_duration > 0 else 2.2
+            dynamic_wps = total_words / track_duration if track_duration > 0 else tune.LYRIC_FALLBACK_WPS
             self.expanded_chunks, self.line_times = expand_dialogue_into_sentences(
                 raw_dialogue_lines,
                 words_per_second=dynamic_wps,

@@ -355,47 +355,60 @@ def get_terminal_height(default: int = 24) -> int:
     return rows
 
 
-def truncate_text(text: str, max_width: int, placeholder: str = "…", front: bool = False) -> str:
-    """Truncate `text` to `max_width`, replacing the cut end (or start, if
-    `front`) with `placeholder`."""
-    # front=True keeps the end of the string instead of the start
-    if text is None:
-        return ""
-    if len(text) <= max_width:
-        return text
-    if max_width <= len(placeholder):
-        return text[:max_width]
+# ---------------------------------------------------------------------------
+# Display width: one ANSI scanner, one column table, for the whole app.
+#
+# Every module that measures, clips or pads a styled line goes through this
+# block. It used to be five divergent implementations — each with its own idea
+# of which escape sequences exist — and the width maths disagreed between them,
+# so a line measured in one module and clipped in another could overrun.
+# ---------------------------------------------------------------------------
 
-    if front:
-        return placeholder + text[-(max_width - len(placeholder)):]
-    else:
-        return text[:max_width - len(placeholder)] + placeholder
+# The escape sequences a terminal consumes without drawing anything. In order:
+# CSI (including private `?` parameters and intermediate bytes, so `\033[?25l`
+# and `\033[3J` are recognised, not just SGR); the Kitty graphics protocol used
+# by the album-art renderer; OSC, terminated by either ST or BEL; the remaining
+# string-introducers (DCS/SOS/PM/APC); and a bare two-byte escape as a backstop.
+_ANSI_RE = re.compile(
+    r'(\x1b\[[0-9;?]*[ -/]*[@-~])'
+    r'|(\x1b_G[^\x1b]*\x1b\\)'
+    r'|(\x1b\][^\x1b\x07]*(?:\x1b\\|\x07))'
+    r'|(\x1b[PX^_].*?\x1b\\)'
+    r'|(\x1b.)'
+)
+
+
+def _scan(s: str):
+    """Yield ``(is_escape, chunk)`` across `s`.
+
+    One chunk per escape sequence, one per printable character — the single
+    walk every width routine below is built on, so measuring and clipping can
+    never disagree about where an escape starts or ends.
+    """
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == '\x1b':
+            m = _ANSI_RE.match(s, i)
+            if m:
+                yield True, m.group(0)
+                i = m.end()
+                continue
+        yield False, s[i]
+        i += 1
 
 
 def strip_ansi(s: str) -> str:
-    """Remove ANSI escape sequences from a string."""
-    return re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', s)
-
-def visual_len(s: str) -> int:
-    """Columns `s` occupies on screen, ignoring ANSI escapes.
-
-    Not the same as `len`: a presentation selector takes no column, and an
-    emoji-presentation or East-Asian-wide character takes two. The ASCII fast
-    path keeps the common case a plain length — this is called per line in the
-    render path.
-    """
-    t = display_text(s)
-    if t.isascii():
-        return len(t)
-    return sum(char_cols(ch) for ch in t)
+    """`s` with every ANSI escape sequence removed."""
+    if '\x1b' not in s:
+        return s
+    return _ANSI_RE.sub('', s)
 
 
 # Codepoints that occupy no column of their own: the variation selectors that
 # pick a glyph's text/emoji presentation, the zero-width joiner family, and
 # combining marks that stack onto the character before them.
 _ZERO_WIDTH = ('︎', '️', '​', '‌', '‍')
-
-
 
 _ZERO_WIDTH_SET = frozenset(_ZERO_WIDTH)
 
@@ -422,7 +435,7 @@ def char_cols(ch: str) -> int:
     """How many terminal columns `ch` occupies: 0, 1 or 2."""
     w = _cols_cache.get(ch)
     if w is None:
-        if ch in _ZERO_WIDTH_SET:
+        if ch in _ZERO_WIDTH_SET or unicodedata.combining(ch):
             w = 0
         elif ch in _WIDE_SET or unicodedata.east_asian_width(ch) in ('W', 'F'):
             w = 2
@@ -433,46 +446,97 @@ def char_cols(ch: str) -> int:
 
 
 def display_text(s: str) -> str:
-    """`s` with ANSI escapes and zero-width codepoints removed — one character
-    per column, so `len()` of the result is the width it will occupy."""
+    """`s` with ANSI escapes and zero-width codepoints removed.
+
+    Every remaining character occupies at least one column, but *not* always
+    exactly one — a wide glyph still takes two, so `visual_len` is what you
+    want for width maths. This is for callers that need the plain characters
+    themselves (cursor hit-testing, writing a styled report out as text).
+    """
     out = strip_ansi(s)
-    for z in _ZERO_WIDTH:
-        if z in out:
-            out = out.replace(z, '')
-    return out
+    if out.isascii():
+        return out
+    return ''.join(ch for ch in out if char_cols(ch) != 0)
 
 
-def clip_ansi(text: str, max_cols: int) -> str:
-    """Truncate an ANSI-styled string to `max_cols` visible characters."""
+def visual_len(s: str) -> int:
+    """Columns `s` occupies on screen, ignoring ANSI escapes.
+
+    Not the same as `len`: escapes and combining marks take no column, and an
+    emoji-presentation or East-Asian-wide character takes two. The ASCII fast
+    path keeps the common case a plain length — this is called per line in the
+    render path.
+    """
+    if not s:
+        return 0
+    if s.isascii() and '\x1b' not in s:
+        return len(s)
+    return sum(char_cols(ch) for esc, ch in _scan(s) if not esc)
+
+
+def clip_ansi(text: str, max_cols: int, reset: bool = True) -> str:
+    """`text` truncated to `max_cols` visible columns, escapes preserved.
+
+    Escapes ride along without being counted, so the styling that survives the
+    cut still closes properly; a zero-width mark rides along with the glyph it
+    belongs to; and a two-cell glyph is never split across the boundary — it is
+    dropped whole, leaving a one-column gap, because half of one renders as a
+    stray cell that pushes everything after it out of line.
+
+    `reset` appends a reset when the string was actually cut, so the clipped
+    line can't bleed colour into whatever is drawn after it. Callers that go on
+    to concatenate more styled content onto the result pass False.
+    """
     if max_cols <= 0:
         return ""
-    if visual_len(text) <= max_cols:
-        return text
-
-    result: list[str] = []
+    out: list[str] = []
     visible = 0
-    i = 0
-    while i < len(text) and visible < max_cols:
-        if text[i] == "\x1b":
-            j = i + 1
-            if j < len(text) and text[j] == "[":
-                j += 1
-                while j < len(text) and not (0x40 <= ord(text[j]) <= 0x7E):
-                    j += 1
-                if j < len(text):
-                    j += 1
-            elif j < len(text):
-                j += 1
-            result.append(text[i:j])
-            i = j
-        else:
-            result.append(text[i])
-            visible += 1
-            i += 1
-    clipped = "".join(result)
-    if not clipped.endswith(Colors.RESET):
-        clipped += Colors.RESET
-    return clipped
+    truncated = False
+    for esc, chunk in _scan(text):
+        if esc:
+            out.append(chunk)
+            continue
+        w = char_cols(chunk)
+        if w and visible + w > max_cols:
+            truncated = True
+            break
+        out.append(chunk)
+        visible += w
+    res = "".join(out)
+    if truncated and reset and not res.endswith(Colors.RESET):
+        res += Colors.RESET
+    return res
+
+
+def truncate_text(text: str, max_width: int, placeholder: str = "…", front: bool = False) -> str:
+    """Truncate `text` to `max_width` columns, replacing the cut end (or start,
+    if `front`) with `placeholder`.
+
+    Measured in columns rather than codepoints, so a CJK or emoji run is cut
+    where it actually reaches the edge instead of a character count that
+    overruns it by up to 2×.
+    """
+    if text is None:
+        return ""
+    if visual_len(text) <= max_width:
+        return text
+    ph_w = visual_len(placeholder)
+    if max_width <= ph_w:
+        return clip_ansi(text, max_width, reset=False)
+
+    keep = max_width - ph_w
+    if front:
+        # Walk from the right, taking whole glyphs until `keep` columns are full.
+        taken: list[str] = []
+        used = 0
+        for ch in reversed(text):
+            w = char_cols(ch)
+            if w and used + w > keep:
+                break
+            taken.append(ch)
+            used += w
+        return placeholder + "".join(reversed(taken))
+    return clip_ansi(text, keep, reset=False) + placeholder
 
 
 def plural(n: int, singular: str, many: str | None = None) -> str:

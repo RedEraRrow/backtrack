@@ -22,7 +22,6 @@ from src import state as _state
 from src.state import QuitToTerminal
 
 _TIMEZONES = [
-    # (utc_h, utc_m, lat, lon, tz_name, abbr, city, is_capital)
     # UTC-12
     (-12,  0,   0.2, -176.5, "Etc/GMT+12",                     "IDLW",      "International Date Line West", False),
     # UTC-11
@@ -34,7 +33,7 @@ _TIMEZONES = [
     (-10,  0, -17.5, -149.6, "Pacific/Tahiti",                 "TAHT",      "Papeete",                      True),
     (-10,  0, -21.2, -159.8, "Pacific/Rarotonga",              "CKT",       "Avarua",                       True),
     # UTC-9:30
-    ( -9, 30, -9.4,  -139.0, "Pacific/Marquesas",              "MART",      "Nuku Hiva",                    False),
+    ( -9, 30,  -9.4, -139.0, "Pacific/Marquesas",              "MART",      "Nuku Hiva",                    False),
     # UTC-9
     ( -9,  0,  61.2, -149.9, "America/Anchorage",              "AKST/AKDT", "Anchorage",                    False),
     ( -9,  0,  64.8, -147.7, "America/Anchorage",              "AKST/AKDT", "Fairbanks",                    False),
@@ -48,8 +47,8 @@ _TIMEZONES = [
     ( -8,  0,  32.7, -117.2, "America/Los_Angeles",            "PST/PDT",   "San Diego",                    False),
     ( -8,  0,  36.7, -119.8, "America/Los_Angeles",            "PST/PDT",   "Fresno",                       False),
     ( -8,  0,  38.6, -121.5, "America/Los_Angeles",            "PST/PDT",   "Sacramento",                   False),
-    ( -8,  0,  51.1, -114.1, "America/Edmonton",               "MST/MDT",   "Calgary",                      False),
     # UTC-7
+    ( -7,  0,  51.1, -114.1, "America/Edmonton",               "MST/MDT",   "Calgary",                      False),
     ( -7,  0,  39.7, -104.9, "America/Denver",                 "MST/MDT",   "Denver",                       False),
     ( -7,  0,  40.8, -111.9, "America/Denver",                 "MST/MDT",   "Salt Lake City",               False),
     ( -7,  0,  35.1, -106.7, "America/Denver",                 "MST/MDT",   "Albuquerque",                  False),
@@ -66,10 +65,10 @@ _TIMEZONES = [
     ( -6,  0,  44.9,  -93.1, "America/Chicago",                "CST/CDT",   "Minneapolis",                  False),
     ( -6,  0,  38.6,  -90.2, "America/Chicago",                "CST/CDT",   "St. Louis",                    False),
     ( -6,  0,  29.9,  -90.1, "America/Chicago",                "CST/CDT",   "New Orleans",                  False),
-    ( -6,  0,  53.5,  -113.5, "America/Edmonton",              "MST/MDT",   "Winnipeg",                     False),
+    ( -6,  0,  49.9,  -97.1, "America/Winnipeg",               "CST/CDT",   "Winnipeg",                     False),
     ( -6,  0,  19.4,  -99.1, "America/Mexico_City",            "CST/CDT",   "Mexico City",                  True),
     ( -6,  0,  20.9,  -89.6, "America/Merida",                 "CST/CDT",   "Mérida",                       False),
-    ( -6,  0,  25.7,  -100.3,"America/Monterrey",              "CST/CDT",   "Monterrey",                    False),
+    ( -6,  0,  25.7, -100.3, "America/Monterrey",              "CST/CDT",   "Monterrey",                    False),
     ( -6,  0,  22.2,  -97.8, "America/Monterrey",              "CST/CDT",   "Tampico",                      False),
     ( -6,  0,  52.1, -106.7, "America/Regina",                 "CST",       "Regina",                       False),
     ( -6,  0,  13.7,  -89.2, "America/El_Salvador",            "CST",       "San Salvador",                 True),
@@ -78,6 +77,7 @@ _TIMEZONES = [
     ( -6,  0,  12.1,  -86.3, "America/Managua",                "CST",       "Managua",                      True),
     ( -6,  0,   9.9,  -84.1, "America/Costa_Rica",             "CST",       "San José",                     True),
     ( -6,  0,  17.3,  -89.9, "America/Belize",                 "CST",       "Belmopan",                     True),
+    ( -6,  0,  36.2,  -86.8, "America/Chicago",                "CST/CDT",   "Nashville",                    False),
     # UTC-5
     ( -5,  0,  40.7,  -74.0, "America/New_York",               "EST/EDT",   "New York",                     False),
     ( -5,  0,  42.4,  -71.1, "America/New_York",               "EST/EDT",   "Boston",                       False),
@@ -88,7 +88,6 @@ _TIMEZONES = [
     ( -5,  0,  45.4,  -75.7, "America/Toronto",                "EST/EDT",   "Ottawa",                       False),
     ( -5,  0,  45.5,  -73.6, "America/Toronto",                "EST/EDT",   "Montreal",                     False),
     ( -5,  0,  30.3,  -81.7, "America/New_York",               "EST/EDT",   "Jacksonville",                 False),
-    ( -5,  0,  36.2,  -86.8, "America/Chicago",                "CST/CDT",   "Nashville",                    False),
     ( -5,  0,   4.7,  -74.1, "America/Bogota",                 "COT",       "Bogotá",                       True),
     ( -5,  0,   6.3,  -75.6, "America/Bogota",                 "COT",       "Medellín",                     False),
     ( -5,  0,   3.4,  -76.5, "America/Bogota",                 "COT",       "Cali",                         False),
@@ -97,38 +96,37 @@ _TIMEZONES = [
     ( -5,  0,   9.0,  -79.5, "America/Panama",                 "EST",       "Panama City",                  True),
     ( -5,  0,  -0.2,  -78.5, "America/Guayaquil",              "ECT",       "Quito",                        True),
     ( -5,  0,  -2.2,  -79.9, "America/Guayaquil",              "ECT",       "Guayaquil",                    False),
+    ( -5,  0,  18.0,  -76.8, "America/Jamaica",                "EST",       "Kingston",                     True),
+    ( -5,  0,  18.5,  -72.3, "America/Port-au-Prince",         "EST/EDT",   "Port-au-Prince",               True),
     # UTC-4:30
-    ( -4, 30,  10.5,  -66.9, "America/Caracas",                "VET",       "Caracas",                      True),
+    ( -4,  0,  10.5,  -66.9, "America/Caracas",                "VET",       "Caracas",                      True),
     # UTC-4
     ( -4,  0,  44.6,  -63.6, "America/Halifax",                "AST/ADT",   "Halifax",                      False),
     ( -4,  0,  17.1,  -61.8, "America/Antigua",                "AST",       "St. John's (Antigua)",         True),
     ( -4,  0,  13.1,  -59.6, "America/Barbados",               "AST",       "Bridgetown",                   True),
     ( -4,  0,  10.7,  -61.5, "America/Port_of_Spain",          "AST",       "Port of Spain",                True),
-    ( -4,  0,  18.0,  -76.8, "America/Jamaica",                "EST",       "Kingston",                     True),
     ( -4,  0,  18.5,  -69.9, "America/Santo_Domingo",          "AST",       "Santo Domingo",                True),
-    ( -4,  0,  18.5,  -72.3, "America/Port-au-Prince",         "EST/EDT",   "Port-au-Prince",               True),
     ( -4,  0,  32.3,  -64.8, "Atlantic/Bermuda",               "AST/ADT",   "Hamilton",                     True),
     ( -4,  0, -33.5,  -70.7, "America/Santiago",               "CLT/CLST",  "Santiago",                     True),
-    ( -4,  0, -23.0,  -43.2, "America/Sao_Paulo",              "BRT/BRST",  "Rio de Janeiro",               False),
     ( -4,  0, -16.5,  -68.1, "America/La_Paz",                 "BOT",       "La Paz",                       True),
     ( -4,  0,  -3.1,  -60.0, "America/Manaus",                 "AMT",       "Manaus",                       False),
-    ( -4,  0,  -1.5,  -48.5, "America/Belem",                  "BRT",       "Belém",                        False),
-    ( -4,  0,  -2.5,  -44.3, "America/Fortaleza",              "BRT",       "São Luís",                     False),
-    ( -4,  0,  11.8,  -15.6, "Africa/Bissau",                  "GMT",       "Bissau",                       True),
+    ( -4,  0, -33.0,  -71.6, "America/Santiago",               "CLT/CLST",  "Valparaíso",                   False),
+    ( -4,  0,   6.8,  -58.2, "America/Guyana",                 "GYT",       "Georgetown",                   True),
     # UTC-3:30
     ( -3, 30,  47.6,  -52.7, "America/St_Johns",               "NST/NDT",   "St. John's (NL)",              False),
     # UTC-3
+    ( -3,  0, -23.0,  -43.2, "America/Sao_Paulo",              "BRT/BRST",  "Rio de Janeiro",               False),
+    ( -3,  0,  -1.5,  -48.5, "America/Belem",                  "BRT",       "Belém",                        False),
+    ( -3,  0,  -2.5,  -44.3, "America/Fortaleza",              "BRT",       "São Luís",                     False),
     ( -3,  0, -34.9,  -56.2, "America/Montevideo",             "UYT",       "Montevideo",                   True),
     ( -3,  0, -34.6,  -58.4, "America/Argentina/Buenos_Aires", "ART",       "Buenos Aires",                 True),
     ( -3,  0, -31.4,  -64.2, "America/Argentina/Cordoba",      "ART",       "Córdoba",                      False),
-    ( -3,  0, -33.0,  -71.6, "America/Santiago",               "CLT/CLST",  "Valparaíso",                   False),
     ( -3,  0, -15.8,  -47.9, "America/Sao_Paulo",              "BRT/BRST",  "Brasília",                     True),
     ( -3,  0, -23.5,  -46.6, "America/Sao_Paulo",              "BRT/BRST",  "São Paulo",                    False),
     ( -3,  0,  -3.7,  -38.5, "America/Fortaleza",              "BRT",       "Fortaleza",                    False),
     ( -3,  0, -12.9,  -38.4, "America/Bahia",                  "BRT",       "Salvador",                     False),
-    ( -3,  0, -8.0,   -34.9, "America/Recife",                 "BRT",       "Recife",                       False),
+    ( -3,  0,  -8.0,  -34.9, "America/Recife",                 "BRT",       "Recife",                       False),
     ( -3,  0,   5.8,  -55.2, "America/Paramaribo",             "SRT",       "Paramaribo",                   True),
-    ( -3,  0,   6.8,  -58.2, "America/Guyana",                 "GYT",       "Georgetown",                   True),
     ( -3,  0,   4.9,  -52.3, "America/Cayenne",                "GFT",       "Cayenne",                      False),
     # UTC-2
     ( -2,  0, -54.3,  -36.5, "Atlantic/South_Georgia",         "GST",       "South Georgia",                False),
@@ -137,6 +135,7 @@ _TIMEZONES = [
     ( -1,  0,  37.7,  -25.7, "Atlantic/Azores",                "AZOT/AZOST","Ponta Delgada",                False),
     ( -1,  0,  14.9,  -23.5, "Atlantic/Cape_Verde",            "CVT",       "Praia",                        True),
     # UTC+0
+    (  0,  0,  11.8,  -15.6, "Africa/Bissau",                  "GMT",       "Bissau",                       True),
     (  0,  0,  51.5,   -0.1, "Europe/London",                  "GMT/BST",   "London",                       True),
     (  0,  0,  53.3,   -6.3, "Europe/Dublin",                  "GMT/IST",   "Dublin",                       True),
     (  0,  0,  51.5,   -3.2, "Europe/London",                  "GMT/BST",   "Cardiff",                      False),
@@ -146,11 +145,6 @@ _TIMEZONES = [
     (  0,  0,  52.5,   -1.9, "Europe/London",                  "GMT/BST",   "Birmingham",                   False),
     (  0,  0,  64.1,  -21.9, "Atlantic/Reykjavik",             "GMT",       "Reykjavik",                    True),
     (  0,  0,   5.6,   -0.2, "Africa/Accra",                   "GMT",       "Accra",                        True),
-    (  0,  0,  33.6,   -7.6, "Africa/Casablanca",              "WET/WEST",  "Casablanca",                   False),
-    (  0,  0,  34.0,   -6.8, "Africa/Casablanca",              "WET/WEST",  "Rabat",                        True),
-    (  0,  0,   6.4,    2.3, "Africa/Porto-Novo",              "WAT",       "Porto-Novo",                   True),
-    (  0,  0,   6.4,    2.4, "Africa/Lagos",                   "WAT",       "Cotonou",                      False),
-    (  0,  0,  13.5,    2.1, "Africa/Niamey",                  "WAT",       "Niamey",                       True),
     (  0,  0,  12.4,   -1.5, "Africa/Ouagadougou",             "GMT",       "Ouagadougou",                  True),
     (  0,  0,  12.7,   -8.0, "Africa/Bamako",                  "GMT",       "Bamako",                       True),
     (  0,  0,  15.6,  -32.4, "Africa/Dakar",                   "GMT",       "Dakar",                        True),
@@ -161,7 +155,13 @@ _TIMEZONES = [
     (  0,  0,   5.4,   -3.9, "Africa/Abidjan",                 "GMT",       "Abidjan",                      False),
     (  0,  0,  38.7,   -9.1, "Europe/Lisbon",                  "WET/WEST",  "Lisbon",                       True),
     (  0,  0,  41.2,   -8.6, "Europe/Lisbon",                  "WET/WEST",  "Porto",                        False),
+    (  0,  0,   0.3,    6.7, "Africa/Sao_Tome",                "GMT",       "São Tomé",                     True),
     # UTC+1
+    (  1,  0,  33.6,   -7.6, "Africa/Casablanca",              "WET/WEST",  "Casablanca",                   False),
+    (  1,  0,  34.0,   -6.8, "Africa/Casablanca",              "WET/WEST",  "Rabat",                        True),
+    (  1,  0,   6.4,    2.3, "Africa/Porto-Novo",              "WAT",       "Porto-Novo",                   True),
+    (  1,  0,   6.4,    2.4, "Africa/Lagos",                   "WAT",       "Cotonou",                      False),
+    (  1,  0,  13.5,    2.1, "Africa/Niamey",                  "WAT",       "Niamey",                       True),
     (  1,  0,  48.9,    2.3, "Europe/Paris",                   "CET/CEST",  "Paris",                        True),
     (  1,  0,  43.3,    5.4, "Europe/Paris",                   "CET/CEST",  "Marseille",                    False),
     (  1,  0,  45.7,    4.8, "Europe/Paris",                   "CET/CEST",  "Lyon",                         False),
@@ -210,16 +210,19 @@ _TIMEZONES = [
     (  1,  0,  41.3,   19.8, "Europe/Tirane",                  "CET/CEST",  "Tirana",                       True),
     (  1,  0,   6.5,    3.4, "Africa/Lagos",                   "WAT",       "Lagos",                        False),
     (  1,  0,   9.1,    7.5, "Africa/Lagos",                   "WAT",       "Abuja",                        True),
-    (  1,  0,   3.9,    11.5,"Africa/Douala",                  "WAT",       "Yaoundé",                      True),
+    (  1,  0,   3.9,   11.5, "Africa/Douala",                  "WAT",       "Yaoundé",                      True),
     (  1,  0,   4.4,    9.7, "Africa/Douala",                  "WAT",       "Douala",                       False),
     (  1,  0,   4.4,   18.6, "Africa/Bangui",                  "WAT",       "Bangui",                       True),
     (  1,  0,  12.1,   15.1, "Africa/Ndjamena",                "WAT",       "N'Djamena",                    True),
-    (  1,  0,   3.9,    11.5,"Africa/Libreville",              "WAT",       "Libreville",                   True),
-    (  1,  0,   0.4,    9.5, "Africa/Malabo",                  "WAT",       "Malabo",                       True),
-    (  1,  0,   0.4,    9.5, "Africa/Libreville",              "WAT",       "São Tomé",                     True),
+    (  1,  0,   0.4,    9.5, "Africa/Libreville",              "WAT",       "Libreville",                   True),
+    (  1,  0,   3.8,    8.8, "Africa/Malabo",                  "WAT",       "Malabo",                       True),
     (  1,  0,  36.8,   10.2, "Africa/Tunis",                   "CET",       "Tunis",                        True),
-    (  1,  0,  32.9,   13.2, "Africa/Tripoli",                 "EET",       "Tripoli",                      True),
+    (  1,  0,  44.8,   20.5, "Europe/Belgrade",                "CET/CEST",  "Belgrade",                     True),
+    (  1,  0,  43.9,   17.7, "Europe/Sarajevo",                "CET/CEST",  "Mostar",                       False),
+    (  1,  0,  42.7,   21.2, "Europe/Belgrade",                "CET/CEST",  "Pristina",                     True),
+    (  1,  0,  -4.3,   15.3, "Africa/Kinshasa",                "WAT",       "Kinshasa",                     True),
     # UTC+2
+    (  2,  0,  32.9,   13.2, "Africa/Tripoli",                 "EET",       "Tripoli",                      True),
     (  2,  0,  37.9,   23.7, "Europe/Athens",                  "EET/EEST",  "Athens",                       True),
     (  2,  0,  40.6,   22.9, "Europe/Athens",                  "EET/EEST",  "Thessaloniki",                 False),
     (  2,  0,  30.0,   31.2, "Africa/Cairo",                   "EET",       "Cairo",                        True),
@@ -247,28 +250,25 @@ _TIMEZONES = [
     (  2,  0,  44.2,   28.6, "Europe/Bucharest",               "EET/EEST",  "Constanța",                    False),
     (  2,  0,  42.7,   23.3, "Europe/Sofia",                   "EET/EEST",  "Sofia",                        True),
     (  2,  0,  42.1,   24.7, "Europe/Sofia",                   "EET/EEST",  "Plovdiv",                      False),
-    (  2,  0,  44.8,   20.5, "Europe/Belgrade",                "CET/CEST",  "Belgrade",                     True),
-    (  2,  0,  43.9,   17.7, "Europe/Sarajevo",                "CET/CEST",  "Mostar",                       False),
-    (  2,  0,  42.7,   21.2, "Europe/Pristina",                "CET/CEST",  "Pristina",                     True),
     (  2,  0,  31.8,   35.2, "Asia/Jerusalem",                 "IST/IDT",   "Jerusalem",                    True),
     (  2,  0,  32.1,   34.8, "Asia/Jerusalem",                 "IST/IDT",   "Tel Aviv",                     False),
     (  2,  0,  33.9,   35.5, "Asia/Beirut",                    "EET/EEST",  "Beirut",                       True),
-    (  2,  0,  33.5,   36.3, "Asia/Damascus",                  "EET/EEST",  "Damascus",                     True),
-    (  2,  0,  32.0,   36.0, "Asia/Amman",                     "EET/EEST",  "Amman",                        True),
     (  2,  0,  15.6,   32.5, "Africa/Khartoum",                "EAT",       "Khartoum",                     True),
     (  2,  0,   4.9,   31.6, "Africa/Juba",                    "EAT",       "Juba",                         True),
-    (  2,  0,   2.0,   45.3, "Africa/Mogadishu",               "EAT",       "Mogadishu",                    True),
+    (  2,  0, -13.0,   27.8, "Africa/Lusaka",                  "CAT",       "Lilongwe",                     True),
+    (  2,  0,  -1.7,   29.2, "Africa/Kigali",                  "CAT",       "Kigali",                       True),
+    (  2,  0,  -3.4,   29.4, "Africa/Bujumbura",               "CAT",       "Bujumbura",                    True),
     # UTC+3
+    (  3,  0,  33.5,   36.3, "Asia/Damascus",                  "EET/EEST",  "Damascus",                     True),
+    (  3,  0,  32.0,   36.0, "Asia/Amman",                     "EET/EEST",  "Amman",                        True),
+    (  3,  0,   2.0,   45.3, "Africa/Mogadishu",               "EAT",       "Mogadishu",                    True),
     (  3,  0,  55.7,   37.6, "Europe/Moscow",                  "MSK",       "Moscow",                       True),
     (  3,  0,  59.9,   30.3, "Europe/Moscow",                  "MSK",       "St. Petersburg",               False),
-    (  3,  0,  56.8,   60.6, "Asia/Yekaterinburg",             "YEKT",      "Yekaterinburg",                False),
     (  3,  0,  53.9,   27.6, "Europe/Minsk",                   "FET",       "Minsk",                        True),
     (  3,  0,  24.7,   46.7, "Asia/Riyadh",                    "AST",       "Riyadh",                       True),
     (  3,  0,  21.5,   39.2, "Asia/Riyadh",                    "AST",       "Jeddah",                       False),
-    (  3,  0,  24.5,   54.4, "Asia/Dubai",                     "GST",       "Abu Dhabi",                    True),
     (  3,  0,  25.3,   51.5, "Asia/Qatar",                     "AST",       "Doha",                         True),
     (  3,  0,  26.2,   50.6, "Asia/Bahrain",                   "AST",       "Manama",                       True),
-    (  3,  0,  23.6,   58.6, "Asia/Muscat",                    "GST",       "Muscat",                       True),
     (  3,  0,  15.3,   38.9, "Africa/Asmara",                  "EAT",       "Asmara",                       True),
     (  3,  0,  11.6,   43.1, "Africa/Djibouti",                "EAT",       "Djibouti",                     True),
     (  3,  0,  -1.3,   36.8, "Africa/Nairobi",                 "EAT",       "Nairobi",                      True),
@@ -277,43 +277,41 @@ _TIMEZONES = [
     (  3,  0,  39.9,   32.9, "Europe/Istanbul",                "TRT",       "Ankara",                       True),
     (  3,  0,  38.4,   27.1, "Europe/Istanbul",                "TRT",       "Izmir",                        False),
     (  3,  0,   9.0,   38.7, "Africa/Addis_Ababa",             "EAT",       "Addis Ababa",                  True),
-    (  3,  0, -6.2,    35.7, "Africa/Dar_es_Salaam",           "EAT",       "Dodoma",                       True),
-    (  3,  0, -6.8,    39.3, "Africa/Dar_es_Salaam",           "EAT",       "Dar es Salaam",                False),
-    (  3,  0, -13.0,   27.8, "Africa/Lusaka",                  "CAT",       "Lilongwe",                     True),
-    (  3,  0,  -4.3,   15.3, "Africa/Kinshasa",                "WAT",       "Kinshasa",                     True),
-    (  3,  0,  -1.7,   29.2, "Africa/Kigali",                  "CAT",       "Kigali",                       True),
-    (  3,  0,  -3.4,   29.4, "Africa/Bujumbura",               "CAT",       "Bujumbura",                    True),
+    (  3,  0,  -6.2,   35.7, "Africa/Dar_es_Salaam",           "EAT",       "Dodoma",                       True),
+    (  3,  0,  -6.8,   39.3, "Africa/Dar_es_Salaam",           "EAT",       "Dar es Salaam",                False),
     (  3,  0,   0.3,   32.6, "Africa/Kampala",                 "EAT",       "Kampala",                      True),
     # UTC+3:30
     (  3, 30,  35.7,   51.4, "Asia/Tehran",                    "IRST/IRDT", "Tehran",                       True),
     (  3, 30,  32.7,   51.7, "Asia/Tehran",                    "IRST/IRDT", "Isfahan",                      False),
     (  3, 30,  36.3,   59.6, "Asia/Tehran",                    "IRST/IRDT", "Mashhad",                      False),
     # UTC+4
+    (  4,  0,  24.5,   54.4, "Asia/Dubai",                     "GST",       "Abu Dhabi",                    True),
+    (  4,  0,  23.6,   58.6, "Asia/Muscat",                    "GST",       "Muscat",                       True),
     (  4,  0,  25.2,   55.3, "Asia/Dubai",                     "GST",       "Dubai",                        False),
     (  4,  0,  25.3,   55.5, "Asia/Dubai",                     "GST",       "Sharjah",                      False),
     (  4,  0,  40.4,   49.8, "Asia/Baku",                      "AZT",       "Baku",                         True),
     (  4,  0,  41.7,   44.8, "Asia/Tbilisi",                   "GET",       "Tbilisi",                      True),
     (  4,  0,  40.2,   44.5, "Asia/Yerevan",                   "AMT",       "Yerevan",                      True),
-    (  4,  0,  37.9,   58.4, "Asia/Ashgabat",                  "TMT",       "Ashgabat",                     True),
-    (  4,  0,  57.8,   40.9, "Europe/Moscow",                  "MSK",       "Samara",                       False),
+    (  4,  0,  53.2,   50.2, "Europe/Samara",                  "SAMT",      "Samara",                       False),
     (  4,  0, -20.2,   57.5, "Indian/Mauritius",               "MUT",       "Port Louis",                   True),
     (  4,  0,  -4.6,   55.5, "Indian/Mahe",                    "SCT",       "Victoria",                     True),
     # UTC+4:30
     (  4, 30,  34.5,   69.2, "Asia/Kabul",                     "AFT",       "Kabul",                        True),
     (  4, 30,  31.6,   65.7, "Asia/Kabul",                     "AFT",       "Kandahar",                     False),
     # UTC+5
+    (  5,  0,  56.8,   60.6, "Asia/Yekaterinburg",             "YEKT",      "Yekaterinburg",                False),
+    (  5,  0,  37.9,   58.4, "Asia/Ashgabat",                  "TMT",       "Ashgabat",                     True),
     (  5,  0,  24.9,   67.0, "Asia/Karachi",                   "PKT",       "Karachi",                      False),
     (  5,  0,  33.7,   73.1, "Asia/Karachi",                   "PKT",       "Islamabad",                    True),
     (  5,  0,  31.5,   74.3, "Asia/Karachi",                   "PKT",       "Lahore",                       False),
     (  5,  0,  34.0,   71.6, "Asia/Karachi",                   "PKT",       "Peshawar",                     False),
     (  5,  0,  41.3,   69.3, "Asia/Tashkent",                  "UZT",       "Tashkent",                     True),
     (  5,  0,  39.7,   66.9, "Asia/Samarkand",                 "UZT",       "Samarkand",                    False),
-    (  5,  0,  37.9,   58.4, "Asia/Ashgabat",                  "TMT",       "Mary",                         False),
-    (  5,  0,  42.9,   74.6, "Asia/Bishkek",                   "KGT",       "Bishkek",                      True),
+    (  5,  0,  37.6,   61.8, "Asia/Ashgabat",                  "TMT",       "Mary",                         False),
     (  5,  0,  43.3,   76.9, "Asia/Almaty",                    "ALMT",      "Almaty",                       False),
     (  5,  0,  51.2,   71.4, "Asia/Almaty",                    "ALMT",      "Astana",                       True),
-    (  5,  0,  56.8,   60.6, "Asia/Yekaterinburg",             "YEKT",      "Ekaterinburg",                 False),
-    (  5,  0,  55.0,   73.4, "Asia/Omsk",                      "OMST",      "Omsk",                         False),
+    (  5,  0,  54.7,   56.0, "Asia/Yekaterinburg",             "YEKT",      "Ufa",                          False),
+    (  5,  0,  54.8,   56.0, "Asia/Yekaterinburg",             "YEKT",      "Chelyabinsk",                  False),
     # UTC+5:30
     (  5, 30,  19.1,   72.9, "Asia/Kolkata",                   "IST",       "Mumbai",                       False),
     (  5, 30,  28.6,   77.2, "Asia/Kolkata",                   "IST",       "Delhi",                        True),
@@ -324,19 +322,21 @@ _TIMEZONES = [
     (  5, 30,  23.0,   72.6, "Asia/Kolkata",                   "IST",       "Ahmedabad",                    False),
     (  5, 30,  18.5,   73.9, "Asia/Kolkata",                   "IST",       "Pune",                         False),
     (  5, 30,   6.9,   79.9, "Asia/Colombo",                   "IST",       "Colombo",                      False),
-    (  5, 30,   7.0,   80.0, "Asia/Colombo",                   "IST",       "Sri Jayawardenepura Kotte",     True),
+    (  5, 30,   7.0,   80.0, "Asia/Colombo",                   "IST",       "Sri Jayawardenepura Kotte",    True),
     # UTC+5:45
     (  5, 45,  27.7,   85.3, "Asia/Kathmandu",                 "NPT",       "Kathmandu",                    True),
     # UTC+6
+    (  6,  0,  42.9,   74.6, "Asia/Bishkek",                   "KGT",       "Bishkek",                      True),
+    (  6,  0,  55.0,   73.4, "Asia/Omsk",                      "OMST",      "Omsk",                         False),
     (  6,  0,  23.7,   90.4, "Asia/Dhaka",                     "BST",       "Dhaka",                        True),
     (  6,  0,  22.3,   91.8, "Asia/Dhaka",                     "BST",       "Chittagong",                   False),
     (  6,  0,  27.5,   90.4, "Asia/Thimphu",                   "BTT",       "Thimphu",                      True),
-    (  6,  0,  55.0,   73.4, "Asia/Omsk",                      "OMST",      "Novosibirsk",                  False),
-    (  6,  0,  53.2,   50.2, "Europe/Samara",                  "SAMT",      "Ufa",                          False),
+    (  6,  0,  43.8,   87.6, "Asia/Urumqi",                    "CST",       "Urumqi",                       False),
     # UTC+6:30
     (  6, 30,  16.8,   96.2, "Asia/Rangoon",                   "MMT",       "Yangon",                       False),
     (  6, 30,  21.9,   96.1, "Asia/Rangoon",                   "MMT",       "Naypyidaw",                    True),
     # UTC+7
+    (  7,  0,  55.0,   82.9, "Asia/Novosibirsk",               "NOVT",      "Novosibirsk",                  False),
     (  7,  0,  13.7,  100.5, "Asia/Bangkok",                   "ICT",       "Bangkok",                      True),
     (  7,  0,  18.8,  102.6, "Asia/Vientiane",                 "ICT",       "Vientiane",                    True),
     (  7,  0,  11.6,  104.9, "Asia/Phnom_Penh",                "ICT",       "Phnom Penh",                   True),
@@ -347,7 +347,6 @@ _TIMEZONES = [
     (  7,  0,  -7.2,  112.7, "Asia/Jakarta",                   "WIB",       "Surabaya",                     False),
     (  7,  0,  -6.9,  107.6, "Asia/Jakarta",                   "WIB",       "Bandung",                      False),
     (  7,  0,  56.0,   92.8, "Asia/Krasnoyarsk",               "KRAT",      "Krasnoyarsk",                  False),
-    (  7,  0,  54.8,   56.0, "Asia/Yekaterinburg",             "YEKT",      "Chelyabinsk",                  False),
     # UTC+8
     (  8,  0,  39.9,  116.4, "Asia/Shanghai",                  "CST",       "Beijing",                      True),
     (  8,  0,  31.2,  121.5, "Asia/Shanghai",                  "CST",       "Shanghai",                     False),
@@ -357,7 +356,6 @@ _TIMEZONES = [
     (  8,  0,  22.6,  120.3, "Asia/Taipei",                    "CST",       "Kaohsiung",                    False),
     (  8,  0,  25.0,  121.5, "Asia/Taipei",                    "CST",       "Taipei",                       True),
     (  8,  0,  30.6,  104.1, "Asia/Shanghai",                  "CST",       "Chengdu",                      False),
-    (  8,  0,  43.8,  87.6,  "Asia/Urumqi",                    "CST",       "Urumqi",                       False),
     (  8,  0,  36.1,  103.8, "Asia/Shanghai",                  "CST",       "Lanzhou",                      False),
     (  8,  0,  34.3,  108.9, "Asia/Shanghai",                  "CST",       "Xi'an",                        False),
     (  8,  0,  29.6,  106.6, "Asia/Shanghai",                  "CST",       "Chongqing",                    False),
@@ -367,15 +365,15 @@ _TIMEZONES = [
     (  8,  0,  14.6,  121.0, "Asia/Manila",                    "PHT",       "Manila",                       True),
     (  8,  0,  10.3,  123.9, "Asia/Manila",                    "PHT",       "Cebu",                         False),
     (  8,  0,  -8.6,  115.2, "Asia/Makassar",                  "WITA",      "Denpasar",                     False),
-    (  8,  0, -5.1,   119.4, "Asia/Makassar",                  "WITA",      "Makassar",                     False),
+    (  8,  0,  -5.1,  119.4, "Asia/Makassar",                  "WITA",      "Makassar",                     False),
     (  8,  0, -31.9,  115.9, "Australia/Perth",                "AWST",      "Perth",                        False),
     (  8,  0,  47.9,  106.9, "Asia/Ulaanbaatar",               "ULAT",      "Ulaanbaatar",                  True),
-    (  8,  0,  51.7,  36.2,  "Asia/Irkutsk",                   "IRKT",      "Irkutsk",                      False),
-    (  8,  0,  1.5,   110.3, "Asia/Kuching",                   "MYT",       "Kuching",                      False),
-    (  8,  0,  5.8,   116.1, "Asia/Kuching",                   "MYT",       "Kota Kinabalu",                False),
-    (  8,  0,  4.9,   115.0, "Asia/Brunei",                    "BNT",       "Bandar Seri Begawan",          True),
-    (  8,  0, -8.5,   125.6, "Asia/Dili",                      "TLT",       "Dili",                         True),
+    (  8,  0,  52.3,  104.3, "Asia/Irkutsk",                   "IRKT",      "Irkutsk",                      False),
+    (  8,  0,   1.5,  110.3, "Asia/Kuching",                   "MYT",       "Kuching",                      False),
+    (  8,  0,   5.8,  116.1, "Asia/Kuching",                   "MYT",       "Kota Kinabalu",                False),
+    (  8,  0,   4.9,  115.0, "Asia/Brunei",                    "BNT",       "Bandar Seri Begawan",          True),
     # UTC+9
+    (  9,  0,  -8.5,  125.6, "Asia/Dili",                      "TLT",       "Dili",                         True),
     (  9,  0,  35.7,  139.7, "Asia/Tokyo",                     "JST",       "Tokyo",                        True),
     (  9,  0,  34.7,  135.5, "Asia/Tokyo",                     "JST",       "Osaka",                        False),
     (  9,  0,  35.2,  136.9, "Asia/Tokyo",                     "JST",       "Nagoya",                       False),
@@ -385,9 +383,9 @@ _TIMEZONES = [
     (  9,  0,  35.1,  129.0, "Asia/Seoul",                     "KST",       "Busan",                        False),
     (  9,  0,  39.0,  125.8, "Asia/Pyongyang",                 "KST",       "Pyongyang",                    True),
     (  9,  0,  62.0,  129.7, "Asia/Yakutsk",                   "YAKT",      "Yakutsk",                      False),
-    (  9,  0, -8.6,   125.6, "Asia/Dili",                      "TLT",       "Kupang",                       False),
-    (  9,  0, -0.9,   134.1, "Asia/Jayapura",                  "WIT",       "Jayapura",                     False),
-    (  9,  0,  22.3,   114.2,"Asia/Hong_Kong",                 "HKT",       "Palau",                        True),
+    (  9,  0,  -8.6,  125.6, "Asia/Dili",                      "TLT",       "Kupang",                       False),
+    (  9,  0,  -0.9,  134.1, "Asia/Jayapura",                  "WIT",       "Jayapura",                     False),
+    (  9,  0,   7.4,  134.5, "Pacific/Palau",                  "PWT",       "Ngerulmud",                    True),
     # UTC+9:30
     (  9, 30, -34.9,  138.6, "Australia/Adelaide",             "ACST/ACDT", "Adelaide",                     False),
     (  9, 30, -12.4,  130.8, "Australia/Darwin",               "ACST",      "Darwin",                       False),
@@ -398,11 +396,10 @@ _TIMEZONES = [
     ( 10,  0, -35.3,  149.1, "Australia/Sydney",               "AEST/AEDT", "Canberra",                     True),
     ( 10,  0,  43.1,  131.9, "Asia/Vladivostok",               "VLAT",      "Vladivostok",                  False),
     ( 10,  0,  13.5,  144.8, "Pacific/Guam",                   "ChST",      "Hagåtña",                      True),
-    ( 10,  0,   7.4,  134.5, "Pacific/Palau",                  "PWT",       "Ngerulmud",                    True),
-    ( 10,  0,   6.9,  158.2, "Pacific/Pohnpei",                "PONT",      "Palikir",                      True),
     # UTC+10:30
     ( 10, 30, -31.5,  159.1, "Australia/Lord_Howe",            "LHST/LHDT", "Lord Howe Island",             False),
     # UTC+11
+    ( 11,  0,   6.9,  158.2, "Pacific/Pohnpei",                "PONT",      "Palikir",                      True),
     ( 11,  0,  -9.4,  160.0, "Pacific/Guadalcanal",            "SBT",       "Honiara",                      True),
     ( 11,  0, -17.7,  168.3, "Pacific/Efate",                  "VUT",       "Port Vila",                    True),
     ( 11,  0, -22.3,  166.5, "Pacific/Noumea",                 "NCT",       "Nouméa",                       False),
@@ -415,22 +412,24 @@ _TIMEZONES = [
     ( 12,  0, -18.1,  178.4, "Pacific/Fiji",                   "FJT",       "Suva",                         True),
     ( 12,  0,  53.0,  158.7, "Asia/Kamchatka",                 "PETT",      "Petropavlovsk-Kamchatsky",     False),
     ( 12,  0,  64.7,  177.5, "Asia/Anadyr",                    "ANAT",      "Anadyr",                       False),
-    ( 12,  0, -13.9,  -171.9,"Pacific/Apia",                   "WST",       "Funafuti",                     True),
+    ( 12,  0,  -8.5,  179.2, "Pacific/Funafuti",               "TVT",       "Funafuti",                     True),
     ( 12,  0,   7.1,  171.4, "Pacific/Majuro",                 "MHT",       "Majuro",                       True),
     ( 12,  0,   7.3,  168.7, "Pacific/Kwajalein",              "MHT",       "Kwajalein",                    False),
     # UTC+12:45
-    ( 12, 45, -43.9, -176.6, "Pacific/Chatham",                "CHAST/CHADT","Waitangi",                    False),
+    ( 12, 45, -43.9, -176.6, "Pacific/Chatham",                "CHAST/CHADT","Waitangi",                     False),
     # UTC+13
     ( 13,  0, -21.1, -175.2, "Pacific/Tongatapu",              "TOT",       "Nuku'alofa",                   True),
     ( 13,  0, -13.8, -172.0, "Pacific/Apia",                   "WST",       "Apia",                         True),
-    ( 13,  0,  -8.5,  179.2, "Pacific/Fakaofo",                "TKT",       "Fakaofo",                      False),
+    ( 13,  0,  -9.4, -171.2, "Pacific/Fakaofo",                "TKT",       "Fakaofo",                      False),
     # UTC+14
     ( 14,  0,   1.9,  157.5, "Pacific/Kiritimati",             "LINT",      "Kiritimati",                   False),
 ]
 
 
-# Pre-computed 72×36 land/sea bitmap (5°/pixel, zlib+base64).
-# Each bit = 1 land, 0 sea. Row-major, top = 90°N, left = 180°W.
+# Pre-computed 2880×1440 land/sea bitmap (0.125°/pixel, zlib+base64), built from
+# Natural Earth 110m coastlines. Each bit = 1 land, 0 sea. Row-major, top = 90°N,
+# left = 180°W: column c → lon = −180 + (c+0.5)×(360/2880), row r → lat =
+# 90 − (r+0.5)×(180/1440). Decoded lazily by `_get_world_bitmap`.
 _WORLD_MAP_DATA = (
     "eNrtvc3KLjcW71dqNa0TaKyGDLIDZqsvoTM6HjgtX4ohN2DI4HjgY5VpSA99Cb6NDA6xnB54csDT"
     "jGJtfKAnAcsYjsu4XJWnvlXfJZWkUj2PBO22937f+vjV0lr/tfSVJLHFFltsscUWW2yxxRZbbLHF"
@@ -839,9 +838,6 @@ _WORLD_MAP_DATA = (
     "c+JKWhPOY7biPDq2NVEeNbSfxqPW8NO+iAhiiy222GKLLbbYYosttthiiy222GKLLbbYYosttthi"
     "iy222GKLLbbYYosttthiiy222GKLLbbYYosttthi22r/P4wOyqU="
 )
-# 2880×1440 bitmap, 0.125°/pixel (Natural Earth 110m coastlines).
-# Column c → lon = −180 + (c+0.5)×(360/2880), row r → lat = 90 − (r+0.5)×(180/1440).
-
 _WORLD_BITMAP: list[list[int]] | None = None
 
 

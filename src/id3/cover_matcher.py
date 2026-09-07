@@ -62,6 +62,18 @@ _GENERIC_NAMES = ('cover', 'folder', 'front', 'albumart', 'albumartsmall',
 # shared title word on a long title does not.
 MATCH_FLOOR = 150.0
 
+# Words too ordinary to be evidence of anything on their own. Without this, a
+# two-word title sharing only "the" with an image name scored 300 × 1/2 = 150 —
+# exactly MATCH_FLOOR — and was auto-checked as a confident match. They still
+# count towards a title that is genuinely mostly stop-words; they just can't
+# carry a match by themselves.
+_STOP_WORDS = frozenset({
+    'the', 'and', 'for', 'but', 'nor', 'yet', 'you', 'your', 'our', 'their',
+    'his', 'her', 'its', 'that', 'this', 'these', 'those', 'with', 'from',
+    'into', 'onto', 'out', 'off', 'over', 'all', 'any', 'not', 'are', 'was',
+    'were', 'been', 'has', 'have', 'had', 'can', 'will', 'would', 'about',
+})
+
 _NUM_RE = re.compile(r'\d+')
 _WORD_RE = re.compile(r'[a-z0-9]{2,}')
 _LEADING_NUM_RE = re.compile(r'^\s*(\d{1,3})(?!\d)')
@@ -201,10 +213,14 @@ def score_match(track_path: str, tokens: dict[str, str] | None, image_path: str)
     if title:
         twords = _words(title)
         iwords = _words(istem)
-        if twords:
-            shared = twords & iwords
+        # Score on the title's content words, so a shared "the" can't reach the
+        # floor on its own. A title that is nothing but stop-words ("The The")
+        # falls back to all of them rather than scoring zero.
+        match_words = (twords - _STOP_WORDS) or twords
+        if match_words:
+            shared = match_words & iwords
             if shared:
-                score += 300.0 * (len(shared) / len(twords))
+                score += 300.0 * (len(shared) / len(match_words))
             nt = _norm(title)
             if nt and nt in _norm(istem):
                 score += 200.0      # whole title appears in the image name

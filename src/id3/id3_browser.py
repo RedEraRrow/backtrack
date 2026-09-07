@@ -37,6 +37,7 @@ from src.id3.id3_tag_handler import (
     _prompt_for_image_metadata,
     parse_composite_tag_id,
 )
+from src.id3 import tag_registry as _reg
 
 # Structured columns for the tag list. Column 1 holds the tag id AND the friendly
 # name as two styled segments (TAG bright + friendly dim) in a single column.
@@ -47,14 +48,11 @@ _TAG_COLUMNS = [
 ]
 
 
-_SORT_SOURCES: dict[str, str] = {
-    'TSOA': 'TALB',
-    'TSOP': 'TPE1',
-    'TSO2': 'TPE2',
-    'TSOC': 'TCOM',
-}
-# Tags where full name-splitting applies (artists/composers); others just strip articles.
-_NAME_SORT_TAGS = {'TSOP', 'TSO2', 'TSOC'}
+# sort frame → the text frame it orders, and the sort frames where full
+# name-splitting applies (artists/composers); the rest just strip articles.
+# Both come from the canonical table in tag_registry.
+_SORT_SOURCES: dict[str, str] = dict(_reg.SORT_SOURCE_OF)
+_NAME_SORT_TAGS = _reg.NAME_SORT_FRAMES
 
 # Articles in English + major European languages.
 # Longer strings first so prefix matching is unambiguous.

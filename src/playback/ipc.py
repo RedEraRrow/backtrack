@@ -1,4 +1,4 @@
-"""Local IPC for multi-window shared playback sessions (feature #14, Phase 2).
+"""Local IPC for multi-window shared playback sessions
 
 One process **hosts** a session (owns the VLC player, Phase 1's ``PlaybackSession``)
 and runs a :class:`SessionServer` on a per-session Unix socket under
@@ -23,12 +23,13 @@ import threading
 import time
 
 from src.config import CONFIG_DIR
+from src import tuning as tune
 
 SESSIONS_DIR = CONFIG_DIR / "sessions"
 
-_BROADCAST_INTERVAL_S = 0.25
-_CONNECT_TIMEOUT_S = 0.4
-_SEND_TIMEOUT_S = 2.0        # drop a client whose socket blocks sends this long
+_BROADCAST_INTERVAL_S = tune.IPC_BROADCAST_INTERVAL_S
+_CONNECT_TIMEOUT_S = tune.IPC_CONNECT_TIMEOUT_S
+_SEND_TIMEOUT_S = tune.IPC_SEND_TIMEOUT_S   # drop a client whose socket blocks sends this long
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +46,7 @@ def _iter_messages(sock: socket.socket):
     buf = b""
     while True:
         try:
-            chunk = sock.recv(4096)
+            chunk = sock.recv(tune.IPC_RECV_CHUNK)
         except socket.timeout:
             continue          # idle read timeout (the socket has a send timeout set)
         except OSError:
@@ -192,8 +193,8 @@ class SessionServer:
             os.chmod(self.socket_path, 0o600)   # owner-only: no other local user can drive playback
         except OSError:
             pass
-        srv.listen(8)
-        srv.settimeout(0.3)
+        srv.listen(tune.IPC_LISTEN_BACKLOG)
+        srv.settimeout(tune.IPC_ACCEPT_TIMEOUT_S)
         self._srv = srv
         self._write_registry()
         for target in (self._accept_loop, self._broadcast_loop):

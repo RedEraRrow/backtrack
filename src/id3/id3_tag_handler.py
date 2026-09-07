@@ -1,6 +1,7 @@
 """ID3 frame creation, value prompts, and bulk-operation helpers."""
 from __future__ import annotations
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 from mutagen.id3 import ID3
 from mutagen.id3._frames import SYLT, USLT, TMCL, TIPL, TXXX, WXXX, COMM  # type: ignore[reportPrivateImportUsage]
 from mutagen.id3._frames import APIC, EQU2, RVA2, POPM, PCNT, RBUF
@@ -286,37 +287,10 @@ def create_frame(tag_id: str, value: Any) -> Frame | None:
     parsed_base, parsed_desc, parsed_lang = parse_composite_tag_id(tag_id)
 
     try:
-        # Audio-adjustment frames carry structured payloads from their own
-        # editors (see _prompt_for_equalisation / _prompt_for_rva2).
-        if parsed_base == 'EQU2':
-            if isinstance(value, dict) and value.get('__eq__'):
-                return EQU2(method=0, desc='', adjustments=list(value.get('adjustments', [])))
-            return None
-
-        if parsed_base == 'RVA2':
-            if isinstance(value, dict) and value.get('__rva2__'):
-                return RVA2(desc='', channel=1, gain=float(value['gain']), peak=0.0)
-            return None
-
-        # POPM (rating 0-255 + play count) and PCNT (play counter) carry structured
-        # payloads from their editors; a bare int is also accepted for convenience.
-        if parsed_base == 'POPM':
-            if isinstance(value, dict) and value.get('__popm__'):
-                return POPM(email=str(value.get('email') or DEFAULT_POPM_EMAIL),
-                            rating=int(value.get('rating', 0)), count=int(value.get('count', 0)))
-            return None
-        if parsed_base == 'PCNT':
-            if isinstance(value, dict) and value.get('__pcnt__'):
-                return PCNT(count=int(value.get('count', 0)))
-            if isinstance(value, int):
-                return PCNT(count=max(0, value))
-            return None
-        if parsed_base == 'RBUF':
-            if isinstance(value, dict) and value.get('__rbuf__'):
-                return RBUF(size=int(value.get('size', 0)))
-            if isinstance(value, int):
-                return RBUF(size=max(0, value))
-            return None
+        # Structured frames build from the payload their own editor produced.
+        st = _STRUCTURED.get(parsed_base)
+        if st is not None and st.build is not None:
+            return st.build(value)
 
         # APIC is a BINARY frame but its UI category is 'image'. (The old
         # `frame_type == 'IMAGE'` check never matched, so APICs never saved.)
@@ -525,6 +499,13 @@ def _prompt_for_rva2(current_value: Any) -> dict | None:
 # POPM rating: 0-5 stars ↔ 0-255 byte (Windows Media Player convention). Writing
 # uses the canonical byte per star; reading maps any byte to the nearest star via
 # WMP's boundaries so ratings written by other players display sensibly.
+#
+# The write bytes are not the midpoints of the read boundaries (196 in
+# particular is a WMP-ism, not 192), so byte→stars→byte is lossy for a value
+# another app wrote near a boundary. That is inherent to showing a 256-value
+# field as six stars; what stops it mattering is that `_prompt_for_rating` only
+# emits a canonical byte for a star the user actually changed, and otherwise
+# hands back the byte it read.
 _POPM_STAR_BYTES = (0, 1, 64, 128, 196, 255)
 DEFAULT_POPM_EMAIL = "Windows Media Player 9 Series"
 
@@ -551,17 +532,30 @@ def popm_byte_to_stars(rating: int) -> int:
 
 
 def _prompt_for_rating(current_value: Any) -> dict | None:
-    """Star-rating editor (0-5) + play count + rater email for a POPM frame."""
+    """Star-rating editor (0-5) + play count + rater email for a POPM frame.
+
+    A rating the user didn't touch is written back as the exact byte that was
+    read. Stars are a 6-value view of a 0-255 field, so re-deriving the byte
+    from the stars would quietly rewrite any value another player stored between
+    our canonical ones — editing only the play count on a track rated 100 by
+    another app would move it to 128. Only a star the user actually changed
+    takes the canonical byte for its new rating.
+    """
     stars = count = 0
     email = DEFAULT_POPM_EMAIL
+    orig_byte: int | None = None
     if current_value is not None and hasattr(current_value, 'rating'):
-        stars = popm_byte_to_stars(getattr(current_value, 'rating', 0) or 0)
+        orig_byte = int(getattr(current_value, 'rating', 0) or 0)
+        stars = popm_byte_to_stars(orig_byte)
         count = int(getattr(current_value, 'count', 0) or 0)
         email = str(getattr(current_value, 'email', '') or DEFAULT_POPM_EMAIL)
     res = prompt.rating_edit("Rating (POPM):", stars=stars, count=count, email=email)
     if res is None:
         return None
-    return {'__popm__': True, 'rating': popm_stars_to_byte(res['stars']),
+    new_stars = int(res['stars'])
+    rating = orig_byte if (orig_byte is not None and new_stars == stars) \
+        else popm_stars_to_byte(new_stars)
+    return {'__popm__': True, 'rating': rating,
             'count': int(res['count']), 'email': str(res['email'] or DEFAULT_POPM_EMAIL)}
 
 
@@ -685,6 +679,114 @@ def _prompt_for_rbuf(current_value: Any) -> dict | None:
     return {'__rbuf__': True, 'size': int(n)}
 
 
+# ---------------------------------------------------------------------------
+# Structured frames — one row each, instead of three hand-synced if-chains.
+#
+# A frame like POPM or EQU2 needs three separate things said about it: which
+# editor collects a value, how that value becomes a mutagen frame, and how the
+# stored frame reads back as a one-line summary. Those three lived in
+# `prompt_for_value`, `create_frame` and `summarize_tag_value` respectively, and
+# adding a frame meant remembering to edit all three — miss one and the frame
+# silently doesn't save, or shows as raw repr. They are now one table, and the
+# three functions look the frame up here.
+#
+# `marker` is the key the editor stamps on its payload dict, so `build` can tell
+# a real payload from whatever else might reach it.
+# ---------------------------------------------------------------------------
+
+# format_spec → the suffix its plain-text field shows. Membership doubles as the
+# answer to "does this spec have a real widget behind Ctrl-T?": the specs listed
+# here are exactly the ones whose smart editor differs from a plain text field,
+# so `has_widget_toggle` reads the same table the widget dispatch does instead of
+# repeating the list. INT_BIG adds no suffix of its own — its hint depends on the
+# frame's category — but it does get a numeric spinner, so it belongs here.
+_FORMAT_HINTS = {
+    'FRACTIONAL': ' (n/total)',
+    'ISO8601':    ' (ISO 8601)',
+    'DDMM':       ' (DD-MM or ISO)',
+    'YYYY':       ' (year)',
+    'HHMM':       ' (HH:MM)',
+    'INT_BIG':    '',
+}
+
+
+@dataclass(frozen=True)
+class _Structured:
+    """What the app knows about one structured frame."""
+    editor: Optional[Callable[[Any], Any]] = None       # collects a new value
+    build: Optional[Callable[[Any], Optional[Frame]]] = None   # value → frame
+    summary: Optional[Callable[[Any], str]] = None      # frame → short display
+    refuse: Optional[str] = None                        # shown when uneditable
+
+
+def _build_equ2(v: Any) -> Optional[Frame]:
+    if isinstance(v, dict) and v.get('__eq__'):
+        return EQU2(method=0, desc='', adjustments=list(v.get('adjustments', [])))
+    return None
+
+
+def _build_rva2(v: Any) -> Optional[Frame]:
+    if isinstance(v, dict) and v.get('__rva2__'):
+        return RVA2(desc='', channel=1, gain=float(v['gain']), peak=0.0)
+    return None
+
+
+def _build_popm(v: Any) -> Optional[Frame]:
+    if isinstance(v, dict) and v.get('__popm__'):
+        return POPM(email=str(v.get('email') or DEFAULT_POPM_EMAIL),
+                    rating=int(v.get('rating', 0)), count=int(v.get('count', 0)))
+    return None
+
+
+def _build_pcnt(v: Any) -> Optional[Frame]:
+    # A bare int is accepted for convenience (a play count is just a number).
+    if isinstance(v, dict) and v.get('__pcnt__'):
+        return PCNT(count=int(v.get('count', 0)))
+    if isinstance(v, int):
+        return PCNT(count=max(0, v))
+    return None
+
+
+def _build_rbuf(v: Any) -> Optional[Frame]:
+    if isinstance(v, dict) and v.get('__rbuf__'):
+        return RBUF(size=int(v.get('size', 0)))
+    if isinstance(v, int):
+        return RBUF(size=max(0, v))
+    return None
+
+
+def _summary_popm(fr: Any) -> str:
+    stars = popm_byte_to_stars(getattr(fr, 'rating', 0) or 0)
+    cnt = int(getattr(fr, 'count', 0) or 0)
+    return '★' * stars + '☆' * (5 - stars) + (f"  ({cnt} plays)" if cnt else "")
+
+
+def _summary_tcmp(fr: Any) -> str:
+    txt = getattr(fr, 'text', None)
+    val = str(txt[0]).strip() if txt else ''
+    return 'Yes' if val not in ('', '0') else 'No'
+
+
+_STRUCTURED: dict[str, _Structured] = {
+    # Audio-adjustment frames carry structured payloads from their own editors.
+    'EQU2': _Structured(editor=_prompt_for_equalisation, build=_build_equ2),
+    'RVA2': _Structured(editor=_prompt_for_rva2,         build=_build_rva2),
+    'POPM': _Structured(editor=_prompt_for_rating,       build=_build_popm,
+                        summary=_summary_popm),
+    'PCNT': _Structured(editor=_prompt_for_playcount,    build=_build_pcnt,
+                        summary=lambda fr: f"{int(getattr(fr, 'count', 0) or 0)} plays"),
+    'RBUF': _Structured(editor=_prompt_for_rbuf,         build=_build_rbuf,
+                        summary=lambda fr: f"{int(getattr(fr, 'size', 0) or 0)} bytes"),
+    'RVRB': _Structured(refuse="Reverb (RVRB) isn't editable in Backtrack."),
+    # Enum / bool text frames: a dedicated picker instead of a free-text field.
+    # They store plain text, so they need no builder or summary of their own.
+    'TKEY': _Structured(editor=_prompt_for_musical_key),
+    'TMED': _Structured(editor=_prompt_for_media_type),
+    'TSRC': _Structured(editor=_prompt_for_isrc),
+    'TCMP': _Structured(editor=_prompt_for_compilation, summary=_summary_tcmp),
+}
+
+
 def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: list | None = None,
                      force_plain: bool | None = None, file_path: str | None = None) -> Any | None:
     """Prompt for a new value for tag_id, dispatching to the right editor for its category
@@ -698,20 +800,15 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     fmt = info.format_spec
     base_id, _, _ = parse_composite_tag_id(tag_id)
 
-    # Structured binary-frame editors (no raw-text equivalent).
-    if base_id == 'EQU2':
-        return _prompt_for_equalisation(current_value)
-    if base_id == 'RVA2':
-        return _prompt_for_rva2(current_value)
-    if base_id == 'POPM':
-        return _prompt_for_rating(current_value)
-    if base_id == 'PCNT':
-        return _prompt_for_playcount(current_value)
-    if base_id == 'RBUF':
-        return _prompt_for_rbuf(current_value)
-    if base_id == 'RVRB':
-        ui_utils.show_status("Reverb (RVRB) isn't editable in Backtrack.")
-        return None
+    # Structured frames (binary payload editors, and the enum/bool pickers
+    # further down the same table) dispatch to the editor named for them.
+    st = _STRUCTURED.get(base_id)
+    if st is not None:
+        if st.refuse:
+            ui_utils.show_status(st.refuse)
+            return None
+        if st.editor is not None:
+            return st.editor(current_value)
 
     # Other structured BINARY frames (UFID/MCDI/GEOB/PRIV/ETCO/MLLT/SEEK/…) have
     # no meaningful free-text form and create_frame can't build them, so refuse
@@ -719,16 +816,6 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     if info.frame_type == 'BINARY' and ui_cat not in ('image', 'audio adjustment', 'lyrics'):
         ui_utils.show_status(f"{base_id} is a structured binary frame and isn't editable in Backtrack.")
         return None
-
-    # Enum / bool text frames get a dedicated picker instead of a free-text field.
-    if base_id == 'TKEY':
-        return _prompt_for_musical_key(current_value)
-    if base_id == 'TMED':
-        return _prompt_for_media_type(current_value)
-    if base_id == 'TSRC':
-        return _prompt_for_isrc(current_value)
-    if base_id == 'TCMP':
-        return _prompt_for_compilation(current_value)
 
     # Extract editor-ready defaults from whatever current_value is.
     # It may be a raw mutagen frame (single-file edit), a summary string
@@ -829,9 +916,7 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
             return prompt.list_edit(f"{label} — values:", list(mv_vals), ("VALUE",))
 
         if as_plain:
-            hints = {'FRACTIONAL': ' (n/total)', 'ISO8601': ' (ISO 8601)',
-                     'DDMM': ' (DD-MM or ISO)', 'YYYY': ' (year)', 'HHMM': ' (HH:MM)'}
-            hint = hints.get(fmt or '', '')
+            hint = _FORMAT_HINTS.get(fmt or '', '')
             if fmt == 'INT_BIG' and ui_cat == 'duration':
                 hint = ' (milliseconds)'
             return prompt.text(f"{label}{hint}:", default=default_val)
@@ -878,9 +963,8 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     # The raw↔widget toggle (#62) is only meaningful when the smart editor
     # actually differs from a plain text field. For plain-text/URL frames the
     # "smart widget" IS prompt.text(), so a toggle would be a no-op — don't
-    # advertise it there. INT_BIG now gets a numeric spinner, so it toggles too.
-    has_widget_toggle = (multivalue or ui_cat == 'people'
-                         or fmt in ('ISO8601', 'DDMM', 'YYYY', 'HHMM', 'FRACTIONAL', 'INT_BIG'))
+    # advertise it there.
+    has_widget_toggle = (multivalue or ui_cat == 'people' or fmt in _FORMAT_HINTS)
 
     # Multi-value frames (#60 avenue A): edit as a simple text field by default,
     # Ctrl-T expands to the list editor. Open straight into the list when the
@@ -942,26 +1026,14 @@ def summarize_tag_value(tag_id: str, raw_frame, display: bool = False) -> str:
         sylt_data = getattr(raw_frame, 'text', [])
         return f"{len(sylt_data)} lines"
 
-    # RATING (POPM) — show stars + play count.
-    if info.tag_id == 'POPM' or hasattr(raw_frame, 'rating'):
-        stars = popm_byte_to_stars(getattr(raw_frame, 'rating', 0) or 0)
-        cnt = int(getattr(raw_frame, 'count', 0) or 0)
-        star_str = '★' * stars + '☆' * (5 - stars)
-        return star_str + (f"  ({cnt} plays)" if cnt else "")
-
-    # PLAY COUNTER (PCNT)
-    if info.tag_id == 'PCNT':
-        return f"{int(getattr(raw_frame, 'count', 0) or 0)} plays"
-
-    # RECOMMENDED BUFFER SIZE (RBUF)
-    if info.tag_id == 'RBUF':
-        return f"{int(getattr(raw_frame, 'size', 0) or 0)} bytes"
-
-    # COMPILATION FLAG (TCMP)
-    if info.tag_id == 'TCMP':
-        txt = getattr(raw_frame, 'text', None)
-        val = str(txt[0]).strip() if txt else ''
-        return 'Yes' if val not in ('', '0') else 'No'
+    # Structured frames render through the summary named alongside their editor
+    # and builder. The `rating` fallback stays: a POPM written under a composite
+    # id, or any frame carrying a rating, should still read as stars.
+    st = _STRUCTURED.get(info.tag_id)
+    if st is not None and st.summary is not None:
+        return st.summary(raw_frame)
+    if hasattr(raw_frame, 'rating'):
+        return _summary_popm(raw_frame)
 
     # AUDIO ADJUSTMENT (EQU2 / RVA2)
     if info.official_category == 'AUDIO_ADJUSTMENT' or hasattr(raw_frame, 'adjustments') or (hasattr(raw_frame, 'gain') and hasattr(raw_frame, 'channel')):

@@ -18,8 +18,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TSST, TDRC, TCMP, TSOP, TSO2, TSOA  # type: ignore[reportPrivateImportUsage]  # noqa: E501
+import mutagen.id3 as _mid3
+from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TSST, TDRC, TCMP  # type: ignore[reportPrivateImportUsage]  # noqa: E501
 from mutagen.mp4 import MP4, MP4Cover  # type: ignore[reportPrivateImportUsage]
+from src.id3 import tag_registry as _reg
 
 # The fields this writer understands (track/disc carry their totals). The
 # compilation flag is not a user field — it rides along when a compilation is
@@ -30,13 +32,13 @@ FIELDS = ('title', 'artist', 'album_artist', 'album', 'track', 'disc',
 # Sort-order tags ride with their base field when the 'sort' pseudo-field is
 # applied. The sort *string* is supplied by the caller as values['<base>_sort']
 # (computed by the smart sort engine); the writer just stores it.
-# base field → (ID3 frame class, MP4 sort atom).
-# Sort tags generated alongside a written field. No title sort: a title sorts on
-# itself, and a stored TSOT is one more value to keep in step for no gain.
+# base field → (ID3 frame class, MP4 sort atom), for the sort tags generated
+# alongside a written field. Derived from the canonical table in tag_registry so
+# this can't drift from the bulk manager's and the browser's view of it; `auto`
+# is what marks a sort tag as one an ordinary write should produce.
 _SORT_MAP = {
-    'artist':       (TSOP, 'soar'),
-    'album_artist': (TSO2, 'soaa'),
-    'album':        (TSOA, 'soal'),
+    t.field: (getattr(_mid3, t.frame), t.atom)
+    for t in _reg.SORT_TAGS if t.auto
 }
 
 def _is_placeholder(value) -> bool:

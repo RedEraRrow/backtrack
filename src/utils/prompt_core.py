@@ -346,7 +346,7 @@ def _hint(*pairs, extra="") -> str:
         parsed_items.append((k, v, f"[{k}] {v}"))
 
     if extra:
-        plain_extra = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', extra).strip()
+        plain_extra = ui_utils.strip_ansi(extra).strip()
         if plain_extra:
             m = re.match(r'\[(.*?)\]\s*(.*)', plain_extra)
             if m:
@@ -477,7 +477,6 @@ def _hint(*pairs, extra="") -> str:
 # maps to the SAME synthesised key the keyboard produces, so the widgets need no
 # extra per-key logic — a click just replays that key through their normal switch.
 
-_HINT_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mGKFHF]')
 _HINT_ARROWS = {'↑': 'UP', '↓': 'DOWN', '←': 'LEFT', '→': 'RIGHT'}
 _HINT_WORDS = {
     'space': 'SPACE', 'spc': 'SPACE', 'esc': 'ESC', 'tab': 'TAB', '↵': 'ENTER',
@@ -518,7 +517,7 @@ def add_hint_click_cells_auto(cells: dict, line: str, base_row: int,
     """Like add_hint_click_cells but auto-detects ``[key]`` groups in the plain
     text (no pairs needed). Use only on lines known to be a hint bar — arbitrary
     bracketed text (e.g. a lyric ``[Chorus]``) would be picked up as a key."""
-    plain = _HINT_ANSI_RE.sub('', line)
+    plain = ui_utils.display_text(line)
     for m in re.finditer(r'\[([^\[\]]+)\]', plain):
         key_col0 = m.start() + 1
         for off, glen, synth in _hint_key_tokens(m.group(1)):
@@ -531,7 +530,7 @@ def add_hint_click_cells(cells: dict, line: str, base_row: int, pairs,
     """Populate ``cells`` (a ``{(row, col): synth_key}`` map) with the clickable
     bright-key glyphs found on one rendered hint ``line`` at absolute ``base_row``.
     ``pairs`` is the (key, label) sequence that produced the hint bar."""
-    plain = _HINT_ANSI_RE.sub('', line)
+    plain = ui_utils.display_text(line)
     for k, _v in pairs:
         if not k:
             continue
@@ -698,18 +697,18 @@ def _render_cell_segments(cell, style: str, is_current: bool, width: int, align:
                 s = 'dynamic-dim'
             if remaining <= 0:
                 t = ""
-            elif len(t) > remaining:
-                t = t[:max(0, remaining - 1)] + "…"
-            raw_len += len(t)
-            remaining -= len(t)
+            else:
+                t = ui_utils.truncate_text(t, remaining)
+            seg_w = ui_utils.visual_len(t)
+            raw_len += seg_w
+            remaining -= seg_w
             parts.append(_style_cell(t, s, is_current))
         text = "".join(parts)
         pad = " " * max(0, width - raw_len)
     else:
         raw_text, override = _cell_text(cell)
-        if len(raw_text) > width:
-            raw_text = raw_text[:max(1, width - 1)] + "…"
-        raw_len = len(raw_text)
+        raw_text = ui_utils.truncate_text(raw_text, width)
+        raw_len = ui_utils.visual_len(raw_text)
         text = _style_cell(raw_text, override or style, is_current)
         pad = " " * max(0, width - raw_len)
     return (pad + text) if align == 'right' else (text + pad)
@@ -755,13 +754,13 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
     content = [0] * ncol
     for cells in rows_cells:
         for i in range(min(ncol, len(cells))):
-            content[i] = max(content[i], len(_cell_text(cells[i])[0]))
+            content[i] = max(content[i], ui_utils.visual_len(_cell_text(cells[i])[0]))
 
     # What each column actually has to show in the window on screen.
     shown = [0] * ncol
     for cells in (rows_cells if visible_cells is None else visible_cells):
         for i in range(min(ncol, len(cells))):
-            shown[i] = max(shown[i], len(_cell_text(cells[i])[0]))
+            shown[i] = max(shown[i], ui_utils.visual_len(_cell_text(cells[i])[0]))
 
     def _cap(col) -> int | None:
         """The hard upper bound a column may reach (max_frac / max_width), or None."""
@@ -963,7 +962,7 @@ def _split_columns(title: str, parse_fraction: bool = False) -> tuple[str, str, 
 
     parse_fraction is off by default: a trailing N/M (e.g. a track/disc/movement
     value like 3/12) must stay in the value column, not be mistaken for a count."""
-    title = re.sub(r'\x1b\[[0-9;]*[mGKFHF]', '', title)
+    title = ui_utils.strip_ansi(title)
     frac = ""
     value = ""
     if parse_fraction:
@@ -995,33 +994,7 @@ def _split_columns(title: str, parse_fraction: bool = False) -> tuple[str, str, 
 def _clip_ansi(s: str, width: int) -> str:
     """Truncate a string to `width` visible columns, preserving ANSI escape
     sequences (they don't count toward width). Guarantees the line never wraps."""
-    if width <= 0:
-        return ""
-    out: list[str] = []
-    vis = 0
-    i = 0
-    truncated = False
-    n = len(s)
-    while i < n:
-        if s[i] == '\x1b':
-            j = i + 1
-            if j < n and s[j] == '[':  # CSI sequence: skip '[' before scanning for final byte
-                j += 1
-            while j < n and not ('@' <= s[j] <= '~'):
-                j += 1
-            if j < n:
-                j += 1
-            out.append(s[i:j])
-            i = j
-        else:
-            if vis >= width:
-                truncated = True
-                break
-            out.append(s[i])
-            vis += 1
-            i += 1
-    res = "".join(out)
-    return res + C.RESET if truncated else res
+    return ui_utils.clip_ansi(s, width)
 
 
 def _render_select_columns(parsed: tuple[str, str, str, str], is_current: bool,

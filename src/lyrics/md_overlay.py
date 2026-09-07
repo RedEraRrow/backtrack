@@ -12,72 +12,20 @@ This module deliberately has no module-level dependency on `src.lyrics.lyrics`
 playback side can import it at module scope without a cycle.
 """
 from __future__ import annotations
-import re
-import unicodedata
+from src.lyrics import lyrics_text as _lt
 
 
-def _norm(t: str) -> str:
-    """Canonical match normalization: Unicode-fold (NFKD), lowercase, joiners
-    (hyphens / periods / slashes)→spaces, other punctuation dropped.  This is the
-    single basis for ALL JSON↔MD comparison (alignment and the verify report) so
-    the two never disagree about what 'matches'.  Treating '.' and '/' as word
-    boundaries makes a dotted abbreviation match its spoken-out letters
-    (C.P.L. → "c p l" == "C P L", G.P → "g p" == "G P").  Folding keeps non-ASCII
-    letters (accented Latin → base letter, Cyrillic/CJK preserved) instead of
-    deleting them, which previously made non-English lyrics vanish from the stream."""
-    t = unicodedata.normalize('NFKD', (t or "")).lower()
-    t = re.sub(r'[-./]', ' ', t)
-    return re.sub(r'[^\w ]', '', t).strip()
+# Text handling lives in lyrics_text so the editor, the player and this module
+# can't drift apart on what a word or a stage direction is. Re-exported under the
+# names this module has always published.
+_norm = _lt.norm
+_norm_words = _lt.norm_words
+_LINK_RE = _lt._LINK_RE
+_STAGE_RE = _lt._STAGE_RE
+_spoken_text = _lt.spoken_text
+_inline_stage_dirs = _lt.inline_stage_dirs
 
 
-def _norm_words(t: str) -> list[str]:
-    """`_norm` split into comparison tokens (a hyphenated word yields two)."""
-    return _norm(t).split()
-
-
-# Shared patterns so `_spoken_text` (what counts as dialogue) and
-# `_inline_stage_dirs` (where a mid-line direction sits) can never disagree.
-_LINK_RE  = re.compile(r'\[([^\]]*)\]\([^)]*\)')      # [text](url)
-_STAGE_RE = re.compile(r'\*?\(([^)]*)\)\*?')          # *(stage dir)* / (aside)
-
-
-def _spoken_text(t: str) -> str:
-    """Keep only actually-spoken words from an MD dialogue line: drop inline stage
-    directions like *(sighs)* / (aside) and reduce [label](url) links to their
-    label.  Used for BOTH matching and verification so a stage direction is never
-    mistaken for dialogue."""
-    if not t:
-        return t
-    t = _LINK_RE.sub(r'\1', t)    # [text](url) → text
-    t = _STAGE_RE.sub(' ', t)     # *(stage dir)* / (aside) → removed
-    return t
-
-
-def _inline_stage_dirs(t: str) -> list[tuple[int, str]]:
-    """Mid-line stage directions embedded in a dialogue line, e.g.
-    'I never thought *(she pauses)* it would end'.  Returns
-    [(n_spoken_words_before, dir_text), ...] using the SAME stripping as
-    `_spoken_text`, so the counts line up with the md_words stream: a direction
-    sitting before the k-th spoken word of the line reports n == k."""
-    if not t:
-        return []
-    t = _LINK_RE.sub(r'\1', t)    # links first, so their (url) isn't taken for a dir
-    out: list[tuple[int, str]] = []
-    last = count = 0
-    for m in _STAGE_RE.finditer(t):
-        count += len(t[last:m.start()].split())
-        d = (m.group(1) or "").strip()
-        if d:
-            out.append((count, d))
-        last = m.end()
-    return out
-
-
-# Stage-direction kinds (cycled in-editor with `x`, persisted in the sidecar):
-#   inline    — a mid-phrase beat, indented under the words (✦)
-#   tone      — tonal / pronunciation note, same indent (~), e.g. drawn-out speech
-#   external  — a framed section (scene/sound directions, and another person's
-#               aside); who/when is left to be read from the text and context.
 _SD_SCOPES = ('inline', 'tone', 'external')
 
 

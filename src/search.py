@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field as _dcfield
+from src import tuning as tune
 
 # Field importance (title matches matter most). Callers can override.
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -26,7 +27,7 @@ _TIER = {
 _TYPO_SLIP_DISCOUNT = 0.35
 
 _SOLID = {'exact', 'prefix', 'word', 'substring'}
-_SOLID_BAND = 1000.0
+_SOLID_BAND = tune.SEARCH_SOLID_BAND
 
 _WORD_RE = re.compile(r'\w+')
 
@@ -238,7 +239,7 @@ def match_token(token: str, value: str) -> Match | None:
             return Match(_TIER['word'], [(wm.start(), wm.start() + m)], 'word')
     p = vl.find(token)
     if p != -1:
-        pos = 1.0 - min(p, 30) / 60.0                      # earlier hit ranks higher
+        pos = 1.0 - min(p, tune.SEARCH_POSITION_CAP) / tune.SEARCH_POSITION_SPAN   # earlier hit ranks higher
         return Match(_TIER['substring'] * pos, [(p, p + m)], 'substring')
     ss = _subseq(vl, token)
     if ss is not None:
@@ -293,7 +294,7 @@ def tokenize(query: str) -> list:
 
 def search(library: list, query: str, fields: list | None = None, *,
            recent: set | None = None, weights: dict | None = None,
-           limit: int | None = None, min_ratio: float = 0.15) -> list:
+           limit: int | None = None, min_ratio: float = tune.SEARCH_MIN_RATIO) -> list:
     """Rank the library against a query. Every token must match some field (fuzzy
     AND). Contiguous ("solid") matches get a large band so exact substrings sort
     above fuzzy ones; within a band the fine score (field weight × match geometry
@@ -341,9 +342,10 @@ def search(library: list, query: str, fields: list | None = None, *,
             continue
 
         if song.get('path') in recent:
-            fine *= 1.15
+            fine *= tune.SEARCH_RECENCY_BOOST
         try:
-            fine += min(int(song.get('play_count') or 0), 20) * 0.05
+            fine += (min(int(song.get('play_count') or 0), tune.SEARCH_PLAY_COUNT_CAP)
+                     * tune.SEARCH_PLAY_COUNT_WEIGHT)
         except (TypeError, ValueError):
             pass
 
@@ -374,7 +376,7 @@ ENTITY_FIELDS = ('artist', 'album', 'composer', 'lyricist', 'genre', 'people')
 # dominates (a near-exact name beats a vague one however large), but among
 # comparably good matches the bigger group wins — that is the whole point of
 # collapsing them.
-_ENTITY_QUALITY = 1000.0
+_ENTITY_QUALITY = tune.SEARCH_ENTITY_QUALITY
 _ENTITY_SIZE = 50.0
 
 _MULTI_SPLIT_RE = re.compile(r'\s*[;/,]\s*')
