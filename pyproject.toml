@@ -38,7 +38,7 @@ dependencies = [
     "pyperclip>=1.8.2",
     "python-vlc>=3.0.21203",
     "colorama>=0.4.6",
-    "backbone @ file:///Users/local/backbone",
+    "backbone @ file:///Users/local/backpack/backbone",
 ]
 
 [project.scripts]
