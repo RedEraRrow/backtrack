@@ -4,3 +4,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Every dependency here is declared as a >= floor, not a pin, so a version
+    # bump PR does not change what anyone actually installs — it only raises the
+    # minimum, and five open PRs a week to do that is noise. Security alerts are
+    # NOT affected by this limit: Dependabot still opens those.
+    open-pull-requests-limit: 0
