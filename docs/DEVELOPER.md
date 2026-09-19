@@ -74,6 +74,8 @@ backtrack/
 │   │   ├── cover_matcher.py    # PURE: pair tracks ↔ cover-image files (Set album art from files)
 │   │   └── tag_writer.py       # Format-agnostic writer: MP3 (ID3) + MP4 atoms; write_fields/write_cover
 │   ├── lyrics/
+│   │   ├── lyrics_text.py      # PURE: normalising, stage-dir stripping, script↔transcript alignment
+│   │   ├── md_overlay.py       # PURE: the one MD→segment overlay both editor and player render from
 │   │   ├── lyrics.py           # SYLT/USLT parsing + display; save_sylt_entries; markdown/dialogue
 │   │   └── lyrics_editor.py    # Unified lyric editor (edit, sync/tap-in, verify)
 │   ├── playback/
@@ -270,6 +272,20 @@ are positioned by a row counter while absolute-positioned items (volume bar, con
 through. It has three layout modes (wide / standard / minimal) that size the art to leave room for
 the metadata and the (variable-height) hint block, a full-height volume bar clamped to the art
 bottom, and toggleable lyrics/queue/credits panes.
+
+### Dialogue scripts & lyrics — `lyrics/`
+
+A spoken-word track has a timed transcript (word-level JSON) and a markdown **script**
+next to the audio. The transcript owns the timing; the script owns the speakers,
+punctuation, emphasis and stage directions. `lyrics_text.py` is the pure layer — what
+counts as the same word, what counts as spoken, and `align_tokens`, which matches the two
+word streams and reconciles the conventions they differ on (`take-off`/`takeoff`,
+`twenty-five`/`25`, `'cause`/`because`). `md_overlay.build_md_overlay` is the **single**
+join of script to segments: the editor and the player both render from it, so they cannot
+disagree about who is speaking or where a direction sits.
+
+The script format, and the rules a script has to follow to be matchable, are
+**[script-etiquette.md](script-etiquette.md)**.
 
 ### Album art — `art/album_art.py`
 

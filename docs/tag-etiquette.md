@@ -153,6 +153,10 @@ multiple values, not a slash-joined string.
 - **`USLT`** — plain (unsynced) lyrics, a single text body.
 - **`SYLT`** — synced lyrics, timestamped lines for karaoke-style highlighting.
 
+For spoken-word tracks Backtrack prefers a markdown script beside the audio over either
+frame — it carries speakers and stage directions, which neither `USLT` nor `SYLT` can.
+See **[script-etiquette.md](script-etiquette.md)**.
+
 ### Don't hoard junk frames
 
 Encoder strings (`TSSE`), private frames (`PRIV`), ownership, and legacy sync frames accumulate from

@@ -279,28 +279,35 @@ def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
         if not stripped:
             continue
 
-        # Check for stage-only lines
-        stage_match = re.match(r'^\*+\(([^)]*)\)\*+$|^\(([^)]*)\)$', stripped)
-        if stage_match:
-            dialogue_lines.append(DialogueLine(stage_dir=(stage_match.group(1) or stage_match.group(2)).strip()))
+        # Stage-direction-only lines FIRST, so one whose text contains a colon —
+        # *(Immediately: bing bong.)* — is never split as a `Speaker: text` header.
+        # `standalone_stage_dir` shares the bracket grammar with the inline matcher.
+        sdir = _lt.standalone_stage_dir(stripped)
+        if sdir is not None:
+            dialogue_lines.append(DialogueLine(stage_dir=sdir))
             continue
 
         # Split at first colon only
         if ':' in stripped:
             header, dialogue = stripped.split(':', 1)
 
-            # Extract stage dir from header (e.g., "**A** (sigh): text")
-            stage_dir = ""
-            stage_match = re.search(r'\(([^)]+)\)', header)
-            if stage_match:
-                stage_dir = stage_match.group(1).strip()
-                header = header.replace(stage_match.group(0), "")
+            # Extract stage dirs from the header (e.g., "**A** (sigh): text").  All
+            # of them: "**DEROCHE** *(Swiss accent)* *(muffled)*:" carries two, and
+            # taking only the first dropped the second on the floor.  Cut by span —
+            # str.replace would also delete an identical bracket elsewhere.
+            dirs = [(m.start(), m.end(), m.group(1))
+                    for m in re.finditer(r'\(([^)]+)\)', header)]
+            stage_dir = "; ".join(d.strip() for _, _, d in dirs)
+            for lo, hi, _ in reversed(dirs):
+                header = header[:lo] + header[hi:]
 
-            # Extract all **Name** bolded blocks
+            # Extract all **Name** bolded blocks.  Cutting the directions out can
+            # leave the markers behind — "**DEROCHE** ** **" — so blanks are dropped
+            # rather than becoming a nameless speaker.
             speakers = re.findall(r'\*\*([^*]+)\*\*', header)
 
             dialogue_lines.append(DialogueLine(
-                speakers=[s.strip() for s in speakers],
+                speakers=[n for n in (s.strip() for s in speakers) if n],
                 stage_dir=stage_dir,
                 text=dialogue.strip()
             ))
@@ -331,6 +338,9 @@ def _apply_markdown_formatting(text: str, base: str = "",
     close  = f"{C.RESET}{base}"
     text = re.sub(r'\*\*([^*]+)\*\*', f'{strong}\\1{close}', text)
     text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', f'{em}\\1{close}', text)
+    # _underscores_ are the other emphasis the scripts use (_Those Magnificent Men
+    # in their Flying Machines_); word-internal ones are left alone.
+    text = re.sub(r'(?<![\w*])_([^_]+)_(?![\w*])', f'{em}\\1{close}', text)
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', f'\\1 ({C.DIM}\\2{close})', text)
     return text
 
@@ -1114,7 +1124,7 @@ def _find_enriched_transcript(audio_path: str) -> str | None:
         candidates.append(Path(json_path))                       # transcript.json (preferred)
     # Search subdirectories for any enriched transcripts, but skip '*.sync.json'
     for p in sorted(parent.rglob('*.json')):
-        if p == Path(json_path) or p.name.endswith('.sync.json'):
+        if (json_path and p == Path(json_path)) or p.name.endswith('.sync.json'):
             continue
         candidates.append(p)
     seen: set[str] = set()
@@ -1251,6 +1261,7 @@ def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict],
 # from it.  Set from the gap distribution of real scripts, where the large
 # majority of directions sit in a clear pause and a handful genuinely overlap.
 _SD_MIN_GAP = 0.35
+_SD_READ_FRACTION = tune.LYRIC_SD_READ_FRACTION
 
 
 def _chunks_from_segments(segs: list[dict], md_path: str,
@@ -1334,9 +1345,13 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
                 t += span
             return []
         gap = next_start - _prev_end()
-        if gap >= _SD_MIN_GAP:
+        weights = [_reading_time(text) for text, _ in held]
+        # A beat of its own is only worth having if the silence can hold it long
+        # enough to READ. A flat minimum gap gave a forty-word transcriber's note
+        # the same half second as '(sighs)' and flashed it past; short of that, the
+        # direction rides the neighbouring line and stays up as long as it does.
+        if gap >= max(_SD_MIN_GAP, sum(weights) * _SD_READ_FRACTION):
             # Share the silence out by reading time so a long direction gets longer.
-            weights = [_reading_time(text) for text, _ in held]
             total = sum(weights) or 1.0
             t = _prev_end()
             for (text, _lean), w in zip(held, weights):

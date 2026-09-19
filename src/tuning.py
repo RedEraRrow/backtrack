@@ -101,6 +101,16 @@ LYRIC_MIN_LINE_S = 0.5
 LYRIC_MATCH_WINDOW_WORDS = 80
 # A silence longer than this gets a visible gap indicator between lines.
 LYRIC_AIR_THRESHOLD_S = 2.0
+# Assumed reading rate for a stage direction shown as its own beat, in words per
+# second, and the floor below which even a one-word note is too quick to register.
+LYRIC_READ_WPS = 2.3
+LYRIC_READ_MIN_S = 0.8
+# How much of a direction's reading time the silence has to cover before the
+# direction is given that silence as a beat of its own. Below it, the direction
+# rides along as a cue on the neighbouring line instead, where it stays up for as
+# long as that line does: a 40-word transcriber's note flashed through a half-
+# second gap is unreadable, and unreadable is worse than late.
+LYRIC_SD_READ_FRACTION = 0.75
 # The last SYLT entry has no following timestamp, so it is given this long.
 LYRIC_FABRICATED_END_MS = 5000
 
