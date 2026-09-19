@@ -11,6 +11,9 @@ import cv2
 
 from src.utils import prompt
 from src.lyrics.lyrics import save_sylt_entries
+from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
+from src.trim import trim as _trim
+from src.trim.trim_editor import trim_editor
 from mutagen.id3 import ID3
 import mutagen.id3
 from mutagen.id3._frames import APIC, USLT
@@ -965,12 +968,16 @@ def inspect_tag_loop(
         _cached_dur = 0.0
     if not _cached_dur:
         try:
-            import mutagen
             _mf = mutagen.File(file_path)  # type: ignore[reportPrivateImportUsage]
             if _mf is not None and getattr(_mf, "info", None) is not None:
                 _cached_dur = float(getattr(_mf.info, "length", 0.0) or 0.0)
         except Exception:
             _cached_dur = 0.0
+
+    from src.config import load_config
+    _cfg = load_config()
+    _has_lyrics = _cfg.get("show_lyrics_editor", True) and bool(find_lyrics(file_path))
+    _has_trim = _trim.HAS_FFMPEG
 
     def _save(audio_obj):
         """Persist tags and refresh the in-memory library cache entry for this file."""
@@ -1077,21 +1084,58 @@ def inspect_tag_loop(
             title="File path", value="__filepath__",
             cells=[[("⌁ File path", 'primary'), (" (filesystem)", 'dynamic-dim')], "", ""],
         )
-        tag_choices = [filepath_row, prompt.separator()] + [
+        non_id3_rows = [filepath_row]
+        if _has_lyrics:
+            # Same shape as the file-path row: a non-ID3 thing that lives with
+            # this one track, not a tag — lyrics/transcript sync has its own
+            # editor (lyrics_editor), reached here rather than as a separate
+            # top-level track action.
+            non_id3_rows.append(prompt.Choice(
+                title="Lyrics", value="__lyrics__",
+                cells=[[("♪ Lyrics", 'primary'), (" (sync editor)", 'dynamic-dim')], "", ""],
+            ))
+        tag_choices = non_id3_rows + [prompt.separator()] + [
             prompt.Choice(title=t, value=t, cells=_tag_cells(t)) for t in tags
         ]
         has_id3 = file_path.lower().endswith('.mp3')
-        _shortcuts = {'a': 'Add Tag'} if has_id3 else None
-        _extra_hints = {'a': 'add tag'} if has_id3 else None
+        _shortcuts = {'a': 'Add Tag'} if has_id3 else {}
+        _extra_hints = {'a': 'add tag'} if has_id3 else {}
+        if _has_trim:
+            # A keyboard shortcut rather than a row: "Trim" as a row here would
+            # read like a tag, not an action, so the footer hint spells it out.
+            _shortcuts['t'] = '__trim__'
+            _extra_hints['t'] = 'trim audio'
 
         choice = prompt.select(
             "Select tag to manage:",
             choices=tag_choices,
             header=_main_header,
-            shortcuts=_shortcuts,
-            extra_hints=_extra_hints,
+            shortcuts=_shortcuts or None,
+            extra_hints=_extra_hints or None,
             columns=_TAG_COLUMNS,
         )
+
+        if choice == "__lyrics__":
+            ui_utils.clear_screen()
+            lyrics_editor(file_path)
+            ui_utils.clear_screen()
+            continue
+
+        if choice == "__trim__":
+            ui_utils.clear_screen()
+            trim_editor(file_path, library)
+            ui_utils.clear_screen()
+            # A commit changes the file's duration — refresh the cached value
+            # this screen's header reads, same as `_save` does after a tag write.
+            if library is not None:
+                try:
+                    fresh = refresh_library_entry(library, file_path)
+                    if library_metadata is not None:
+                        library_metadata.update(fresh)
+                    _cached_dur = float(fresh.get("duration") or 0.0)
+                except Exception:
+                    pass
+            continue
 
         if choice == "__filepath__":
             _fp_header = [

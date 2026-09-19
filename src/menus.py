@@ -19,7 +19,6 @@ from src.history import get_history, clear_history, get_recent_paths
 from src import search as _search
 from src.playback.playback import music_player
 from src.playback.session import REPEAT_OFF, REPEAT_ONE, REPEAT_ALL, active_session, is_client
-from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
 from src.config import load_config, save_config, music_dirs, set_music_dirs
 from src.state import NAV_STACK
 from src.id3.id3_browser import inspect_tag_loop
@@ -139,7 +138,10 @@ def _pick_sort(current: str, options: list, header) -> str:
 
 
 # Search scope cycled with Tab in the live search screen (default: all fields).
-_ALL_SEARCH_FIELDS = ['title', 'artist', 'album', 'composer', 'lyricist', 'genre', 'people']
+# 'disc_label' is a computed field (search._disc_label) — a disc's subtitle
+# when tagged, else "Disc N" for any multi-disc album — not a scope of its
+# own (it rides along under "all fields", the same as "people" does).
+_ALL_SEARCH_FIELDS = ['title', 'artist', 'album', 'composer', 'lyricist', 'genre', 'people', 'disc_label']
 _SCOPE_CYCLE = ['all', 'title', 'artist', 'album', 'composer', 'lyricist', 'genre', 'people']
 
 # Columns for live search results: title (matched chars accented) · artist ·
@@ -272,7 +274,6 @@ def handle_search(library: list) -> str | None:
 
     _cfg = load_config()
     _show_editor = _cfg.get("show_metadata_editor", True)
-    _show_lyrics = _cfg.get("show_lyrics_editor", True)
     recent = get_recent_paths()
 
     scope = {'i': 0}                       # index into _SCOPE_CYCLE
@@ -295,9 +296,11 @@ def handle_search(library: list) -> str | None:
         results = _search.search(library, query, _fields(), recent=recent)
         tokens = _search.tokenize(query)
         ents = _search.collect_entities(results, tokens)
+        disc_ents = _search.collect_disc_entities(results, tokens)
         _last['results'] = [r.song for r in results]
         _last['entities'] = ents
         _last['counts'] = {k: len(v) for k, v in ents.items()}
+        _last['counts']['disc'] = len(disc_ents)
         _last['counts']['track'] = len(results)
 
         choices: list = []
@@ -319,7 +322,7 @@ def handle_search(library: list) -> str | None:
         # Top result: the single best thing across every kind, so the most likely
         # answer is always the first row rather than buried in whichever section
         # happens to sort first.
-        best = max((e for v in ents.values() for e in v),
+        best = max((e for v in list(ents.values()) + [disc_ents] for e in v),
                    key=lambda e: e.score, default=None)
         if show is None and best is not None:
             choices.append(prompt.separator("TOP RESULT"))
@@ -334,9 +337,16 @@ def handle_search(library: list) -> str | None:
                      lambda e: prompt.Choice(title=e.name, value=("__entity__", e),
                                              cells=_entity_cells(e, tokens)))
 
+        # Discs sit under albums: a subdivision of one, not a peer of artist/
+        # genre/etc. — only surfaced for albums that actually have more than one.
+        _section('disc', 'DISCS', 'disc', [e for e in disc_ents if e is not best],
+                 lambda e: prompt.Choice(title=e.name, value=("__entity__", e),
+                                         cells=_entity_cells(e, tokens)))
+
         # Tracks last: with the entities above them, the track list is for when
         # you want a specific recording rather than a body of work.
-        tracks_shown = (len(query) >= _ENTITY_ONLY_UNTIL or not any(ents.values()))
+        tracks_shown = (len(query) >= _ENTITY_ONLY_UNTIL
+                        or not (any(ents.values()) or disc_ents))
         if tracks_shown:
             _section('track', 'TRACKS', 'track', results,
                      lambda r: prompt.Choice(title=r.song.get('title', ''),
@@ -357,11 +367,24 @@ def handle_search(library: list) -> str | None:
         sub = " · ".join(bits) if bits else f"{ui_utils.plural(len(library), 'track')} indexed"
         return _menu_header("Search", f"{sub}    ^f scope: {label}")()
 
+    def _edit_highlighted(value) -> None:
+        """^E: edit the highlighted track directly, without leaving the
+        search results — only a plain track row is editable, not an entity
+        or a structural row like "show all"."""
+        if not isinstance(value, str) or value.startswith("__"):
+            return
+        song = next((s for s in library if s['path'] == value), None)
+        ui_utils.clear_screen()
+        inspect_tag_loop(value, library_metadata=song, library=library)
+        ui_utils.clear_screen()
+
     while True:
         selected = prompt.live_select(
             "", _provider, columns=_SEARCH_COLUMNS,
             header=_hdr, on_cycle=_cycle, cycle_key='\x06',   # ^F cycles scope
             section_nav=True,
+            row_actions={'\x05': _edit_highlighted} if _show_editor else None,
+            extra_hints={'^E': 'edit'} if _show_editor else None,
             count_of=lambda: len(_last['results']))
         if not selected:
             return None
@@ -386,12 +409,12 @@ def handle_search(library: list) -> str | None:
     song_meta = next((s for s in library if s['path'] == selected), None)
     track_title = song_meta['title'] if song_meta else os.path.basename(selected)
 
-    _action_choices = ["Play"]
-    if _show_lyrics and find_lyrics(selected):
-        _action_choices.append("Edit lyrics")
-    if _show_editor:
-        _action_choices.append("Edit metadata")
-    _action_choices += _queue_action_choices()
+    # Selecting a track plays it directly. Metadata editing (which now also
+    # holds lyrics sync and trim, see id3_browser.inspect_tag_loop) is reached
+    # via the "edit tags" row above, not a per-track action page — `live_select`
+    # types every key into the query, so it can't take a row/shortcut hotkey
+    # the way Browse/History can.
+    _action_choices = ["Play"] + _queue_action_choices()
 
     if len(_action_choices) == 1 or _autoplay():
         action = "Play"
@@ -410,21 +433,14 @@ def handle_search(library: list) -> str | None:
             return "QUIT_ALL"
     elif _handle_queue_action(action, selected, track_title):
         pass
-    elif action == "Edit lyrics":
-        ui_utils.clear_screen()
-        lyrics_editor(selected)
-        ui_utils.clear_screen()
-    elif action == "Edit metadata":
-        ui_utils.clear_screen()
-        inspect_tag_loop(selected, library_metadata=song_meta, library=library)
-        ui_utils.clear_screen()
 
     return None
 
 
 def _play_entity(ent, library: list) -> str | None:
-    """Open a chosen artist/album/genre: list its tracks and act on one."""
+    """Open a chosen artist/album/disc/genre: list its tracks and act on one."""
     tracks = ent.tracks
+    _show_editor = load_config().get("show_metadata_editor", True)
     choices = [prompt.Choice(title=f"▸  Play all — {ent.name}", value="__play_all__")]
     for s in tracks:
         choices.append(prompt.Choice(
@@ -432,14 +448,28 @@ def _play_entity(ent, library: list) -> str | None:
             cells=[s.get('title', ''), format_tag_values(s.get('artist', '')),
                    s.get('album', ''), "", _disc_track_cell(s),
                    ui_utils.format_time(int(s.get('duration') or 0)) if s.get('duration') else ""]))
+
+    def _inspect_track(path: str) -> None:
+        """`e`: edit the highlighted track only."""
+        song = next((s for s in tracks if s['path'] == path), None)
+        ui_utils.clear_screen()
+        inspect_tag_loop(path, library_metadata=song, library=library)
+        ui_utils.clear_screen()
+
     sub = ui_utils.plural(len(tracks), 'track')
     pick = prompt.select(f"{ent.kind.title()}:", choices=choices,
                          columns=_SEARCH_COLUMNS,
-                         header=_menu_header(ent.name, sub))
+                         header=_menu_header(ent.name, sub),
+                         on_inspect=_inspect_track if _show_editor else None, inspect_key='e',
+                         shortcuts={'E': '__bulk_edit__'} if _show_editor else None,
+                         extra_hints={'e': 'edit', 'E': 'edit all'} if _show_editor else None)
     if not pick:
         return None
     if pick == "__play_all__":
         return play_queue([s['path'] for s in tracks], library=library)
+    if pick == "__bulk_edit__":
+        bulk_id3_manager(library, paths=[s['path'] for s in tracks])
+        return None
     ui_utils.clear_screen()
     res = music_player(pick)
     ui_utils.clear_screen()
@@ -534,49 +564,39 @@ def handle_history(library: list) -> str | None:
             title=title, value=path,
             cells=[title, artist, album, _relative_time(ts, now), _nice_dur(dur)]))
 
+    _show_editor = load_config().get("show_metadata_editor", True)
+
+    def _inspect_history(path: str) -> None:
+        """`e`: open the metadata editor (lyrics sync and trim live inside it
+        too) for the highlighted entry without leaving this list."""
+        song = next((s for s in library if s['path'] == path), None)
+        ui_utils.clear_screen()
+        inspect_tag_loop(path, library_metadata=song, library=library)
+        ui_utils.clear_screen()
+
     selected = prompt.select(
         "",
         choices=choices,
         columns=_HISTORY_COLUMNS,
         header=_menu_header("Listening History", f"{len(history_entries)} recent"),
+        on_inspect=_inspect_history if _show_editor else None,
+        inspect_key='e',
+        shortcuts={'E': '__bulk_edit__'} if _show_editor else None,
+        extra_hints={'e': 'edit', 'E': 'edit all'} if _show_editor else None,
         **_queue_shortcut_kwargs(library),
     )
     if not selected:
         return None
 
-    song_meta = next((s for s in library if s['path'] == selected), None)
-    track_title = song_meta['title'] if song_meta else os.path.basename(selected)
+    if selected == "__bulk_edit__":
+        bulk_id3_manager(library, paths=[p for _, _, p in history_entries])
+        return None
 
-    _cfg = load_config()
-    _action_choices = ["Play"]
-    if _cfg.get("show_lyrics_editor", True) and find_lyrics(selected):
-        _action_choices.append("Edit lyrics")
-    if _cfg.get("show_metadata_editor", True):
-        _action_choices.append("Edit metadata")
-
-    if len(_action_choices) == 1 or _autoplay():
-        action = "Play"
-    else:
-        action = prompt.select(
-            "Action:",
-            choices=_action_choices,
-            header=_menu_header(track_title),
-        )
-
-    if action == "Play":
-        ui_utils.clear_screen()
-        res = music_player(selected)
-        ui_utils.clear_screen()
-        if res and res.get("status") == "QUIT_ALL":
-            return "QUIT_ALL"
-    elif action == "Edit lyrics":
-        ui_utils.clear_screen()
-        lyrics_editor(selected)
-        ui_utils.clear_screen()
-    elif action == "Edit metadata":
-        ui_utils.clear_screen()
-        inspect_tag_loop(selected, library_metadata=song_meta, library=library)
-        ui_utils.clear_screen()
+    ui_utils.clear_screen()
+    res = music_player(selected)
+    ui_utils.clear_screen()
+    if res and res.get("status") == "QUIT_ALL":
+        return "QUIT_ALL"
 
     return None
 
@@ -1275,7 +1295,9 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         ]
                         _tsc["p"] = "__play_all__"; _teh["p"] = "play all"
                         if _show_editor:
-                            _tsc["e"] = "__bulk_edit__"; _teh["e"] = "edit tags"
+                            _tsc["E"] = "__bulk_edit__"; _teh["E"] = "edit all"
+                    if _show_editor:
+                        _teh["e"] = "edit"
 
                     # Album artist shown in the header subtitle (#33).
                     _album_artist = format_tag_values(_album_artist_of(final_tracks))
@@ -1285,6 +1307,19 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                     if _track_cursor is None:        # start on the first real row
                         _track_cursor = len(_track_header_choices) if track_choices else 0
 
+                    def _inspect_track(path: str) -> None:
+                        """`e`: open the metadata editor (lyrics sync and trim
+                        live inside it too) for the highlighted track, or
+                        bulk-edit the whole disc when on a disc header row."""
+                        if path.startswith("__disc_"):
+                            disc_val = path[len("__disc_"):]
+                            bulk_id3_manager(library, paths=disc_track_map.get(disc_val, []))
+                            return
+                        song = next((t for t in final_tracks if t['path'] == path), None)
+                        ui_utils.clear_screen()
+                        inspect_tag_loop(path, library_metadata=song, library=library)
+                        ui_utils.clear_screen()
+
                     path_choice_obj = prompt.select(
                         "Tracks:",
                         choices=_all_track_choices,
@@ -1293,6 +1328,8 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                         shortcuts=_tsc,
                         extra_hints=_teh,
                         index=_track_cursor,
+                        on_inspect=_inspect_track if _show_editor else None,
+                        inspect_key='e',
                         **_queue_shortcut_kwargs(library,
                                                  disc_track_map=disc_track_map,
                                                  work_track_map=work_track_map),
@@ -1313,36 +1350,15 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
 
                     _track_cursor = _idx_of(_all_track_choices, path_choice_obj)
 
-                    # Disc header selected — offer play or bulk edit for that disc
+                    # Disc header selected — play that disc directly.
+                    # Bulk-editing the disc's tags is `e`/`E` on this row, same
+                    # as an ordinary track, so there's no separate disc page.
                     if isinstance(path_choice_obj, str) and path_choice_obj.startswith("__disc_"):
                         disc_val   = path_choice_obj[len("__disc_"):]
                         disc_paths = disc_track_map.get(disc_val, [])
-                        subtitle   = next(
-                            (t.get('disc_subtitle', '') for t in final_tracks if str(t.get('disc', '1')) == disc_val),
-                            '',
-                        )
-                        disc_label   = subtitle if subtitle else f"Disc {disc_val}"
-                        _show_editor = _cfg.get("show_metadata_editor", True)
-                        _disc_choices = [prompt.Choice(title=f"▸  Play all — {disc_label}", value="__play_all__")]
-                        if _show_editor:
-                            _disc_choices.append(prompt.Choice(title=f"Edit tags — {disc_label}", value="__bulk_edit__"))
-
-                        # With only "Play all" (editor hidden), skip the extra
-                        # single-option screen and play the disc immediately.
-                        if len(_disc_choices) == 1:
-                            disc_action = "__play_all__"
-                        else:
-                            disc_action = prompt.select(
-                                "",
-                                choices=_disc_choices,
-                                header=_menu_header(disc_label, _track_context),
-                            )
-                        if disc_action == "__play_all__":
-                            res = play_queue(disc_paths, library=library)
-                            if res == "QUIT_ALL":
-                                return "QUIT_ALL"
-                        elif disc_action == "__bulk_edit__":
-                            bulk_id3_manager(library, paths=disc_paths)
+                        res = play_queue(disc_paths, library=library)
+                        if res == "QUIT_ALL":
+                            return "QUIT_ALL"
                         continue
 
                     # Work header selected — offer play or bulk edit for that work
@@ -1371,54 +1387,13 @@ def browse_menu(library_ref: list, cat_choice: str) -> str | None:
                             bulk_id3_manager(library, paths=work_paths)
                         continue
 
-                    # LEVEL 5: Track action
-                    selected_track = next((t for t in final_tracks if t['path'] == path_choice_obj), None)
-                    track_title    = selected_track['title'] if selected_track else os.path.basename(path_choice_obj)
-                    track_artist   = (format_tag_values(selected_track.get('artist'))
-                                      if selected_track else '')
-                    NAV_STACK.append(track_title)
-
-                    _cfg_track = load_config()
-                    while True:
-                        _action_choices = ["Play"]
-                        if _cfg_track.get("show_lyrics_editor", True) and find_lyrics(path_choice_obj):
-                            _action_choices.append("Edit lyrics")
-                        if _cfg_track.get("show_metadata_editor", True):
-                            _action_choices.append("Edit metadata")
-
-                        if len(_action_choices) == 1 or _autoplay():
-                            action = "Play"
-                        else:
-                            action = prompt.select(
-                                "Action:",
-                                choices=_action_choices,
-                                header=_menu_header(track_title, track_artist),
-                            )
-
-                        if not action:
-                            break
-
-                        if action == "Play":
-                            ui_utils.clear_screen()
-                            res = music_player(path_choice_obj)
-                            ui_utils.clear_screen()
-                            if res and res.get("status") == "QUIT_ALL":
-                                return "QUIT_ALL"
-                            if len(_action_choices) == 1 or _autoplay():
-                                break
-
-                        elif action == "Edit lyrics":
-                            ui_utils.clear_screen()
-                            lyrics_editor(path_choice_obj)
-                            ui_utils.clear_screen()
-
-                        elif action == "Edit metadata":
-                            ui_utils.clear_screen()
-                            inspect_tag_loop(path_choice_obj, library_metadata=selected_track, library=library)
-                            ui_utils.clear_screen()
-                            _cfg_track = load_config()
-
-                    NAV_STACK.pop()
+                    # A track plays directly — metadata editing is `e`/`E` on
+                    # the "Tracks:" list above, not a separate action page.
+                    ui_utils.clear_screen()
+                    res = music_player(path_choice_obj)
+                    ui_utils.clear_screen()
+                    if res and res.get("status") == "QUIT_ALL":
+                        return "QUIT_ALL"
 
                 if cat_choice in ("Artists", "Genres"):
                     NAV_STACK.pop()

@@ -356,6 +356,24 @@ def clear_fields(path: str, fields) -> WriteResult:
     return res
 
 
+def stale_length_tags(path: str) -> tuple[bool, bool]:
+    """(has_tlen, has_stale_tdly) for path — MP3 only, MP4 has neither frame.
+
+    TLEN (track length, ms) is suspect the instant a file is cut by any means,
+    including outside backtrack. TDLY (playlist delay, ms) is equally suspect
+    after a head cut, but a zero value still means "no delay" and isn't stale.
+    """
+    if format_kind(path) != 'mp3':
+        return (False, False)
+    try:
+        audio = ID3(path)
+    except ID3NoHeaderError:
+        return (False, False)
+    has_tlen = bool(audio.getall('TLEN'))
+    has_tdly = any(t.text and str(t.text[0]) != '0' for t in audio.getall('TDLY'))
+    return (has_tlen, has_tdly)
+
+
 def _set_compilation(audio, kind: str) -> None:
     """Write the compilation flag (TCMP or 'cpil') on the given tag object."""
     if kind == 'mp3':

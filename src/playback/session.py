@@ -69,33 +69,49 @@ def _handle_seek(mp, elapsed: float, duration: float, seek_amount: float) -> Non
 
 
 def _apply_equalizer(mp, audio) -> bool:
-    """Apply the file's EQU2 equalisation to playback via libvlc's equaliser.
-
-    Each stored (frequency, gain) point is snapped to the nearest libvlc band, so
-    absent bands stay flat. Returns True if an equaliser was applied.
+    """Apply the file's EQU2 bands and RVA2 master-channel gain to playback
+    via libvlc's equaliser — bands shape tone, the RVA2 gain becomes the
+    equaliser's preamp, and they combine rather than either replacing the
+    other. Without this, an RVA2 frame (the gain tag the trimmer's
+    ReplayGain operation writes, section 5.4) has no audible effect in
+    backtrack's own player, which is the one place it's most obviously
+    supposed to show. Each EQU2 (frequency, gain) point is snapped to the
+    nearest libvlc band, so absent bands stay flat. Returns True if an
+    equaliser was applied.
     """
     try:
-        frames = audio.getall('EQU2')
+        equ2_frames = audio.getall('EQU2')
     except Exception:
-        frames = []
-    adjustments = [pt for fr in frames for pt in (getattr(fr, 'adjustments', None) or [])]
-    if not adjustments:
+        equ2_frames = []
+    adjustments = [pt for fr in equ2_frames for pt in (getattr(fr, 'adjustments', None) or [])]
+
+    try:
+        rva2_frames = audio.getall('RVA2')
+    except Exception:
+        rva2_frames = []
+    preamp_gain = next((fr.gain for fr in rva2_frames if getattr(fr, 'channel', None) == 1), None)
+
+    if not adjustments and preamp_gain is None:
         return False
     try:
         eq = vlc.AudioEqualizer()
-        count = vlc.libvlc_audio_equalizer_get_band_count()
-        band_freqs = [vlc.libvlc_audio_equalizer_get_band_frequency(i) for i in range(count)]
-        for freq, gain in adjustments:
-            if not freq or freq <= 0:
-                continue
+        if adjustments:
+            count = vlc.libvlc_audio_equalizer_get_band_count()
+            band_freqs = [vlc.libvlc_audio_equalizer_get_band_frequency(i) for i in range(count)]
+            for freq, gain in adjustments:
+                if not freq or freq <= 0:
+                    continue
 
-            def _ratio(k: int) -> float:
-                """Distance of band k from freq as a >=1 ratio, for nearest-band matching."""
-                r = band_freqs[k] / freq
-                return r if r >= 1.0 else 1.0 / r
-            idx = min(range(count), key=_ratio)
-            clamped = float(max(-tune.EQ_GAIN_LIMIT_DB, min(tune.EQ_GAIN_LIMIT_DB, gain)))
-            eq.set_amp_at_index(clamped, idx)  # type: ignore[reportOptionalMemberAccess]
+                def _ratio(k: int) -> float:
+                    """Distance of band k from freq as a >=1 ratio, for nearest-band matching."""
+                    r = band_freqs[k] / freq
+                    return r if r >= 1.0 else 1.0 / r
+                idx = min(range(count), key=_ratio)
+                clamped = float(max(-tune.EQ_GAIN_LIMIT_DB, min(tune.EQ_GAIN_LIMIT_DB, gain)))
+                eq.set_amp_at_index(clamped, idx)  # type: ignore[reportOptionalMemberAccess]
+        if preamp_gain is not None:
+            clamped_preamp = float(max(-tune.EQ_GAIN_LIMIT_DB, min(tune.EQ_GAIN_LIMIT_DB, preamp_gain)))
+            eq.set_preamp(clamped_preamp)  # type: ignore[reportOptionalMemberAccess]
         return bool(mp.set_equalizer(eq) == 0)
     except Exception:
         return False

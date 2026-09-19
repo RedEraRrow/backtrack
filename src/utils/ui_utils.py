@@ -268,6 +268,30 @@ def pulse_circle() -> str:
     return f"\033[38;5;{code}m●{Colors.RESET}"
 
 
+def print_inline_progress(message: str, progress: float) -> None:
+    """Redraw a single in-place line for a blocking, no-other-redraw loop
+    (a per-track ffmpeg pass): pulsing beacon + bar so a slow scan still
+    looks alive instead of a hung terminal, inset by MARGIN_H and centred
+    like the rest of the chrome. Call `clear_inline_progress()` once the
+    loop finishes."""
+    bar = get_progress_bar(progress, 24)
+    width = get_terminal_width()
+    avail = max(1, width - 2 * MARGIN_H)
+    prefix_len = visual_len(f"{pulse_circle()} {bar} ")
+    if prefix_len + len(message) > avail:
+        message = message[:max(0, avail - prefix_len - 1)] + "…"
+    content = f"{pulse_circle()} {bar} {Colors.DIM}{message}{Colors.RESET}"
+    pad = max(MARGIN_H, (width - visual_len(content)) // 2)
+    sys.stdout.write(f"\r{' ' * pad}{content}\033[K")
+    sys.stdout.flush()
+
+
+def clear_inline_progress() -> None:
+    """Erase the line left by `print_inline_progress()`."""
+    sys.stdout.write("\r\033[K")
+    sys.stdout.flush()
+
+
 def show_status(message: str, duration: float = 3.0) -> None:
     """Flash a one-shot message in the status bar for `duration` seconds."""
     global _toast_message, _toast_expiry

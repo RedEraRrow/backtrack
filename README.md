@@ -62,6 +62,8 @@ lyrics, and includes a full ID3/MP4 tag editor with a suite of bulk-automation t
 
 - **Python 3.8+** (developed against 3.13/3.14).
 - **VLC / libvlc** installed on your system (provides audio playback).
+- **ffmpeg** on your `PATH` (or set `trim_ffmpeg_path` in config) — only needed for the track
+  trimmer's lossless cut; without it the trimmer is hidden and everything else works as normal.
 - Python packages from `requirements.txt`: `mutagen`, `python-vlc`, `opencv-python`, `numpy`,
   `pyperclip`, `colorama`. Album art is rendered **in-project** (OpenCV + NumPy) — no external image
   viewer is needed.
@@ -78,6 +80,18 @@ brew install vlc
 Ubuntu / Debian:
 ```bash
 sudo apt update && sudo apt install vlc
+```
+
+**1a. (Optional) install ffmpeg, for the track trimmer**
+
+macOS (Homebrew):
+```bash
+brew install ffmpeg
+```
+
+Ubuntu / Debian:
+```bash
+sudo apt install ffmpeg
 ```
 
 **2. Install Python dependencies**

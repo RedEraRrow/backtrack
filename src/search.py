@@ -11,7 +11,7 @@ from src import tuning as tune
 # Field importance (title matches matter most). Callers can override.
 DEFAULT_WEIGHTS: dict[str, float] = {
     'title': 10.0, 'artist': 7.0, 'album': 5.0, 'composer': 4.0,
-    'lyricist': 3.5, 'genre': 3.0, 'people': 2.0,
+    'lyricist': 3.5, 'genre': 3.0, 'people': 2.0, 'disc_label': 4.0,
 }
 
 # Base quality per match tier (0–1), scaled by field weight and match geometry.
@@ -30,6 +30,14 @@ _SOLID = {'exact', 'prefix', 'word', 'substring'}
 _SOLID_BAND = tune.SEARCH_SOLID_BAND
 
 _WORD_RE = re.compile(r'\w+')
+
+# Connectors in a natural "title by artist" phrasing ("Hungry Like the Wolf
+# by Duran Duran"). Every other token still has to match some field — this
+# just stops one filler word from sinking an otherwise-good result. If a
+# track's own title happens to contain one of these ("Stand By Me"), the
+# token still matches normally and scores as usual; this only changes what
+# happens when it *fails* to match anywhere.
+_CONNECTOR_WORDS = {'by', 'feat', 'ft', 'featuring', 'vs'}
 
 
 @dataclass
@@ -292,11 +300,90 @@ def tokenize(query: str) -> list:
     return [t for t in query.lower().split() if t]
 
 
+def _total_discs(song: dict) -> int:
+    try:
+        return int(str(song.get('total_discs', '') or '0').split('/')[0] or 0)
+    except ValueError:
+        return 0
+
+
+def _disc_number(song: dict) -> str:
+    """The track's own disc number, as tagged (e.g. "5"). Blank if unset."""
+    return str(song.get('disc', '') or '').split('/')[0].strip()
+
+
+def _disc_label(song: dict) -> str:
+    """A disc's *fuzzy-searchable* identity, for any album with more than one
+    disc: its subtitle when tagged (e.g. "Series 4"), else "Disc N". Blank
+    for a single-disc album.
+
+    Deliberately just one form, not both combined: a disc's subtitle number
+    and its physical disc number can legitimately disagree (a series
+    renumbered relative to its disc ordinal — disc 5 can be "Series 4"), and
+    fuzzy-matching a combined string would let a bare digit in the query hit
+    whichever number happens to contain it, regardless of which one the
+    query meant. An exact "disc N" lookup is handled separately, as a hard
+    constraint against the real disc field (`extract_disc_constraint`) —
+    never through this fuzzy text.
+    """
+    if _total_discs(song) <= 1:
+        return ''
+    subtitle = str(song.get('disc_subtitle', '') or '').strip()
+    if subtitle:
+        return subtitle
+    disc_num = _disc_number(song)
+    return f"Disc {disc_num}" if disc_num else ''
+
+
+def _disc_display_label(song: dict) -> str:
+    """Human-facing disc label: subtitle and disc number together when both
+    exist ("Series 4 (Disc 5)"), so a divergence between them is visible
+    rather than hidden. For display only — never fed to the matcher."""
+    label = _disc_label(song)
+    if not label:
+        return ''
+    subtitle = str(song.get('disc_subtitle', '') or '').strip()
+    disc_num = _disc_number(song)
+    if subtitle and disc_num:
+        return f"{subtitle} (Disc {disc_num})"
+    return label
+
+
+# "disc"/"cd" immediately followed by a number is treated as an exact lookup
+# against the real disc field, not fuzzy text — see `_disc_label`.
+_DISC_WORDS = {'disc', 'cd'}
+
+
+def extract_disc_constraint(tokens: list) -> tuple[list, str | None]:
+    """Pull a "disc N" / "cd N" pair out of `tokens`, if present, as a hard
+    constraint on the track's actual disc number. Returns (remaining_tokens,
+    disc_number) — remaining_tokens is `tokens` unchanged when no such pair
+    is found. Only the first match is taken; a query naming two disc numbers
+    is unusual enough not to need defining behaviour for."""
+    for i in range(len(tokens) - 1):
+        if tokens[i] in _DISC_WORDS and tokens[i + 1].isdigit():
+            return tokens[:i] + tokens[i + 2:], tokens[i + 1]
+    return tokens, None
+
+
+def _field_value(song: dict, f: str) -> str:
+    """A track's value for field `f` — most fields are stored directly;
+    'disc_label' is computed (section: disc search)."""
+    if f == 'disc_label':
+        return _disc_label(song)
+    return str(song.get(f, '') or '')
+
+
 def search(library: list, query: str, fields: list | None = None, *,
            recent: set | None = None, weights: dict | None = None,
            limit: int | None = None, min_ratio: float = tune.SEARCH_MIN_RATIO) -> list:
     """Rank the library against a query. Every token must match some field (fuzzy
-    AND). Contiguous ("solid") matches get a large band so exact substrings sort
+    AND) — except a connector word (_CONNECTOR_WORDS, e.g. "by"), which is
+    dropped rather than sinking the result when it matches nothing, so "Hungry
+    Like the Wolf by Duran Duran" isn't rejected over "by". Different tokens
+    can each match a different field of the same track ("Hungry" against the
+    title, "Duran" against the artist) — nothing requires them to agree.
+    Contiguous ("solid") matches get a large band so exact substrings sort
     above fuzzy ones; within a band the fine score (field weight × match geometry
     + recent/play-count boosts) orders results. Results whose fine score falls
     below `min_ratio` × the best fine score are pruned. Best first."""
@@ -307,16 +394,28 @@ def search(library: list, query: str, fields: list | None = None, *,
     if not tokens:
         return []
 
+    # "disc N" is an exact lookup against the real field, not fuzzy text —
+    # see `_disc_label`. Only meaningful when disc search is actually in
+    # scope, so a plain title/artist search isn't affected.
+    disc_number = None
+    if 'disc_label' in fields:
+        tokens, disc_number = extract_disc_constraint(tokens)
+    if not tokens and disc_number is None:
+        return []
+
     tier_rank = {t: i for i, t in enumerate(
         ('typo', 'subsequence', 'substring', 'word', 'prefix', 'exact'))}
     raw: list = []                       # (song, fine, solid_count, matched_fields, best_tier)
 
     for song in library:
-        vals = {f: str(song.get(f, '') or '') for f in fields}
-        fine = 0.0
-        solid = 0
-        matched: list = []
-        best_tier = 'typo'
+        disc_matched = disc_number is not None
+        if disc_matched and _disc_number(song) != disc_number:
+            continue
+        vals = {f: _field_value(song, f) for f in fields}
+        fine = _TIER['exact'] * weights.get('disc_label', 1.0) if disc_matched else 0.0
+        solid = 1 if disc_matched else 0
+        matched: list = ['disc_label'] if disc_matched else []
+        best_tier = 'exact' if disc_matched else 'typo'
         ok = True
         for token in tokens:
             best_m: Match | None = None
@@ -330,6 +429,8 @@ def search(library: list, query: str, fields: list | None = None, *,
                 if w > best_w:
                     best_w, best_m, best_f = w, mt, f
             if best_m is None:
+                if token in _CONNECTOR_WORDS:
+                    continue
                 ok = False
                 break
             fine += best_w
@@ -338,7 +439,10 @@ def search(library: list, query: str, fields: list | None = None, *,
                 solid += 1
             if tier_rank[best_m.tier] > tier_rank[best_tier]:
                 best_tier = best_m.tier
-        if not ok:
+        # `ok` alone isn't enough: a query that's nothing but connector words
+        # ("by", "vs"...) leaves it True with no real match at all, which
+        # must not be treated as "everything matches".
+        if not ok or not matched:
             continue
 
         if song.get('path') in recent:
@@ -448,6 +552,64 @@ def collect_entities(results: list, tokens: list, kinds: tuple = ENTITY_FIELDS,
         ents.sort(key=lambda e: (-e.score, e.name.casefold()))
         out[kind] = ents
     return out
+
+
+def collect_disc_entities(results: list, tokens: list, min_tracks: int = 1) -> list:
+    """Group `results` into per-disc entities within multi-disc albums — e.g.
+    "John Finnemore's Souvenir Programme Series 1" should surface just that
+    disc's tracks, not the whole album's. Grouped by (artist, album, disc
+    number), never by the disc label alone: two different albums can each
+    have a "Disc 1" or even both happen to call one "Series 1", and those
+    must stay distinct groups. Only albums that actually have more than one
+    disc are considered — a single-disc album has no separate disc to find.
+
+    An explicit "disc N" in the query (`extract_disc_constraint`) is checked
+    against the real disc field directly, same as `search`; the remaining
+    tokens are matched fuzzily against `_disc_label` alone (never the
+    combined display form — see its docstring for why that would let "series
+    4" and "disc 4" cross-match a disc where those two numbers disagree).
+    """
+    if not tokens:
+        return []
+    tokens, disc_number = extract_disc_constraint(tokens)
+    if not tokens and disc_number is None:
+        return []
+
+    buckets: dict = {}
+    for r in results:
+        song = r.song
+        if not _disc_label(song):   # blank for a single-disc album — see _disc_label
+            continue
+        if disc_number is not None and _disc_number(song) != disc_number:
+            continue
+        album = str(song.get('album', '') or '').strip()
+        if not album:
+            continue
+        disc_num = _disc_number(song) or '1'
+        artist = str(song.get('album_artist') or song.get('artist') or '').strip()
+        key = (artist.casefold(), album.casefold(), disc_num)
+
+        ent = buckets.get(key)
+        if ent is False:
+            continue
+        if ent is None:
+            if tokens:
+                quality = _name_quality(f"{album} — {_disc_label(song)}", tokens)
+                if quality is None:
+                    buckets[key] = False       # remember the miss
+                    continue
+            else:
+                quality = 1.0   # the disc-number constraint alone already decided this
+            name = f"{album} — {_disc_display_label(song)}"
+            ent = Entity(kind='disc', name=name, score=quality, subtitle=artist)
+            buckets[key] = ent
+        ent.tracks.append(song)
+
+    ents = [e for e in buckets.values() if e is not False and len(e.tracks) >= min_tracks]
+    for e in ents:
+        e.score = e.score * _ENTITY_QUALITY + math.log1p(len(e.tracks)) * _ENTITY_SIZE
+    ents.sort(key=lambda e: (-e.score, e.name.casefold()))
+    return ents
 
 
 def _name_quality(name: str, tokens: list) -> float | None:

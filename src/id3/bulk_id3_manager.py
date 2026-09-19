@@ -36,6 +36,8 @@ from src.utils import numbering
 from src.utils import ui_utils
 from src.utils.ui_utils import get_terminal_width, Colors as C
 from src.music_library import refresh_library_entry
+from src.trim import trim as _trim
+from src.trim.trim_bulk import trim_conveyor, apply_replaygain_op
 
 from collections import Counter
 import textwrap
@@ -822,6 +824,12 @@ _RENUMBER_COLUMNS = [
     prompt.Column(style='dynamic-dim', align='right', pin=True),  # old → new (the change, kept)
 ]
 
+# Length-tag strip preview: file · which stale tags were found.
+_STRIP_LENGTH_COLUMNS = [
+    prompt.Column(style='primary', flex=True),
+    prompt.Column(style='dynamic-dim', align='right', pin=True),
+]
+
 
 def renumber_tracks_op(paths: list, library: list, header) -> None:
     """Renumber track numbers per-disc (disc-relative) ↔ continuous (album-
@@ -1223,6 +1231,85 @@ def strip_single_disc_op(paths: list, library: list, header) -> None:
                 pass
 
     msg = f"Removed the disc number from {count} file(s)."
+    if skipped_fmt:
+        msg += f" {skipped_fmt} unsupported skipped."
+    if errors:
+        msg += f" {errors} error(s)."
+    ui_utils.show_status(msg)
+
+
+def strip_length_tags_op(paths: list, library: list, header) -> None:
+    """Remove stale TLEN (track length) and non-zero TDLY (playlist delay).
+
+    Both hold millisecond values nothing recomputes once a file is cut by any
+    means, including a trim done outside backtrack — this is the cleanup pass
+    for files that predate that feature. MP3 only, since neither frame has an
+    MP4 analogue.
+    """
+    songs = []
+    for path in paths:
+        if tw.format_kind(path) != 'mp3':
+            continue
+        tlen, tdly = tw.stale_length_tags(path)
+        songs.append({'path': path, 'tlen': tlen, 'tdly': tdly})
+    skipped_fmt = len(paths) - len(songs)
+    if not songs:
+        ui_utils.show_status("No MP3 tracks to check.")
+        return
+
+    def _why(s: dict) -> str:
+        return ' · '.join(t for t, present in (('TLEN', s['tlen']), ('TDLY', s['tdly'])) if present)
+
+    choices, n_changed = [], 0
+    for s in songs:
+        why = _why(s)
+        n_changed += bool(why)
+        choices.append(prompt.Choice(
+            title=os.path.basename(s['path']), value=s['path'], checked=bool(why),
+            cells=[os.path.basename(s['path']), why or "no stale tags"]))
+
+    if not n_changed:
+        ui_utils.show_status("No stale TLEN/TDLY tags found.")
+        return
+
+    def _strip_header():
+        """Live counts for the preview."""
+        nk = sum(1 for ch in choices if ch.checked)
+        bits = [ui_utils.plural(len(songs), "track"), f"{n_changed} with stale tags", f"{nk} ticked"]
+        if skipped_fmt:
+            bits.append(f"{skipped_fmt} unsupported skipped")
+        return header(' · '.join(bits))()
+
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+                        columns=_STRIP_LENGTH_COLUMNS, header=_strip_header, multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel)
+    if not apply_set:
+        ui_utils.show_status("No tracks selected.")
+        return
+
+    count = errors = 0
+    for s in songs:
+        if s['path'] not in apply_set or not (s['tlen'] or s['tdly']):
+            continue
+        try:
+            audio = ID3(s['path'])
+            if s['tlen']:
+                apply_bulk_edit(audio, 'TLEN', 'delete')
+            if s['tdly']:
+                apply_bulk_edit(audio, 'TDLY', 'delete')
+            save_id3(audio, s['path'])
+        except Exception:
+            errors += 1
+            continue
+        count += 1
+        try:
+            refresh_library_entry(library, s['path'])
+        except Exception:
+            pass
+
+    msg = f"Stripped stale length tags from {count} file(s)."
     if skipped_fmt:
         msg += f" {skipped_fmt} unsupported skipped."
     if errors:
@@ -2639,20 +2726,25 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             return
         if operation != "Automation…":
             break
+        _automation_choices = [
+            "Derive from filename",
+            "Rename files from tags",
+            "Set album art from files",
+            "Assign by range / schedule",
+            "Apply sort orders",
+            "Renumber tracks (disc ↔ continuous)",
+            "Reflow disc numbering",
+            "Remove single-disc numbering",
+            "Strip stale length tags",
+        ]
+        if _trim.HAS_FFMPEG:
+            # Hidden rather than offered and failing at the keypress (section 2.6).
+            _automation_choices.append("Trim tracks…")
+            _automation_choices.append("Measure loudness / set ReplayGain…")
+        _automation_choices += ["Set picture type", "Copy from first track"]
         operation = prompt.select(
             "Automation:",
-            choices=[
-                "Derive from filename",
-                "Rename files from tags",
-                "Set album art from files",
-                "Assign by range / schedule",
-                "Apply sort orders",
-                "Renumber tracks (disc ↔ continuous)",
-                "Reflow disc numbering",
-                "Remove single-disc numbering",
-                "Set picture type",
-                "Copy from first track",
-            ],
+            choices=_automation_choices,
             header=_bulk_header()
         )
         if operation:
@@ -2669,6 +2761,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         "Renumber tracks (disc ↔ continuous)": "Renumber Tracks",
         "Reflow disc numbering": "Reflow Discs",
         "Remove single-disc numbering": "Strip Single Disc",
+        "Strip stale length tags": "Strip Length Tags",
+        "Trim tracks…": "Trim Tracks",
+        "Measure loudness / set ReplayGain…": "Apply ReplayGain",
         "Set picture type": "Set Picture Type",
         "Set value": "Set Common Value",
         "Copy from first track": "Copy From First Track",
@@ -2702,6 +2797,15 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         return
     if operation == "Strip Single Disc":
         strip_single_disc_op(album_tracks, library, _bulk_header)
+        return
+    if operation == "Strip Length Tags":
+        strip_length_tags_op(album_tracks, library, _bulk_header)
+        return
+    if operation == "Trim Tracks":
+        trim_conveyor(album_tracks, library, _bulk_header)
+        return
+    if operation == "Apply ReplayGain":
+        apply_replaygain_op(album_tracks, library, _bulk_header)
         return
     if operation == "Reflow Discs":
         reflow_discs_op(album_tracks, library, _bulk_header)

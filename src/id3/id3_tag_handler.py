@@ -1049,7 +1049,12 @@ def summarize_tag_value(tag_id: str, raw_frame, display: bool = False) -> str:
     # because this summary also seeds editors and the clipboard where it has to
     # round-trip; `display=True` renders them as a list for the screen instead.
     if hasattr(raw_frame, 'text'):
-        vals = [str(t).replace("\n", "\\") for t in raw_frame.text]
+        # COMM/USLT/USER carry a single scalar string, not a value list —
+        # iterating one walks its characters (see the matching guard in
+        # create_frame). Keep it a one-element list so it summarizes whole.
+        raw_text = raw_frame.text
+        text_items = [raw_text] if isinstance(raw_text, str) else raw_text
+        vals = [str(t).replace("\n", "\\") for t in text_items]
         text = format_value_list(vals) if display else "; ".join(vals)
         return text[:100]
 

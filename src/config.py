@@ -25,6 +25,27 @@ DEFAULT_CONFIG = {
     # Playback volume, 0–100. Owned by the player session: restored at launch and
     # written back whenever it changes.
     "volume": 100,
+    # Override for locating the ffmpeg binary (trimming), when it isn't on PATH.
+    "trim_ffmpeg_path": "",
+    # Where trimmed files' pre-trim originals are backed up. Defaults under
+    # CONFIG_DIR (alongside config.json/history.log), not the cache dir, which
+    # is disposable.
+    "trim_backup_dir": "",
+    # Sting matching (bulk seeding, section 4.4): a match's score (peak vs.
+    # runner-up) must clear this to seed automatically; below it, the track is
+    # left unseeded with the score shown rather than seeded wrongly. The window
+    # scanned per candidate track, in seconds.
+    "trim_sting_min_score": 0.3,
+    "trim_sting_window_s": 90.0,
+    # Silence detection (section 4.3), the baseline cut-point suggestion when
+    # there's no sting to match against. Higher-bitrate sources tolerate a
+    # tighter (higher) noise floor than low-bitrate speech.
+    "trim_silence_noise_db": -32.0,
+    "trim_silence_min_s": 0.4,
+    "trim_scan_window_s": 30.0,
+    # ReplayGain target (section 5.4). Speech-led radio sits lower than a
+    # music target, hence -18 rather than the usual -14/-23.
+    "trim_target_lufs": -18.0,
 }
 
 def _default_config_dir() -> Path:

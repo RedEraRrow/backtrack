@@ -221,6 +221,17 @@ def set_notification_opener(fn) -> None:
     _notification_opener = fn
 
 
+def _plain(s: str) -> str:
+    """The row's printed characters, one entry per *terminal column*.
+
+    A two-cell glyph is repeated so that an index into the result is the
+    column it sits in — which is what a click hit-test assumes when it asks
+    whether column `col` holds a character or blank padding. Shared by
+    `select` and `live_select`, so the two widgets' click behaviour can't drift.
+    """
+    return "".join(ch * ui_utils.char_cols(ch) for ch in ui_utils.display_text(s))
+
+
 @overload
 def select(message: str, choices: list, *,
            header: list | None | Callable[[], list[str]] = ...,
@@ -402,15 +413,6 @@ def select(message: str, choices: list, *,
     # Maps an absolute (row, col) on a hint line → the key that clicking that
     # bright glyph should replay through the normal key handling below.
     _hint_cells: dict[tuple[int, int], str] = {}
-
-    def _plain(s: str) -> str:
-        """The row's printed characters, one entry per *terminal column*.
-
-        A two-cell glyph is repeated so that an index into the result is the
-        column it sits in — which is what the click hit-test below assumes when
-        it asks whether column `col` holds a character or blank padding.
-        """
-        return "".join(ch * ui_utils.char_cols(ch) for ch in ui_utils.display_text(s))
 
     def _header_lines() -> list[str]:
         if header is None:
@@ -787,6 +789,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
                 on_cycle: Callable[[], None] | None = None,
                 cycle_key: str | None = None,
                 section_nav: bool = False,
+                row_actions: dict[str, Callable[[Any], None]] | None = None,
                 placeholder: str = "type to search…",
                 initial_query: str = "") -> Any:
     """Incremental "search box + live results" widget.
@@ -796,6 +799,11 @@ def live_select(message: str, provider: Callable[[str], list], *,
     Letters/digits type into the query; ← → move the query caret; ↑ ↓ (and the
     scroll wheel) move through results; Enter selects the highlighted row; Esc
     cancels. Returns the chosen Choice.value, or None.
+
+    `row_actions`: key -> callback(current row value), same shape as
+    `select`'s — the only per-row hotkey mechanism available here, since every
+    other key types into the query. Bind non-printable keys only (e.g. a
+    Ctrl-combo); the callback runs and the list stays open, redrawing after.
 
     `placeholder` is greyed out inside the empty field, behind the caret, and
     goes as soon as there is a query to show in its place.
@@ -809,6 +817,12 @@ def live_select(message: str, provider: Callable[[str], list], *,
     items: list      = list(provider("".join(query)))
     cursor           = 0
     viewport         = 0
+    _sel_last_click: int | None = None
+    # Maps a visible item index → its ANSI-stripped rendered text, so a mouse
+    # click can tell whether it landed on a printed character or blank space
+    # (shared hit-test convention with `select`).
+    _row_plain: dict[int, str] = {}
+    _fixed_rows = [0]   # header + query + count + above-indicator lines, this frame
 
     base_hints = {"type": "search", "↑↓": "results", "esc": "back", "↵": "confirm"}
     if section_nav:
@@ -883,7 +897,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
 
     def _recompute() -> None:
         """Re-run the provider for the current query and reset cursor/viewport onto the new results."""
-        nonlocal items, cursor, viewport
+        nonlocal items, cursor, viewport, _sel_last_click
         # Called for the empty query too: the provider owns what a query yields,
         # including "nothing", and anything it reported for the previous one
         # (result counts, section tallies) has to be cleared rather than left
@@ -894,6 +908,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
             items = []
         cursor = _step(-1, 1) if items else 0
         viewport = 0
+        _sel_last_click = None
 
     def _lines() -> list:
         nonlocal viewport
@@ -937,6 +952,8 @@ def live_select(message: str, provider: Callable[[str], list], *,
         # the list sits on the last visible row at most.
         viewport = max(0, min(viewport, n - vis))
         out.append(f"  {C.DIM}╵ {viewport} above{C.RESET}" if viewport > 0 else "")
+        _fixed_rows[0] = len(out)   # rows before the first item — the click-math offset
+        _row_plain.clear()
 
         eff = min(cols, _COLUMNS_MAX_WIDTH)
         col_widths: list = []
@@ -962,6 +979,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
                 out.append(f"  {C.ACCENT}›{C.RESET} {C.PRIMARY}{C.BOLD}{it.title}{C.RESET}")
             else:
                 out.append(f"    {C.DIM}{it.title}{C.RESET}")
+            _row_plain[i] = _plain(out[-1])
 
         remaining = n - viewport - vis
         out.append(f"  {C.DIM}╷ {remaining} below{C.RESET}" if remaining > 0 else "")
@@ -1006,6 +1024,9 @@ def live_select(message: str, provider: Callable[[str], list], *,
             elif key == 'ESC':
                 result = None
                 break
+            elif row_actions and isinstance(key, str) and key in row_actions and items:
+                row_actions[key](items[cursor].value)
+                w.render(_lines())
             elif key in ('TAB', 'BACKTAB') and section_nav:
                 cursor = _jump_section(-1 if key == 'BACKTAB' else 1)
                 w.render(_lines())
@@ -1030,19 +1051,51 @@ def live_select(message: str, provider: Callable[[str], list], *,
                     result = items[cursor].value
                     break
             elif key in ('UP',):
-                cursor = _step(cursor, -1); w.render(_lines())
+                cursor = _step(cursor, -1); _sel_last_click = None; w.render(_lines())
             elif key in ('DOWN',):
-                cursor = _step(cursor, 1); w.render(_lines())
+                cursor = _step(cursor, 1); _sel_last_click = None; w.render(_lines())
             elif key == 'SCROLL_UP':
-                cursor = _step(cursor, -1); w.render(_lines())
+                cursor = _step(cursor, -1); _sel_last_click = None; w.render(_lines())
             elif key == 'SCROLL_DOWN':
-                cursor = _step(cursor, 1); w.render(_lines())
+                cursor = _step(cursor, 1); _sel_last_click = None; w.render(_lines())
+            elif key.startswith('MOUSE_CLICK:') and w.row is not None:
+                # Same two-click convention as `select`: a click on a row not
+                # already highlighted moves the cursor there; clicking it again
+                # (or a row already under the cursor) confirms — one click can't
+                # accidentally jump straight into a result.
+                parts = key.split(':')
+                r = int(parts[2]) if len(parts) > 2 else 0
+                col = int(parts[3]) if len(parts) > 3 else 1
+                i = r - w.row - ui_utils.MARGIN_V - _fixed_rows[0]
+                idx = viewport + i
+                if 0 <= idx < len(items):
+                    clickable = not items[idx].disabled
+                    row_plain = _row_plain.get(idx, "")
+                    on_char = 0 < col <= len(row_plain) and row_plain[col - 1] != ' '
+                    if not on_char:
+                        if clickable:
+                            cursor = idx
+                        _sel_last_click = None
+                        w.render(_lines())
+                    elif clickable:
+                        if idx == cursor or _sel_last_click == idx:
+                            cursor = idx
+                            result = items[cursor].value
+                            break
+                        _sel_last_click = idx
+                        cursor = idx
+                        w.render(_lines())
+                    else:
+                        _sel_last_click = None
+                        cursor = idx
+                        w.render(_lines())
             elif key == 'PGUP':
                 sel = _selectable()
                 if sel:
                     cursor = max(sel[0], cursor - 5)
                     if items[cursor].disabled:
                         cursor = _step(cursor, -1)
+                _sel_last_click = None
                 w.render(_lines())
             elif key == 'PGDN':
                 sel = _selectable()
@@ -1050,6 +1103,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
                     cursor = min(sel[-1], cursor + 5)
                     if items[cursor].disabled:
                         cursor = _step(cursor, 1)
+                _sel_last_click = None
                 w.render(_lines())
             elif key == 'LEFT':
                 qpos = max(0, qpos - 1); w.render(_lines())
