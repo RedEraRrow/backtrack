@@ -272,5 +272,154 @@ class SummariseTest(unittest.TestCase):
                                    skipped_note="without art or not MP3"))
 
 
+class RenameFilesTest(_Fixtures):
+    def test_renames_and_follows_the_library_entry(self):
+        a = _mp3(os.path.join(self.tmp, "a.mp3"), track="1")
+        library = [{'path': a, 'title': 'A'}]
+        final = os.path.join(self.tmp, "01 - A.mp3")
+        applied = bo.rename_files([(a, final)], library)
+        self.assertEqual((applied.written, applied.errors), (1, 0))
+        self.assertTrue(os.path.exists(final))
+        self.assertFalse(os.path.exists(a))
+        self.assertEqual(library[0]['path'], final)
+
+    def test_a_swap_does_not_clobber_either_file(self):
+        # The two-phase move exists for exactly this: each target is the other
+        # file's current name, so a naive rename would destroy one of them.
+        a = _mp3(os.path.join(self.tmp, "a.mp3"), track="1")
+        b = _mp3(os.path.join(self.tmp, "b.mp3"), track="2")
+        applied = bo.rename_files([(a, b), (b, a)], [])
+        self.assertEqual((applied.written, applied.errors), (2, 0))
+        self.assertEqual(bo.tw.read_number_pairs(a)['track'], '2')
+        self.assertEqual(bo.tw.read_number_pairs(b)['track'], '1')
+
+    def test_a_failed_rename_is_counted_and_the_rest_still_run(self):
+        a = _mp3(os.path.join(self.tmp, "a.mp3"), track="1")
+        b = _mp3(os.path.join(self.tmp, "b.mp3"), track="2")
+        nowhere = os.path.join(self.tmp, "no", "such", "dir", "x.mp3")
+        applied = bo.rename_files([(a, nowhere),
+                                   (b, os.path.join(self.tmp, "ok.mp3"))], [])
+        self.assertEqual((applied.written, applied.errors), (1, 1))
+        # The failed one rolled back rather than being left under a dot-name.
+        self.assertTrue(os.path.exists(a))
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith('.rn_')], [])
+
+
+class ApplyCoversTest(_Fixtures):
+    def _jpeg(self) -> str:
+        path = os.path.join(self.tmp, "cover.jpg")
+        with open(path, "wb") as f:
+            f.write(b"\xff\xd8\xff\xe0" + b"\x00" * 32 + b"\xff\xd9")
+        return path
+
+    def test_embeds_the_image(self):
+        track = _mp3(os.path.join(self.tmp, "a.mp3"))
+        applied = bo.apply_covers({track: self._jpeg()}, [])
+        self.assertEqual((applied.written, applied.errors), (1, 0))
+        self.assertTrue(bo.tw.has_cover(track))
+
+    def test_fill_blanks_keeps_existing_art_and_counts_it(self):
+        track = _mp3(os.path.join(self.tmp, "a.mp3"), pic_types=[3])
+        applied = bo.apply_covers({track: self._jpeg()}, [], overwrite=False)
+        self.assertEqual((applied.written, applied.kept), (0, 1))
+
+    def test_an_unreadable_image_is_an_error_not_a_write(self):
+        track = _mp3(os.path.join(self.tmp, "a.mp3"))
+        missing = os.path.join(self.tmp, "gone.jpg")
+        applied = bo.apply_covers({track: missing}, [])
+        self.assertEqual((applied.written, applied.errors), (0, 1))
+
+    def test_tracks_with_no_matched_image_are_passed_over(self):
+        track = _mp3(os.path.join(self.tmp, "a.mp3"))
+        applied = bo.apply_covers({track: None}, [])
+        self.assertEqual((applied.written, applied.errors), (0, 0))
+
+    def test_an_unselected_track_is_not_written(self):
+        track = _mp3(os.path.join(self.tmp, "a.mp3"))
+        applied = bo.apply_covers({track: self._jpeg()}, [], selected=set())
+        self.assertEqual(applied.written, 0)
+        self.assertFalse(bo.tw.has_cover(track))
+
+
+class ApplyFrameWritesTest(_Fixtures):
+    def test_writes_a_frame_and_replaces_an_existing_one(self):
+        path = _mp3(os.path.join(self.tmp, "a.mp3"))
+        bo.apply_frame_writes({path: [('TIT2', 'First')]}, [])
+        bo.apply_frame_writes({path: [('TIT2', 'Second')]}, [])
+        self.assertEqual(str(ID3(path)['TIT2'].text[0]), 'Second')
+
+    def test_fill_blanks_leaves_an_existing_value_alone(self):
+        path = _mp3(os.path.join(self.tmp, "a.mp3"))
+        bo.apply_frame_writes({path: [('TIT2', 'First')]}, [])
+        applied = bo.apply_frame_writes({path: [('TIT2', 'Second')]}, [],
+                                        overwrite=False)
+        self.assertEqual((applied.written, applied.kept), (0, 1))
+        self.assertEqual(str(ID3(path)['TIT2'].text[0]), 'First')
+
+    def test_a_file_that_cannot_be_written_counts_as_an_error(self):
+        applied = bo.apply_frame_writes(
+            {os.path.join(self.tmp, "no", "a.mp3"): [('TIT2', 'x')]}, [])
+        self.assertEqual((applied.written, applied.errors), (0, 1))
+
+    def test_writes_several_frames_to_one_file(self):
+        path = _mp3(os.path.join(self.tmp, "a.mp3"))
+        bo.apply_frame_writes({path: [('TSOP', 'Wren, DJ'), ('TSOA', 'Album, The')]}, [])
+        tags = ID3(path)
+        self.assertEqual(str(tags['TSOP'].text[0]), 'Wren, DJ')
+        self.assertEqual(str(tags['TSOA'].text[0]), 'Album, The')
+
+
+class DeriveTest(_Fixtures):
+    def test_derives_a_title_from_the_file_name(self):
+        path = _mp3(os.path.join(self.tmp, "01 - Hungry Like the Wolf.mp3"))
+        plan, derived = bo.plan_derive([path], {'title'})
+        self.assertEqual(plan.changes[0].fields['title'], "Hungry Like the Wolf")
+        self.assertIn(path, derived)
+
+    def test_fill_blanks_declines_a_field_that_is_already_set(self):
+        path = os.path.join(self.tmp, "01 - Wolf.mp3")
+        _mp3(path)
+        audio = ID3(path)
+        from mutagen.id3 import TIT2  # type: ignore[reportPrivateImportUsage]
+        audio.add(TIT2(encoding=3, text=["Already"]))
+        audio.save(path, v2_version=3)
+        plan, _derived = bo.plan_derive([path], {'title'}, overwrite=False)
+        self.assertIsNotNone(plan.message)
+        self.assertIn("already set", plan.message or "")
+
+    def test_overwrite_offers_it_anyway(self):
+        path = os.path.join(self.tmp, "01 - Wolf.mp3")
+        _mp3(path)
+        audio = ID3(path)
+        from mutagen.id3 import TIT2  # type: ignore[reportPrivateImportUsage]
+        audio.add(TIT2(encoding=3, text=["Already"]))
+        audio.save(path, v2_version=3)
+        plan, _derived = bo.plan_derive([path], {'title'}, overwrite=True)
+        self.assertEqual(plan.changes[0].fields['title'], "Wolf")
+
+    def test_the_writer_actually_writes_the_derivation(self):
+        path = _mp3(os.path.join(self.tmp, "01 - Wolf.mp3"))
+        plan, derived = bo.plan_derive([path], {'title'})
+        applied = bo.apply_changes(plan, [], bo.derive_writer(derived, {'title'}, False))
+        self.assertEqual(applied.written, 1)
+        self.assertEqual(str(ID3(path)['TIT2'].text[0]), "Wolf")
+
+    def test_unwritable_formats_are_counted_not_derived(self):
+        odd = os.path.join(self.tmp, "notes.txt")
+        open(odd, "w").close()
+        plan, _derived = bo.plan_derive([odd], {'title'})
+        self.assertEqual(plan.skipped, 1)
+        self.assertEqual(plan.message, "No MP3/MP4 tracks to derive from.")
+
+    def test_sort_orders_ride_along_when_asked_for(self):
+        vals = bo.augment_sort({'artist': 'DJ Wren'}, {'artist', 'sort'})
+        self.assertEqual(vals['artist_sort'], 'Wren, DJ')
+
+    def test_sort_orders_are_not_invented_for_a_derived_name(self):
+        vals = bo.augment_sort({'album_artist': 'Various Artists'},
+                               {'album_artist', 'sort'})
+        self.assertNotIn('album_artist_sort', vals)
+
+
 if __name__ == "__main__":
     unittest.main()

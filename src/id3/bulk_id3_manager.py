@@ -158,67 +158,11 @@ def _walk(steps: list) -> bool:
     return i >= len(steps)
 
 
-def _num_pair(num, total) -> str:
-    """Format a "num/total" string, or just "num" when total is falsy."""
-    return f"{num}/{total}" if total else f"{num}"
-
-
-# base field → sort frame id, used to compute sort-order strings via the #42
-# engine. The `auto` rows of the canonical table: the fields a derive/write run
-# produces, so composer (never derived from a filename) is not among them.
-_SORT_BASE = [(t.field, t.frame) for t in _reg.SORT_TAGS if t.auto]
-
-
-def _sort_value(base_id: str, raw: str) -> str | None:
-    """Top smart sort-order candidate for a value, or None when none is needed.
-
-    Reuses the #42 engine (name-inversion for artists, article-move for
-    album/title). "Various Artists" sorts as itself, so no tag is generated."""
-    from src.id3.id3_tag_handler import is_placeholder_name
-    if not raw or is_placeholder_name(raw):
-        return None                     # derived names sort as themselves
-    from src.id3.id3_browser import _sort_candidates
-    cands = _sort_candidates(base_id, str(raw))
-    return cands[0] if cands else None
-
-
-def _augment_sort(vals: dict, apply_fields: set) -> dict:
-    """Add '<base>_sort' entries for the derived fields being written."""
-    for base, base_id in _SORT_BASE:
-        if base in apply_fields and vals.get(base):
-            sv = _sort_value(base_id, str(vals[base]))
-            if sv:
-                vals[f'{base}_sort'] = sv
-    return vals
-
-
-def _plan_write(derived, apply_fields: set, overwrite: bool,
-                present: dict, path: str) -> dict:
-    """Fields that would actually be written for one file: {field: value_str}.
-
-    Honours fill-blanks (skip fields already present unless overwrite), only
-    includes fields with a derived value, and — crucially — only fields the
-    file's *format* can store (so the preview never claims a write it can't
-    perform, e.g. disc subtitle on MP4). Pure — used for the preview and tests.
-    """
-    supported = tw.writable_fields(path)
-    d = derived.as_dict()
-    planned: dict = {}
-    for f in tw.FIELDS:
-        if f not in apply_fields or f not in supported:
-            continue
-        val = d.get(f)
-        if val is None or (isinstance(val, str) and not val.strip()):
-            continue
-        if present.get(f) and not overwrite:
-            continue
-        if f == 'track':
-            planned[f] = _num_pair(d['track'], d.get('total_tracks'))
-        elif f == 'disc':
-            planned[f] = _num_pair(d['disc'], d.get('total_discs'))
-        else:
-            planned[f] = str(val)
-    return planned
+_SORT_BASE = bo.sort_base()
+_num_pair = bo._num_pair
+_sort_value = bo._sort_value
+_augment_sort = bo.augment_sort
+_plan_write = bo.plan_write
 
 
 # Columns for the bulk people editor: role · name · coverage/state.
@@ -770,31 +714,14 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         return
 
     # 5) Apply.
-    count = 0
-    errors = 0
-    for p in to_write:
-        if p not in apply_paths:
-            continue
-        vw = derived[p].as_dict()
-        if 'sort' in apply_fields:
-            _augment_sort(vw, apply_fields)
-        r = tw.write_fields(p, vw, apply_fields, overwrite=overwrite)
-        if r.error:
-            errors += 1
-            continue
-        if r.written:
-            count += 1
-            try:
-                refresh_library_entry(library, p)
-            except Exception:
-                pass
-
-    msg = f"Derived tags for {count} file(s)."
-    if skipped_fmt:
-        msg += f" {skipped_fmt} non-MP3/MP4 skipped."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    plan = bo.Plan(changes=[bo.Change(path=p, why=' · '.join(
+        f"{f}={v}" for f, v in plans[p].items())) for p in to_write],
+        skipped=skipped_fmt)
+    applied = bo.apply_changes(
+        plan, library, bo.derive_writer(derived, apply_fields, overwrite),
+        selected=apply_paths)
+    ui_utils.show_status(bo.summarise(applied, "Derived tags for",
+                                      skipped_note="non-MP3/MP4 skipped"))
 
 
 # Preview columns for the pattern assignment: position · file · assigned value.
@@ -1251,53 +1178,11 @@ def rename_files_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("No files selected.")
         return
 
-    import tempfile
-    todo = [(p, os.path.join(os.path.dirname(p), n)) for (p, o, n) in changed if p in apply_set]
-
-    # Phase 1: move each source to a unique temp name, so a target that equals
-    # another (not-yet-moved) selected file's current name can't clobber it.
-    staged: list[tuple[str, str, str]] = []   # (orig, temp, final)
-    errors = 0
-    for orig, final in todo:
-        d = os.path.dirname(orig)
-        try:
-            fd, tmp = tempfile.mkstemp(prefix='.rn_', dir=d, suffix=os.path.splitext(orig)[1])
-            os.close(fd)
-            os.replace(orig, tmp)
-            staged.append((orig, tmp, final))
-        except OSError as e:
-            errors += 1
-            ui_utils.show_status(f"Could not rename {os.path.basename(orig)}: {e}")
-
-    # Phase 2: move each temp to its final name and keep the library in sync.
-    count = 0
-    for orig, tmp, final in staged:
-        try:
-            os.replace(tmp, final)
-        except OSError as e:
-            errors += 1
-            ui_utils.show_status(f"Could not rename to {os.path.basename(final)}: {e}")
-            try:
-                os.replace(tmp, orig)   # roll this one back
-            except OSError:
-                pass
-            continue
-        count += 1
-        for track in library:
-            if track.get('path') == orig:
-                track['path'] = final
-                break
-        try:
-            refresh_library_entry(library, final)
-        except Exception:
-            pass
-
-    msg = f"Renamed {count} file(s)."
-    if skipped_fmt:
-        msg += f" {skipped_fmt} unsupported skipped."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    todo = [(p, os.path.join(os.path.dirname(p), n))
+            for (p, o, n) in changed if p in apply_set]
+    applied = bo.rename_files(todo, library)
+    applied.skipped = skipped_fmt
+    ui_utils.show_status(bo.summarise(applied, "Renamed"))
 
 
 # Per-file album art: track · matched cover image · confidence. Confidence is
@@ -1628,48 +1513,13 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     #    art it was chosen to preserve; those tracks are counted and reported
     #    rather than silently passed over.
     overwrite = state['policy'] == "Overwrite existing"
-    count = errors = mp4_skipped = kept = 0
-    img_cache: dict[str, tuple | None] = {}
-    for p in shown:
-        if p not in apply_paths:
-            continue
-        img = plan.get(p)
-        if not img:
-            continue
-        if img not in img_cache:
-            img_cache[img] = cm.read_image(img)
-        read = img_cache[img]
-        if not read:
-            errors += 1
-            continue
-        data, mime = read
-        r = tw.write_cover(p, data, mime, pic_type=3, desc='', overwrite=overwrite)
-        if r.skipped_format:
-            mp4_skipped += 1
-            continue
-        if r.skipped_existing:
-            kept += 1
-            continue
-        if r.error:
-            errors += 1
-            continue
-        if r.written:
-            count += 1
-            try:
-                refresh_library_entry(library, p)
-            except Exception:
-                pass
-
-    msg = f"Set album art on {count} track(s)."
-    if kept:
-        msg += f" {kept} kept existing art (fill blanks only)."
-    if mp4_skipped:
-        msg += f" {mp4_skipped} MP4 skipped (cover needs JPEG/PNG)."
-    if skipped_fmt:
-        msg += f" {skipped_fmt} unsupported skipped."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    applied = bo.apply_covers({p: plan.get(p) for p in shown}, library,
+                              overwrite=overwrite, selected=apply_paths)
+    applied.skipped = skipped_fmt
+    ui_utils.show_status(bo.summarise(
+        applied, "Set album art on", noun="track",
+        kept_note="kept existing art (fill blanks only)",
+        unsupported_note="MP4 skipped (cover needs JPEG/PNG)"))
 
 
 _SORT_VALUE_COLUMNS = [
@@ -2060,33 +1910,10 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
         for p in plan.entries[key]:
             per_path.setdefault(p, []).append((sort_tag, plan.value(sort_tag, raw)))
 
-    count = errors = 0
-    for p, writes in per_path.items():
-        try:
-            audio = ID3(p)
-            changed = False
-            for sort_tag, sv in writes:
-                audio.delall(sort_tag)
-                frame = create_frame(sort_tag, sv)
-                if frame is not None:
-                    audio.add(frame)
-                    changed = True
-            if changed:
-                save_id3(audio, p)
-                count += 1
-                try:
-                    refresh_library_entry(library, p)
-                except Exception:
-                    pass
-        except Exception:
-            errors += 1
-
-    msg = f"Wrote sort orders for {count} file(s)."
-    if skipped_fmt:
-        msg += f" {skipped_fmt} non-MP3 skipped."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    applied = bo.apply_frame_writes(per_path, library)
+    applied.skipped = skipped_fmt
+    ui_utils.show_status(bo.summarise(applied, "Wrote sort orders for",
+                                      skipped_note="non-MP3 skipped"))
 
 
 def assign_by_pattern(paths: list, library: list, header) -> None:
@@ -2372,41 +2199,19 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         ui_utils.show_status("No files selected.")
         return
 
-    count = errors = 0
-    for s in targets:
-        p = s['path']
-        if p not in apply_set:
-            continue
-        val = assignments[p]
-        try:
-            try:
-                audio = ID3(p)
-            except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-                audio = ID3()
-            if not overwrite:
-                fr = audio.get(tag_id)
-                if fr is not None and getattr(fr, 'text', None) and str(fr.text[0]).strip():
-                    continue
-            audio.delall(tag_id)
-            frame = create_frame(tag_id, val)
-            if frame is None:
-                continue
-            audio.add(frame)
-            save_id3(audio, p)
-            count += 1
-            try:
-                refresh_library_entry(library, p)
-            except Exception:
-                pass
-        except Exception:
-            errors += 1
-
-    msg = f"Assigned {tag_id} to {count} file(s)."
-    if n_mp4:
-        msg += f" {n_mp4} non-MP3 skipped."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    # MP3 only: create_frame/save_id3 write ID3. The count of everything else
+    # was reported from a name that no longer existed — `if n_mp4:` raised
+    # NameError at the end of every successful run.
+    writable = [s for s in targets if tw.format_kind(s['path']) == 'mp3']
+    n_other = len(targets) - len(writable)
+    applied = bo.apply_frame_writes(
+        {s['path']: [(tag_id, assignments[s['path']])]
+         for s in writable if s['path'] in apply_set},
+        library, overwrite=overwrite)
+    applied.skipped = n_other
+    ui_utils.show_status(bo.summarise(applied, f"Assigned {tag_id} to",
+                                      skipped_note="non-MP3 skipped",
+                                      kept_note="kept an existing value"))
 
 
 def _operation_verb(operation: str) -> str:
