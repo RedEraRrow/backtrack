@@ -1652,6 +1652,234 @@ def _trim_restore(ctx: Ctx) -> int:
     return out.OK
 
 
+# --- feeds ------------------------------------------------------------------
+# Downloaded audio enters the library the way any other new file does: it is
+# written into a music directory and handed to refresh_library_entry. There is
+# deliberately no second route in.
+
+def _feed_root(ctx: Ctx) -> str | None:
+    """Where downloaded episodes should land — --output, else the first music
+    directory."""
+    from src.config import music_dirs
+
+    if ctx.args.output:
+        return os.path.abspath(os.path.expanduser(ctx.args.output))
+    roots = music_dirs(ctx.config)
+    return roots[0] if roots else None
+
+
+def _feed_add(ctx: Ctx) -> int:
+    """Subscribe to a feed."""
+    from src import feed as fd
+
+    url = ctx.args.url
+    feeds = fd.load_feeds()
+    try:
+        parsed = fd.parse_feed(fd.fetch(url))
+    except (OSError, ValueError) as exc:
+        return out.fail(out.FAIL, "Could not read that feed.", url=url,
+                        reason=str(exc))
+
+    name = fd.slugify(ctx.args.name or parsed.title or url)
+    if name in feeds:
+        return out.fail(out.EXISTS, "A feed by that name is already added.",
+                        name=name, hint="pass --name to choose another")
+
+    entry = {'url': url, 'title': parsed.title,
+             'filter_title': ctx.args.filter_title or '',
+             'seen': fd.new_seen()}
+    matched = fd.matching(parsed.items, entry['filter_title'])
+    if ctx.dry_run():
+        out.event('plan', action='feed-add', name=name,
+                  detail=f"{parsed.title} — {len(matched)} matching episodes")
+        return out.OK
+
+    feeds[name] = entry
+    fd.save_feeds(feeds)
+    out.record('feed', {'name': name, 'url': url, 'title': parsed.title,
+                        'filter_title': entry['filter_title'],
+                        'episodes': len(matched)},
+               human=f"  Added {name} — {parsed.title}, "
+                     f"{len(matched)} episodes waiting.")
+    return out.OK
+
+
+def _feed_list(ctx: Ctx) -> int:
+    """Every subscribed feed."""
+    from src import feed as fd
+
+    feeds = fd.load_feeds()
+    rows = [{'path': name, 'name': name, 'title': entry.get('title', ''),
+             'url': entry.get('url', ''),
+             'filter_title': entry.get('filter_title', ''),
+             'downloaded': len(entry.get('seen') or [])}
+            for name, entry in sorted(feeds.items())]
+    out.table('feeds', rows, [
+        pc.Column(style='primary', max_frac=0.3),
+        pc.Column(style='normal', flex=True),
+        pc.Column(style='dynamic-dim', align='right', pin=True),
+    ], cells=lambda r: [r['name'], r['title'],
+                        f"{r['downloaded']} downloaded"], pipe_key='name')
+    return out.OK
+
+
+def _feed_remove(ctx: Ctx) -> int:
+    """Unsubscribe from a feed. The downloaded files are left alone."""
+    from src import feed as fd
+
+    feeds = fd.load_feeds()
+    name = ctx.args.name
+    if name not in feeds:
+        return out.fail(out.NOT_FOUND, "No feed by that name.", name=name,
+                        hint="`backtrack feed list` shows them")
+    if ctx.dry_run():
+        out.event('plan', action='feed-remove', name=name)
+        return out.OK
+    if not ctx.confirm(f"Stop following {name}? (downloaded files are kept)",
+                       default=True):
+        out.note("Left alone.")
+        return out.OK
+    feeds.pop(name)
+    fd.save_feeds(feeds)
+    out.record('feed', {'name': name, 'removed': True},
+               human=f"  Removed {name}. The downloaded files are still there.")
+    return out.OK
+
+
+def _feed_fetch(ctx: Ctx) -> int:
+    """Read a feed and print what is in it, storing nothing."""
+    from src import feed as fd
+
+    try:
+        parsed = fd.parse_feed(fd.fetch(ctx.args.url))
+    except (OSError, ValueError) as exc:
+        return out.fail(out.FAIL, "Could not read that feed.",
+                        url=ctx.args.url, reason=str(exc))
+
+    items = fd.matching(parsed.items, ctx.args.filter_title or '')
+    rows = [item.as_dict() for item in items]
+    for row in rows:
+        row['path'] = row.get('url', '')
+    out.table('episodes', rows, [
+        pc.Column(style='dynamic-dim', min_width=10),
+        pc.Column(style='normal', max_frac=0.25),
+        pc.Column(style='primary', flex=True),
+    ], cells=lambda r: [r['date'] or '', r['show'] or '',
+                        r['title'] or r['raw']], pipe_key='url')
+    return out.OK
+
+
+def _feed_sync(ctx: Ctx) -> int:
+    """Download everything new from one feed, or all of them."""
+    from src import feed as fd
+    from src.utils import ui_utils
+
+    feeds = fd.load_feeds()
+    # A named feed that does not exist is not found, whether or not any others
+    # do — "there are no feeds" answers a different question from the one asked.
+    if ctx.args.name and ctx.args.name not in feeds:
+        return out.fail(out.NOT_FOUND, "No feed by that name.",
+                        name=ctx.args.name,
+                        hint="`backtrack feed list` shows them")
+    if not feeds:
+        out.note("No feeds added. `backtrack feed add <url>` starts one.")
+        return out.OK
+    wanted = [ctx.args.name] if ctx.args.name else sorted(feeds)
+
+    root = _feed_root(ctx)
+    if not root:
+        return out.fail(out.USAGE, "Nowhere to put the downloads.",
+                        hint="pass --output DIR, or set a music directory")
+
+    downloaded = skipped = errors = planned = 0
+    for name in wanted:
+        entry = feeds[name]
+        try:
+            parsed = fd.parse_feed(fd.fetch(entry['url']))
+        except (OSError, ValueError) as exc:
+            errors += 1
+            out.event('error', name=name, detail=str(exc))
+            continue
+
+        seen = set(entry.get('seen') or [])
+        items = fd.matching(parsed.items, entry.get('filter_title', ''))
+        fresh = [i for i in items if i.key and i.key not in seen and i.url]
+        skipped += len(items) - len(fresh)
+
+        for item in fresh:
+            target = fd.target_path(item, root, parsed.title)
+            if os.path.exists(target):
+                # Already on disk under the name we would give it: record it as
+                # seen so the next sync stops reconsidering it.
+                seen.add(item.key)
+                skipped += 1
+                out.event('skipped', path=target, detail=item.parsed.title)
+                continue
+            if ctx.dry_run():
+                planned += 1
+                out.event('plan', action='download', path=target,
+                          detail=item.parsed.title or item.parsed.raw,
+                          url=item.url)
+                continue
+            try:
+                _download_one(ctx, item, target, parsed.title)
+            except OSError as exc:
+                errors += 1
+                out.event('error', path=target, detail=str(exc))
+                continue
+            seen.add(item.key)
+            downloaded += 1
+            out.event('written', path=target,
+                      detail=item.parsed.title or item.parsed.raw)
+
+        if not ctx.dry_run():
+            entry['seen'] = sorted(seen)
+            entry['title'] = parsed.title or entry.get('title', '')
+            feeds[name] = entry
+
+    if ctx.dry_run():
+        out.note(f"{ui_utils.plural(planned, 'episode')} would be downloaded, "
+                 f"{skipped} already had.")
+        return out.OK
+    fd.save_feeds(feeds)
+    out.note(f"{ui_utils.plural(downloaded, 'new episode')}, "
+             f"{skipped} already had"
+             + (f", {ui_utils.plural(errors, 'error')}" if errors else "") + ".")
+    return out.FAIL if errors and not downloaded else out.OK
+
+
+def _download_one(ctx: Ctx, item, target: str, feed_title: str) -> None:
+    """Fetch one episode, tag it, and let the library know it exists."""
+    from src import feed as fd
+    from src.id3 import tag_writer as tw
+    from src.music_library import refresh_library_entry
+    from src.utils import ui_utils
+
+    interactive = out.is_tty() and not out.json_mode() and not ctx.args.quiet
+    label = item.parsed.title or item.parsed.raw
+
+    def _progress(done: int, total: int) -> None:
+        """Draw the app's own inline progress bar while a download runs."""
+        ui_utils.print_inline_progress(label, (done / total) if total else 0.0)
+
+    fd.download(item.url, target, on_progress=_progress if interactive else None)
+    if interactive:
+        ui_utils.clear_inline_progress()
+
+    # The file was downloaded a moment ago and nothing else has touched it, so
+    # these writes overwrite: the TDRC the frame write carries is the full
+    # broadcast date, and it has to win over the year the field write left.
+    fields, frames = fd.tag_plan(item, feed_title)
+    tw.write_fields(target, fields, set(fields), overwrite=True)
+    if frames and tw.format_kind(target) == 'mp3':
+        from src.id3 import bulk_ops as bo
+        bo.apply_frame_writes({target: list(frames.items())}, [], overwrite=True)
+    try:
+        refresh_library_entry(ctx.library, target)
+    except Exception:
+        pass
+
+
 # --- the tree ---------------------------------------------------------------
 
 TREE = [
@@ -1895,6 +2123,32 @@ TREE = [
         Cmd('restore', 'Put a backed-up original back', run=_trim_restore,
             emits='trim', args=[Arg('id', 'Backup id from `trim list`')],
             example='backtrack trim restore a1b2c3d4e5f6'),
+    ]),
+
+    Cmd('feed', 'Follow podcast feeds and import their episodes', children=[
+        Cmd('add', 'Subscribe to a feed', run=_feed_add, emits='feed',
+            args=[Arg('url', 'Feed URL')],
+            flags=[Flag('--name', 'Short name to file it under', short='-n',
+                        metavar='SLUG'),
+                   Flag('--filter-title', 'Only episodes whose title contains '
+                                          'this', metavar='TEXT')],
+            example='backtrack feed add https://example.com/rss '
+                    '--name comedy --filter-title "News Quiz"'),
+        Cmd('list', 'Every feed being followed', run=_feed_list, emits='feeds',
+            example='backtrack feed list'),
+        Cmd('remove', 'Stop following a feed (downloads are kept)',
+            run=_feed_remove, emits='feed',
+            args=[Arg('name', 'Feed name from `feed list`')],
+            example='backtrack feed remove comedy'),
+        Cmd('sync', 'Download everything new', run=_feed_sync, emits='event',
+            flags=[Flag('--name', 'Just this feed', short='-n',
+                        metavar='SLUG')],
+            example='backtrack feed sync --name comedy --output ~/Music/Podcasts'),
+        Cmd('fetch', 'Read a feed and print it, storing nothing',
+            run=_feed_fetch, emits='episodes', args=[Arg('url', 'Feed URL')],
+            flags=[Flag('--filter-title', 'Only episodes whose title contains '
+                                          'this', metavar='TEXT')],
+            example='backtrack feed fetch https://example.com/rss --json'),
     ]),
 
     Cmd('search', 'Fuzzy-search the library', run=_search, emits='tracks',

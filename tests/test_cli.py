@@ -938,5 +938,235 @@ class ChapterPolicyTest(unittest.TestCase):
                 self.t.apply_chapter_policy(handle.name, 0.0, 1.0, 'clamp'))
 
 
+class FeedCommandsTest(CliTest):
+    """Feeds are served from local files over file:// URLs — no network."""
+
+    def setUp(self):
+        super().setUp()
+        from src import feed as fd
+        self._saved_feeds = fd._state_path
+        self.enclosures = os.path.join(self.tmp, 'enc')
+        os.makedirs(self.enclosures, exist_ok=True)
+        for name in ('a.mp3', 'b.mp3'):
+            _mp3(os.path.join(self.enclosures, name), 'Enclosure', 'X', 'Y', '1')
+        self.feed_path = os.path.join(self.tmp, 'feed.rss')
+        self._write_feed()
+        self.url = 'file://' + self.feed_path
+        self.podcasts = os.path.join(self.tmp, 'podcasts')
+
+    def _write_feed(self, items: str | None = None):
+        """Write the test feed, with a default two-item body."""
+        base = 'file://' + self.enclosures
+        items = items if items is not None else f"""
+<item><title>Test Show: Ep 1.	First one</title>
+<pubDate>Fri, 06 Jun 2025 18:00:00 +0000</pubDate>
+<guid>urn:test:1</guid>
+<enclosure url="{base}/a.mp3" length="1" type="audio/mpeg"/></item>
+<item><title>Test Show - 14th March</title>
+<pubDate>Fri, 14 Mar 2025 18:00:00 +0000</pubDate>
+<guid>urn:test:2</guid>
+<enclosure url="{base}/b.mp3" length="1" type="audio/mpeg"/></item>"""
+        with open(self.feed_path, 'w', encoding='utf-8') as handle:
+            handle.write("<?xml version='1.0' encoding='UTF-8'?>"
+                         "<rss version='2.0'><channel>"
+                         "<title>Local Test Feed</title>"
+                         "<link>http://example.invalid</link>"
+                         "<description>d</description>"
+                         f"{items}</channel></rss>")
+
+    def _mp3s(self):
+        """Every audio file under the download directory."""
+        found = []
+        for root, _dirs, names in os.walk(self.podcasts):
+            found += [os.path.join(root, n) for n in names if n.endswith('.mp3')]
+        return sorted(found)
+
+    # -- fetch ---------------------------------------------------------------
+
+    def test_fetch_reads_a_feed_without_storing_it(self):
+        _code, body = self.json_of('feed', 'fetch', self.url)
+        self.assertEqual(body['count'], 2)
+        _code, listed = self.json_of('feed', 'list')
+        self.assertEqual(listed['items'], [])
+
+    def test_fetch_carries_the_parse_and_the_raw_title(self):
+        _code, body = self.json_of('feed', 'fetch', self.url)
+        first = body['items'][0]
+        self.assertEqual(first['show'], 'Test Show')
+        self.assertEqual(first['episode'], 1)
+        self.assertEqual(first['title'], 'First one')
+        self.assertIn('\t', first['raw'])
+
+    def test_fetch_can_filter_by_title(self):
+        _code, body = self.json_of('feed', 'fetch', self.url,
+                                   '--filter-title', '14th March')
+        self.assertEqual(body['count'], 1)
+
+    def test_fetch_of_something_that_is_not_a_feed_fails(self):
+        bad = os.path.join(self.tmp, 'bad.xml')
+        with open(bad, 'w') as handle:
+            handle.write('<html>404</html>')
+        code, _out, _err = self.run_cli('feed', 'fetch', 'file://' + bad)
+        self.assertEqual(code, out.FAIL)
+
+    # -- add / list / remove -------------------------------------------------
+
+    def test_add_then_list(self):
+        self.assertEqual(self.run_cli('feed', 'add', self.url,
+                                      '--name', 'local')[0], out.OK)
+        _code, body = self.json_of('feed', 'list')
+        self.assertEqual([i['name'] for i in body['items']], ['local'])
+
+    def test_a_name_is_derived_from_the_feed_title_when_not_given(self):
+        self.run_cli('feed', 'add', self.url)
+        _code, body = self.json_of('feed', 'list')
+        self.assertEqual(body['items'][0]['name'], 'local-test-feed')
+
+    def test_adding_the_same_name_twice_reports_exists(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        code, _out, _err = self.run_cli('feed', 'add', self.url,
+                                        '--name', 'local')
+        self.assertEqual(code, out.EXISTS)
+
+    def test_add_dry_run_stores_nothing(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local', '--dry-run')
+        self.assertEqual(self.json_of('feed', 'list')[1]['items'], [])
+
+    def test_remove_forgets_the_feed(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        self.assertEqual(self.run_cli('feed', 'remove', 'local', '--yes')[0],
+                         out.OK)
+        self.assertEqual(self.json_of('feed', 'list')[1]['items'], [])
+
+    def test_removing_an_unknown_feed_is_not_found(self):
+        code, _out, _err = self.run_cli('feed', 'remove', 'nope', '--yes')
+        self.assertEqual(code, out.NOT_FOUND)
+
+    # -- sync ----------------------------------------------------------------
+
+    def test_sync_downloads_the_episodes(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        code, _out, _err = self.run_cli('feed', 'sync', '--name', 'local',
+                                        '--output', self.podcasts)
+        self.assertEqual(code, out.OK)
+        self.assertEqual(len(self._mp3s()), 2)
+
+    def test_syncing_twice_downloads_nothing_the_second_time(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        first = {p: os.path.getmtime(p) for p in self._mp3s()}
+        _code, stdout, _err = self.run_cli('feed', 'sync', '--name', 'local',
+                                           '--output', self.podcasts)
+        second = {p: os.path.getmtime(p) for p in self._mp3s()}
+        self.assertEqual(first, second)           # same files, untouched
+        self.assertIn('0 new episodes', stdout)
+
+    def test_syncing_twice_leaves_one_copy_of_each_episode(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        for _ in range(3):
+            self.run_cli('feed', 'sync', '--name', 'local',
+                         '--output', self.podcasts)
+        self.assertEqual(len(self._mp3s()), 2)
+
+    def test_a_new_episode_on_a_later_sync_is_picked_up(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        base = 'file://' + self.enclosures
+        self._write_feed(f"""
+<item><title>Test Show: Ep 3. Third one</title>
+<pubDate>Fri, 20 Jun 2025 18:00:00 +0000</pubDate>
+<guid>urn:test:3</guid>
+<enclosure url="{base}/a.mp3" length="1" type="audio/mpeg"/></item>""")
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        self.assertEqual(len(self._mp3s()), 3)
+
+    def test_dedupe_falls_back_to_the_enclosure_url_with_no_guid(self):
+        base = 'file://' + self.enclosures
+        self._write_feed(f"""
+<item><title>Test Show: Ep 9. No guid</title>
+<pubDate>Fri, 06 Jun 2025 18:00:00 +0000</pubDate>
+<enclosure url="{base}/a.mp3" length="1" type="audio/mpeg"/></item>""")
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        self.assertEqual(len(self._mp3s()), 1)
+
+    def test_the_title_filter_is_honoured_on_sync(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local',
+                     '--filter-title', '14th March')
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        self.assertEqual(len(self._mp3s()), 1)
+
+    def test_sync_dry_run_downloads_nothing(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        code, stdout, _err = self.run_cli('feed', 'sync', '--name', 'local',
+                                          '--output', self.podcasts, '--dry-run')
+        self.assertEqual(code, out.OK)
+        self.assertEqual(self._mp3s(), [])
+        self.assertIn('would be downloaded', stdout)
+
+    def test_sync_emits_one_event_per_episode_under_json(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        _code, stdout, _err = self.run_cli('feed', 'sync', '--name', 'local',
+                                           '--output', self.podcasts, '--json')
+        events = [json.loads(line) for line in stdout.splitlines()]
+        self.assertEqual(len(events), 2)
+        self.assertTrue(all(e['event'] == 'written' for e in events))
+        self.assertTrue(all(e['schema'] == out.SCHEMA_VERSION for e in events))
+
+    def test_the_download_is_tagged_from_the_parse(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        first = [p for p in self._mp3s() if 'First one' in p][0]
+        tags = ID3(first)
+        self.assertEqual(str(tags['TIT2'].text[0]), 'First one')
+        self.assertEqual(str(tags['TALB'].text[0]), 'Test Show')
+        self.assertEqual(str(tags['TRCK'].text[0]), '1')
+        self.assertEqual(str(tags['TCON'].text[0]), 'Podcast')
+
+    def test_the_raw_title_survives_in_a_comment(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        first = [p for p in self._mp3s() if 'First one' in p][0]
+        comments = [str(f.text[0]) for k, f in ID3(first).items()
+                    if k.startswith('COMM')]
+        self.assertTrue(any('\t' in c for c in comments), comments)
+
+    def test_a_dated_episode_gets_its_broadcast_date_not_the_feed_date(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        dated = [p for p in self._mp3s() if '14th March' in p][0]
+        self.assertEqual(str(ID3(dated)['TDRC'].text[0]), '2025-03-14')
+
+    def test_the_download_reaches_the_library(self):
+        self.run_cli('library', 'dirs', '--add', self.podcasts)
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        _code, body = self.json_of('track', 'list', '--album', 'Test Show')
+        self.assertEqual(len(body['items']), 2)
+
+    def test_syncing_an_unknown_feed_is_not_found(self):
+        code, _out, _err = self.run_cli('feed', 'sync', '--name', 'nope',
+                                        '--output', self.podcasts)
+        self.assertEqual(code, out.NOT_FOUND)
+
+    def test_sync_with_no_feeds_says_so_and_succeeds(self):
+        code, stdout, _err = self.run_cli('feed', 'sync',
+                                          '--output', self.podcasts)
+        self.assertEqual(code, out.OK)
+        self.assertIn('No feeds added', stdout)
+
+    def test_sync_with_nowhere_to_put_them_is_a_usage_error(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        code, _out, _err = self.run_cli('feed', 'sync', '--name', 'local')
+        self.assertEqual(code, out.USAGE)
+
+    def test_a_part_file_is_never_left_behind(self):
+        self.run_cli('feed', 'add', self.url, '--name', 'local')
+        self.run_cli('feed', 'sync', '--name', 'local', '--output', self.podcasts)
+        for root, _dirs, names in os.walk(self.podcasts):
+            self.assertEqual([n for n in names if n.endswith('.part')], [])
+
+
 if __name__ == "__main__":
     unittest.main()
