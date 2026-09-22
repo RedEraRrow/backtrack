@@ -108,6 +108,7 @@ _CREW_ORDER = ['creator', 'writer', 'producer', 'director', 'script editor', 'co
 _art_cache: dict = {}
 _ui_state = {
     'show_metadata': False,
+    'debug': False,
     'show_credits': False,
     'show_lyrics': False,
     'show_help': False,
@@ -484,6 +485,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
 def toggle_metadata() -> None:
     """Toggle display of the extended metadata details line."""
     _ui_state['show_metadata'] = not _ui_state['show_metadata']
+    _refresh_debug_flag()
 def toggle_help() -> None:
     """Toggle display of the full keyboard-shortcut help line."""
     _ui_state['show_help'] = not _ui_state['show_help']
@@ -513,6 +515,41 @@ def cycle_right_pane(has_lyrics: bool = True, has_credits: bool = True,
     if cur not in states:
         cur = 'off'
     _set_pane_mode(states[(states.index(cur) + 1) % len(states)])
+
+
+_lyric_src: dict = {'track': '', 'files': [], 'estimated': False}
+
+
+def _refresh_debug_flag() -> None:
+    """Re-read the `debug` config key into `_ui_state`.
+
+    Called when a track loads and when the metadata panel is toggled — both rare,
+    both moments where the answer could have changed — rather than on every draw,
+    which would re-read the file for a value that almost never moves.
+    """
+    try:
+        from src.config import load_config
+        _ui_state['debug'] = bool(load_config().get('debug', False))
+    except Exception:
+        _ui_state['debug'] = False
+
+
+def set_lyric_sources(track: str, files: list[str], estimated: bool = False) -> None:
+    """Register the files the lyric layer actually opened for this track.
+
+    Set by the player from what the load RESOLVED, never from what it hoped to
+    find, so the 'm' panel names the document being read rather than the one that
+    ought to be there — the difference between the two is the whole bug class this
+    exists to make visible.
+
+    Stamped with the track it belongs to, and the panel only shows it for that
+    track. Naming another episode's files would be worse than naming none, and a
+    module-level record outlives the track that set it.
+    """
+    _refresh_debug_flag()
+    _lyric_src['track'] = track or ''
+    _lyric_src['files'] = [f for f in (files or []) if f]
+    _lyric_src['estimated'] = estimated
 
 
 def set_queue_context(titles: list[str], index: int, paths: list[str] | None = None) -> None:
@@ -1018,6 +1055,16 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
 
         if details:
             lines.append(f"{C.DIM}{_trim(' · '.join(details))}{C.RESET}")
+
+        # Which documents the words on screen are coming from. A track can have a
+        # script, a timed transcript, both or neither, and until this was shown the
+        # only way to tell an accurate timeline from a guessed one was to watch it
+        # drift for ten minutes.
+        if _ui_state.get('debug') and _lyric_src['track'] == file_path:
+            src = ' · '.join(_lyric_src['files']) or 'none found'
+            est = _lyric_src['estimated']
+            txt = _trim(f"lyrics: {src}" + (" · estimated, will drift" if est else ""))
+            lines.append(f"{C.ACCENT if est else C.DIM}{txt}{C.RESET}")
 
     if not lines:
         fp = ui_utils.truncate_text(file_path, max(1, max_val_w), placeholder='…', front=True)

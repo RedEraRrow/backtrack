@@ -7,11 +7,13 @@ playing in the background** — only Stop (s) ends it. The session's background
 tick advances the queue and logs history whether or not this view is attached.
 """
 from __future__ import annotations
+import os
 import sys
 import time
 
 from src.utils import ui_utils
 from src.art.album_art import get_art_from_mp3
+from src.lyrics import lyric_pane
 from src.lyrics.lyrics import (
     _parse_sylt,
     _parse_uslt,
@@ -313,6 +315,7 @@ def _player_view_loop() -> dict:
     pending_size = last_size
     in_uslt_tail = False
     prog_row = ctrl_row = lyric_row = art_bottom_row = 0
+    pane = None
     current_width = last_size[0]
     # The USLT timeline currently on screen: the whole track normally, or just
     # the post-SYLT tail once we hand off.  `_redraw_full` re-wraps from these,
@@ -329,6 +332,7 @@ def _player_view_loop() -> dict:
         nonlocal is_uslt, has_uslt, has_credits, has_lyrics, dialogue_state
         nonlocal sylt_handoff_end_s, uslt_handoff_idx, in_uslt_tail, uslt_time_offset
         nonlocal toast_text, toast_expiry, view_lines, view_times
+        nonlocal pane
         fp = SESSION.file_path or ""
         audio = SESSION.audio
         duration = SESSION.duration
@@ -358,6 +362,37 @@ def _player_view_loop() -> dict:
             sylt_handoff_end_s = estimate_sylt_last_line_end(sylt_data, duration * 1000)
             uslt_handoff_idx = find_uslt_handoff_index(uslt_lines, sylt_data[-1][0])
 
+        # One timeline, whichever source this track has. Richest first: a dialogue
+        # transcript knows speakers and directions, SYLT knows real timings, USLT
+        # knows only the words and is paced across the track. All three become the
+        # same beats here, so nothing downstream asks which kind of lyrics these
+        # are or keeps a second set of rules for them.
+        _tl = None
+        # Whatever this track's words come from, say so in the same breath as
+        # choosing it — the 'm' panel then names the real source rather than a
+        # guess reconstructed later from the file names.
+        _srcs, _est = [], False
+        if dialogue_state.is_active():
+            _tl = lyric_pane.from_chunks(dialogue_state.expanded_chunks,
+                                         dialogue_state.line_times, duration)
+            _srcs = [os.path.basename(p) for p in
+                     (dialogue_state.md_path, dialogue_state.json_path) if p]
+            _est = dialogue_state.timing_source == 'estimated'
+        elif sylt_data and not is_uslt:
+            _tl = lyric_pane.from_sylt(sylt_data, duration)
+            _srcs = ['embedded SYLT']
+        elif uslt_lines and line_times:
+            _tl = lyric_pane.from_uslt(uslt_lines, line_times, duration)
+            _srcs = ['embedded USLT']
+            _est = True          # USLT carries words only; the pacing is invented
+        playback_ui.set_lyric_sources(fp, _srcs, _est)
+        pane = lyric_pane.Pane(_tl) if _tl else None
+        # Say it out loud. Paced-out timing looks right for the first minute and is
+        # a line adrift by the last, which is not something a still screen shows.
+        if dialogue_state.is_active() and dialogue_state.timing_source == 'estimated':
+            toast_text = "⚠ No transcript — lyric timing is estimated and will drift"
+            toast_expiry = time.time() + tune.TOAST_LONG_S
+
         if audio and audio.getall('EQU2'):
             toast_text = "♫ Equaliser applied"
             toast_expiry = time.time() + tune.TOAST_LONG_S
@@ -379,20 +414,22 @@ def _player_view_loop() -> dict:
         else:
             exp_lines, exp_times = [], []
 
-        if _ui_state['show_lyrics']:
-            right_col = playback_ui._last_right_left or 1
-            right_w = playback_ui._last_right_width or current_width
-            if dialogue_state and dialogue_state.is_active():
-                dialogue_state.update(0.0)
-                draw_dialogue_window(
-                    row=lyric_row, dialogue_lines=dialogue_state.expanded_chunks,
-                    current_idx=dialogue_state.current_idx, width=right_w, max_row=last_size[1],
-                    col=right_col, bottom_row=art_bottom_row, line_times=dialogue_state.line_times)
-            elif sylt_data or has_uslt:
-                first_line = sylt_data[0][0] if sylt_data else (uslt_lines[0] if uslt_lines else "")
-                draw_lyric_initial(
-                    lyric_row, first_line, width=right_w, max_row=last_size[1],
-                    col=right_col, bottom_row=art_bottom_row)
+        if pane and _ui_state['show_lyrics'] and not _ui_state.get('show_queue'):
+            # A full redraw has just wiped the screen, so what the pane last
+            # painted is gone. Its record is of rows it wrote, not rows that
+            # survived, so it is told — and repaints in step with the rest of the
+            # UI rather than a tick later.
+            _mp = getattr(SESSION, 'mp', None)
+            _ms = _mp.get_time() if _mp is not None else 0
+            pane.paint(sys.stdout, (_ms / 1000.0) if _ms and _ms > 0 else 0.0,
+                       lyric_pane.Geometry(
+                           row=lyric_row,
+                           col=playback_ui._last_right_left or 1,
+                           width=playback_ui._last_right_width or current_width,
+                           bottom=art_bottom_row or last_size[1]),
+                       force=True)
+            sys.stdout.flush()
+
 
     def update_ctrl_ui() -> None:
         """Redraw just the transport/status line in place (see #86)."""
@@ -517,12 +554,6 @@ def _player_view_loop() -> dict:
                     SESSION.seek(-5)
                     toast_text = 'Seek Backward -5s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
-                elif arrow in ('A', 'B') and (is_uslt or in_uslt_tail):
-                    current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
-                    target_idx = max(0, current_idx - 1) if arrow == 'A' else min(len(exp_times) - 1, current_idx + 1)
-                    uslt_time_offset = exp_times[target_idx][0] - elapsed
-                    manual_line_index = target_idx
-                    arrow_key_time = time.time()
                 elif key == ',':
                     SESSION.seek(-30)
                     toast_text = 'Seek Backward -30s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
@@ -589,70 +620,19 @@ def _player_view_loop() -> dict:
 
             update_progress_ui(prog_row, elapsed, duration, current_width)
 
-            if _ui_state.get('show_lyrics', True) and not _ui_state.get('show_queue'):
-                if dialogue_state and dialogue_state.is_active():
-                    right_col = playback_ui._last_right_left or 1
-                    right_w = playback_ui._last_right_width or current_width
-                    dialogue_state.update(elapsed=elapsed)
-                    if dialogue_state.current_idx != last_lyric_idx:
-                        draw_dialogue_window(
-                            row=lyric_row, dialogue_lines=dialogue_state.expanded_chunks,
-                            current_idx=dialogue_state.current_idx, width=right_w, max_row=last_size[1],
-                            col=right_col, bottom_row=art_bottom_row, line_times=dialogue_state.line_times)
-                        last_lyric_idx = dialogue_state.current_idx
-
-                elif sylt_data or has_uslt:
-                    right_col = playback_ui._last_right_left or 1
-                    right_w = playback_ui._last_right_width or current_width
-
-                    if (in_uslt_tail and has_uslt and sylt_handoff_end_s is not None
-                            and elapsed < sylt_handoff_end_s):
-                        in_uslt_tail = False
-                        uslt_time_offset = 0.0
-                        view_lines, view_times = uslt_lines, line_times
-                        last_lyric_idx = -1
-
-                    if is_uslt or in_uslt_tail:
-                        if manual_line_index is not None and arrow_key_time and time.time() - arrow_key_time > tune.MANUAL_LYRIC_REVERT_S:
-                            manual_line_index = None
-                        current_idx = find_current_uslt_line(exp_times, elapsed + uslt_time_offset)
-                        display_idx = min(current_idx, len(exp_lines) - 1)
-                        if display_idx != last_lyric_idx or manual_line_index is not None:
-                            draw_uslt_window(
-                                lyric_row, exp_lines, exp_times, elapsed + uslt_time_offset,
-                                width=right_w, manual_idx=manual_line_index,
-                                max_row=last_size[1], col=right_col, bottom_row=art_bottom_row)
-                            last_lyric_idx = display_idx
-
-                    else:
-                        current_idx = max(
-                            (i for i, (_, ts) in enumerate(sylt_data) if ts <= elapsed_ms), default=-1)
-
-                        if (not in_uslt_tail and has_uslt and sylt_handoff_end_s is not None
-                                and current_idx == len(sylt_data) - 1 and elapsed >= sylt_handoff_end_s):
-                            in_uslt_tail = True
-                            uslt_time_offset = 0.0
-                            _wrap_w = max(20, current_width - 8)
-                            tail_lines = uslt_lines[uslt_handoff_idx:]
-                            # The tail only owns the run-out *after* SYLT stops,
-                            # not the whole track — pacing it over `duration` and
-                            # then shifting it by the hand-off ran the lines a
-                            # track-length past the end of the audio.
-                            tail_span = max(0.0, duration - sylt_handoff_end_s)
-                            tail_raw_times = build_uslt_line_times(tail_lines, tail_span)
-                            tail_raw_times = [
-                                (t_start + sylt_handoff_end_s, t_end + sylt_handoff_end_s)
-                                for t_start, t_end in tail_raw_times]
-                            view_lines, view_times = tail_lines, tail_raw_times
-                            exp_lines, exp_times = expand_uslt_lines(view_lines, view_times, _wrap_w)
-                            last_lyric_idx = -1
-
-                        if current_idx != last_lyric_idx:
-                            draw_lyric_window(
-                                lyric_row, sylt_data, current_idx,
-                                width=right_w, max_row=last_size[1], col=right_col,
-                                bottom_row=art_bottom_row)
-                            last_lyric_idx = current_idx
+            if pane and _ui_state.get('show_lyrics', True) and not _ui_state.get('show_queue'):
+                # Every tick takes the same path: the frame is a function of the
+                # clock and the geometry and nothing else. A seek is just a
+                # different number arriving, a resize just a different box —
+                # neither is an event anyone has to notice, and neither can leave
+                # the words disagreeing with the audio. Only rows that differ get
+                # written, so an unchanged frame costs nothing.
+                pane.paint(sys.stdout, elapsed, lyric_pane.Geometry(
+                    row=lyric_row,
+                    col=playback_ui._last_right_left or 1,
+                    width=playback_ui._last_right_width or current_width,
+                    bottom=art_bottom_row or last_size[1]))
+                sys.stdout.flush()
 
             time.sleep(_LOOP_TICK_S)
         finally:

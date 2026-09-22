@@ -374,9 +374,12 @@ class DirectionTimingTest(unittest.TestCase):
         return _chunks_from_segments(segs + [tail], path, track_duration=60.0)
 
     def test_long_note_in_a_short_gap_rides_the_line(self):
+        # It rides in `pre`, not `cues`: the note introduces the line it lands on,
+        # so it reads above the words rather than under them.
         chunks, _times = self._run(self.LONG, 0.5)
         self.assertFalse(any(c['is_stage'] for c in chunks))
-        self.assertTrue(any(self.LONG[:20] in cue for c in chunks for cue in c['cues']))
+        self.assertTrue(any(self.LONG[:20] in cue
+                            for c in chunks for cue in c.get('pre', [])))
 
     def test_long_note_with_room_gets_its_own_beat(self):
         chunks, times = self._run(self.LONG, 20.0)

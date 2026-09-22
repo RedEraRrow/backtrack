@@ -101,9 +101,21 @@ LYRIC_MIN_LINE_S = 0.5
 LYRIC_MATCH_WINDOW_WORDS = 80
 # A silence longer than this gets a visible gap indicator between lines.
 LYRIC_AIR_THRESHOLD_S = 2.0
+# How early a line may appear, at most, in the silence before its first word. On
+# time is too late: the eye needs a moment to land and start reading before the
+# words are said. Giving a line the WHOLE preceding pause is the other error — it
+# then sits on screen through a two-second silence looking like it has already been
+# spoken. A short fixed anticipation reads as punctual either side of it.
+LYRIC_LEAD_IN_S = 0.35
 # Assumed reading rate for a stage direction shown as its own beat, in words per
 # second, and the floor below which even a one-word note is too quick to register.
-LYRIC_READ_WPS = 2.3
+# Reading is about twice as fast as speech, not the same speed — this was set level
+# with LYRIC_FALLBACK_WPS above, which made every direction ask for roughly double
+# the screen time it needs. Once the transcript came from forced alignment the gaps
+# between lines became short and accurate, and almost every direction failed the
+# test and got demoted to riding on a neighbouring line instead of sitting in the
+# pause where its sound actually happens. 4 w/s is 240 wpm, ordinary silent reading.
+LYRIC_READ_WPS = 4.0
 LYRIC_READ_MIN_S = 0.8
 # How much of a direction's reading time the silence has to cover before the
 # direction is given that silence as a beat of its own. Below it, the direction

@@ -51,7 +51,8 @@ except ImportError:
     _HAS_VLC = False
 
 from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[reportPrivateImportUsage]
-from src.lyrics.lyrics import _apply_markdown_formatting, _AIR_THRESHOLD
+from src.lyrics.lyrics import (_apply_markdown_formatting, _AIR_THRESHOLD,
+                               load_transcript)
 # The MD↔JSON alignment is shared with the playback lyric display so the two
 # always agree on speakers, stage directions and line text (see md_overlay).
 from src.lyrics.lyrics_text import (align_tokens as _align_tokens,
@@ -240,13 +241,20 @@ def _render_edit_fields(edit: dict) -> tuple[str, str]:
 
 
 def _find_transcript(mp3_path: str) -> str | None:
-    """Locate a transcript JSON file near mp3_path by common naming conventions."""
+    """Locate a transcript JSON file near mp3_path by common naming conventions.
+
+    Each candidate is opened and checked rather than taken on its name, using the
+    same test the player uses — otherwise the two can disagree about which file is
+    authoritative for a track, and the editor would be timing one document while
+    playback read another. A transcription's own export (a bare list of segments,
+    as MacWhisper writes) is named like a transcript and is not one.
+    """
     d    = os.path.dirname(mp3_path)
     base = os.path.splitext(os.path.basename(mp3_path))[0]
     for name in [f"{base}.json", f"{base}_timings.json", "transcript.json",
                  os.path.join("Transcript", f"{base}.json")]:
         p = os.path.join(d, name)
-        if os.path.isfile(p):
+        if os.path.isfile(p) and load_transcript(p):
             return p
     return None
 
@@ -544,7 +552,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
           dirty, undo_depth, track_name, playing, play_pos,
           edit, source, total_s, show_hints=False, md_overlay=None,
           md_quality=None, aud_now=None, aud_editing=False,
-          review=None) -> tuple[list[str], int, dict, int, tuple | None]:
+          review=None, sources="") -> tuple[list[str], int, dict, int, tuple | None]:
     """Render the full editor screen for the current mode (TAP/AUDITION/SEG/WORD),
     returning the display lines, the updated viewport, a row→item hit-map for
     mouse clicks, how many trailing lines are the pinned hint footer, and the
@@ -608,6 +616,13 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     if show_words and segs and seg_cursor < len(segs):
         _raw = segs[seg_cursor].get("text", "").strip()
         ctx_plain = f"  ›  {_raw}"
+    elif sources:
+        # Which documents are being edited, in the one place already reserved for
+        # "what am I looking at". An editor that does not name its files lets you
+        # spend an hour retiming a working copy you meant to throw away, or the
+        # wrong episode's transcript entirely. Word view gives the space back to
+        # the line under the cursor, which is what matters there.
+        ctx_plain = f"  ·  {sources}"
     track_budget = max(0, B - len(label) - 2 - right_w - 2)
     track_txt    = ui_utils.truncate_text(track_name + ctx_plain, track_budget)
     left_disp    = f"{C.BOLD}{label}{C.RESET}  {C.DIM}{track_txt}{C.RESET}"
@@ -1573,6 +1588,28 @@ def lyrics_editor(mp3_path: str) -> None:
 
     w = _Widget(fd)
 
+    def _sources_label() -> str:
+        """The documents this session is actually reading, named as they are on disk.
+
+        `working copy` matters more than the rest: resuming from the `.sync.json`
+        sidecar means edits are going there and not to the transcript until W, and
+        a `diverged` copy means the transcript has changed underneath it since. Both
+        were previously announced once at load and then invisible for the rest of
+        the session.
+        """
+        parts: list[str] = []
+        if aux.get('jpath'):
+            parts.append(os.path.basename(aux['jpath']))
+        if aux.get('from_sidecar'):
+            parts.append('diverged working copy' if aux.get('drift') else 'working copy')
+        if source == SOURCE_SYLT:
+            parts.append('embedded SYLT')
+        elif source == SOURCE_USLT:
+            parts.append('embedded USLT')
+        if md_path:
+            parts.append(os.path.basename(md_path))
+        return ' · '.join(parts)
+
     def cur_words() -> list:
         """Words of the segment currently open in WORD mode."""
         return segs[seg_cursor].get("words", []) if segs else []
@@ -2226,7 +2263,7 @@ def lyrics_editor(mp3_path: str) -> None:
                     {'fields': edit_fields, 'fi': edit_fi, 'pos': edit_pos},
                     source, total_s,
                     show_hints, md_overlay, md_quality, aud_now, aud_editing,
-                    review=review_info,
+                    review=review_info, sources=_sources_label(),
                 )
                 w.render(lines)
                 need_redraw = False

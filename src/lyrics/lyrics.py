@@ -685,6 +685,7 @@ def draw_dialogue_window(
         is_stage  = chunk.get('is_stage', False)
         is_air    = chunk.get('is_air', False)
         cues      = [c for c in chunk.get('cues', []) if c and c.strip()]
+        pre_cues  = [c for c in chunk.get('pre', []) if c and c.strip()]
 
         # Only fired for gaps that weren't covered by an is_air chunk (edge
         # cases). Suppressed when either neighbour is already an air/stage chunk.
@@ -734,6 +735,15 @@ def draw_dialogue_window(
 
             if text:
                 right_lines = _md_rows(text, text_width, base=base, active=is_active) or [""]
+
+        # A direction that INTRODUCES the line goes above it: the bing bong sounds
+        # before the announcement, the door opens before the person speaks. Reading
+        # it underneath puts the effect after its cause.
+        if pre_cues:
+            lead = []
+            for cue in pre_cues:
+                lead.extend(_dir_rows(cue, text_width, base, is_active))
+            right_lines = lead + right_lines
 
         # Directions about the words — a mid-line beat with no silence of its own,
         # or a standalone event happening over the line — sit under the line in the
@@ -1050,10 +1060,13 @@ def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | Non
                 srt_path = str(srt_file)
                 break
 
-    # JSON: same dir first
+    # JSON: same dir first. Each candidate is opened and checked, because a file
+    # can be named like a transcript without being one — an anchor transcription
+    # sitting in `timings/` matches by stem, and taking it would quietly cost the
+    # track its real timings.
     for name in [f"{base}.json", f"{base}_timings.json", "transcript.json"]:
         candidate = parent / name
-        if candidate.exists():
+        if candidate.exists() and load_transcript(candidate):
             json_path = str(candidate)
             break
 
@@ -1062,7 +1075,8 @@ def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | Non
         for json_file in sorted(parent.rglob("*.json")):
             if json_file.parent == parent:
                 continue
-            if json_file.stem == base or "timings" in json_file.name.lower():
+            if (json_file.stem == base or "timings" in json_file.name.lower()) \
+                    and load_transcript(json_file):
                 json_path = str(json_file)
                 break
 
@@ -1081,6 +1095,28 @@ def parse_markdown_file(file_path: str) -> list[DialogueLine] | None:
         return None
 
 
+def load_transcript(path) -> dict | None:
+    """A timed transcript read off disk, or None if that file is not one.
+
+    Not everything named `<track>.json` beside a track is a transcript. A
+    transcription's own export — MacWhisper writes a bare list of
+    {"text", "timestamp"} — is an ANCHOR file: it exists to be aligned against,
+    not to be played from. Mistaking one for a transcript silently drops playback
+    onto the evenly-paced fallback, which starts about right and drifts further
+    the longer the track runs, so the shape is checked rather than assumed.
+    """
+    try:
+        with open(path, encoding='utf-8') as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not isinstance(data.get('segments'), list) and not data.get('word_segments'):
+        return None
+    return data
+
+
 def _parse_word_timings_json(json_path: str) -> list[dict]:
     """Return the flat list of spoken word timings.
 
@@ -1089,8 +1125,9 @@ def _parse_word_timings_json(json_path: str) -> list[dict]:
     editor's enriched transcripts add ``kind: stage_dir`` / ``dead_air`` segments
     that carry no spoken words — those are skipped so the timing stream stays
     purely the spoken words regardless of which format the file is in."""
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    data = load_transcript(json_path)
+    if not data:
+        return []
 
     if data.get('word_segments'):
         return data['word_segments']
@@ -1122,9 +1159,17 @@ def _find_enriched_transcript(audio_path: str) -> str | None:
     # other JSON files that contain editor `kind` beats instead.
     if json_path:
         candidates.append(Path(json_path))                       # transcript.json (preferred)
-    # Search subdirectories for any enriched transcripts, but skip '*.sync.json'
+    # Search subdirectories too, but only for files that BELONG to this track.
+    # A whole-library folder holds one transcript per episode, so a scan that takes
+    # any JSON it finds will happily merge another episode's silences and stage
+    # directions into this one the moment this one's own file is missing. A
+    # transcript is this track's because it is named after it, not because it is
+    # nearby; a bare `transcript.json` is the single-track folder convention.
+    base = Path(audio_path).stem
     for p in sorted(parent.rglob('*.json')):
         if (json_path and p == Path(json_path)) or p.name.endswith('.sync.json'):
+            continue
+        if p.stem != base and p.name != 'transcript.json':
             continue
         candidates.append(p)
     seen: set[str] = set()
@@ -1133,10 +1178,8 @@ def _find_enriched_transcript(audio_path: str) -> str | None:
         if cs in seen or not c.exists():
             continue
         seen.add(cs)
-        try:
-            with open(c, encoding='utf-8') as f:
-                data = json.load(f)
-        except (OSError, ValueError):
+        data = load_transcript(c)
+        if not data:
             continue
         if any(s.get('kind') in ('dead_air', 'stage_dir') for s in data.get('segments', [])):
             return cs
@@ -1432,8 +1475,12 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
                 line_seen.add(line)
             # `stage_dir` is the MD banner's aside and belongs to the speaker;
             # `cues` are directions about the words, shown in the text column.
+            # `carried` introduces this line — the bing bong before the
+            # announcement, the door before whoever walks through it. It reads
+            # above the words, not under them. A direction that leaned 'prev' was
+            # attached to the line just gone by `_flush` and stays under that one.
             _emit({'parent_idx': si, 'speaker': speaker, 'stage_dir': stage,
-                   'text': text, 'cues': carried,
+                   'text': text, 'cues': [], 'pre': carried,
                    'is_stage': False, 'is_air': False}, window)
 
     for ov in ov_map.get(len(segs), []):             # trailing overlay items
@@ -1442,6 +1489,33 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
     _flush(None)
     if track_duration > 0:
         _air_if_silent(float(track_duration))        # the run-out after the last line
+
+    # Close the gaps between beats, so a moment of silence belongs to the line just
+    # gone rather than resolving to the line that comes NEXT and showing it while
+    # nobody is speaking yet. All but the last `LYRIC_LEAD_IN_S` of it, that is: a
+    # line that arrives exactly on its first word arrives too late to read, so the
+    # next beat takes a short, fixed anticipation out of the silence and the line
+    # before keeps the rest.
+    for i in range(len(times) - 1):
+        a, b = times[i]
+        nxt = times[i + 1][0]
+        target = nxt - tune.LYRIC_LEAD_IN_S
+        # There is rarely enough silence to take the lead-in from: this dialogue
+        # runs at 170 words a minute, the pauses between lines are a quarter of a
+        # second, and a stage direction now legitimately occupies many of them. So
+        # between two spoken lines the anticipation comes out of the previous line's
+        # own tail — the highlight moves on a moment before its last word finishes,
+        # which is how a lyric highlight has always behaved, and the line stays on
+        # screen (dimmed) while it does. No line gives up more than half of itself.
+        #
+        # A direction keeps all of its beat: it is short and it is the thing being
+        # read, and the line after it needs no run-up because the eye is already in
+        # the text column looking at it.
+        if chunks[i]['is_stage'] or chunks[i]['is_air']:
+            lo = b
+        else:
+            lo = max(a, b - min(tune.LYRIC_LEAD_IN_S, (b - a) / 2))
+        times[i] = (a, min(nxt, max(lo, target)))
 
     return chunks, times
 
@@ -1455,6 +1529,11 @@ class DialoguePlaybackState:
         sentence chunks, and merge in explicit dead-air beats; sets load_error on failure."""
         md_path = _find_markdown_for_audio(audio_path)
         _, json_path = _find_timing_files_for_audio(audio_path)
+        # Kept so the player can NAME what it read. Resolved paths, not candidates:
+        # the point of showing them is to catch the case where what was opened is
+        # not what was meant.
+        self.md_path = md_path
+        self.json_path = json_path
 
         raw_dialogue_lines = None
         word_timings = None
@@ -1462,6 +1541,11 @@ class DialoguePlaybackState:
         self.line_times: list[tuple[float, float]] = []
         self.current_idx = 0
         self.load_error = None
+        # Where the timing came from, so playback can say so rather than look
+        # confident. 'transcript' is measured; 'estimated' is the script paced
+        # across the track, which starts about right and drifts all the way to the
+        # middle — the failure that is impossible to spot from a still screen.
+        self.timing_source = 'none'
         loaded_from_segments = False  # Track if we already have a full segmentation
 
         # Diagnostic: report if files aren't found
@@ -1500,6 +1584,7 @@ class DialoguePlaybackState:
                                 self.expanded_chunks, self.line_times = _chunks_from_segments(
                                     json_segments, md_path, track_duration)
                                 self.load_error = None
+                                self.timing_source = 'transcript'
                                 loaded_from_segments = True   # skip the MD re-timing path
                                 json_segments = None
                                 word_timings = None
@@ -1520,6 +1605,7 @@ class DialoguePlaybackState:
                 word_timings=word_timings,
                 wrap_w=50
             )
+            self.timing_source = 'transcript' if word_timings else 'estimated'
             self._merge_air_beats(audio_path)
 
     def _merge_air_beats(self, audio_path: str) -> None:

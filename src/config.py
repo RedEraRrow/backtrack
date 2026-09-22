@@ -9,6 +9,10 @@ DEFAULT_CONFIG = {
         "accent": "\033[1;31m",
         "success": "\033[1;32m",
     },
+    # Diagnostics for working on the library itself, not for listening: the
+    # player names the files a track's lyrics came from, and anything added later
+    # that answers "why is it doing that" rather than "what is playing".
+    "debug": False,
     "history_enabled": True,
     "lyric_lead_in": 2.0,
     "music_directories": [],
