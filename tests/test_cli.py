@@ -465,13 +465,45 @@ class UsageTest(CliTest):
                 self.assertTrue(cmd.example, f"{path} has no example")
                 self.assertIn('backtrack', cmd.example)
 
-    def test_every_command_offers_help(self):
+    def test_every_command_and_group_offers_help(self):
+        """Every node, not just the top-level ones.
+
+        Testing only the groups missed `bulk rename --help` crashing: argparse
+        %-formats help strings, and "A %token% name pattern" made it read `%t`
+        as a format specifier.
+        """
         from src.cli_commands import TREE
-        for cmd in TREE:
-            with self.subTest(command=cmd.name):
-                code, stdout, _err = self.run_cli(cmd.name, '--help')
+
+        def walk(cmds, prefix=''):
+            """Every command and group with the path that reaches it."""
+            for cmd in cmds:
+                path = f"{prefix} {cmd.name}".strip()
+                yield path, cmd
+                if cmd.children:
+                    yield from walk(cmd.children, path)
+
+        for path, cmd in walk(TREE):
+            with self.subTest(command=path):
+                code, stdout, _err = self.run_cli(*path.split(), '--help')
                 self.assertEqual(code, out.OK)
                 self.assertIn(cmd.help.split()[0].lower(), stdout.lower())
+                if not cmd.children:
+                    self.assertIn('example', stdout)
+
+    def test_a_percent_in_a_help_string_does_not_break_argparse(self):
+        code, stdout, _err = self.run_cli('bulk', 'rename', '--help')
+        self.assertEqual(code, out.OK)
+        self.assertIn('%token%', stdout)
+
+    def test_the_schema_keeps_help_text_unescaped(self):
+        # The escaping is for argparse only; a consumer reads the real text.
+        _code, stdout, _err = self.run_cli('schema', '--json')
+        body = json.loads(stdout)
+        bulk = [c for c in body['commands'] if c['name'] == 'bulk'][0]
+        rename = [c for c in bulk['commands'] if c['name'] == 'rename'][0]
+        pattern = [f for f in rename['flags'] if f['name'] == '--pattern'][0]
+        self.assertIn('%token%', pattern['help'])
+        self.assertNotIn('%%', pattern['help'])
 
 
 class SchemaAndCompletionTest(CliTest):

@@ -196,7 +196,7 @@ def _add_flag(parser: argparse.ArgumentParser, flag: Flag,
     the rest afterwards.
     """
     names = [flag.name] + ([flag.short] if flag.short else [])
-    kwargs: dict = {'help': flag.help, 'dest': flag.dest}
+    kwargs: dict = {'help': _escape_help(flag.help), 'dest': flag.dest}
     if flag.action:
         kwargs['action'] = flag.action
     if flag.action != 'store_true':
@@ -214,6 +214,17 @@ def _add_flag(parser: argparse.ArgumentParser, flag: Flag,
     elif flag.action != 'store_true':
         kwargs['default'] = flag.default
     parser.add_argument(*names, **kwargs)
+
+
+def _escape_help(text: str) -> str:
+    """Escape a help string for argparse, which %-formats them.
+
+    A help line naming a `%token%` pattern — which several of these do — made
+    argparse raise on `--help` trying to read `%t` as a format specifier. Done
+    here, at the boundary, so `schema` still prints the readable text and no
+    author has to remember.
+    """
+    return (text or '').replace('%', '%%')
 
 
 def _globals_parser() -> argparse.ArgumentParser:
@@ -269,7 +280,7 @@ def _build(cmd: Cmd, parser: argparse.ArgumentParser, parent) -> None:
     for flag in cmd.flags:
         _add_flag(parser, flag)
     for arg in cmd.args:
-        kwargs: dict = {'help': arg.help}
+        kwargs: dict = {'help': _escape_help(arg.help)}
         if arg.nargs is not None:
             kwargs['nargs'] = arg.nargs
         if arg.choices:
@@ -474,6 +485,8 @@ def main(argv: list) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:                 # argparse's own --help / usage
         return int(exc.code or 0)
+    except Exception as exc:                  # a malformed definition or input
+        return out.fail(out.USAGE, f"Could not read those arguments: {exc}")
     args = _apply_global_defaults(args)
 
     out.configure(json_mode=args.json, quiet=args.quiet,
