@@ -27,6 +27,7 @@ from src.id3.id3_tag_handler import (
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import filename_parser as fp
 from src.id3 import tag_writer as tw
+from src.id3 import bulk_ops as bo
 from src.id3 import tag_registry as _reg
 from src.id3 import file_namer as fnm
 from src.id3 import cover_matcher as cm
@@ -834,31 +835,20 @@ _STRIP_LENGTH_COLUMNS = [
 def renumber_tracks_op(paths: list, library: list, header) -> None:
     """Renumber track numbers per-disc (disc-relative) ↔ continuous (album-
     relative / movement systems). Works for MP3 and MP4 via tag_writer."""
-    # Disc/track numbering is read from the files, not the library cache. Taking
-    # the discs from a stale cache silently flattened a multi-disc selection into
-    # one group, so a *per-disc* renumber wrote a single continuous 1…N run over
-    # every disc — the exact thing you reach for this after inserting a disc.
-    songs = []
-    for p in paths:
-        if not tw.is_writable(p):
-            continue
-        pairs = tw.read_number_pairs(p)
-        songs.append({'path': p, 'disc': pairs['disc'], 'track': pairs['track']})
-    skipped_fmt = len(paths) - len(songs)
-    writable = bp.order_tracks(songs)
-    if not writable:
+    ordered, skipped_fmt = bo.read_numbering(paths)
+    if not ordered:
         ui_utils.show_status("No MP3/MP4 tracks to renumber.")
         return
 
     _MODES = ["Continuous (album-relative) — 1…N across all discs",
               "Per-disc (disc-relative) — restart at 1 each disc"]
-    state: dict = {'mode_sel': _MODES[0]}
+    state: dict = {'mode_sel': _MODES[0], 'apply_set': set()}
 
     def _ask_mode() -> bool:
         """Which numbering to lay down."""
         sel = prompt.select("Renumber to:", choices=_MODES,
                             index=_MODES.index(state['mode_sel']),
-                            header=header(f"{len(writable)} tracks in disc/track order"))
+                            header=header(f"{len(ordered)} tracks in disc/track order"))
         if not sel:
             return False
         state['mode_sel'] = sel
@@ -867,18 +857,13 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
     def _ask_preview() -> bool:
         """Show what each file becomes and take the selection."""
         mode = 'continuous' if state['mode_sel'].startswith("Continuous") else 'per_disc'
-        plan = bp.renumber_tracks(writable, mode)    # {path: (track, total)}
+        plan = bo.plan_renumber(ordered, skipped_fmt, mode)
         state['plan'] = plan
-        pos = {s['path']: i + 1 for i, s in enumerate(writable)}
-        choices = []
-        for s in writable:
-            trk, total = plan[s['path']]
-            was = str(s.get('track', '') or '?')
-            choices.append(prompt.Choice(
-                title=os.path.basename(s['path']), value=s['path'],
-                checked=s['path'] in state.get('apply_set', {s['path']}),
-                cells=[str(pos[s['path']]), os.path.basename(s['path']),
-                       f"{was} → {trk}/{total}"]))
+        ticked = state['apply_set'] or {c.path for c in plan.changed}
+        choices = [
+            prompt.Choice(title=name, value=c.path, checked=c.path in ticked,
+                          cells=[str(pos), name, why])
+            for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
         sub = ui_utils.plural(len(choices), "file") + (
             f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
         sel = prompt.select("Preview — ↵ applies:", choices=choices,
@@ -890,34 +875,15 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
 
     if not _walk([_ask_mode, _ask_preview]):
         return
-    plan = state['plan']
-    apply_set = state['apply_set']
-    if not apply_set:
+    if not state['apply_set']:
         ui_utils.show_status("No files selected.")
         return
 
-    count = errors = 0
-    for s in writable:
-        p = s['path']
-        if p not in apply_set:
-            continue
-        trk, total = plan[p]
-        r = tw.write_fields(p, {'track': trk, 'total_tracks': total}, {'track'}, overwrite=True)
-        if r.error:
-            errors += 1
-        elif r.written:
-            count += 1
-            try:
-                refresh_library_entry(library, p)
-            except Exception:
-                pass
-
-    msg = f"Renumbered {count} file(s)."
-    if skipped_fmt:
-        msg += f" {skipped_fmt} unsupported skipped."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    applied = bo.apply_changes(
+        state['plan'], library,
+        lambda c: tw.write_fields(c.path, c.fields, {'track'}, overwrite=True),
+        selected=state['apply_set'])
+    ui_utils.show_status(bo.summarise(applied, "Renumbered"))
 
 
 def reflow_discs_op(paths: list, library: list, header) -> None:
@@ -929,25 +895,14 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
     the totals move. "Totals only" fixes the "of N" half without renumbering, for
     deliberately sparse discs. MP3 and MP4 both write, via tag_writer.
     """
-    # Numbering comes from the files, not the library cache: you reach for this
-    # right after hand-numbering a disc 1.5, when the cache has not caught up.
-    songs = []
-    for p in paths:
-        if not tw.is_writable(p):
-            continue
-        pairs = tw.read_number_pairs(p)
-        songs.append({'path': p, 'disc': pairs['disc'], 'track': pairs['track'],
-                      'total_discs': pairs['total_discs'],
-                      'total_tracks': pairs['total_tracks']})
-    skipped_fmt = len(paths) - len(songs)
-    writable = bp.order_tracks(songs)
-    if not writable:
+    ordered, skipped_fmt = bo.read_numbering(paths)
+    if not ordered:
         ui_utils.show_status("No MP3/MP4 tracks to reflow.")
         return
 
-    runs = bp.disc_ranges(writable)
+    runs = bp.disc_ranges(ordered)
     disc_list = ', '.join(lab for _, _, lab in runs[:8]) + ('…' if len(runs) > 8 else '')
-    sub = f"{len(writable)} tracks · discs {disc_list}"
+    sub = f"{len(ordered)} tracks · discs {disc_list}"
 
     mode_sel = prompt.select(
         "Disc numbering:",
@@ -972,54 +927,26 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("Nothing to change — pick a total to update.")
         return
 
-    plan = bp.reflow_discs(writable, renumber=renumber,
-                           disc_totals=disc_totals, track_totals=track_totals)
-
-    def _old_pair(s, cur_key, tot_key) -> str:
-        """The track's existing 'n/N' for a pair field, as stored."""
-        raw = str(s.get(cur_key, '') or '').strip()
-        if '/' in raw:
-            return raw
-        tot = str(s.get(tot_key, '') or '').strip()
-        return f"{raw or '?'}/{tot}" if tot else (raw or '?')
-
-    def _new_pair(f: dict, cur_key: str, tot_key: str) -> str:
-        """The planned 'n/N' for a pair field."""
-        return f"{f[cur_key]}/{f[tot_key]}" if tot_key in f else str(f[cur_key])
-
-    pos = {s['path']: i + 1 for i, s in enumerate(writable)}
-    choices, n_changed = [], 0
-    for s in writable:
-        f = plan[s['path']]
-        bits = []
-        d_old, d_new = _old_pair(s, 'disc', 'total_discs'), _new_pair(f, 'disc', 'total_discs')
-        if d_old != d_new:
-            bits.append(f"disc {d_old} → {d_new}")
-        if track_totals:
-            t_old = _old_pair(s, 'track', 'total_tracks')
-            t_new = _new_pair(f, 'track', 'total_tracks')
-            if t_old != t_new:
-                bits.append(f"track {t_old} → {t_new}")
-        changed = bool(bits)
-        n_changed += changed
-        # Unchanged rows stay listed but unticked — no point rewriting a file
-        # whose numbering the reflow leaves exactly as it was.
-        choices.append(prompt.Choice(
-            title=os.path.basename(s['path']), value=s['path'], checked=changed,
-            cells=[str(pos[s['path']]), os.path.basename(s['path']),
-                   ' · '.join(bits) if changed else 'no change']))
-
-    if not n_changed:
+    plan = bo.plan_reflow(ordered, skipped_fmt, renumber=renumber,
+                          disc_totals=disc_totals, track_totals=track_totals)
+    if plan.message:
         # Already dense with the right totals — say so, rather than showing an
         # all-unticked preview that ends in "No tracks selected".
-        ui_utils.show_status(
-            f"Disc numbering is already 1…{len(runs)} with matching totals — nothing to do.")
+        ui_utils.show_status(plan.message)
         return
+
+    # Unchanged rows stay listed but unticked — no point rewriting a file whose
+    # numbering the reflow leaves exactly as it was.
+    choices = [
+        prompt.Choice(title=name, value=c.path, checked=c.changed,
+                      cells=[str(pos), name, why or 'no change'])
+        for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
+    n_changed = len(plan.changed)
 
     def _reflow_header():
         """Live counts for the reflow preview."""
         nk = sum(1 for ch in choices if ch.checked)
-        bits = [ui_utils.plural(len(writable), "track"), f"{n_changed} changing", f"{nk} ticked"]
+        bits = [ui_utils.plural(len(ordered), "track"), f"{n_changed} changing", f"{nk} ticked"]
         if skipped_fmt:
             bits.append(f"{skipped_fmt} unsupported skipped")
         return header(' · '.join(bits))()
@@ -1034,32 +961,14 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
         return
 
     fields = {'disc'} | ({'track'} if track_totals else set())
-    count = errors = 0
-    for s in writable:
-        p = s['path']
-        if p not in apply_set:
-            continue
-        r = tw.write_fields(p, plan[p], fields, overwrite=True)
-        if r.error:
-            errors += 1
-        elif r.written:
-            count += 1
-            try:
-                refresh_library_entry(library, p)
-            except Exception:
-                pass
-
-    msg = f"Reflowed disc numbering on {count} file(s)."
-    if skipped_fmt:
-        msg += f" {skipped_fmt} unsupported skipped."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    applied = bo.apply_changes(
+        plan, library,
+        lambda c: tw.write_fields(c.path, c.fields, fields, overwrite=True),
+        selected=apply_set)
+    ui_utils.show_status(bo.summarise(applied, "Reflowed disc numbering on"))
 
 
-def _picture_type_name(pic_type) -> str:
-    """Human label for an APIC picture-type byte ("Cover (front)", "Other"…)."""
-    return dict(_PICTURE_TYPES).get(int(pic_type), f"type {pic_type}")
+_picture_type_name = bo.picture_type_name
 
 
 def set_picture_type_op(paths: list, library: list, header) -> None:
@@ -1069,19 +978,7 @@ def set_picture_type_op(paths: list, library: list, header) -> None:
     looking specifically for a front cover then misses. This retypes in bulk
     without touching the image. MP3 only — MP4's `covr` atom has no type field.
     """
-    art = []
-    for path in paths:
-        if not path.lower().endswith('.mp3'):
-            continue
-        try:
-            tags = ID3(path)
-        except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
-            continue
-        frames = [tags[k] for k in tags if k.startswith('APIC')]
-        if frames:
-            art.append({'path': path,
-                        'types': [int(getattr(f, 'type', 3)) for f in frames]})
-    skipped = len(paths) - len(art)
+    art, skipped = bo.read_picture_types(paths)
     if not art:
         ui_utils.show_status("No MP3s with embedded art in this selection.")
         return
@@ -1094,20 +991,16 @@ def set_picture_type_op(paths: list, library: list, header) -> None:
     if pic_type is None:
         return
 
-    pos = {a['path']: i + 1 for i, a in enumerate(art)}
-    choices, n_changed = [], 0
-    for a in art:
-        stale = [t for t in a['types'] if t != pic_type]
-        n_changed += bool(stale)
-        was = ' · '.join(_picture_type_name(t) for t in a['types'])
-        choices.append(prompt.Choice(
-            title=os.path.basename(a['path']), value=a['path'], checked=bool(stale),
-            cells=[str(pos[a['path']]), os.path.basename(a['path']),
-                   f"{was} → {_picture_type_name(pic_type)}" if stale else "already correct"]))
-
-    if not n_changed:
-        ui_utils.show_status(f"Every image is already {_picture_type_name(pic_type)}.")
+    plan = bo.plan_set_picture_type(art, skipped, pic_type)
+    if plan.message:
+        ui_utils.show_status(plan.message)
         return
+
+    choices = [
+        prompt.Choice(title=name, value=c.path, checked=c.changed,
+                      cells=[str(pos), name, why or "already correct"])
+        for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
+    n_changed = len(plan.changed)
 
     def _type_header():
         """Live counts for the preview."""
@@ -1126,26 +1019,10 @@ def set_picture_type_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("No tracks selected.")
         return
 
-    count = errors = 0
-    for a in art:
-        if a['path'] not in apply_set:
-            continue
-        r = tw.retype_cover(a['path'], pic_type)
-        if r.error:
-            errors += 1
-        elif r.written:
-            count += 1
-            try:
-                refresh_library_entry(library, a['path'])
-            except Exception:
-                pass
-
-    msg = f"Set {_picture_type_name(pic_type)} on {count} file(s)."
-    if skipped:
-        msg += f" {skipped} without art or not MP3."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    applied = bo.apply_changes(
+        plan, library, lambda c: tw.retype_cover(c.path, pic_type), selected=apply_set)
+    ui_utils.show_status(bo.summarise(applied, f"Set {_picture_type_name(pic_type)} on",
+                                      skipped_note="without art or not MP3"))
 
 
 def strip_single_disc_op(paths: list, library: list, header) -> None:
@@ -1156,48 +1033,26 @@ def strip_single_disc_op(paths: list, library: list, header) -> None:
     (no total) counts too, but only when nothing in the selection sits on another
     disc — on a real multi-disc album an untotalled "1" is meaningful.
     """
-    songs = []
-    for path in paths:
-        if not tw.is_writable(path):
-            continue
-        pairs = tw.read_number_pairs(path)
-        songs.append({'path': path, 'disc': pairs['disc'].strip(),
-                      'total_discs': pairs['total_discs'].strip(),
-                      'track': pairs['track'], 'total_tracks': pairs['total_tracks']})
-    skipped_fmt = len(paths) - len(songs)
-    ordered = bp.order_tracks(songs)
+    ordered, skipped_fmt = bo.read_numbering(paths)
     if not ordered:
         ui_utils.show_status("No MP3/MP4 tracks to change.")
         return
 
-    # Is every disc value in this selection either absent or 1?
-    single_disc = not {s['disc'] for s in ordered} - {'', '1'}
-
-    def _why(s: dict) -> str:
-        """Why this track is (or isn't) a candidate."""
-        disc, total = s['disc'], s['total_discs']
-        if not disc:
-            return ""                                  # nothing to remove
-        if total == '1':
-            return f"disc {disc}/{total} → —"
-        if not total and disc == '1' and single_disc:
-            return "disc 1 → —"
-        return ""
-
-    pos = {s['path']: i + 1 for i, s in enumerate(ordered)}
-    choices, n_changed = [], 0
-    for s in ordered:
-        why = _why(s)
-        n_changed += bool(why)
-        stored = s['disc'] + (f"/{s['total_discs']}" if s['total_discs'] else "")
-        choices.append(prompt.Choice(
-            title=os.path.basename(s['path']), value=s['path'], checked=bool(why),
-            cells=[str(pos[s['path']]), os.path.basename(s['path']),
-                   why or (f"keeps disc {stored}" if stored else "no disc number")]))
-
-    if not n_changed:
-        ui_utils.show_status("No tracks are disc 1 of 1 — nothing to remove.")
+    plan = bo.plan_strip_single_disc(ordered, skipped_fmt)
+    if plan.message:
+        ui_utils.show_status(plan.message)
         return
+
+    def _kept(c) -> str:
+        """What an untouched row says instead of a change."""
+        stored = c.fields.get('keeps', '')
+        return f"keeps disc {stored}" if stored else "no disc number"
+
+    choices = [
+        prompt.Choice(title=name, value=c.path, checked=c.changed,
+                      cells=[str(pos), name, why or _kept(c)])
+        for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
+    n_changed = len(plan.changed)
 
     def _strip_header():
         """Live counts for the preview."""
@@ -1216,26 +1071,9 @@ def strip_single_disc_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("No tracks selected.")
         return
 
-    count = errors = 0
-    for s in ordered:
-        if s['path'] not in apply_set:
-            continue
-        r = tw.clear_fields(s['path'], {'disc'})
-        if r.error:
-            errors += 1
-        elif r.written:
-            count += 1
-            try:
-                refresh_library_entry(library, s['path'])
-            except Exception:
-                pass
-
-    msg = f"Removed the disc number from {count} file(s)."
-    if skipped_fmt:
-        msg += f" {skipped_fmt} unsupported skipped."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    applied = bo.apply_changes(
+        plan, library, lambda c: tw.clear_fields(c.path, {'disc'}), selected=apply_set)
+    ui_utils.show_status(bo.summarise(applied, "Removed the disc number from"))
 
 
 def strip_length_tags_op(paths: list, library: list, header) -> None:
@@ -1246,31 +1084,21 @@ def strip_length_tags_op(paths: list, library: list, header) -> None:
     for files that predate that feature. MP3 only, since neither frame has an
     MP4 analogue.
     """
-    songs = []
-    for path in paths:
-        if tw.format_kind(path) != 'mp3':
-            continue
-        tlen, tdly = tw.stale_length_tags(path)
-        songs.append({'path': path, 'tlen': tlen, 'tdly': tdly})
-    skipped_fmt = len(paths) - len(songs)
+    songs, skipped_fmt = bo.read_length_tags(paths)
     if not songs:
         ui_utils.show_status("No MP3 tracks to check.")
         return
 
-    def _why(s: dict) -> str:
-        return ' · '.join(t for t, present in (('TLEN', s['tlen']), ('TDLY', s['tdly'])) if present)
-
-    choices, n_changed = [], 0
-    for s in songs:
-        why = _why(s)
-        n_changed += bool(why)
-        choices.append(prompt.Choice(
-            title=os.path.basename(s['path']), value=s['path'], checked=bool(why),
-            cells=[os.path.basename(s['path']), why or "no stale tags"]))
-
-    if not n_changed:
-        ui_utils.show_status("No stale TLEN/TDLY tags found.")
+    plan = bo.plan_strip_length_tags(songs, skipped_fmt)
+    if plan.message:
+        ui_utils.show_status(plan.message)
         return
+
+    choices = [
+        prompt.Choice(title=name, value=c.path, checked=c.changed,
+                      cells=[name, why or "no stale tags"])
+        for (_pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
+    n_changed = len(plan.changed)
 
     def _strip_header():
         """Live counts for the preview."""
@@ -1289,32 +1117,9 @@ def strip_length_tags_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("No tracks selected.")
         return
 
-    count = errors = 0
-    for s in songs:
-        if s['path'] not in apply_set or not (s['tlen'] or s['tdly']):
-            continue
-        try:
-            audio = ID3(s['path'])
-            if s['tlen']:
-                apply_bulk_edit(audio, 'TLEN', 'delete')
-            if s['tdly']:
-                apply_bulk_edit(audio, 'TDLY', 'delete')
-            save_id3(audio, s['path'])
-        except Exception:
-            errors += 1
-            continue
-        count += 1
-        try:
-            refresh_library_entry(library, s['path'])
-        except Exception:
-            pass
-
-    msg = f"Stripped stale length tags from {count} file(s)."
-    if skipped_fmt:
-        msg += f" {skipped_fmt} unsupported skipped."
-    if errors:
-        msg += f" {errors} error(s)."
-    ui_utils.show_status(msg)
+    applied = bo.apply_changes(plan, library, bo.strip_length_writer,
+                               selected=apply_set & {c.path for c in plan.changed})
+    ui_utils.show_status(bo.summarise(applied, "Stripped stale length tags from"))
 
 
 # Pattern picker: pattern · example/description.
