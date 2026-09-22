@@ -12,6 +12,7 @@ import cv2
 from src.utils import prompt
 from src.lyrics.lyrics import save_sylt_entries
 from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
+from src.lyrics import lyrics as _lyrics
 from src.trim import trim as _trim
 from src.trim.trim_editor import trim_editor
 from mutagen.id3 import ID3
@@ -591,36 +592,9 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
         return False
 
 
-_LRC_TIMESTAMP_RE = re.compile(r'\[(\d+):(\d+)(?:[.:](\d{1,3}))?\]')
-_LRC_META_RE = re.compile(r'^\s*\[(ti|ar|al|by|offset|re|ve)\s*:.+\]\s*$', re.I)
-
-def _parse_lrc_file(lrc_path: str) -> list[tuple[str, int | None]]:
-    """Parse an LRC file into (text, timestamp_ms) lines, skipping metadata tags like [ti:...]."""
-    with open(lrc_path, "r", encoding="utf-8") as f:
-        raw = f.read()
-
-    entries: list[tuple[str, int | None]] = []
-    for raw_line in raw.splitlines():
-        if _LRC_META_RE.match(raw_line):
-            continue
-        timestamps = list(_LRC_TIMESTAMP_RE.finditer(raw_line))
-        text = _LRC_TIMESTAMP_RE.sub("", raw_line).strip()
-        if not text and not timestamps:
-            continue
-        if timestamps:
-            for match in timestamps:
-                mins = int(match.group(1))
-                secs = int(match.group(2))
-                frac = match.group(3) or "0"
-                ms = int(frac.ljust(3, "0")[:3])
-                entries.append((text, mins * 60_000 + secs * 1_000 + ms))
-        else:
-            entries.append((text, None))
-    return entries
-
 
 def _import_from_lrc(file_path: str, audio: ID3, tag_id: str) -> None:
-    """Import an LRC file's lyrics, writing timed lines to SYLT and/or plain text to USLT."""
+    """Ask for an LRC file and import it — the writing itself is `lyrics.import_lrc`."""
     default_lrc = os.path.splitext(file_path)[0] + ".lrc"
     # prompt.path, not prompt.text: this is a filesystem location, so it gets
     # Tab-completion against the directory listing like every other path field.
@@ -629,34 +603,13 @@ def _import_from_lrc(file_path: str, audio: ID3, tag_id: str) -> None:
         ui_utils.show_status("File not found." if lrc_path else "Cancelled.")
         return
 
-    entries = _parse_lrc_file(lrc_path)
-    if not entries:
+    written, count = _lyrics.import_lrc(file_path, lrc_path)
+    if not written:
         ui_utils.show_status("No usable lines in LRC file.")
-        return
-
-    timed = [(text, ts) for text, ts in entries if ts is not None]
-
-    if timed:
-        sylt_data = [(text, int(ts)) for text, ts in timed if text]
-        if not sylt_data:
-            if tag_id.startswith('SYLT'):
-                ui_utils.show_status("LRC has no timestamps for SYLT import.")
-                return
-        else:
-            save_sylt_entries(file_path, sylt_data)
-            ui_utils.show_status(f"Imported {len(sylt_data)} lines to SYLT.")
-            return
-
-    if tag_id.startswith('SYLT'):
+    elif tag_id.startswith('SYLT') and written == 'USLT':
         ui_utils.show_status("LRC has no timestamps; cannot import to SYLT.")
-        return
-
-    uslt_text = "\n".join(text for text, _ in entries if text)
-    if uslt_text.strip():
-        audio.delall('USLT')
-        audio.add(USLT(encoding=3, lang='eng', desc='', text=uslt_text))
-        save_id3(audio)
-        ui_utils.show_status("Imported to USLT.")
+    else:
+        ui_utils.show_status(f"Imported {count} lines to {written}.")
 
 
 # Rendered art, cached by (image bytes, width): it used to be decoded and
@@ -689,6 +642,7 @@ _ART_MAX_WIDTH = 64
 _ART_BREATHING_ROWS = 2          # rows left free below the art box
 # Below this the picture is mush; the facts line says more than it would.
 _MIN_ART_ROWS = 6
+
 
 
 def _art_rows_available(reserved_rows: int) -> int:

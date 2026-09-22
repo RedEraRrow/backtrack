@@ -413,6 +413,45 @@ def rebuild_ctoc_children(child_order: list[str], surviving_ids) -> list[str]:
     return [cid for cid in child_order if cid in surviving_ids]
 
 
+def apply_chapter_policy(path: str, cut_start_s: float, cut_end_s: float,
+                         policy: str = 'clamp'
+                         ) -> tuple[list[tuple], list[str], int | None] | None:
+    """Resolve a cut's chapters by rule rather than by asking.
+
+    The editor asks about every chapter the cut disturbs, which needs a person.
+    This is the same resolution driven by one decision instead:
+
+    * ``clamp``  — keep a straddling chapter, pulled to the cut boundary
+    * ``drop``   — delete anything the cut disturbs
+    * ``keep``   — rebase everything, even a chapter the cut has emptied
+
+    Returns ``(chapters, ctoc_order, flags)``, or None when the file has none.
+    `trim_editor.resolve_chapters` delegates here when nothing is affected, so
+    the no-question path has one implementation.
+    """
+    orig_chapters, child_order, flags = read_chapters(path)
+    if not orig_chapters:
+        return None
+
+    cut_start_ms = int(round(cut_start_s * 1000))
+    cut_end_ms = int(round(cut_end_s * 1000))
+    survivors: list[tuple] = []
+    for eid, start, end, title, cls in classify_chapters(
+            orig_chapters, cut_start_ms, cut_end_ms):
+        chapter = (eid, start, end, title)
+        if cls == 'kept' or policy == 'keep':
+            survivors.append(rebase_chapter(chapter, cut_start_ms))
+        elif policy == 'drop' or cls == 'destroyed':
+            continue                       # the cut removed the audio under it
+        else:                              # 'clamp' on a straddling chapter
+            survivors.append(clamp_chapter(chapter, cut_start_ms, cut_end_ms))
+
+    surviving_ids = {c[0] for c in survivors}
+    new_order = rebuild_ctoc_children(child_order, surviving_ids) \
+        if child_order else []
+    return survivors, new_order, flags
+
+
 def read_chapters(path: str) -> tuple[list[tuple], list[str] | None, int | None]:
     """Every CHAP frame as (element_id, start_ms, end_ms, title) tuples, in
     file order, plus the CTOC's child order and flags (None, None if there's

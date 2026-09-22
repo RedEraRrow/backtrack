@@ -750,5 +750,193 @@ class BulkCommandsTest(CliTest):
         self.assertEqual(code, out.OK)
 
 
+class SessionCommandsTest(CliTest):
+    """With no session running, every transport command reports that rather
+    than hanging or pretending it worked."""
+
+    def setUp(self):
+        super().setUp()
+        self.scan()
+
+    def test_list_is_empty_and_succeeds(self):
+        _code, body = self.json_of('session', 'list')
+        self.assertEqual(body['kind'], 'sessions')
+
+    def test_status_with_no_session_is_not_found(self):
+        code, _out, _err = self.run_cli('session', 'status')
+        self.assertEqual(code, out.NOT_FOUND)
+
+    def test_every_transport_command_reports_no_session(self):
+        for verb, extra in (('pause', ()), ('next', ()), ('prev', ()),
+                            ('stop', ()), ('seek', ('30',)),
+                            ('volume', ('50',))):
+            with self.subTest(verb=verb):
+                code, _out, _err = self.run_cli('session', verb, *extra)
+                self.assertEqual(code, out.NOT_FOUND)
+
+    def test_volume_out_of_range_is_a_usage_error(self):
+        code, _out, _err = self.run_cli('session', 'volume', '200')
+        self.assertEqual(code, out.USAGE)
+
+    def test_queue_commands_report_no_session(self):
+        self.assertEqual(self.run_cli('queue', 'show')[0], out.NOT_FOUND)
+        self.assertEqual(self.run_cli('queue', 'add', self.tracks[0])[0],
+                         out.NOT_FOUND)
+
+    def test_play_with_nothing_to_play_is_a_usage_error(self):
+        code, _out, _err = self.run_cli('play', stdin="")
+        self.assertEqual(code, out.USAGE)
+
+    def test_play_dry_run_starts_no_audio(self):
+        code, stdout, _err = self.run_cli('play', self.tracks[0], '--dry-run',
+                                          '--json')
+        self.assertEqual(code, out.OK)
+        event = json.loads(stdout.splitlines()[0])
+        self.assertEqual(event['event'], 'plan')
+        self.assertEqual(event['action'], 'play')
+
+
+class LyricsCommandsTest(CliTest):
+    def setUp(self):
+        super().setUp()
+        self.scan()
+        self.track = self.tracks[2]
+        self.lrc = os.path.join(self.tmp, 'lines.lrc')
+        with open(self.lrc, 'w', encoding='utf-8') as handle:
+            handle.write("[00:12.000]First line\n"
+                         "[00:15.500]Second line\n"
+                         "[00:19.250]Third line\n")
+
+    def test_show_before_any_import_is_not_found(self):
+        code, _out, _err = self.run_cli('lyrics', 'show', self.track)
+        self.assertEqual(code, out.NOT_FOUND)
+
+    def test_import_writes_timed_lines_to_sylt(self):
+        code, _out, _err = self.run_cli('lyrics', 'import', self.track,
+                                        '--from', self.lrc)
+        self.assertEqual(code, out.OK)
+        _code, body = self.json_of('lyrics', 'show', self.track)
+        self.assertEqual(body['source'], 'SYLT')
+        self.assertEqual([l['time_ms'] for l in body['lines']],
+                         [12000, 15500, 19250])
+
+    def test_an_untimed_lrc_becomes_uslt(self):
+        plain = os.path.join(self.tmp, 'plain.lrc')
+        with open(plain, 'w', encoding='utf-8') as handle:
+            handle.write("Just words\nAnd more words\n")
+        self.run_cli('lyrics', 'import', self.track, '--from', plain)
+        _code, body = self.json_of('lyrics', 'show', self.track)
+        self.assertEqual(body['source'], 'USLT')
+
+    def test_import_without_a_source_is_a_usage_error(self):
+        code, _out, _err = self.run_cli('lyrics', 'import', self.track)
+        self.assertEqual(code, out.USAGE)
+
+    def test_import_of_a_missing_lrc_is_not_found(self):
+        code, _out, _err = self.run_cli('lyrics', 'import', self.track,
+                                        '--from', os.path.join(self.tmp, 'no.lrc'))
+        self.assertEqual(code, out.NOT_FOUND)
+
+    def test_import_dry_run_writes_nothing(self):
+        self.run_cli('lyrics', 'import', self.track, '--from', self.lrc,
+                     '--dry-run')
+        self.assertEqual(self.run_cli('lyrics', 'show', self.track)[0],
+                         out.NOT_FOUND)
+
+    def test_export_round_trips_through_lrc(self):
+        self.run_cli('lyrics', 'import', self.track, '--from', self.lrc)
+        code, _out, _err = self.run_cli('lyrics', 'export', self.track,
+                                        '--format', 'lrc', '--output', self.tmp)
+        self.assertEqual(code, out.OK)
+        written = os.path.join(self.tmp,
+                               os.path.splitext(os.path.basename(self.track))[0]
+                               + '.lrc')
+        self.assertIn('[00:12.000]First line', open(written).read())
+
+    def test_export_as_srt_numbers_and_ranges_the_cues(self):
+        self.run_cli('lyrics', 'import', self.track, '--from', self.lrc)
+        self.run_cli('lyrics', 'export', self.track, '--format', 'srt',
+                     '--output', self.tmp)
+        written = os.path.join(self.tmp,
+                               os.path.splitext(os.path.basename(self.track))[0]
+                               + '.srt')
+        text = open(written).read()
+        self.assertIn('00:00:12,000 --> 00:00:15,500', text)
+        self.assertTrue(text.startswith('1\n'))
+
+    def test_exporting_over_an_existing_file_reports_exists(self):
+        self.run_cli('lyrics', 'import', self.track, '--from', self.lrc)
+        self.run_cli('lyrics', 'export', self.track, '--output', self.tmp)
+        code, _out, _err = self.run_cli('lyrics', 'export', self.track,
+                                        '--output', self.tmp)
+        self.assertEqual(code, out.EXISTS)
+
+    def test_verify_with_no_script_or_transcript_is_not_found(self):
+        code, _out, _err = self.run_cli('lyrics', 'verify', self.track)
+        self.assertEqual(code, out.NOT_FOUND)
+
+
+class TrimCommandsTest(CliTest):
+    def setUp(self):
+        super().setUp()
+        self.scan()
+
+    def test_list_succeeds_with_no_backups(self):
+        code, _out, _err = self.run_cli('trim', 'list')
+        self.assertEqual(code, out.OK)
+
+    def test_restoring_an_unknown_backup_is_not_found(self):
+        code, _out, _err = self.run_cli('trim', 'restore', 'nosuchbackup')
+        self.assertEqual(code, out.NOT_FOUND)
+
+    def test_detect_on_a_file_with_no_audio_fails_cleanly(self):
+        code, _out, err = self.run_cli('trim', 'detect', self.tracks[0])
+        self.assertIn(code, (out.FAIL, out.NO_TOOL))
+        if code == out.FAIL:
+            self.assertIn("Could not read", err)
+
+    def test_an_out_point_before_the_in_point_is_a_usage_error(self):
+        from src.trim import trim as t
+        if not t.HAS_FFMPEG:
+            self.skipTest("ffmpeg is not installed")
+        code, _out, _err = self.run_cli('trim', 'cut', self.tracks[0],
+                                        '--start', '10', '--end', '5', '--yes')
+        self.assertEqual(code, out.USAGE)
+
+
+class ChapterPolicyTest(unittest.TestCase):
+    """The rule-driven chapter resolution the CLI uses in place of the editor's
+    per-chapter questions."""
+
+    def setUp(self):
+        from src.trim import trim as t
+        self.t = t
+
+    def test_clamp_pulls_a_straddling_chapter_to_the_boundary(self):
+        # (id, start_ms, end_ms, title), cut keeping 5s-15s.
+        chapter = ('ch1', 3000, 9000, 'Intro')
+        clamped = self.t.clamp_chapter(chapter, 5000, 15000)
+        self.assertEqual(clamped[1], 0)
+        self.assertEqual(clamped[2], 4000)
+
+    def test_a_chapter_wholly_inside_the_cut_is_kept(self):
+        self.assertEqual(
+            self.t.classify_chapter(6000, 8000, 5000, 15000), 'kept')
+
+    def test_a_chapter_wholly_outside_is_destroyed(self):
+        self.assertEqual(
+            self.t.classify_chapter(1000, 2000, 5000, 15000), 'destroyed')
+
+    def test_rebase_moves_a_kept_chapter_back_by_the_cut(self):
+        self.assertEqual(self.t.rebase_chapter(('ch', 7000, 9000, 'X'), 5000),
+                         ('ch', 2000, 4000, 'X'))
+
+    def test_a_file_with_no_chapters_resolves_to_none(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.mp3') as handle:
+            self.assertIsNone(
+                self.t.apply_chapter_policy(handle.name, 0.0, 1.0, 'clamp'))
+
+
 if __name__ == "__main__":
     unittest.main()

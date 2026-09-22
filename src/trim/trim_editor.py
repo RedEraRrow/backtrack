@@ -365,7 +365,8 @@ def resolve_chapters(path: str, snapped_in_s: float, snapped_out_s: float
         return survivors, new_order, flags
 
     if not affected:
-        return _finish({c[0]: trim.rebase_chapter(c, cut_start_ms) for c, _cls in classified})
+        # Nothing to ask about: the rule-driven resolution gives the same answer.
+        return trim.apply_chapter_policy(path, snapped_in_s, snapped_out_s, 'clamp')
 
     def _label(c: tuple) -> str:
         return c[3] or c[0]

@@ -581,6 +581,9 @@ def _tag_copy(ctx: Ctx) -> int:
     from src.id3.id3_tag_handler import save_id3
     from src.music_library import refresh_library_entry
 
+    if not ctx.args.source:
+        return out.fail(out.USAGE, "No .lrc file given.",
+                        hint='pass --from track.lrc')
     source = os.path.abspath(os.path.expanduser(ctx.args.source))
     if not os.path.exists(source):
         return out.fail(out.NOT_FOUND, "No such source track.", path=source)
@@ -1020,6 +1023,635 @@ def _bulk_assign(ctx: Ctx) -> int:
     return out.FAIL if applied.errors and not applied.written else out.OK
 
 
+# --- playback ---------------------------------------------------------------
+# A CLI process is not the audio host. When a Backtrack session is already
+# running these commands drive it over the existing IPC socket and return at
+# once; with no session, `play` hosts one itself and blocks until the queue
+# ends, the way any other terminal player does.
+
+def _session_link():
+    """A connected client for the newest live session, or None."""
+    from src.playback import ipc
+
+    for info in ipc.list_sessions():
+        link = ipc.SessionClient(info.get('socket', ''))
+        if link.connect():
+            return link, info
+    return None, None
+
+
+def _snapshot(link, tries: int = 20):
+    """The host's first now-playing snapshot, waited for briefly."""
+    import time
+
+    for _ in range(tries):
+        snap = link.latest()
+        if snap is not None:
+            return snap
+        time.sleep(0.025)
+    return None
+
+
+def _now_playing_body(snap: dict) -> dict:
+    """The fields `session status` reports, in both modes."""
+    return {
+        'playing': not snap.get('paused', False),
+        'title': snap.get('title', ''),
+        'artist': snap.get('artist', ''),
+        'album': snap.get('album', ''),
+        'path': snap.get('file_path', ''),
+        'elapsed': round(float(snap.get('elapsed') or 0), 1),
+        'duration': round(float(snap.get('duration') or 0), 1),
+        'volume': snap.get('volume', 0),
+        'queue_length': len(snap.get('queue') or []),
+    }
+
+
+def _session_list(ctx: Ctx) -> int:
+    """Every Backtrack session currently running on this machine."""
+    from src.playback import ipc
+
+    rows = []
+    for info in ipc.list_sessions():
+        now = info.get('now_playing') or {}
+        rows.append({'path': info.get('socket', ''), 'id': info.get('id', ''),
+                     'label': info.get('label', ''),
+                     'playing': now.get('title', '')})
+    out.table('sessions', rows, [
+        pc.Column(style='primary', flex=True),
+        pc.Column(style='dynamic-dim', flex=True),
+    ], cells=lambda r: [r['label'] or r['id'], r['playing'] or '(idle)'])
+    return out.OK
+
+
+def _session_status(ctx: Ctx) -> int:
+    """What the running session is playing."""
+    link, _info = _session_link()
+    if link is None:
+        return out.fail(out.NOT_FOUND, "No Backtrack session is running.")
+    try:
+        snap = _snapshot(link)
+        if not snap:
+            out.record('session', {'playing': False},
+                       human="  Nothing is playing.")
+            return out.OK
+        out.record('session', _now_playing_body(snap))
+        return out.OK
+    finally:
+        link.close()
+
+
+def _transport(ctx: Ctx, command: str, args: dict | None = None,
+               describe: str = '') -> int:
+    """Send one transport command to the running session."""
+    link, _info = _session_link()
+    if link is None:
+        return out.fail(out.NOT_FOUND, "No Backtrack session is running.",
+                        hint="`backtrack play <track>` starts one")
+    try:
+        if ctx.dry_run():
+            out.event('plan', action=command, detail=describe or command)
+            return out.OK
+        if not link.send(command, args or {}):
+            return out.fail(out.FAIL, "Could not reach the session.")
+        import time
+        time.sleep(0.15)                     # let the host apply it before we look
+        snap = _snapshot(link, tries=8)
+        if snap:
+            out.record('session', _now_playing_body(snap))
+        else:
+            out.note(describe or command)
+        return out.OK
+    finally:
+        link.close()
+
+
+def _session_pause(ctx: Ctx) -> int:
+    """Toggle play/pause on the running session."""
+    return _transport(ctx, 'pause', describe='Toggled play/pause.')
+
+
+def _session_next(ctx: Ctx) -> int:
+    """Skip to the next track."""
+    return _transport(ctx, 'next', describe='Skipped to the next track.')
+
+
+def _session_prev(ctx: Ctx) -> int:
+    """Go back to the previous track."""
+    return _transport(ctx, 'prev', describe='Went back a track.')
+
+
+def _session_stop(ctx: Ctx) -> int:
+    """Stop playback."""
+    return _transport(ctx, 'stop', describe='Stopped.')
+
+
+def _session_seek(ctx: Ctx) -> int:
+    """Seek by a number of seconds, forwards or back."""
+    return _transport(ctx, 'seek', {'delta': ctx.args.seconds},
+                      describe=f"Sought {ctx.args.seconds:+g}s.")
+
+
+def _session_volume(ctx: Ctx) -> int:
+    """Set the volume, 0-100."""
+    if not 0 <= ctx.args.level <= 100:
+        return out.fail(out.USAGE, "Volume must be between 0 and 100.",
+                        given=ctx.args.level)
+    return _transport(ctx, 'set_volume', {'vol': ctx.args.level},
+                      describe=f"Volume {ctx.args.level}.")
+
+
+def _resolve_queue(ctx: Ctx) -> list:
+    """The tracks a play/queue command was given, in library order."""
+    from src.music_library import sort_library_logic
+
+    paths = _targets_or_filter(ctx)
+    if paths:
+        known = {s['path']: s for s in ctx.library}
+        songs = [known.get(p, {'path': p}) for p in paths if os.path.exists(p)]
+        return sort_library_logic(songs) if len(songs) > 1 else songs
+    return []
+
+
+def _play(ctx: Ctx) -> int:
+    """Play tracks — through a running session if there is one, else here.
+
+    Handing a running session the queue is instant and leaves the audio with the
+    process that owns it. With no session, this process becomes the host and
+    blocks until the queue ends, because audio stops when its process exits.
+    """
+    songs = _resolve_queue(ctx)
+    if not songs:
+        return out.fail(out.USAGE, "Nothing to play.",
+                        hint="pass a path, pipe one in, or use --artist/--album")
+    paths = [s['path'] for s in songs]
+    titles = [s.get('title') or os.path.basename(s['path']) for s in songs]
+
+    if ctx.dry_run():
+        for path, title in zip(paths, titles):
+            out.event('plan', action='play', path=path, detail=title)
+        return out.OK
+
+    link, _info = _session_link()
+    if link is not None:
+        try:
+            link.send('play', {'path': paths[0], 'queue': paths,
+                               'titles': titles, 'index': 0,
+                               'mode': ctx.args.repeat})
+            out.record('session', {'playing': True, 'title': titles[0],
+                                   'path': paths[0], 'queue_length': len(paths)},
+                       human=f"  ▸ {titles[0]}")
+            return out.OK
+        finally:
+            link.close()
+
+    return _play_here(ctx, paths, titles)
+
+
+def _play_here(ctx: Ctx, paths: list, titles: list) -> int:
+    """Host a session in this process and block until the queue ends."""
+    import time
+
+    from src.playback.session import SESSION
+    from src.utils import ui_utils
+
+    SESSION.bind_config(ctx.config)
+    SESSION.start(paths[0], queue=paths, titles=titles, index=0,
+                  mode=ctx.args.repeat)
+    current = None
+    try:
+        while SESSION.is_active():
+            SESSION.tick()
+            snap = SESSION.now_playing() or {}
+            if snap.get('file_path') != current:
+                current = snap.get('file_path')
+                out.event('playing', path=current or '',
+                          detail=snap.get('title') or '')
+            if not out.json_mode() and not out.is_tty():
+                time.sleep(0.25)
+                continue
+            if out.is_tty() and not out.json_mode():
+                total = float(snap.get('duration') or 0)
+                done = float(snap.get('elapsed') or 0)
+                ui_utils.print_inline_progress(
+                    f"{snap.get('title', '')} — {ui_utils.format_time(done)}"
+                    f" / {ui_utils.format_time(total)}",
+                    (done / total) if total else 0.0)
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if out.is_tty() and not out.json_mode():
+            ui_utils.clear_inline_progress()
+        SESSION.shutdown()
+    return out.OK
+
+
+def _queue_add(ctx: Ctx) -> int:
+    """Add tracks to the end of the running session's queue."""
+    return _queue_send(ctx, 'enqueue', "Added to the queue")
+
+
+def _queue_next(ctx: Ctx) -> int:
+    """Put tracks next in the running session's queue."""
+    return _queue_send(ctx, 'play_next', "Queued next")
+
+
+def _queue_send(ctx: Ctx, command: str, verb: str) -> int:
+    """The shared body of `queue add` and `queue next`."""
+    from src.utils import ui_utils
+
+    songs = _resolve_queue(ctx)
+    if not songs:
+        return out.fail(out.USAGE, "Nothing to queue.",
+                        hint="pass a path, pipe one in, or use --artist/--album")
+    if ctx.dry_run():
+        for song in songs:
+            out.event('plan', action=command, path=song['path'],
+                      detail=song.get('title', ''))
+        return out.OK
+
+    link, _info = _session_link()
+    if link is None:
+        return out.fail(out.NOT_FOUND, "No Backtrack session is running.",
+                        hint="`backtrack play <track>` starts one")
+    try:
+        for song in songs:
+            title = song.get('title') or os.path.basename(song['path'])
+            link.send(command, {'path': song['path'], 'title': title})
+            out.event('queued', path=song['path'], detail=title)
+        out.note(f"{verb}: {ui_utils.plural(len(songs), 'track')}.")
+        return out.OK
+    finally:
+        link.close()
+
+
+def _queue_show(ctx: Ctx) -> int:
+    """What the running session has queued up."""
+    link, _info = _session_link()
+    if link is None:
+        return out.fail(out.NOT_FOUND, "No Backtrack session is running.")
+    try:
+        snap = _snapshot(link) or {}
+        paths = snap.get('queue') or []
+        titles = snap.get('titles') or []
+        index = int(snap.get('index', 0) or 0)
+        rows = [{'path': p, 'title': titles[i] if i < len(titles) else
+                 os.path.basename(p), 'position': i + 1,
+                 'current': i == index}
+                for i, p in enumerate(paths)]
+        out.table('queue', rows, [
+            pc.Column(style='dynamic-dim', min_width=3),
+            pc.Column(style='primary', flex=True),
+        ], cells=lambda r: [('▸' if r['current'] else str(r['position'])),
+                            r['title']])
+        return out.OK
+    finally:
+        link.close()
+
+
+# --- lyrics -----------------------------------------------------------------
+# The sync editor's tap and audition modes need a human listening to the audio,
+# so they stay in the app. Everything that is a file transformation is here.
+
+def _one_target(ctx: Ctx, what: str = "track"):
+    """Exactly one file, or a failure code — for the single-subject commands."""
+    paths = _targets_or_filter(ctx)
+    if not paths:
+        return None, out.fail(out.USAGE, f"No {what} given.",
+                              hint="pass a path or pipe one in")
+    if not os.path.exists(paths[0]):
+        return None, out.fail(out.NOT_FOUND, f"No such {what}.", path=paths[0])
+    return paths[0], out.OK
+
+
+def _lyric_lines(path: str) -> tuple[list, str]:
+    """A track's lyrics as `(rows, source)` — timed SYLT first, else USLT."""
+    from mutagen.id3 import ID3
+
+    from src.lyrics import lyrics as ly
+
+    audio = ID3(path)
+    timed = ly._parse_sylt(audio)
+    if timed:
+        return ([{'path': path, 'time_ms': ms, 'text': text}
+                 for text, ms in timed], 'SYLT')
+    plain = ly._parse_uslt(audio)
+    return ([{'path': path, 'time_ms': None, 'text': text}
+             for text, _ms in plain], 'USLT')
+
+
+def _ms(value) -> str:
+    """A millisecond timestamp as [mm:ss.mmm], or blank when untimed."""
+    if value is None:
+        return ''
+    total = int(value)
+    return f"[{total // 60000:02d}:{total // 1000 % 60:02d}.{total % 1000:03d}]"
+
+
+def _lyrics_show(ctx: Ctx) -> int:
+    """Print a track's lyrics."""
+    from mutagen.id3 import ID3NoHeaderError  # type: ignore[reportPrivateImportUsage]
+
+    path, code = _one_target(ctx)
+    if path is None:
+        return code
+    try:
+        rows, source = _lyric_lines(path)
+    except ID3NoHeaderError:
+        rows, source = [], ''
+    if not rows:
+        return out.fail(out.NOT_FOUND, "That track has no lyrics.", path=path)
+    if out.json_mode():
+        out.record('lyrics', {'path': path, 'source': source,
+                              'count': len(rows), 'lines': rows})
+        return out.OK
+    out.table('lyrics', rows, [
+        pc.Column(style='dynamic-dim', min_width=12),
+        pc.Column(style='normal', flex=True),
+    ], cells=lambda r: [_ms(r['time_ms']), r['text']], pipe_key='text')
+    return out.OK
+
+
+def _lyrics_import(ctx: Ctx) -> int:
+    """Import lyrics from an .lrc file into SYLT (timed) or USLT (untimed)."""
+    from src.lyrics import lyrics as ly
+    from src.music_library import refresh_library_entry
+
+    path, code = _one_target(ctx)
+    if path is None:
+        return code
+    if not ctx.args.source:
+        return out.fail(out.USAGE, "No .lrc file given.",
+                        hint='pass --from track.lrc')
+    source = os.path.abspath(os.path.expanduser(ctx.args.source))
+    if not os.path.exists(source):
+        return out.fail(out.NOT_FOUND, "No such .lrc file.", path=source)
+
+    entries = ly.parse_lrc_file(source)
+    if not entries:
+        return out.fail(out.FAIL, "Nothing readable in that .lrc file.",
+                        path=source)
+    timed = any(ms is not None for _text, ms in entries)
+
+    if ctx.dry_run():
+        out.event('plan', path=path,
+                  detail=f"{len(entries)} lines into "
+                         f"{'SYLT' if timed else 'USLT'}")
+        return out.OK
+
+    tag_id, count = ly.import_lrc(path, source)
+    if not tag_id:
+        return out.fail(out.FAIL, "Nothing readable in that .lrc file.",
+                        path=source)
+    try:
+        refresh_library_entry(ctx.library, path)
+    except Exception:
+        pass
+    out.record('lyrics', {'path': path, 'tag': tag_id, 'lines': count},
+               human=f"  Imported {count} lines into {tag_id}.")
+    return out.OK
+
+
+def _lyrics_export(ctx: Ctx) -> int:
+    """Write a track's lyrics out as .lrc, .srt or plain text."""
+    path, code = _one_target(ctx)
+    if path is None:
+        return code
+    rows, source = _lyric_lines(path)
+    if not rows:
+        return out.fail(out.NOT_FOUND, "That track has no lyrics.", path=path)
+
+    fmt = ctx.args.format
+    if fmt == 'lrc':
+        text = "\n".join(f"{_ms(r['time_ms'])}{r['text']}" for r in rows)
+    elif fmt == 'srt':
+        parts = []
+        for i, row in enumerate(rows, 1):
+            start = int(row['time_ms'] or 0)
+            end = int(rows[i]['time_ms']) if i < len(rows) and rows[i]['time_ms'] \
+                else start + 3000
+            parts.append(f"{i}\n{_srt(start)} --> {_srt(end)}\n{row['text']}\n")
+        text = "\n".join(parts)
+    else:
+        text = "\n".join(r['text'] for r in rows)
+
+    stem = os.path.splitext(os.path.basename(path))[0]
+    directory = ctx.args.output or os.path.dirname(path)
+    target = os.path.join(os.path.expanduser(directory), f"{stem}.{fmt}")
+    if ctx.dry_run():
+        out.event('plan', path=target, detail=f"{len(rows)} lines as {fmt}")
+        return out.OK
+    if os.path.exists(target) and not ctx.confirm(f"Overwrite {target}?"):
+        return out.fail(out.EXISTS, "That file already exists.", path=target)
+    with open(target, 'w', encoding='utf-8') as handle:
+        handle.write(text + "\n")
+    out.record('lyrics', {'path': target, 'format': fmt, 'lines': len(rows),
+                          'source': source},
+               human=f"  Wrote {len(rows)} lines to {target}.")
+    return out.OK
+
+
+def _srt(ms_value: int) -> str:
+    """A millisecond timestamp in SRT's HH:MM:SS,mmm form."""
+    return (f"{ms_value // 3600000:02d}:{ms_value // 60000 % 60:02d}:"
+            f"{ms_value // 1000 % 60:02d},{ms_value % 1000:03d}")
+
+
+def _lyrics_verify(ctx: Ctx) -> int:
+    """Report whether a track's script and transcript still line up."""
+    from src.lyrics import lyrics as ly
+
+    path, code = _one_target(ctx)
+    if path is None:
+        return code
+    md_path, json_path = ly._find_timing_files_for_audio(path)
+    body = {'path': path, 'script': md_path or '', 'transcript': json_path or ''}
+    if not md_path and not json_path:
+        out.record('lyrics', {**body, 'status': 'none'},
+                   human="  No script or transcript beside this track.")
+        return out.NOT_FOUND
+    if not (md_path and json_path):
+        out.record('lyrics', {**body, 'status': 'partial'},
+                   human=f"  Only the {'script' if md_path else 'transcript'} "
+                         "is present — nothing to check it against.")
+        return out.FAIL
+
+    from src.lyrics.md_overlay import build_md_overlay
+    transcript = ly.load_transcript(json_path) or {}
+    segments = transcript.get('segments') or []
+    _overlay, quality, _links = build_md_overlay(segments, md_path)
+    flags = [key for key, value in (quality or {}).items() if value]
+    out.record('lyrics', {**body, 'status': 'checked',
+                          'segments': len(segments), 'flagged': len(flags)},
+               human=f"  {len(segments)} segments, {len(flags)} flagged.")
+    return out.FAIL if flags else out.OK
+
+
+# --- trim -------------------------------------------------------------------
+# Marking a cut by ear is the editor's job. Detecting candidates, performing a
+# cut you can already name, and the backup store are all headless.
+
+def _need_ffmpeg() -> int | None:
+    """The missing-tool failure, when ffmpeg is not on PATH."""
+    from src.trim import trim as t
+    if not t.HAS_FFMPEG:
+        return out.fail(out.NO_TOOL, "ffmpeg is required for trimming.",
+                        hint="brew install ffmpeg, or set trim_ffmpeg_path")
+    return None
+
+
+def _trim_detect(ctx: Ctx) -> int:
+    """Suggest cut points from the silence near a track's head and tail."""
+    from src.trim import trim as t
+
+    missing = _need_ffmpeg()
+    if missing is not None:
+        return missing
+    path, code = _one_target(ctx)
+    if path is None:
+        return code
+
+    window = ctx.args.window
+    rows = []
+    try:
+        bounds = [(region, t.window_bounds(path, window, region))
+                  for region in ('head', 'tail')]
+    except Exception as exc:
+        return out.fail(out.FAIL, "Could not read that file's audio.",
+                        path=path, reason=str(exc))
+    for region, (start, dur) in bounds:
+        for begin, end in t.detect_silence(
+                path, start, dur,
+                noise_db=ctx.config.get('trim_silence_noise_db', -32.0),
+                min_s=ctx.config.get('trim_silence_min_s', 0.4)):
+            rows.append({'path': path, 'region': region,
+                         'start': round(begin, 3), 'end': round(end, 3),
+                         'length': round(end - begin, 3)})
+    if not rows:
+        out.record('trim', {'path': path, 'silences': 0},
+                   human="  No silence found near either end.")
+        return out.OK
+    out.table('silences', rows, [
+        pc.Column(style='primary', min_width=6),
+        pc.Column(style='normal', min_width=10),
+        pc.Column(style='normal', min_width=10),
+        pc.Column(style='dynamic-dim', align='right', pin=True),
+    ], cells=lambda r: [r['region'], f"{r['start']:.3f}", f"{r['end']:.3f}",
+                        f"{r['length']:.3f}s"], pipe_key='start')
+    return out.OK
+
+
+def _trim_cut(ctx: Ctx) -> int:
+    """Cut a track losslessly between two points, backing up the original."""
+    from src.trim import trim as t
+
+    missing = _need_ffmpeg()
+    if missing is not None:
+        return missing
+    path, code = _one_target(ctx)
+    if path is None:
+        return code
+
+    # Argument validation before file I/O: bad points are bad points whether or
+    # not the file turns out to be readable, and that should read as a usage
+    # error rather than whatever mutagen says about the audio.
+    if ctx.args.end is not None and ctx.args.end <= ctx.args.start:
+        return out.fail(out.USAGE, "The out point must come after the in point.",
+                        start=ctx.args.start, end=ctx.args.end)
+    if ctx.args.start < 0:
+        return out.fail(out.USAGE, "The in point cannot be negative.",
+                        start=ctx.args.start)
+
+    try:
+        frame = t.probe_frame_duration(path)
+        end_raw = ctx.args.end
+        if end_raw is None:
+            from src.music_library import get_song_duration
+            end_raw = get_song_duration(path)
+    except Exception as exc:
+        return out.fail(out.FAIL, "Could not read that file's audio.",
+                        path=path, reason=str(exc))
+    start = t.snap_in_point(ctx.args.start, frame)
+    end = t.snap_out_point(end_raw, frame)
+    if end <= start:
+        return out.fail(out.USAGE, "The out point must come after the in point.",
+                        start=start, end=end)
+
+    if ctx.dry_run():
+        out.event('plan', path=path, action='cut',
+                  detail=f"keep {start:.3f}s to {end:.3f}s "
+                         f"({end - start:.3f}s of audio)")
+        return out.OK
+    if not ctx.confirm(f"Cut {os.path.basename(path)} to "
+                       f"{start:.3f}-{end:.3f}s?", default=True):
+        out.note("Left alone.")
+        return out.OK
+
+    # The editor asks about every disturbed chapter; with no human to ask, the
+    # --chapters policy decides for all of them.
+    result = t.commit_trim(path, start, end, ctx.library,
+                           chapters=t.apply_chapter_policy(
+                               path, start, end, ctx.args.chapters))
+    if not result.ok:
+        return out.fail(out.FAIL, result.error or "The cut failed.", path=path)
+    out.record('trim', {'path': path, 'start': start, 'end': end,
+                        'duration': round(end - start, 3)},
+               human=f"  Cut to {end - start:.3f}s. The original is backed up.")
+    return out.OK
+
+
+def _trim_list(ctx: Ctx) -> int:
+    """Every backed-up original a trim can be undone from."""
+    from src.trim import trim as t
+
+    import datetime
+
+    rows = []
+    for entry in t.list_backups():
+        stamp = entry.get('timestamp')
+        when = (datetime.datetime.fromtimestamp(stamp).strftime('%Y-%m-%d %H:%M')
+                if stamp else '')
+        rows.append({'path': entry.get('original_path', ''),
+                     'id': entry.get('id', ''),
+                     'when': when,
+                     'kept_from': entry.get('snapped_in_s', 0.0),
+                     'kept_to': entry.get('snapped_out_s', 0.0),
+                     'original_length': entry.get('original_length_s', 0.0)})
+    out.table('backups', rows, [
+        pc.Column(style='primary', min_width=12),
+        pc.Column(style='normal', flex=True),
+        pc.Column(style='dynamic-dim', align='right', pin=True),
+    ], cells=lambda r: [r['id'], os.path.basename(r['path']), r['when']],
+        pipe_key='id')
+    return out.OK
+
+
+def _trim_restore(ctx: Ctx) -> int:
+    """Put a backed-up original back."""
+    from src.trim import trim as t
+
+    entry_id = str(ctx.args.id or '')
+    known = {entry.get('id') for entry in t.list_backups()}
+    if entry_id not in known:
+        return out.fail(out.NOT_FOUND, "No such backup.", id=entry_id,
+                        hint="`backtrack trim list` shows them")
+    if ctx.dry_run():
+        out.event('plan', action='restore', detail=entry_id)
+        return out.OK
+    if not ctx.confirm(f"Restore backup {entry_id}, replacing the trimmed file?",
+                       default=True):
+        out.note("Left alone.")
+        return out.OK
+    result = t.restore_backup(entry_id, ctx.library)
+    if not result.ok:
+        return out.fail(out.FAIL, result.error or "The restore failed.",
+                        id=entry_id)
+    out.record('trim', {'id': entry_id, 'restored': True},
+               human="  Restored.")
+    return out.OK
+
+
 # --- the tree ---------------------------------------------------------------
 
 TREE = [
@@ -1176,6 +1808,93 @@ TREE = [
                    Flag('--overwrite', 'Replace values already set',
                         action='store_true')] + list(_FILTERS[:3]),
             example='backtrack bulk assign -t TIT1 --every 6 -v "Series {n}"'),
+    ]),
+
+    Cmd('play', 'Play tracks — through a running session, or here', run=_play,
+        emits='session', args=[Arg('target', 'Track files', nargs='*')],
+        flags=[Flag('--repeat', 'Repeat mode', short='-r', default='linear',
+                    choices=('linear', 'one', 'all'))] + list(_FILTERS[:3]),
+        example='backtrack play --album Rio --repeat all'),
+
+    Cmd('queue', "The running session's queue", children=[
+        Cmd('show', 'What is queued up', run=_queue_show, emits='queue',
+            example='backtrack queue show'),
+        Cmd('add', 'Add tracks to the end of the queue', run=_queue_add,
+            emits='event', args=[Arg('target', 'Track files', nargs='*')],
+            flags=list(_FILTERS[:3]),
+            example='backtrack queue add --artist Darude'),
+        Cmd('next', 'Put tracks next in the queue', run=_queue_next,
+            emits='event', args=[Arg('target', 'Track files', nargs='*')],
+            flags=list(_FILTERS[:3]),
+            example='backtrack queue next track.mp3'),
+    ]),
+
+    Cmd('session', 'Control a running Backtrack session', children=[
+        Cmd('list', 'Every session running on this machine', run=_session_list,
+            emits='sessions', example='backtrack session list'),
+        Cmd('status', 'What the running session is playing',
+            run=_session_status, emits='session',
+            example='backtrack session status --json'),
+        Cmd('pause', 'Toggle play/pause', run=_session_pause, emits='session',
+            example='backtrack session pause'),
+        Cmd('next', 'Skip to the next track', run=_session_next,
+            emits='session', example='backtrack session next'),
+        Cmd('prev', 'Go back to the previous track', run=_session_prev,
+            emits='session', example='backtrack session prev'),
+        Cmd('stop', 'Stop playback', run=_session_stop, emits='session',
+            example='backtrack session stop'),
+        Cmd('seek', 'Seek forwards or back', run=_session_seek, emits='session',
+            args=[Arg('seconds', 'Seconds to move, negative to go back',
+                      type=float)],
+            example='backtrack session seek -- -30'),
+        Cmd('volume', 'Set the volume, 0-100', run=_session_volume,
+            emits='session',
+            args=[Arg('level', 'Volume level', type=int)],
+            example='backtrack session volume 70'),
+    ]),
+
+    Cmd('lyrics', 'Read, import and export lyrics', children=[
+        Cmd('show', "Print a track's lyrics", run=_lyrics_show, emits='lyrics',
+            args=[Arg('target', 'Track file', nargs='*')],
+            example='backtrack lyrics show track.mp3'),
+        Cmd('import', 'Import lyrics from an .lrc file', run=_lyrics_import,
+            emits='lyrics', args=[Arg('target', 'Track file', nargs='*')],
+            flags=[Flag('--from', 'The .lrc file to read', short='-f',
+                        metavar='FILE', store_as='source')],
+            example='backtrack lyrics import track.mp3 --from track.lrc'),
+        Cmd('export', 'Write lyrics out as .lrc, .srt or plain text',
+            run=_lyrics_export, emits='lyrics',
+            args=[Arg('target', 'Track file', nargs='*')],
+            flags=[Flag('--format', 'What to write', short='-f', default='lrc',
+                        choices=('lrc', 'srt', 'txt'))],
+            example='backtrack lyrics export track.mp3 --format srt'),
+        Cmd('verify', "Check a track's script against its transcript",
+            run=_lyrics_verify, emits='lyrics',
+            args=[Arg('target', 'Track file', nargs='*')],
+            example='backtrack lyrics verify episode.mp3'),
+    ]),
+
+    Cmd('trim', 'Cut tracks losslessly, and undo it', children=[
+        Cmd('detect', 'Suggest cut points from the silence near each end',
+            run=_trim_detect, emits='silences',
+            args=[Arg('target', 'Track file', nargs='*')],
+            flags=[Flag('--window', 'Seconds to scan at each end', short='-w',
+                        type=float, default=30.0)],
+            example='backtrack trim detect episode.mp3 --window 60'),
+        Cmd('cut', 'Cut a track between two points', run=_trim_cut,
+            emits='trim', args=[Arg('target', 'Track file', nargs='*')],
+            flags=[Flag('--start', 'In point, in seconds', short='-s',
+                        type=float, default=0.0),
+                   Flag('--end', 'Out point, in seconds (default: the end)',
+                        short='-e', type=float),
+                   Flag('--chapters', 'What to do with disturbed chapters',
+                        default='clamp', choices=('clamp', 'drop', 'keep'))],
+            example='backtrack trim cut episode.mp3 --start 12.5 --end 1800'),
+        Cmd('list', 'Every backed-up original a trim can be undone from',
+            run=_trim_list, emits='backups', example='backtrack trim list'),
+        Cmd('restore', 'Put a backed-up original back', run=_trim_restore,
+            emits='trim', args=[Arg('id', 'Backup id from `trim list`')],
+            example='backtrack trim restore a1b2c3d4e5f6'),
     ]),
 
     Cmd('search', 'Fuzzy-search the library', run=_search, emits='tracks',

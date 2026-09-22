@@ -960,6 +960,67 @@ def _parse_sylt(audio) -> list[tuple[str, int]]:
     return sylt_data
 
 
+_LRC_TIMESTAMP_RE = re.compile(r'\[(\d+):(\d+)(?:[.:](\d{1,3}))?\]')
+_LRC_META_RE = re.compile(r'^\s*\[(ti|ar|al|by|offset|re|ve)\s*:.+\]\s*$', re.I)
+
+
+def parse_lrc_file(lrc_path: str) -> list[tuple[str, int | None]]:
+    """Parse an LRC file into (text, timestamp_ms) lines, skipping metadata tags like [ti:...]."""
+    with open(lrc_path, "r", encoding="utf-8") as f:
+        raw = f.read()
+
+    entries: list[tuple[str, int | None]] = []
+    for raw_line in raw.splitlines():
+        if _LRC_META_RE.match(raw_line):
+            continue
+        timestamps = list(_LRC_TIMESTAMP_RE.finditer(raw_line))
+        text = _LRC_TIMESTAMP_RE.sub("", raw_line).strip()
+        if not text and not timestamps:
+            continue
+        if timestamps:
+            for match in timestamps:
+                mins = int(match.group(1))
+                secs = int(match.group(2))
+                frac = match.group(3) or "0"
+                ms = int(frac.ljust(3, "0")[:3])
+                entries.append((text, mins * 60_000 + secs * 1_000 + ms))
+        else:
+            entries.append((text, None))
+    return entries
+
+
+def import_lrc(audio_path: str, lrc_path: str) -> tuple[str, int]:
+    """Write an .lrc file's lines into `audio_path`. Returns `(tag, lines)`.
+
+    Timed lines become a SYLT frame; an .lrc with no timestamps becomes USLT.
+    `('', 0)` means there was nothing usable in the file.
+
+    The editor's *Import LRC* asks for the path and then does exactly this, so
+    the two cannot disagree about what an .lrc turns into.
+    """
+    from mutagen.id3 import ID3, USLT  # type: ignore[reportPrivateImportUsage]
+
+    from src.id3.id3_tag_handler import save_id3
+
+    entries = parse_lrc_file(lrc_path)
+    if not entries:
+        return '', 0
+
+    timed = [(text, int(ts)) for text, ts in entries if ts is not None and text]
+    if timed:
+        save_sylt_entries(audio_path, timed)
+        return 'SYLT', len(timed)
+
+    text = "\n".join(t for t, _ in entries if t)
+    if not text.strip():
+        return '', 0
+    audio = ID3(audio_path)
+    audio.delall('USLT')
+    audio.add(USLT(encoding=3, lang='eng', desc='', text=text))
+    save_id3(audio, audio_path)
+    return 'USLT', len([t for t, _ in entries if t])
+
+
 def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]]) -> None:
     """Write timestamped lyrics to the file's SYLT frame (replacing any existing)."""
     from mutagen.id3 import ID3

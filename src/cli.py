@@ -37,11 +37,16 @@ class Flag:
     default: object = None
     choices: tuple = ()
     type: Callable | None = None
+    store_as: str = ''              # override, for a name that is a keyword
 
     @property
     def dest(self) -> str:
-        """The attribute argparse stores this flag under."""
-        return self.name.lstrip('-').replace('-', '_')
+        """The attribute argparse stores this flag under.
+
+        `store_as` exists for `--from`, whose natural destination is a Python
+        keyword and so cannot be read back off the namespace.
+        """
+        return self.store_as or self.name.lstrip('-').replace('-', '_')
 
 
 @dataclass
@@ -51,6 +56,7 @@ class Arg:
     help: str
     nargs: str | int | None = None
     choices: tuple = ()
+    type: Callable | None = None
 
 
 @dataclass
@@ -238,6 +244,8 @@ def _build(cmd: Cmd, parser: argparse.ArgumentParser, parent) -> None:
             kwargs['nargs'] = arg.nargs
         if arg.choices:
             kwargs['choices'] = list(arg.choices)
+        if arg.type is not None:
+            kwargs['type'] = arg.type
         parser.add_argument(arg.name, **kwargs)
     if cmd.is_group:
         subs = parser.add_subparsers(dest=f'_{cmd.name}_cmd', metavar='<command>')
