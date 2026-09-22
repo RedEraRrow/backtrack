@@ -1168,5 +1168,65 @@ class FeedCommandsTest(CliTest):
             self.assertEqual([n for n in names if n.endswith('.part')], [])
 
 
+class DefaultsPrecedenceTest(CliTest):
+    """A flag beats the config, the config beats the value compiled in."""
+
+    def setUp(self):
+        super().setUp()
+        self.scan()
+
+    def test_the_built_in_default_applies_with_nothing_set(self):
+        _code, body = self.json_of('search', 'rio')
+        self.assertLessEqual(body['count'], 20)
+
+    def test_the_config_beats_the_built_in(self):
+        self.run_cli('config', 'set', 'cli_search_limit', '1')
+        _code, body = self.json_of('search', 'duran')
+        self.assertEqual(body['count'], 1)
+
+    def test_the_flag_beats_the_config(self):
+        self.run_cli('config', 'set', 'cli_search_limit', '1')
+        _code, body = self.json_of('search', 'duran', '--limit', '2')
+        self.assertEqual(body['count'], 2)
+
+    def test_a_falsy_config_value_means_no_preference(self):
+        self.run_cli('config', 'set', 'cli_history_limit', '0')
+        from src import history
+        for _ in range(3):
+            history.log_listening_history(self.tracks[0], 0.0, 30.0)
+        _code, body = self.json_of('history', 'list')
+        self.assertEqual(body['count'], 3)       # not 0
+
+    def test_a_config_pattern_shortens_a_bulk_rename(self):
+        self.run_cli('config', 'set', 'cli_rename_pattern', '%title%')
+        self.run_cli('bulk', 'rename', '--album', 'rio', '--yes')
+        names = sorted(os.listdir(os.path.dirname(self.tracks[0])))
+        self.assertEqual(names, ['Hungry Like the Wolf.mp3', 'Rio.mp3'])
+
+    def test_a_flag_still_beats_a_config_pattern(self):
+        self.run_cli('config', 'set', 'cli_rename_pattern', '%title%')
+        self.run_cli('bulk', 'rename', '--album', 'rio', '-p', '%track%',
+                     '--yes')
+        names = sorted(os.listdir(os.path.dirname(self.tracks[0])))
+        # %track% zero-pads, which is file_namer's behaviour everywhere.
+        self.assertEqual(names, ['01.mp3', '02.mp3'])
+
+    def test_a_nonsense_config_value_falls_back_rather_than_failing(self):
+        self.run_cli('config', 'set', 'cli_search_limit', '5')
+        # Hand-edit it to something the type cannot take.
+        from src.config import load_config, save_config
+        config = load_config()
+        config['cli_search_limit'] = 'lots'
+        save_config(config)
+        code, _out, _err = self.run_cli('search', 'duran')
+        self.assertEqual(code, out.OK)
+
+    def test_the_dry_run_note_is_not_printed_after_a_failure(self):
+        code, stdout, _err = self.run_cli('bulk', 'stripdisc', '--dry-run',
+                                          stdin="")
+        self.assertEqual(code, out.USAGE)
+        self.assertNotIn('Dry run', stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

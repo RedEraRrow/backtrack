@@ -117,6 +117,9 @@ backtrack
 On first run, Backtrack asks for a music directory and builds a cached library for faster
 subsequent startups.
 
+**With arguments, `backtrack` is an ordinary command-line tool** instead — see
+[Command line](#command-line) below. Everything the menus can do is reachable from there.
+
 ---
 
 ## Usage
@@ -188,6 +191,140 @@ Disc and track numbering is read from the files themselves rather than the libra
 renumbering and reflowing stay correct even right after you have hand-numbered a disc.
 
 See the guides below to get the most out of tagging and auto-detection.
+
+---
+
+## Command line
+
+`backtrack` with no arguments opens the app. With arguments it is a normal CLI: noun, then
+verb.
+
+```bash
+backtrack library scan                    # rebuild the cache
+backtrack track list --artist "Duran Duran"
+backtrack search "hungry wolf" -n 5
+backtrack tag read track.mp3 --tag TIT2
+backtrack bulk stripdisc --album Rio
+backtrack play --album Rio --repeat all
+backtrack feed sync --name comedy
+```
+
+`backtrack --help` lists the groups; `backtrack <group> <verb> --help` documents one command
+and shows a worked example. `backtrack schema` prints the whole tree — commands, flags,
+output shapes and exit codes — as JSON, generated from the same definitions the parser is
+built from, so it cannot drift.
+
+### Command groups
+
+| Group | Verbs |
+|---|---|
+| `library` | `scan` `list` `stat` `verify` `dirs` |
+| `track` | `list` `show` |
+| `tag` | `read` `write` `rename` `delete` `copy` |
+| `bulk` | `derive` `rename` `art` `pictype` `renumber` `reflow` `stripdisc` `striplength` `sortorders` `assign` |
+| `play` | (takes tracks or a filter) |
+| `queue` | `show` `add` `next` |
+| `session` | `list` `status` `pause` `next` `prev` `stop` `seek` `volume` |
+| `lyrics` | `show` `import` `export` `verify` |
+| `trim` | `detect` `cut` `list` `restore` |
+| `feed` | `add` `list` `remove` `sync` `fetch` |
+| `search`, `history`, `config`, `schema`, `completion` | |
+
+Three things stay in the app, because they are "mark this by ear while it plays" and need a
+person: **lyric tap-sync and audition**, the **trim marking screen**, and the **rendered
+player view**. Their non-interactive halves all have commands — `lyrics import/export`,
+`trim detect`, `trim cut --start --end`, and the `session` transport.
+
+### Global flags
+
+| Flag | What it does |
+|---|---|
+| `--json` | Structured output; NDJSON, one event per line, for long operations |
+| `-y`, `--yes` | Accept every confirmation; never prompt |
+| `--dry-run` | Print the plan in the same event shape a real run emits, change nothing |
+| `-L`, `--library DIR` | Work in this music directory (repeatable) |
+| `-o`, `--output DIR` | Where files this command writes should go |
+| `-q`, `--quiet` | No human output; the exit code still reports |
+| `--no-colour` | Never colour the output |
+
+They work on either side of the verb: `backtrack --json library list` and
+`backtrack library list --json` are the same.
+
+### Output
+
+Human by default: aligned columns, and colour **only** when stdout is a terminal. `NO_COLOR`
+is honoured.
+
+When stdout is **not** a terminal, a list command prints one path per line instead of a
+table, so commands compose without a flag:
+
+```bash
+backtrack track list --artist Darude | backtrack tag read
+backtrack search wolf | backtrack bulk stripdisc
+```
+
+`--json` overrides both. Every JSON object carries a `schema` version. Long operations emit
+one event per line, flushed as it happens, so `backtrack bulk derive --json | jq` reports
+each file as it is written rather than everything at the end.
+
+Errors go to stderr; under `--json` they are `{"error": {"code", "message", "context"}}`.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | It worked |
+| 1 | It didn't, for a reason with no more specific code |
+| 2 | The arguments were wrong |
+| 3 | The thing asked for isn't there |
+| 4 | The thing asked for is there already |
+| 5 | A required external tool (ffmpeg, VLC) is missing |
+
+### Nothing blocks
+
+`--yes` accepts every confirmation. When stdin is not a terminal, a confirmation takes its
+default rather than waiting — an agent with no human attached never hangs on a read that
+will never come. `--dry-run` works on every command that writes.
+
+### Shell completion
+
+Generated from the command definitions, so it cannot describe a CLI that no longer exists:
+
+```bash
+backtrack completion zsh  > ~/.zfunc/_backtrack
+backtrack completion bash > /usr/local/etc/bash_completion.d/backtrack
+backtrack completion fish > ~/.config/fish/completions/backtrack.fish
+```
+
+### Defaults in the config
+
+A flag beats the config file; the config file beats the value compiled in. The keys are
+`cli_output_dir`, `cli_rename_pattern`, `cli_art_strategy`, `cli_search_limit`,
+`cli_history_limit` and `trim_scan_window_s`, plus `music_directories` for `--library`. A
+falsy value means "no preference".
+
+```bash
+backtrack config set cli_rename_pattern "%artist% - %track% - %title%"
+backtrack bulk rename --album Rio        # uses it
+```
+
+### Podcast feeds
+
+```bash
+backtrack feed add https://example.com/rss --name comedy --filter-title "News Quiz"
+backtrack feed sync --name comedy --output ~/Music/Podcasts
+```
+
+`sync` downloads what is new, dedupes on GUID (falling back to the enclosure URL), and tags
+each episode from its title — show, series, episode, title and date — keeping the raw title
+verbatim in a comment. Re-running it downloads nothing and duplicates nothing.
+
+`pubDate` is usually an upload time rather than a broadcast date, so a date found in the
+title wins; where the title gives a day and month but no year, the year comes from `pubDate`
+and each episode records which happened.
+
+Downloads enter the library the way any other new file does — written into a music
+directory and handed to the same refresh the app uses.
 
 ---
 

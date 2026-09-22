@@ -38,6 +38,7 @@ class Flag:
     choices: tuple = ()
     type: Callable | None = None
     store_as: str = ''              # override, for a name that is a keyword
+    config_key: str = ''            # config key this falls back to when unset
 
     @property
     def dest(self) -> str:
@@ -205,7 +206,10 @@ def _add_flag(parser: argparse.ArgumentParser, flag: Flag,
         kwargs['choices'] = list(flag.choices)
     if flag.type is not None:
         kwargs['type'] = flag.type
-    if suppress_default:
+    if suppress_default or flag.config_key:
+        # A flag with a config default must be able to tell "not given" from
+        # "given the built-in default", so it is filled in afterwards rather
+        # than by argparse. See `_resolve_defaults`.
         kwargs['default'] = argparse.SUPPRESS
     elif flag.action != 'store_true':
         kwargs['default'] = flag.default
@@ -226,6 +230,32 @@ def _apply_global_defaults(args: argparse.Namespace) -> argparse.Namespace:
         if not hasattr(args, flag.dest):
             setattr(args, flag.dest,
                     False if flag.action == 'store_true' else flag.default)
+    return args
+
+
+def _resolve_defaults(args: argparse.Namespace, cmd: Cmd | None,
+                      config: dict) -> argparse.Namespace:
+    """Fill a command's unset flags from the config, then from the built-in.
+
+    The precedence the CLI promises, in one place: a flag on the command line
+    beats the config file, and the config file beats the value compiled in. A
+    flag only takes part when it names a `config_key`.
+    """
+    for flag in getattr(cmd, 'flags', ()) or ():
+        if hasattr(args, flag.dest):
+            continue                          # given on the command line
+        value = config.get(flag.config_key) if flag.config_key else None
+        # An empty string, a zero or a missing key all mean "no preference" —
+        # these keys ship falsy precisely so an untouched config changes nothing,
+        # and a limit of 0 would otherwise silently show nothing.
+        if not value:
+            value = flag.default
+        elif flag.type is not None:
+            try:
+                value = flag.type(value)
+            except (TypeError, ValueError):
+                value = flag.default          # a bad config value is not fatal
+        setattr(args, flag.dest, value)
     return args
 
 
@@ -449,6 +479,10 @@ def main(argv: list) -> int:
     out.configure(json_mode=args.json, quiet=args.quiet,
                   colour=False if args.no_colour else None)
 
+    ctx = Ctx(args)
+    _resolve_defaults(args, getattr(args, '_cmd', None), ctx.config
+                      if getattr(args, '_cmd', None) else {})
+
     run = getattr(args, '_run', None)
     if run is None:
         # A group with no verb: show that group's help rather than a bare error.
@@ -460,10 +494,11 @@ def main(argv: list) -> int:
         return out.USAGE
 
     try:
-        code = int(run(Ctx(args)) or out.OK)
-        if args.dry_run:
+        code = int(run(ctx) or out.OK)
+        if args.dry_run and code == out.OK:
             # Said once, centrally, so no handler has to remember to — and so a
-            # planned-state table can't read as a done deal.
+            # planned-state table can't read as a done deal. Only on success:
+            # after a usage error nothing was planned either.
             out.note("Dry run — nothing was written.")
         return code
     except KeyboardInterrupt:

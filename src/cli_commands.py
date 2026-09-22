@@ -664,12 +664,44 @@ def _run_plan(ctx: Ctx, plan, writer, verb: str, **summary) -> int:
         out.note("Left alone.")
         return out.OK
 
-    applied = bo.apply_changes(
-        plan, ctx.library, writer,
-        on_event=lambda kind, change, detail: out.event(
-            kind, path=change.path, detail=detail))
+    applied = bo.apply_changes(plan, ctx.library, writer,
+                               on_event=_reporter(ctx, len(changed)))
+    _clear_progress(ctx)
     out.note(bo.summarise(applied, verb, **summary))
     return out.FAIL if applied.errors and not applied.written else out.OK
+
+
+def _reporter(ctx: Ctx, total: int):
+    """An `on_event` that reports each file and, on a terminal, draws progress.
+
+    The progress bar is `ui_utils.print_inline_progress` — the same one the
+    trimmer's ffmpeg passes use, so a long CLI run looks like a long in-app run.
+    It is drawn only when stdout is a terminal, so a pipe and `--json` stay
+    clean.
+    """
+    from src.utils import ui_utils
+
+    interactive = out.is_tty() and not out.json_mode() and not ctx.args.quiet
+    done = [0]
+
+    def _report(kind: str, change, detail: str) -> None:
+        """One file's outcome, plus a redrawn bar when anyone is watching."""
+        done[0] += 1
+        if interactive:
+            ui_utils.print_inline_progress(
+                f"{done[0]}/{total} {os.path.basename(change.path)}",
+                done[0] / total if total else 1.0)
+        else:
+            out.event(kind, path=change.path, detail=detail)
+
+    return _report
+
+
+def _clear_progress(ctx: Ctx) -> None:
+    """Erase the inline progress line, if one was drawn."""
+    from src.utils import ui_utils
+    if out.is_tty() and not out.json_mode() and not ctx.args.quiet:
+        ui_utils.clear_inline_progress()
 
 
 def _bulk_paths(ctx: Ctx) -> tuple[list, int]:
@@ -1437,7 +1469,8 @@ def _lyrics_export(ctx: Ctx) -> int:
         text = "\n".join(r['text'] for r in rows)
 
     stem = os.path.splitext(os.path.basename(path))[0]
-    directory = ctx.args.output or os.path.dirname(path)
+    directory = (ctx.args.output or ctx.config.get('cli_output_dir')
+                 or os.path.dirname(path))
     target = os.path.join(os.path.expanduser(directory), f"{stem}.{fmt}")
     if ctx.dry_run():
         out.event('plan', path=target, detail=f"{len(rows)} lines as {fmt}")
@@ -1662,8 +1695,9 @@ def _feed_root(ctx: Ctx) -> str | None:
     directory."""
     from src.config import music_dirs
 
-    if ctx.args.output:
-        return os.path.abspath(os.path.expanduser(ctx.args.output))
+    chosen = ctx.args.output or ctx.config.get('cli_output_dir') or ''
+    if chosen:
+        return os.path.abspath(os.path.expanduser(chosen))
     roots = music_dirs(ctx.config)
     return roots[0] if roots else None
 
@@ -1969,12 +2003,13 @@ TREE = [
         Cmd('rename', 'Rename files from their tags', run=_bulk_rename,
             emits='event', args=[Arg('target', 'Track files', nargs='*')],
             flags=[Flag('--pattern', 'A %token% name pattern', short='-p',
-                        default='%track% - %title%')] + list(_FILTERS[:3]),
+                        default='%track% - %title%',
+                        config_key='cli_rename_pattern')] + list(_FILTERS[:3]),
             example='backtrack bulk rename --album Rio -p "%track% %title%"'),
         Cmd('art', 'Embed cover images found beside the tracks', run=_bulk_art,
             emits='event', args=[Arg('target', 'Track files', nargs='*')],
             flags=[Flag('--strategy', 'How to pair tracks with images',
-                        short='-s', default='auto',
+                        short='-s', default='auto', config_key='cli_art_strategy',
                         choices=('auto', 'basename', 'positional', 'best',
                                  'grouped', 'template')),
                    Flag('--group-by', 'What a grouped pairing groups on',
@@ -2107,7 +2142,8 @@ TREE = [
             run=_trim_detect, emits='silences',
             args=[Arg('target', 'Track file', nargs='*')],
             flags=[Flag('--window', 'Seconds to scan at each end', short='-w',
-                        type=float, default=30.0)],
+                        type=float, default=30.0,
+                        config_key='trim_scan_window_s')],
             example='backtrack trim detect episode.mp3 --window 60'),
         Cmd('cut', 'Cut a track between two points', run=_trim_cut,
             emits='trim', args=[Arg('target', 'Track file', nargs='*')],
@@ -2157,14 +2193,14 @@ TREE = [
                     choices=('all', 'title', 'artist', 'album', 'genre', 'people'),
                     default='all'),
                Flag('--limit', 'Show at most this many', short='-n', type=int,
-                    default=20)],
+                    default=20, config_key='cli_search_limit')],
         example='backtrack search "hungry wolf" --limit 5'),
 
     Cmd('history', 'Listening history', children=[
         Cmd('list', 'Recently played tracks, newest first', run=_history_list,
             emits='history',
             flags=[Flag('--limit', 'Show at most this many', short='-n',
-                        type=int, default=30)],
+                        type=int, default=30, config_key='cli_history_limit')],
             example='backtrack history list -n 10'),
         Cmd('clear', 'Delete the listening history log', run=_history_clear,
             emits='history', example='backtrack history clear --yes'),

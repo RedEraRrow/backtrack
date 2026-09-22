@@ -50,6 +50,16 @@ DEFAULT_CONFIG = {
     # ReplayGain target (section 5.4). Speech-led radio sits lower than a
     # music target, hence -18 rather than the usual -14/-23.
     "trim_target_lufs": -18.0,
+    # --- command-line defaults -------------------------------------------
+    # Each of these backs a CLI flag: the flag wins when given, this wins over
+    # the value compiled in, so a common invocation can be short. A falsy value
+    # — "" or 0 — means "no preference, use the built-in", so an untouched
+    # config behaves exactly as if these keys were not here.
+    "cli_output_dir": "",          # --output, for feed sync and lyric export
+    "cli_rename_pattern": "",      # bulk rename --pattern
+    "cli_art_strategy": "",        # bulk art --strategy
+    "cli_search_limit": 0,         # search --limit
+    "cli_history_limit": 0,        # history list --limit
 }
 
 def _default_config_dir() -> Path:

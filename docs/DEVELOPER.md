@@ -53,7 +53,10 @@ screens are thin layers over them. This is what lets most behaviour be verified 
 backtrack/
 ├── main.py                     # Root launcher → src.main:main (console-script: `backtrack`)
 ├── src/
-│   ├── main.py                 # Startup: load config/library, launch the main menu
+│   ├── main.py                 # Startup: no args → the app, any arg → the CLI
+│   ├── cli.py                  # The command tree (data), argparse/schema/completion from it
+│   ├── cli_commands.py         # The tree's handlers — thin wrappers over the app's own functions
+│   ├── feed.py                 # PURE (bar two network calls): RSS → parsed episodes; dedupe; download
 │   ├── menus.py                # Main menu, browse, search, history, settings handlers
 │   ├── music_library.py        # Library scan, ID3/MP4 extraction, background sync + reconcile, cache
 │   ├── search.py               # Fuzzy matcher/ranker (tiered exact→prefix→word→substring→typo)
@@ -72,6 +75,7 @@ backtrack/
 │   │   ├── file_namer.py       # PURE: tags → %token% file names (Rename files from tags)
 │   │   │                        #       number styles: %track:r% (roman), %disc:en% (words)
 │   │   ├── cover_matcher.py    # PURE: pair tracks ↔ cover-image files (Set album art from files)
+│   │   ├── bulk_ops.py         # The plan/apply core the bulk menu and the CLI both drive
 │   │   └── tag_writer.py       # Format-agnostic writer: MP3 (ID3) + MP4 atoms; write_fields/write_cover
 │   ├── lyrics/
 │   │   ├── lyrics_text.py      # PURE: normalising, stage-dir stripping, script↔transcript alignment
@@ -90,6 +94,7 @@ backtrack/
 │       ├── terminal_input.py   # Non-blocking key reads for the playback loop
 │       ├── datetime_parse.py   # the one date/time parser (precision-aware, human errors)
 │       ├── keyboard.py         # Detects the keyboard layout family (typo scoring in search.py)
+│       ├── output.py           # The CLI's one output path: human table / JSON / NDJSON, exit codes
 │       └── ui_utils.py         # ANSI helpers, terminal size, margins, breadcrumb status bar
 └── docs/                       # This guide + user docs
 ```
@@ -102,6 +107,7 @@ backtrack/
 | Library cache | `~/.cache/backtrack/library_cache.json` | `$BACKTRACK_CACHE_DIR` |
 | Keyboard layout | detected from the OS (typo scoring) | `$BACKTRACK_KEYBOARD` (`qwerty`/`qwertz`/`azerty`/`dvorak`/`colemak`) |
 | History | `~/.config/backtrack/history.log` (`timestamp | duration | path`) | (follows `CONFIG_DIR`) |
+| Feeds | `~/.config/backtrack/feeds.json` (url, filter, seen keys) | (follows `CONFIG_DIR`) |
 
 The env overrides make **isolated live testing** possible — point them at a temp dir to run the real
 app against a throwaway config/cache without touching your own.
@@ -264,6 +270,55 @@ builds the widgets:
   `_hint_pin_target() - len(chrome_hint_lines(pairs))`, not the raw terminal height, or it draws
   over the miniplayer (both the EQ and the RVA2 meter did).
 
+
+### Command line — `cli.py`, `cli_commands.py`, `utils/output.py`
+
+`src/main.py:main` sends any invocation with arguments to `cli.main`; bare `backtrack` opens
+the app as it always did.
+
+**The command tree is data.** `cli.TREE` (in `cli_commands.py`) is a list of `Cmd`s, each with
+`Flag`s, `Arg`s and children. Three things read it — `build_parser` makes the argparse parser,
+`schema_tree` makes `backtrack schema`, and `completion` makes the bash/zsh/fish scripts. A
+flag therefore cannot exist in the parser and be missing from the schema or the completions,
+which is the usual way a hand-written completion script rots.
+
+**Handlers are thin.** A handler resolves its arguments, calls the function the menus call, and
+hands the result to `output`. If a handler starts deciding *what an operation does*, that
+decision belongs in a shared module — `id3/bulk_ops.py` is the worked example.
+
+**One output path.** `utils/output.py` has `table` / `record` / `event` / `note` / `fail`, and
+the format decision lives only there. Human tables go through `prompt_core._table_widths` and
+`_render_table_row`, the same engine every list in the app uses. Colour is switched process-wide
+by `ui_utils.set_colour`, so existing render paths lose colour on a pipe without knowing about
+it. A list command prints its table on a terminal and one path per line when it is not, which
+is what makes `backtrack track list | backtrack tag read` compose with no flag.
+
+**Two argparse traps this hit**, worth knowing before adding a flag:
+
+- A flag declared on both the top-level parser and the subparsers (so it can be written either
+  side of the verb) gets its value *overwritten* by the subparser's default. Global flags and
+  any flag with a `config_key` therefore declare `default=argparse.SUPPRESS` and are filled in
+  afterwards by `_apply_global_defaults` / `_resolve_defaults`.
+- `--help` raises `SystemExit` from inside `parse_args`; it must be caught or it escapes as a
+  traceback.
+
+**Defaults precedence** is `flag > config > built-in`, implemented once in `_resolve_defaults`.
+Give a `Flag` a `config_key` and it takes part. A falsy config value means "no preference".
+
+**Nothing blocks on stdin.** `Ctx.confirm` returns its default when stdin is not a terminal, and
+`--yes` accepts everything. `Ctx.targets(allow_stdin=False)` exists because reading stdin is a
+blocking call: a command with another source of targets (`--album`, say) must consult that
+*before* stdin, or it hangs on any stdin that stays open.
+
+### Adding a command
+
+1. Write the logic where both callers can reach it — a pure module, or `bulk_ops`-style
+   plan/apply. Never in the handler.
+2. Add a handler in `cli_commands.py` returning an exit code from `output`.
+3. Add a `Cmd` to `TREE` with a **worked example** — a test asserts every leaf has one.
+4. Support `--dry-run` if it writes, and emit through `output.event` so `--json` streams.
+5. Test it in both output modes and assert its exit codes.
+
 ### Playback — `playback/`
 
 `playback.py` runs VLC, handles keys (seek/volume/panes/help), and drives the lyric/dialogue sync
@@ -308,10 +363,18 @@ helper names like `_convert_apic_to_viu` are legacy from the old `viu` dependenc
 ## Testing
 
 ```bash
-pyright src                                   # type check — keep at 0 errors / 0 warnings
-python3 -m compileall -q src                  # syntax/import sanity
+python3 -m unittest discover -s tests -t tests   # the suite
+pyright src                                      # type check
+python3 -m compileall -q src                     # syntax/import sanity
 BACKTRACK_CONFIG_DIR=/tmp/bt BACKTRACK_CACHE_DIR=/tmp/bt python3 main.py   # isolated live run
 ```
+
+**Isolating a test that writes.** `config.CONFIG_FILE`, `music_library.CACHE_PATH` and
+`history.HISTORY_FILE` are all bound at import, and `history.HISTORY_FILE` captures
+`config.CONFIG_DIR` at *its* import — so patching `CONFIG_DIR` alone does not reach it. Patch
+each one, and assert they all point inside the temp directory before running anything
+destructive. `tests/test_cli.py:_assert_isolated` does this; it exists because a
+`history clear` test once deleted a real log.
 
 Prefer a small headless script for pure logic and tag writes (build fixtures with `mutagen`,
 round-trip create→save→read). Reserve live runs for the interactive widgets and playback rendering.
