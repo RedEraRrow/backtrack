@@ -201,8 +201,22 @@ def _wire_playback() -> None:
     prompt.set_notification_opener(notification_centre)
 
 
-def main() -> None:
-    """Program entry point: set up the terminal, load config, and run the app."""
+def main() -> int | None:
+    """Program entry point.
+
+    Bare `backtrack` opens the app, which is what it has always done and what
+    the console-script exists for. Any argument means the command-line
+    interface instead, and its exit code becomes the process's.
+    """
+    import sys
+    if len(sys.argv) > 1:
+        from src import cli
+        return cli.main(sys.argv[1:])
+    return _run_app()
+
+
+def _run_app() -> None:
+    """Set up the terminal, load config, and run the interactive app."""
     # Enable ANSI escape processing on Windows consoles (no-op elsewhere).
     try:
         import colorama
@@ -233,4 +247,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

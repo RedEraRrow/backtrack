@@ -1,5 +1,6 @@
 """Terminal helpers: ANSI colours, sizing, formatting, status bar, progress bar."""
 from __future__ import annotations
+import os
 import sys
 import shutil
 import signal
@@ -85,6 +86,40 @@ class Colors:
     INVERT = "\033[7m"
     HIDE = "\033[?25l"
     SHOW = "\033[?25h"
+
+
+# The styling half of Colors — everything that paints rather than moves the
+# cursor. Suppressing colour must not suppress HIDE/SHOW, which are cursor
+# control and still needed on a pipe.
+_STYLE_NAMES = ('PRIMARY', 'WHITE', 'ACCENT', 'CYAN', 'YELLOW', 'MAGENTA', 'GREEN',
+                'DIM', 'BOLD', 'ITALIC', 'UNDERLINE', 'RESET', 'BACK', 'INVERT')
+_STYLE_CODES = {name: getattr(Colors, name) for name in _STYLE_NAMES}
+
+
+def colour_enabled() -> bool:
+    """Whether colour should be emitted: a terminal, and NO_COLOR unset.
+
+    An empty NO_COLOR still counts as set — that is what the convention says,
+    and `NO_COLOR=` in an environment is a deliberate act.
+    """
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    try:
+        return bool(sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def set_colour(enabled: bool) -> None:
+    """Turn every style code in `Colors` on or off, for the whole process.
+
+    One switch rather than a check at each of the several hundred places a style
+    is interpolated: the table renderer, the hint engine, the status bar and
+    every screen already read their codes from here, so a pipe gets plain text
+    without any of them knowing about it.
+    """
+    for name, code in _STYLE_CODES.items():
+        setattr(Colors, name, code if enabled else "")
 
 
 _screen_invalidator = None
