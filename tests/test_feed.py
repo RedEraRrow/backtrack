@@ -111,6 +111,22 @@ class TitleDateTest(unittest.TestCase):
         self.assertEqual(got.date, "2024-05-31")
         self.assertEqual(got.date_source, 'title+feed')
 
+    def test_a_december_broadcast_republished_in_january_keeps_its_own_year(self):
+        """A compilation feed republishes weeks later, so pubDate's year is not
+        always the broadcast's. Taking it gave a date *after* publication."""
+        got = fd.parse_title("Dead Ringers - 9th December",
+                             _when("Fri, 06 Jan 2023 18:00:00 +0000"))
+        self.assertEqual(got.date, "2022-12-09")
+        self.assertEqual(got.date_source, 'title+feed')
+
+    def test_an_inferred_date_is_never_after_the_publication_date(self):
+        for title, pub in (("A Show - 9th December", "Fri, 06 Jan 2023 18:00:00 +0000"),
+                           ("A Show - 31st May", "Thu, 13 Jun 2024 18:00:00 +0000"),
+                           ("A Show - 1st January", "Fri, 02 Jan 2026 18:00:00 +0000")):
+            with self.subTest(title=title):
+                got = fd.parse_title(title, _when(pub))
+                self.assertLessEqual(got.date, _when(pub).date().isoformat())
+
     def test_with_no_date_in_the_title_the_feed_date_is_used_and_said_so(self):
         got = fd.parse_title("A Show: Ep 1. Hello",
                              _when("Fri, 07 Jun 2024 18:00:00 +0000"))

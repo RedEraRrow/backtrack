@@ -135,7 +135,14 @@ def parse_title(raw: str, pub_date: datetime | None = None) -> ParsedTitle:
             elif pub_date is not None:
                 # The title names the broadcast day; only the year is missing,
                 # and the feed's own year is the one reliable part of pubDate.
-                parsed.date = f"{pub_date.year:04d}-{month:02d}-{day:02d}"
+                # But a compilation feed republishes weeks later, so a December
+                # broadcast can carry a January pubDate: taking that year gives
+                # a date *after* publication, which cannot be right. A feed
+                # cannot publish an episode before it aired, so step back a year.
+                year = pub_date.year
+                if (month, day) > (pub_date.month, pub_date.day):
+                    year -= 1
+                parsed.date = f"{year:04d}-{month:02d}-{day:02d}"
                 parsed.date_source = 'title+feed'
             return parsed if parsed.date else _with_feed_date(parsed, pub_date)
 
