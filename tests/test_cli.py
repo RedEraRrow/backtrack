@@ -521,5 +521,234 @@ class SchemaAndCompletionTest(CliTest):
         self.assertEqual(code, out.USAGE)
 
 
+class TagCommandsTest(CliTest):
+    def setUp(self):
+        super().setUp()
+        self.scan()
+        self.track = self.tracks[2]                # Sandstorm, on its own
+
+    def test_read_lists_the_frames(self):
+        _code, body = self.json_of('tag', 'read', self.track)
+        self.assertEqual({i['tag'] for i in body['items']},
+                         {'TIT2', 'TPE1', 'TALB', 'TRCK', 'TCON'})
+
+    def test_read_can_narrow_to_one_frame(self):
+        _code, body = self.json_of('tag', 'read', self.track, '--tag', 'TIT2')
+        self.assertEqual([i['value'] for i in body['items']], ['Sandstorm'])
+
+    def test_read_carries_the_friendly_name(self):
+        _code, body = self.json_of('tag', 'read', self.track, '--tag', 'TALB')
+        self.assertEqual(body['items'][0]['name'], 'Album')
+
+    def test_read_of_a_missing_file_is_not_found(self):
+        code, _out, _err = self.run_cli('tag', 'read',
+                                        os.path.join(self.tmp, 'ghost.mp3'))
+        self.assertEqual(code, out.NOT_FOUND)
+
+    def test_read_with_no_target_is_a_usage_error(self):
+        code, _out, _err = self.run_cli('tag', 'read', stdin="")
+        self.assertEqual(code, out.USAGE)
+
+    def test_write_sets_a_value(self):
+        self.assertEqual(self.run_cli('tag', 'write', self.track,
+                                      '-t', 'TCON', '-v', 'Hardcore')[0], out.OK)
+        self.assertEqual(ID3(self.track)['TCON'].text[0], 'Hardcore')
+
+    def test_write_reaches_every_file_a_filter_matches(self):
+        self.run_cli('tag', 'write', '--album', 'rio', '-t', 'TCON',
+                     '-v', 'Synthpop')
+        for path in self.tracks[:2]:
+            self.assertEqual(ID3(path)['TCON'].text[0], 'Synthpop')
+
+    def test_delete_removes_a_frame(self):
+        self.assertEqual(self.run_cli('tag', 'delete', self.track,
+                                      '-t', 'TCON', '--yes')[0], out.OK)
+        self.assertNotIn('TCON', ID3(self.track))
+
+    def test_delete_does_not_prompt_or_act_without_yes_on_a_pipe(self):
+        code, stdout, _err = self.run_cli('tag', 'delete', self.track,
+                                          '-t', 'TCON', stdin="")
+        self.assertEqual(code, out.OK)
+        self.assertIn("Left alone", stdout)
+        self.assertIn('TCON', ID3(self.track))
+
+    def test_rename_moves_the_value_to_a_new_frame(self):
+        self.run_cli('tag', 'write', self.track, '-t', 'TIT1', '-v', 'Grouping')
+        self.assertEqual(self.run_cli('tag', 'rename', self.track, '-t', 'TIT1',
+                                      '--to', 'TSST')[0], out.OK)
+        self.assertEqual(ID3(self.track)['TSST'].text[0], 'Grouping')
+        self.assertNotIn('TIT1', ID3(self.track))
+
+    def test_copy_moves_chosen_frames_between_files(self):
+        code, _out, _err = self.run_cli('tag', 'copy', self.track,
+                                        self.tracks[0], '-t', 'TCON')
+        self.assertEqual(code, out.OK)
+        self.assertEqual(ID3(self.tracks[0])['TCON'].text[0], 'Trance')
+
+    def test_copy_from_a_missing_source_is_not_found(self):
+        code, _out, _err = self.run_cli('tag', 'copy',
+                                        os.path.join(self.tmp, 'ghost.mp3'),
+                                        self.tracks[0])
+        self.assertEqual(code, out.NOT_FOUND)
+
+    def test_copy_of_a_tag_the_source_lacks_is_not_found(self):
+        code, _out, _err = self.run_cli('tag', 'copy', self.track,
+                                        self.tracks[0], '-t', 'TBPM')
+        self.assertEqual(code, out.NOT_FOUND)
+
+    def test_dry_run_writes_no_tag(self):
+        self.run_cli('tag', 'write', self.track, '-t', 'TCON', '-v', 'Nope',
+                     '--dry-run')
+        self.assertEqual(ID3(self.track)['TCON'].text[0], 'Trance')
+
+
+class BulkCommandsTest(CliTest):
+    def setUp(self):
+        super().setUp()
+        self.scan()
+
+    def test_stripdisc_removes_one_of_one(self):
+        from src.id3 import tag_writer as tw
+        code, _out, _err = self.run_cli('bulk', 'stripdisc', '--album', 'rio',
+                                        '--yes')
+        self.assertEqual(code, out.OK)
+        self.assertEqual(tw.read_number_pairs(self.tracks[0])['disc'], '')
+
+    def test_stripdisc_dry_run_changes_nothing(self):
+        from src.id3 import tag_writer as tw
+        self.run_cli('bulk', 'stripdisc', '--album', 'rio', '--dry-run')
+        self.assertEqual(tw.read_number_pairs(self.tracks[0])['disc'], '1')
+
+    def test_dry_run_and_a_real_run_emit_the_same_event_shape(self):
+        planned = [json.loads(line) for line in
+                   self.run_cli('bulk', 'stripdisc', '--album', 'rio',
+                                '--dry-run', '--json')[1].splitlines()]
+        real = [json.loads(line) for line in
+                self.run_cli('bulk', 'stripdisc', '--album', 'rio',
+                             '--yes', '--json')[1].splitlines()]
+        self.assertEqual(len(planned), len(real))
+        for a, b in zip(planned, real):
+            self.assertEqual(a['kind'], b['kind'])
+            self.assertEqual(set(a) - {'fields'}, set(b))
+            self.assertEqual(a['detail'], b['detail'])
+
+    def test_events_stream_one_line_per_file(self):
+        _code, stdout, _err = self.run_cli('bulk', 'stripdisc', '--album', 'rio',
+                                           '--yes', '--json')
+        lines = [json.loads(line) for line in stdout.splitlines()]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all(line['kind'] == 'event' for line in lines))
+        self.assertTrue(all(line['schema'] == out.SCHEMA_VERSION for line in lines))
+
+    def test_renumber_lays_down_a_continuous_run(self):
+        from src.id3 import tag_writer as tw
+        self.run_cli('bulk', 'renumber', '--album', 'rio', '--yes')
+        numbers = [tw.read_number_pairs(p)['track'] for p in self.tracks[:2]]
+        self.assertEqual(numbers, ['1', '2'])
+
+    def test_striplength_removes_a_stale_tlen(self):
+        from mutagen.id3 import TLEN  # type: ignore[reportPrivateImportUsage]
+        from src.id3 import tag_writer as tw
+        audio = ID3(self.tracks[2])
+        audio.add(TLEN(encoding=3, text=["123456"]))
+        audio.save(self.tracks[2], v2_version=3)
+        self.run_cli('bulk', 'striplength', self.tracks[2], '--yes')
+        self.assertEqual(tw.stale_length_tags(self.tracks[2]), (False, False))
+
+    def test_sortorders_moves_a_leading_article_to_the_tail(self):
+        self.run_cli('tag', 'write', self.tracks[2], '-t', 'TPE1',
+                     '-v', 'The Shamen')
+        self.run_cli('bulk', 'sortorders', self.tracks[2], '--yes')
+        self.assertEqual(ID3(self.tracks[2])['TSOP'].text[0], 'Shamen, The')
+
+    def test_assign_every_n_numbers_the_groups(self):
+        self.run_cli('bulk', 'assign', '--album', 'rio', '-t', 'TIT1',
+                     '--every', '1', '-v', 'Series {n}', '--yes')
+        values = [str(ID3(p)['TIT1'].text[0]) for p in self.tracks[:2]]
+        self.assertEqual(values, ['Series 1', 'Series 2'])
+
+    def test_assign_by_range(self):
+        self.run_cli('bulk', 'assign', '--album', 'rio', '-t', 'TSST',
+                     '--range', '1-2=Part One', '--yes')
+        self.assertEqual(str(ID3(self.tracks[0])['TSST'].text[0]), 'Part One')
+
+    def test_assign_needs_exactly_one_mode(self):
+        code, _out, _err = self.run_cli('bulk', 'assign', '--album', 'rio',
+                                        '-t', 'TIT1', '--yes')
+        self.assertEqual(code, out.USAGE)
+        code, _out, _err = self.run_cli('bulk', 'assign', '--album', 'rio',
+                                        '-t', 'TIT1', '--every', '2',
+                                        '--range', '1-2=x', '--yes')
+        self.assertEqual(code, out.USAGE)
+
+    def test_assign_rejects_a_malformed_range(self):
+        code, _out, _err = self.run_cli('bulk', 'assign', '--album', 'rio',
+                                        '-t', 'TIT1', '--range', 'nonsense',
+                                        '--yes')
+        self.assertEqual(code, out.USAGE)
+
+    def test_rename_renames_from_the_tags(self):
+        code, _out, _err = self.run_cli('bulk', 'rename', '--album', 'rio',
+                                        '-p', '%track% - %title%', '--yes')
+        self.assertEqual(code, out.OK)
+        names = sorted(os.listdir(os.path.dirname(self.tracks[0])))
+        self.assertEqual(names, ['01 - Rio.mp3', '02 - Hungry Like the Wolf.mp3'])
+
+    def test_rename_rejects_an_unknown_token(self):
+        code, _out, err = self.run_cli('bulk', 'rename', '--album', 'rio',
+                                       '-p', '%nosuchtoken%', '--yes')
+        self.assertEqual(code, out.USAGE)
+        self.assertIn('nosuchtoken', err)
+
+    def test_rename_dry_run_leaves_the_names_alone(self):
+        before = sorted(os.listdir(os.path.dirname(self.tracks[0])))
+        self.run_cli('bulk', 'rename', '--album', 'rio', '-p', '%title%',
+                     '--dry-run')
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.tracks[0]))),
+                         before)
+
+    def test_derive_fills_a_title_from_the_file_name(self):
+        self.run_cli('bulk', 'derive', self.tracks[2], '-f', 'title',
+                     '--overwrite', '--yes')
+        self.assertEqual(str(ID3(self.tracks[2])['TIT2'].text[0]), 'Sandstorm')
+
+    def test_pictype_reports_when_there_is_no_art(self):
+        code, stdout, _err = self.run_cli('bulk', 'pictype', '--album', 'rio',
+                                          '--yes')
+        self.assertEqual(code, out.OK)
+        self.assertIn('No MP3s with embedded art', stdout)
+
+    def test_art_embeds_a_shared_cover(self):
+        from src.id3 import tag_writer as tw
+        cover = os.path.join(os.path.dirname(self.tracks[0]), 'cover.jpg')
+        with open(cover, 'wb') as f:
+            f.write(b"\xff\xd8\xff\xe0" + b"\x00" * 32 + b"\xff\xd9")
+        code, _out, _err = self.run_cli('bulk', 'art', '--album', 'rio',
+                                        '--strategy', 'best', '--yes')
+        self.assertEqual(code, out.OK)
+        self.assertTrue(tw.has_cover(self.tracks[0]))
+
+    def test_art_template_without_a_pattern_is_a_usage_error(self):
+        code, _out, _err = self.run_cli('bulk', 'art', '--album', 'rio',
+                                        '--strategy', 'template', '--yes')
+        self.assertEqual(code, out.USAGE)
+
+    def test_a_bulk_command_with_no_target_is_a_usage_error(self):
+        for verb in ('stripdisc', 'striplength', 'renumber', 'reflow',
+                     'sortorders', 'derive'):
+            with self.subTest(verb=verb):
+                code, _out, _err = self.run_cli('bulk', verb, '--yes', stdin="")
+                self.assertEqual(code, out.USAGE)
+
+    def test_a_named_filter_never_reads_stdin(self):
+        # Regression: reading stdin whenever the positionals were empty hung any
+        # `--album`-scoped command against a stdin that stays open.
+        sys.stdin = io.StringIO("")
+        sys.stdin.isatty = lambda: False        # type: ignore[method-assign]
+        code, _out, _err = self.run_cli('bulk', 'stripdisc', '--album', 'rio',
+                                        '--dry-run')
+        self.assertEqual(code, out.OK)
+
+
 if __name__ == "__main__":
     unittest.main()

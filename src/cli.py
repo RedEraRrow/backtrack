@@ -138,17 +138,22 @@ class Ctx:
                     save_library_cache(self._library, _async=False)
         return self._library or []
 
-    def targets(self, positional: str = 'target') -> list[str]:
+    def targets(self, positional: str = 'target', *,
+                allow_stdin: bool = True) -> list[str]:
         """The files this run acts on: the positional arguments, else stdin.
 
         Lets `backtrack track list --artist Darude | backtrack tag read` work
-        without either command knowing about the other.
+        without either command knowing about the other. `allow_stdin=False` is
+        for a caller with another source to try first — reading stdin is a
+        blocking call, so it must be the last thing asked, not the second.
         """
         given = getattr(self.args, positional, None) or []
         if isinstance(given, str):
             given = [given]
-        return [os.path.abspath(os.path.expanduser(p)) for p in given] \
-            or out.read_stdin_paths()
+        paths = [os.path.abspath(os.path.expanduser(p)) for p in given]
+        if paths or not allow_stdin:
+            return paths
+        return out.read_stdin_paths()
 
     def confirm(self, question: str, *, default: bool = False) -> bool:
         """Ask before something destructive — unless we were told not to.

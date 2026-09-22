@@ -592,7 +592,8 @@ def rename_files(pairs: list, library: list, *,
             refresh_library_entry(library, final)
         except Exception:
             pass
-        _emit(on_event, 'written', Change(path=orig, why=os.path.basename(final)), final)
+        _emit(on_event, 'written', Change(path=orig, why=os.path.basename(final)),
+              os.path.basename(final))
     return out
 
 
@@ -638,7 +639,7 @@ def apply_covers(covers: dict, library: list, *, overwrite: bool = False,
                 refresh_library_entry(library, path)
             except Exception:
                 pass
-            _emit(on_event, 'written', change, image)
+            _emit(on_event, 'written', change, os.path.basename(image))
     return out
 
 
