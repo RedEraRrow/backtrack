@@ -24,7 +24,7 @@ SYNC_INTERVAL_SECONDS = 30
 # tag: cached entries carrying an older version are re-read on the next sync even
 # though their mtime hasn't moved. (Before this, each new field needed its own
 # `'field' not in track` special case.)
-METADATA_VERSION = 4
+METADATA_VERSION = 5
 
 
 def _default_cache_dir() -> Path:
@@ -117,6 +117,12 @@ def start_background_sync(library: list) -> None:
             daemon=True,
         )
         _sync_thread.start()
+
+
+def live_library() -> list | None:
+    """The in-memory library the background sync keeps current, or None when
+    no sync is running (a bare CLI invocation)."""
+    return _sync_state.get("library")
 
 
 def _reconcile_library(library: list, music_dirs, ignore_hidden: bool = False) -> bool:
@@ -266,6 +272,10 @@ def _get_default_metadata(file_path: str) -> dict:
         "play_count": 0,
         "bpm": "0",
         "people": "",
+        # The same credits as exact [name, role] pairs. `people` is one string
+        # for search to match against, and can't be split back apart: a role
+        # may itself contain commas ("Sundry Ruffians, Publishers, and …").
+        "credits": [],
         "duration": 0.0,
         "cached_mtime": 0,
         "meta_version": METADATA_VERSION,
@@ -402,16 +412,17 @@ def _extract_id3_metadata(tags: ID3) -> dict:
     # People from TMCL (performers) / TIPL (involved people). Store each as
     # "Name (Role)" when a role is present so search matches — and the results
     # people column can show — both the person and their role/character.
-    people_entries = []
+    credits = []
     for frame_id in ('TMCL', 'TIPL'):
         frame = tags.get(frame_id)
         if frame and hasattr(frame, 'people'):
             for role, name in frame.people:
                 n, r = name.strip(), role.strip()
                 if n:
-                    people_entries.append(f"{n} ({r})" if r else n)
-    if people_entries:
-        result['people'] = ', '.join(people_entries)
+                    credits.append([n, r])
+    if credits:
+        result['credits'] = credits
+        result['people'] = ', '.join(f"{n} ({r})" if r else n for n, r in credits)
 
     return result
 
@@ -716,6 +727,12 @@ def group_values(field: str, value: Any) -> list[str]:
     return [val] if val else []
 
 
+def people_names(song: dict) -> list[str]:
+    """Everyone credited on a track (from its exact name/role pairs), each once,
+    in credit order."""
+    return list(dict.fromkeys(n for n, _r in song.get('credits') or [] if n))
+
+
 def derive_album_credit(songs: list) -> str:
     """The credit an album carrying no album-artist tag is filed under ('' if its
     tracks name no artist at all).
@@ -780,12 +797,30 @@ def get_grouped_data(library: list, category: str) -> dict:
             grouped.setdefault(name, []).append(song)
         return grouped
 
+    if category in ("year", "decade"):
+        # By the year in any date form; a decade is "1990s". Undated tracks
+        # are left out rather than filed under an "Unknown" year.
+        for song in library:
+            y = year_of(song.get("year"))
+            if y:
+                grouped.setdefault(str(y) if category == "year" else f"{y // 10 * 10}s", []).append(song)
+        return grouped
+
+    if category == "people":
+        # Each credited person once, whatever their role(s), so someone in
+        # several shows is one entry.
+        for song in library:
+            for name in people_names(song):
+                grouped.setdefault(name, []).append(song)
+        return grouped
+
     for song in library:
         vals = group_values(category, song.get(category)) or ["Unknown"]
 
         for val in vals:
-            # Skip Unknown grouping
-            if category == "grouping" and val == "Unknown":
+            # Optional credits: a track without one isn't filed under "Unknown"
+            # (that would be most of the library in one row).
+            if category in ("grouping", "composer", "lyricist", "work") and val == "Unknown":
                 continue
 
             grouped.setdefault(val, []).append(song)
@@ -838,74 +873,229 @@ def _tagged_sort_key(display_name: str, songs: list, category: str) -> str | Non
     return None
 
 
-def get_group_sort_key(display_name: str, songs: list, category: str) -> str:
+def get_group_sort_key(display_name: str, songs: list, category: str,
+                       cfg: dict | None = None) -> str:
     """
     Sort key for group name.
 
     Priority:
         1. Explicit sort-order tag (TSOP/TSO2/TSOA), matched to this group by
-           position within a multi-value credit
-        2. Display name with leading "The " dropped
-        3. Raw lowercase display name
+           position within a multi-value credit — unless sort tags are off
+        2. Display name through `sort_text` (leading words dropped, case and
+           accents folded)
     """
-    tagged = _tagged_sort_key(display_name, songs, category)
-    if tagged:
-        return tagged
-
-    # No sort tag — use display name, strip "The "
-    name = display_name.lower()
-    if name.startswith("the "):
-        return name[4:].strip()
-    return name
+    opts = sort_options(cfg)
+    if opts['use_tags']:
+        tagged = _tagged_sort_key(display_name, songs, category)
+        if tagged:
+            return tagged
+    return sort_text(display_name, opts)
 
 
-def sort_library_logic(tracks: list) -> list:
-    """Sort tracks by artist, year, album, disc, and track number."""
-    def get_sortable_name(display_name: str, sort_order: str | None) -> str:
-        """Prefer an explicit sort-order tag; else the display name with leading "The " dropped."""
-        if sort_order and str(sort_order).strip():
-            return str(sort_order).lower()
-        if not display_name:
-            return ""
-        name = str(display_name).lower()
-        if name.startswith("the "):
-            return name[4:].strip()
-        return name
+# --- Sorting ------------------------------------------------------------------
+# One engine orders every list of albums and tracks: a *chain* of levels, each a
+# (field, direction) pair, compared in turn. Album-level fields are worked out
+# once per album, so an album can only be split up by a track-level field placed
+# ahead of it (broadcast order does this on purpose). Missing values always sort
+# last, whichever the direction.
 
-    def sort_key(track: dict):
-        """Artist, year (descending), album, disc, track, movement — in sort order."""
-        artist = track.get('album_artist') or track.get('artist', 'Unknown Artist')
-        artist_sort = track.get('Album Artist Sort Order') or track.get('Performer Sort Order')
-        album = track.get('album', 'Unknown Album')
-        album_sort = track.get('Album Sort Order')
-        year_val = track.get('year')
+# field → (label, level, kind)
+SORT_FIELDS: dict[str, tuple[str, str, str]] = {
+    'album':        ("Album",          'album', 'text'),
+    'album_artist': ("Album artist",   'album', 'text'),
+    'album_year':   ("Album year",     'album', 'num'),
+    'disc':         ("Disc",           'track', 'num'),
+    'track':        ("Track number",   'track', 'num'),
+    'movement':     ("Movement",       'track', 'num'),
+    'title':        ("Title",          'track', 'text'),
+    'artist':       ("Track artist",   'track', 'text'),
+    'date':         ("Date",           'track', 'date'),
+    'play_count':   ("Play count",     'track', 'num'),
+    'duration':     ("Duration",       'track', 'num'),
+}
 
-        clean_year = year_of(year_val)
+DEFAULT_SORT_LEVELS = [['album', 'asc'], ['album_year', 'asc'], ['disc', 'asc'],
+                       ['track', 'asc'], ['title', 'asc'], ['date', 'asc']]
 
-        mv_num = to_num(track.get('movement_number', 0))
-
-        return (
-            get_sortable_name(artist, artist_sort),
-            -clean_year,
-            get_sortable_name(album, album_sort),
-            to_num(track.get('disc', 1)),
-            to_num(track.get('track', 0)),
-            mv_num,
-        )
-
-    return sorted(tracks, key=sort_key)
+_opts_cache: dict = {}
 
 
-def sort_album_tracks(tracks: list) -> list:
-    """Sort tracks within a single album by disc → track → movement.
+def sort_options(cfg: dict | None = None) -> dict:
+    """The sort settings: `levels`, `use_tags`, `ignore_words`, `libraries`
+    (directory → its own levels). Read from `cfg`, else from the config file
+    (cached on its mtime — group keys are computed per row, per render)."""
+    from src.config import music_dirs
+    if cfg is None:
+        from src.config import CONFIG_FILE, load_config
+        try:
+            mtime = CONFIG_FILE.stat().st_mtime
+        except OSError:
+            mtime = None
+        if _opts_cache.get('mtime') != mtime or 'cfg' not in _opts_cache:
+            _opts_cache.update(mtime=mtime, cfg=load_config())
+        cfg = _opts_cache['cfg']
+    return {
+        'levels':       valid_levels(cfg.get('sort_levels')) or DEFAULT_SORT_LEVELS,
+        'use_tags':     cfg.get('sort_use_tags', True),
+        'ignore_words': [w.strip().lower() for w in cfg.get('sort_ignore_words', ['The', 'A', 'An'])
+                         if w.strip()],
+        'libraries':    {d: valid_levels(l) for d, l in (cfg.get('library_sort_levels') or {}).items()
+                         if valid_levels(l)},
+        'dirs':         music_dirs(cfg),
+    }
 
-    Does not consider artist or album — callers have already scoped to one album.
-    """
-    def key(track: dict) -> tuple:
-        """(disc, track, movement) numbers for within-album ordering."""
-        disc = to_num(track.get('disc', 0))
-        trk  = to_num(track.get('track', 0))
-        mv   = to_num(track.get('movement_number', 0))
-        return (disc, trk, mv)
 
-    return sorted(tracks, key=key)
+def valid_levels(levels) -> list:
+    """A stored chain with unknown fields and bad directions dropped."""
+    out = []
+    for lv in levels or []:
+        if (isinstance(lv, (list, tuple)) and len(lv) == 2
+                and lv[0] in SORT_FIELDS and lv[1] in ('asc', 'desc')):
+            out.append([lv[0], lv[1]])
+    return out
+
+
+def describe_levels(levels: list) -> str:
+    """One-line summary of a chain, e.g. "Album ↑, Album year ↑, Disc ↑"."""
+    return ", ".join(f"{SORT_FIELDS[f][0]} {'↑' if d == 'asc' else '↓'}" for f, d in levels)
+
+
+def sort_text(value, opts: dict | None = None) -> str:
+    """A name as it sorts: casefolded, accents folded (Café = Cafe), and a
+    leading ignored word dropped ("The Beatles" → "beatles")."""
+    import unicodedata
+    opts = opts or sort_options()
+    s = unicodedata.normalize('NFKD', str(value or '').strip())
+    s = "".join(ch for ch in s if not unicodedata.combining(ch)).casefold()
+    for w in opts['ignore_words']:
+        if s.startswith(w + " ") and len(s) > len(w) + 1:
+            return s[len(w) + 1:].strip()
+    return s
+
+
+def _natural(s: str) -> tuple:
+    """Split digits out so "vol. 2" sorts before "vol. 10". Always starts with
+    a str, so any two keys compare element by element without a type clash."""
+    return tuple(int(p) if p.isdigit() else p for p in re.split(r'(\d+)', s))
+
+
+def library_of(path: str, dirs: list) -> str | None:
+    """The configured directory a file lives under (the deepest, when they nest)."""
+    best = None
+    p = os.path.normcase(os.path.abspath(path))
+    for d in dirs:
+        nd = os.path.normcase(os.path.abspath(d))
+        if (p == nd or p.startswith(nd.rstrip(os.sep) + os.sep)) and (best is None or len(nd) > len(best[0])):
+            best = (nd, d)
+    return best[1] if best else None
+
+
+def resolve_levels(tracks: list, cfg: dict | None = None) -> tuple[list, str | None]:
+    """The chain a set of tracks sorts by, and whose it is: a library's own
+    order when every track lives in that one library, else the shared order
+    (owner None)."""
+    opts = sort_options(cfg)
+    if opts['libraries'] and tracks:
+        libs = {library_of(t.get('path', ''), opts['dirs']) for t in tracks}
+        if len(libs) == 1:
+            (lib,) = libs
+            if lib in opts['libraries']:
+                return opts['libraries'][lib], lib
+    return opts['levels'], None
+
+
+def _album_id(t: dict) -> tuple:
+    return ((t.get('album') or '').strip().lower(), (t.get('album_artist') or '').strip().lower())
+
+
+def _field_value(field: str, t: dict, album: list, opts: dict):
+    """One track's value for `field` (album-level fields from its whole album),
+    or None when it has none."""
+    if field == 'album':
+        tag = next((s.get('Album Sort Order') for s in album if s.get('Album Sort Order')), None)
+        name = (tag if opts['use_tags'] and tag else t.get('album')) or ''
+        return _natural(sort_text(name, opts)) if name.strip() else None
+    if field == 'album_artist':
+        tag = next((s.get('Album Artist Sort Order') for s in album if s.get('Album Artist Sort Order')), None)
+        name = tag if opts['use_tags'] and tag else (_first_album_artist(album) or derive_album_credit(album))
+        return _natural(sort_text(name, opts)) if name and name.strip() else None
+    if field == 'album_year':
+        return album_year(album) or None
+    if field in ('disc', 'track', 'movement'):
+        raw = t.get('movement_number' if field == 'movement' else field)
+        return to_num(raw) if str(raw or '').strip() else None
+    if field == 'title':
+        return _natural(sort_text(t['title'], opts)) if (t.get('title') or '').strip() else None
+    if field == 'artist':
+        tag = t.get('Performer Sort Order')
+        name = tag if opts['use_tags'] and tag else t.get('artist')
+        return _natural(sort_text(name, opts)) if (name or '').strip() else None
+    if field == 'date':
+        d = str(t.get('year') or '').strip()
+        return d if year_of(d) else None
+    if field == 'play_count':
+        return to_num(t.get('play_count') or 0)
+    if field == 'duration':
+        return to_num(t.get('duration')) or None
+    return None
+
+
+def _first_album_artist(album: list) -> str:
+    return next(((s.get('album_artist') or '').strip() for s in album if s.get('album_artist')), '')
+
+
+def _chain_sort(items: list, levels: list, value) -> list:
+    """Stable multi-pass sort: the last level first, the first level last, so the
+    first level wins. `value(item, field)` gives a comparable value or None;
+    None sorts last in either direction."""
+    out = list(items)
+    for field, direction in reversed(levels):
+        desc = direction == 'desc'
+        vals = {id(it): value(it, field) for it in out}
+
+        def key(it, _vals=vals, _desc=desc):
+            v = _vals[id(it)]
+            present = v is not None
+            return (present if _desc else not present, v if present else 0)
+        # Present and missing values never meet in a comparison: the flag
+        # separates them first, and missing ones all share the value 0.
+        out.sort(key=key, reverse=desc)
+    return out
+
+
+def sort_tracks(tracks: list, cfg: dict | None = None, levels: list | None = None) -> list:
+    """Tracks in the sort chain's order (the resolved chain unless `levels` is
+    given). Ties fall back to album, disc, track number, then path, so the
+    result never depends on the order the tracks arrived in."""
+    opts = sort_options(cfg)
+    chain = levels if levels is not None else resolve_levels(tracks, cfg)[0]
+    albums: dict = {}
+    for t in tracks:
+        albums.setdefault(_album_id(t), []).append(t)
+    cache: dict = {}
+
+    def value(t, field):
+        k = (id(t), field)
+        if k not in cache:
+            cache[k] = _field_value(field, t, albums[_album_id(t)], opts)
+        return cache[k]
+
+    base = sorted(tracks, key=lambda t: t.get('path', ''))
+    tiebreak = [['album', 'asc'], ['disc', 'asc'], ['track', 'asc'], ['movement', 'asc']]
+    return _chain_sort(base, list(chain) + tiebreak, value)
+
+
+def sort_albums(names: list, albums: dict, cfg: dict | None = None,
+                levels: list | None = None) -> list:
+    """Album names (each mapped to its tracks in `albums`) in the chain's
+    order, using only its album-level fields; the album name breaks ties."""
+    opts = sort_options(cfg)
+    if levels is None:
+        levels = resolve_levels([t for n in names for t in albums[n]], cfg)[0]
+    chain = [lv for lv in levels if SORT_FIELDS[lv[0]][1] == 'album'] + [['album', 'asc']]
+
+    def value(name, field):
+        songs = albums[name]
+        v = _field_value(field, songs[0], songs, opts) if songs else None
+        return v if (v is not None or field != 'album') else _natural(sort_text(name, opts))
+    return _chain_sort(sorted(names), chain, value)

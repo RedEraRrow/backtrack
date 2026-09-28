@@ -503,6 +503,9 @@ def _entity_values(song: dict, kind: str) -> list:
     towards both artists rather than towards a single fused name that matches
     neither well.
     """
+    if kind == 'people':                   # exact pairs: a role may contain commas
+        from src.music_library import people_names
+        return people_names(song)
     raw = str(song.get(kind, '') or '').strip()
     if not raw:
         return []

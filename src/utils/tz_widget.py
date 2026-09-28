@@ -1503,8 +1503,8 @@ def timezone_select(initial_offset: str = "") -> str | None:
                     tz_idx_in_offset = (tz_idx_in_offset - 1) % len(tzs)
                 _render()
 
-            elif len(key) == 1 and (key.isalpha() or key.isdigit() or key in '+-_/ '):
-                search_str += key
+            elif key == 'SPACE' or (len(key) == 1 and (key.isalpha() or key.isdigit() or key in '+-_/')):
+                search_str += ' ' if key == 'SPACE' else key
                 q = search_str.lower()
                 for i, tz in enumerate(_TIMEZONES):
                     if (q in tz[4].lower() or q in tz[5].lower() or

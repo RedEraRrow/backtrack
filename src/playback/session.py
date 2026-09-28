@@ -515,6 +515,16 @@ class PlaybackSession:
             self._load(self.queue[self.index])
             return self.file_path
 
+    def jump(self, index: int) -> str | None:
+        """Play queue position `index` now (a click in the queue pane). Returns
+        the new path, or None if `index` is out of range."""
+        with self._lock:
+            if not 0 <= index < len(self.queue):
+                return None
+            self.index = index
+            self._load(self.queue[self.index])
+            return self.file_path
+
     def enqueue(self, path: str, title: str | None = None) -> int:
         """Append a track to the end of the queue. Returns the new queue length."""
         with self._lock:

@@ -2294,26 +2294,8 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         optional dim subtitle line. Returns a builder for select()/checkbox()."""
         def _build():
             """Render the boxed header lines for the current terminal width."""
-            cols_now = get_terminal_width()
-            mh = ui_utils.MARGIN_H
-            # Reserve mh on BOTH sides (box border = 1+inner+2+1); the ' '*mh
-            # prefix is the left margin, so subtract 2*mh for an even right one.
-            inner = max(12, cols_now - 2 * mh - 4)
-            title = "Bulk Edit"
             count = f"{len(album_tracks)} track" + ("" if len(album_tracks) == 1 else "s")
-            gap = max(2, inner - len(title) - len(count))
-            title_line = f"{C.BOLD}{title}{C.RESET}{' ' * gap}{C.DIM}{count}{C.RESET}"
-
-            lines = [
-                f"{' ' * mh}{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}",
-                f"{' ' * mh}{C.DIM}│{C.RESET} {title_line} {C.DIM}│{C.RESET}",
-            ]
-            if subtitle:
-                sub = subtitle if len(subtitle) <= inner else subtitle[:inner - 1] + "…"
-                lines.append(f"{' ' * mh}{C.DIM}│{C.RESET} {C.DIM}{sub:<{inner}}{C.RESET} {C.DIM}│{C.RESET}")
-            lines.append(f"{' ' * mh}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}")
-            lines.append("")
-            return lines
+            return prompt.rounded_header("Bulk Edit", "", count, subtitle)
         return _build
 
     # Main screen: the basic per-tag ops, plus one entry into the automation

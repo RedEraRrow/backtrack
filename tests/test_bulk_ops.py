@@ -34,9 +34,19 @@ def _mp3(path: str, *, track: str | None = None, disc: str | None = None,
 
 class _Fixtures(unittest.TestCase):
     def setUp(self):
+        # rename_files refreshes library entries, which saves the cache: point
+        # it into the temp dir, or every run overwrites the real library cache.
+        from pathlib import Path
+        from src import music_library as ml
         self.tmp = tempfile.mkdtemp()
+        self._saved_cache = (ml.CACHE_DIR, ml.CACHE_PATH)
+        ml.CACHE_DIR = Path(self.tmp) / "cache"
+        ml.CACHE_PATH = ml.CACHE_DIR / "library_cache.json"
+        ml.CACHE_DIR.mkdir()
 
     def tearDown(self):
+        from src import music_library as ml
+        ml.CACHE_DIR, ml.CACHE_PATH = self._saved_cache
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _album(self, spec: list) -> list:

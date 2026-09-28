@@ -117,6 +117,21 @@ def get_art_from_mp3(file_path: str, width: int,
         return f"Error loading MP3 art: {e}"
 
 
+def get_art_bytes(file_path: str) -> bytes | None:
+    """The raw cover image for a file (an MP3's embedded picture, or an image
+    file itself), for terminals that can show real images; None if there's none."""
+    try:
+        if file_path.lower().endswith(".mp3"):
+            frame = _select_apic_frame(ID3(file_path))
+            return bytes(frame.data) if frame is not None and frame.data else None
+        if os.path.splitext(file_path)[1].lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+            with open(file_path, "rb") as f:
+                return f.read()
+    except (OSError, mutagen.id3.ID3NoHeaderError):  # type: ignore[reportPrivateImportUsage]
+        pass
+    return None
+
+
 def get_art(file_path: str, width: int = 100) -> str:
     """Render a file's album art, dispatching to the MP3 tag reader or plain
     image loader by extension."""

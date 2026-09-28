@@ -221,9 +221,9 @@ def _library_dirs(ctx: Ctx) -> int:
 
 def _track_list(ctx: Ctx) -> int:
     """List tracks, optionally filtered."""
-    from src.music_library import sort_library_logic
+    from src.music_library import sort_tracks
 
-    songs = sort_library_logic(_filtered(ctx))
+    songs = sort_tracks(_filtered(ctx))
     if ctx.args.limit:
         songs = songs[:ctx.args.limit]
     rows = [_track_row(s) for s in songs]
@@ -1195,13 +1195,13 @@ def _session_volume(ctx: Ctx) -> int:
 
 def _resolve_queue(ctx: Ctx) -> list:
     """The tracks a play/queue command was given, in library order."""
-    from src.music_library import sort_library_logic
+    from src.music_library import sort_tracks
 
     paths = _targets_or_filter(ctx)
     if paths:
         known = {s['path']: s for s in ctx.library}
         songs = [known.get(p, {'path': p}) for p in paths if os.path.exists(p)]
-        return sort_library_logic(songs) if len(songs) > 1 else songs
+        return sort_tracks(songs) if len(songs) > 1 else songs
     return []
 
 

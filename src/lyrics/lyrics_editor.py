@@ -798,7 +798,9 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             elif is_air:
                 pairs += [('e', 'timing'), ('l', 'label'), ('k', 'make dir')]
             else:
-                pairs += [('/', 'split'), ('e', 'edit'), ('w', 'words'), ('←→', '±0.25s')]
+                pairs += [('/', 'split'), ('e', 'edit')]
+                if source == SOURCE_TRANSCRIPT: pairs.append(('w', 'words'))
+                pairs.append(('←→', '±0.25s'))
             pairs += [('s', 'save'), ('esc', 'leave review'), ('q', 'quit')]
         elif show_hints:
             pairs = [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
@@ -821,7 +823,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
             pairs += [('?', 'hide hints'), ('q', 'quit')]
         else:
-            pairs = [('↑↓', 'navigate'), ('←→', '±0.1s')]
+            pairs = [('↑↓', 'navigate'), ('←→', '±0.25s')]
             if is_air or is_sdir:
                 pairs += [('d', 'del'), ('l', 'label'),
                           ('k', 'make dir' if is_air else 'make air'),
@@ -1472,7 +1474,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
             body.append("")
         body.append(f"{C.BOLD}Segments the script splits into more than one beat"
                     f"{C.RESET}  {C.DIM}— a new speaker, or a stage direction, part "
-                    f"way through; press S to cut them{C.RESET}")
+                    f"way through{C.RESET}")
         body += split_lines
     if not body:
         header.append(f"{C.GREEN}✔ every spoken word matches, and every segment is "
@@ -1931,12 +1933,13 @@ def lyrics_editor(mp3_path: str) -> None:
         """Minimal scrollable full-screen viewer.  `body` lines are already
         coloured; the pager just windows and clips them."""
         vp = 0
-        foot = [f"{C.DIM}{ui_utils.divider()}{C.RESET}"] + \
-               _promptmod.chrome_hint_lines(
-                   [('↑↓', 'scroll'), ('PgUp/PgDn', 'page'),
-                    ('Home/End', 'ends'), ('q', 'back')])
         hint_cells: dict = {}
         while True:
+            # Rebuilt each frame: the hints come and go with the corner toggle.
+            foot = [f"{C.DIM}{ui_utils.divider()}{C.RESET}"] + \
+                   _promptmod.chrome_hint_lines(
+                       [('↑↓/j/k', 'scroll'), ('PgUp/PgDn', 'page'),
+                        ('Home/End', 'ends'), ('q', 'back')])
             ui_utils.now_playing_lines(ui_utils.get_terminal_width())
             cols = _cols()
             avail = _visible_rows()
@@ -1947,8 +1950,9 @@ def lyrics_editor(mp3_path: str) -> None:
                 out.append(_clip("  " + ln, cols + ui_utils.MARGIN_H))
             pad = max(0, (avail) - len(out) - len(foot))
             rendered = out + [""] * pad + foot
-            w.render(rendered)
             hint_cells.clear()
+            rendered[0] = _promptmod.add_help_corner(rendered[0], 0, hint_cells)
+            w.render(rendered)
             for _i in range(len(rendered) - len(foot), len(rendered)):
                 add_hint_click_cells_auto(hint_cells, rendered[_i], _i)
             if not _wait_for_keypress(0.2):
@@ -1957,6 +1961,11 @@ def lyrics_editor(mp3_path: str) -> None:
             if k.startswith('MOUSE_CLICK:') and w.row is not None:
                 _p = k.split(':'); _r = int(_p[2]); _c = int(_p[3]) if len(_p) > 3 else 1
                 k = hint_cells.get((_r - w.row - ui_utils.MARGIN_V, _c)) or ''
+            _ch = _promptmod.consume_chrome(k, {})      # the transport keys it advertises
+            if _ch is _promptmod.CHROME_REDRAW:
+                w.anchor_reset(); continue
+            if _ch is _promptmod.CHROME_HANDLED:
+                continue
             if   k in ('q', 'ESC', 'CTRL_C'): break
             elif k in ('UP', 'k'):            vp -= 1
             elif k in ('DOWN', 'j', 'SPACE'): vp += 1
@@ -2265,6 +2274,9 @@ def lyrics_editor(mp3_path: str) -> None:
                     show_hints, md_overlay, md_quality, aud_now, aud_editing,
                     review=review_info, sources=_sources_label(),
                 )
+                hint_cells.clear()
+                if lines:       # the app-wide hints toggle, on the top line
+                    lines[0] = _promptmod.add_help_corner(lines[0], 0, hint_cells, mode != EDIT)
                 w.render(lines)
                 need_redraw = False
                 # Map the clickable footer-hint glyphs. `_draw` reports how many
@@ -2273,7 +2285,6 @@ def lyrics_editor(mp3_path: str) -> None:
                 # mistaken for a key, without depending on the divider glyph. Cells
                 # are keyed by out-index row (col is absolute), matching the
                 # r → line_idx inversion the mouse handler uses.
-                hint_cells.clear()
                 for _i in range(max(0, len(lines) - footer_rows), len(lines)):
                     add_hint_click_cells_auto(hint_cells, lines[_i], _i)
 
@@ -2283,13 +2294,23 @@ def lyrics_editor(mp3_path: str) -> None:
             need_redraw = True
 
             # Mini-player (shared session) transport from the editor: Ctrl-P/N/B,
-            # and Ctrl-O to open the full player over the editor.
-            if key in ('\x10', '\x0e', '\x02'):
-                _np_transport({'\x10': 'playpause', '\x0e': 'next', '\x02': 'prev'}[key])
+            # and Ctrl-O to open the full player over the editor — typed, or
+            # clicked in the hint bar (replayed below).
+            def _transport(key) -> bool:
+                if key in ('\x10', '\x0e', '\x02'):
+                    _np_transport({'\x10': 'playpause', '\x0e': 'next', '\x02': 'prev'}[key])
+                    return True
+                if key == '\x0f' and _promptmod._player_opener is not None:
+                    _promptmod._player_opener()
+                    sys.stdout.write("\033[?1000h\033[?1006h"); sys.stdout.flush()
+                    w.anchor_reset()
+                    return True
+                return False
+
+            if _transport(key):
                 continue
-            if key == '\x0f' and _promptmod._player_opener is not None:
-                _promptmod._player_opener()
-                sys.stdout.write("\033[?1000h\033[?1006h"); sys.stdout.flush()
+            if key == _promptmod.HINTS_CLICK or (key == 'i' and mode != EDIT):
+                _promptmod.toggle_hints()
                 w.anchor_reset()
                 continue
 
@@ -2358,6 +2379,12 @@ def lyrics_editor(mp3_path: str) -> None:
                 if _hk is None:
                     continue
                 key = _hk           # replay the clicked hint's key through the switch
+                if _transport(key):
+                    continue
+                if key == _promptmod.HINTS_CLICK:
+                    _promptmod.toggle_hints()
+                    w.anchor_reset()
+                    continue
 
             # Review walkthrough (layered over SEG): Tab/⇧Tab step between flagged
             # lines, Esc leaves review; every other key falls through so you fix

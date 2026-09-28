@@ -138,15 +138,24 @@ are all clickable (click the volume bar at the height you want).
 
 ### Browse
 
-Explore by **Artist**, **Album**, or **Genre**. Drilling into a letter in the A–Z index and backing
-out returns you to the index. Selecting a track offers Play / Edit tags (or plays immediately if
+Explore by **Artist**, **Album**, **Genre** and more (composer, lyricist, people, year, decade,
+grouping, work: choose which appear, and their order, in Settings → Browse menu), across everything or within one music directory
+(Browse → Libraries, each under the name you give it in Settings → Music directories). Drilling into
+a letter in the A–Z index and backing out returns you to the index. Play all (`p`), shuffle (`x`),
+album shuffle (`X`) and edit all (`E`) are in the hint bar at the bottom of each list; `e` edits
+just the highlighted row.
+
+Albums and tracks follow one sort order, set with `s` in any list or in Settings → Sorting: a
+chain of levels (album, album year, disc, track, title, date…), each ascending or descending, with
+presets such as broadcast order. A music directory can have its own. Selecting a track offers Play / Edit tags (or plays immediately if
 *Auto-play on select* is enabled).
 
 ### Search
 
 Fuzzy search across title, artist, album, genre, people, and file path. Type to filter; results
-re-rank live with the matched characters highlighted. `Tab` cycles the search scope; `Enter` opens
-a result; `Esc` backs out.
+re-rank live with the matched characters highlighted. `^f` cycles the search scope and `Tab` jumps
+between result sections; `^e` edits the highlighted track and `^a` every result; `Enter` opens a
+result; `Esc` backs out.
 
 ### Playback controls
 
@@ -159,8 +168,7 @@ a result; `Esc` backs out.
 | `+` / `-` | Volume up / down |
 | `m` | Toggle extended metadata (year · genre · work/movement …) |
 | `w` | Cycle the side panel (lyrics → queue → lyrics+credits) |
-| `↑` / `↓` | Scroll the active pane / lyric selection |
-| `i` | Toggle the full help/hint line |
+| `i` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[i] help` (click the `i`; it also works where `i` is typed as a letter); in the player it stays in the hint bar. Also Settings → Key hints |
 | `[` / `]` | Previous / next track |
 | `b` / `Esc` | Minimise — leave the player but keep the audio playing in the background (pinned while another window shares the session) |
 | `s` | Stop playback |

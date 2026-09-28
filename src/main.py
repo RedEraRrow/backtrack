@@ -3,6 +3,7 @@ import os
 import time
 
 from src.config import load_config, save_config, music_dirs, set_music_dirs
+from src.utils.log import log, configure as log_setup
 from src.playback.session import SESSION
 from src.music_library import (
     build_library, load_library_cache, save_library_cache,
@@ -110,8 +111,10 @@ def _run(config: dict) -> None:
         start_background_sync(library)
 
         library_ref = [library]
+        # No save on the way out: everything that changes a setting saves it
+        # as it goes, and this dict is the one loaded at startup — saving it here
+        # put back every setting as it was when the app opened.
         main_menu(library_ref)
-        save_config(config)
         return
 
     # First run: prompt for music directory
@@ -225,6 +228,7 @@ def _run_app() -> None:
         pass
 
     config = load_config()
+    log_setup(bool(config.get("debug", False)))
     _wire_keyboard()
     _wire_playback()
     ui_utils.enter_alt_screen()
@@ -232,6 +236,9 @@ def _run_app() -> None:
         _run(config)
     except QuitToTerminal:
         pass  # Shift-Q from anywhere in the menus — unwind straight to the shell.
+    except Exception:
+        log.exception("crashed")
+        raise
     finally:
         # Stop any background audio / restore stderr, and drop any joined-session
         # client link (#14).

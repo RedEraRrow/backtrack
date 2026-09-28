@@ -4,11 +4,12 @@ import os
 import re
 import sys
 
-from src.music_library import get_metadata, format_tag_values, format_value_list
+from src.music_library import get_metadata, format_tag_values, format_value_list, live_library
 from src.utils import prompt_core as pc
 from src.utils import ui_utils
+from src.utils.log import log
 from src.utils import numbering
-from src.art.album_art import get_art
+from src.art.album_art import get_art, get_art_bytes
 from src.utils.prompt import _hint
 from src.utils.prompt_core import Column, _table_widths, add_hint_click_cells
 from src.utils.ui_utils import Colors as C
@@ -89,6 +90,7 @@ def _render_frame_buffer(buf: list, rows: int) -> None:
     )
     if out:
         sys.stdout.write(out)
+        _draw_inline_art()      # rows were rewritten, which may have cut into it
 
 PLAYER_CREDITS_ROLES = [
     'performer',
@@ -111,12 +113,14 @@ _ui_state = {
     'debug': False,
     'show_credits': False,
     'show_lyrics': False,
-    'show_help': False,
     'show_queue': False,
     'pane_mode': 'off',   # off → lyrics → queue → lyrics+credits (single-key cycle)
+    # False in a joined window's player view, which draws no side panel — so
+    # its hint bar doesn't offer `w` (a hint shown is a key that works).
+    'panel_keys': True,
 }
 # Up-next context for the queue view: list of display titles + current index.
-_queue_ctx: dict = {'titles': [], 'paths': [], 'index': 0, 'meta': []}
+_queue_ctx: dict = {'titles': [], 'paths': [], 'index': 0, 'meta': [], 'visible': []}
 # Last rendered artwork width (visible characters) used to align progress/controls
 _last_art_width: int | None = None
 # Left pad (columns) where the artwork starts when printed
@@ -180,8 +184,220 @@ def _clip_ansi_to_width(text: str, max_cols: int) -> str:
     return ui_utils.clip_ansi(text, max_cols, reset=False)
 
 
+# --- Real-image album art (iTerm2 inline images), opt-in -----------------------
+# The half-block art is still rendered — it sizes the layout exactly as before —
+# but in image mode its cells show the cover's average colour, then a small
+# quick-to-decode image, then the full-quality one, all at those same cells.
+# The text art itself is only the fallback for when there's no image to show. Every position the layout records (clicks, the volume bar,
+# the lyric pane) is unchanged. Off unless the `art_inline_images` setting is on
+# AND the terminal is iTerm2 (not inside tmux, which would swallow the image).
+_inline_art: dict = {'path': None,       # set when this frame's art is an image
+               'resizing': False,        # mid-resize: the preview only (see set_resizing)
+               'incomplete': False}      # the full image was cut short by a resize
+
+
+def set_resizing(on: bool) -> None:
+    """While the window is still being resized the player redraws at every size
+    it passes through; only the small preview image is sent for those, and the
+    full-quality one once the size settles (redraw_art_image)."""
+    _inline_art['resizing'] = on
+
+
+def redraw_art_image() -> None:
+    """Send the full-quality image again without repainting any rows — after a
+    resize settles, when the rows are right and the preview is already showing,
+    or after a resize cut the last send short."""
+    _draw_inline_art(full_only=True)
+    sys.stdout.flush()
+
+
+def art_image_incomplete() -> bool:
+    """Whether the last full-quality image was cut short and still needs sending."""
+    return _inline_art['incomplete']
+_inline_art_cache: dict = {}             # (path, mtime, cols, rows) → (base64, byte count)
+_INLINE_PX_PER_COL = 10                  # image pixels per cell column: sharp on a Retina
+                                         # screen, a fraction of a full-size cover to send
+_INLINE_CHUNK = 16 * 1024                # a full image goes out in pieces this size, so a
+                                         # resize mid-send can cut it short (_send_image)
+_INLINE_PREVIEW_PX = 3                   # the quick first image: ~1/16 the pixels
+
+
+_inline_cfg: dict = {}                   # the setting, cached on config.json's mtime
+
+
+def inline_art_enabled() -> bool:
+    """Whether art should be drawn as a real image here. Cheap to ask often
+    (the miniplayer asks every second): the setting is re-read only when the
+    config file changes."""
+    if os.environ.get('TMUX'):
+        return False
+    if (os.environ.get('TERM_PROGRAM') != 'iTerm.app'
+            and os.environ.get('LC_TERMINAL') != 'iTerm2'):
+        return False
+    from src.config import CONFIG_FILE, load_config
+    try:
+        mtime = CONFIG_FILE.stat().st_mtime
+    except OSError:
+        mtime = None
+    if _inline_cfg.get('mtime', object()) != mtime:
+        _inline_cfg.update(mtime=mtime, on=bool(load_config().get('art_inline_images', False)))
+    return _inline_cfg['on']
+
+
+_decoded_cache: dict = {}                # (path, mtime) → (raw bytes, decoded image or None)
+_WORKING_PX = 1400                       # decoded covers are kept at most this big
+
+
+def _cover_decoded(file_path: str) -> tuple | None:
+    """The cover's raw bytes and decoded pixels, read and decoded once per file
+    (a large cover takes a noticeable moment to decode — do it once, not per
+    colour, preview and full image). None when the file has no cover."""
+    import cv2
+    import numpy as np
+    try:
+        key = (file_path, os.path.getmtime(file_path))
+    except OSError:
+        return None
+    if key not in _decoded_cache:
+        if len(_decoded_cache) > 4:            # decoded covers are large: keep a few
+            _decoded_cache.clear()
+        raw = get_art_bytes(file_path)
+        img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR) if raw else None
+        if img is not None and max(img.shape[:2]) > _WORKING_PX:
+            # A 4000-pixel cover is shrunk once, here, to a working size still
+            # above anything the player shows — every later step works on that.
+            f = _WORKING_PX / max(img.shape[:2])
+            img = cv2.resize(img, (round(img.shape[1] * f), round(img.shape[0] * f)),
+                             interpolation=cv2.INTER_AREA)
+        _decoded_cache[key] = (raw, img) if raw else None
+    return _decoded_cache[key]
+
+
+def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
+                     px: int = _INLINE_PX_PER_COL) -> tuple[str, int] | None:
+    """The cover as base64 for the image escape, scaled to the cells it fills
+    (cols × rows at `px` pixels per column) and cached per file and size — so a
+    resize back to a size already seen costs nothing. The preview size is also
+    saved at a lower quality: it's only on screen for a moment."""
+    import base64
+    import cv2
+    try:
+        key = (file_path, os.path.getmtime(file_path), cols, rows, px)
+    except OSError:
+        return None
+    if key not in _inline_art_cache:
+        if len(_inline_art_cache) > 24:
+            _inline_art_cache.clear()
+        dec = _cover_decoded(file_path)
+        data = None
+        if dec:
+            raw, img = dec
+            data = raw
+            if img is not None and cols and rows:
+                size = (cols * px, rows * 2 * px)           # cells are ~1:2
+                if size[0] < img.shape[1]:                  # only ever scale down
+                    img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
+                quality = 70 if px == _INLINE_PREVIEW_PX else 85
+                ok, jpg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                if ok and len(jpg) < len(raw):              # a heavy original still shrinks
+                    data = jpg.tobytes()
+        _inline_art_cache[key] = (base64.b64encode(data).decode('ascii'), len(data)) if data else None
+    return _inline_art_cache[key]
+
+
+_mean_cache: dict = {}                   # (path, mtime) → the cover's average colour
+
+
+def _cover_mean(file_path: str) -> tuple[int, int, int] | None:
+    """The cover's average colour (r, g, b), or None when it can't be decoded —
+    in which case the text art is the fallback."""
+    try:
+        key = (file_path, os.path.getmtime(file_path))
+    except OSError:
+        return None
+    if key not in _mean_cache:
+        if len(_mean_cache) > 64:
+            _mean_cache.clear()
+        dec = _cover_decoded(file_path)
+        img = dec[1] if dec else None
+        import cv2
+        _mean_cache[key] = (None if img is None else
+                            tuple(int(v) for v in cv2.mean(img)[2::-1]))    # BGR → RGB
+    return _mean_cache[key]
+
+
+def _draw_inline_art(full_only: bool = False) -> None:
+    """Draw this frame's image over its cells: the small preview, then the
+    full-quality image, which replaces it once the terminal has decoded it
+    (mid-resize, only the preview; at a settle, only the full one — the preview
+    is already there). Called after every frame's rows are written — a
+    repainted row erases whatever image was under it."""
+    path = _inline_art['path']
+    if not (path and _last_art_top and _last_art_width and _last_art_height):
+        return
+    if not full_only:
+        _send_image(path, _INLINE_PREVIEW_PX)
+    if not _inline_art['resizing']:
+        _inline_art['incomplete'] = not _send_image(path, _INLINE_PX_PER_COL, chunked=True)
+
+
+def _send_image(path: str, px: int, chunked: bool = False) -> bool:
+    """Write one image escape for the art's cells (cursor left where it was).
+
+    `chunked`: the full image is big enough that writing it blocks for a
+    noticeable time while the terminal takes it in, and a resize arriving then
+    had to wait — the window showed the old frame rewrapped until it finished.
+    So it goes out in pieces, and if the terminal reports a resize in between,
+    the rest is dropped: the escape is closed early (the terminal discards a
+    truncated image) and False returned, for the image to be sent again later.
+    """
+    data = _inline_art_data(path, _last_art_width, _last_art_height, px)
+    if not data:
+        return True
+    b64, size = data
+    head = (f"\0337\033[{_last_art_top};{(_last_art_left or 0) + 1}H"
+            f"\033]1337;File=inline=1;size={size};width={_last_art_width};"
+            f"height={_last_art_height};preserveAspectRatio=0;doNotMoveCursor=1:")
+    if not chunked:
+        sys.stdout.write(head + b64 + "\a\0338")
+        return True
+    import time
+    start = time.monotonic()
+    sys.stdout.write(head)
+    for i in range(0, len(b64), _INLINE_CHUNK):
+        if ui_utils.last_resize_signal_at() > start:
+            sys.stdout.write("\a\0338")
+            sys.stdout.flush()
+            log.debug("art image cut short by a resize after %d of %d KB (%.0f ms)",
+                      i // 1024, len(b64) // 1024, (time.monotonic() - start) * 1000)
+            return False
+        sys.stdout.write(b64[i:i + _INLINE_CHUNK])
+        sys.stdout.flush()
+    sys.stdout.write("\a\0338")
+    sys.stdout.flush()
+    log.debug("art image %sx%s cells: %d KB in %.0f ms", _last_art_width, _last_art_height,
+              len(b64) // 1024, (time.monotonic() - start) * 1000)
+    return True
+
+
 def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
                           pre_art: str | None) -> tuple[str, list[str]]:
+    """The art for the layout (see _art_fit). In image mode its cells become the
+    cover's average colour, to be drawn over by the image (_draw_inline_art);
+    the text art stays only when there's no image to show — no cover, one that
+    won't decode, or a group cover, which is a composite of several."""
+    art_str, lines = _art_fit(file_path, max_w, avail_h, pre_art)
+    _inline_art['path'] = None
+    mean = _cover_mean(file_path) if (lines and not pre_art and inline_art_enabled()) else None
+    if mean:
+        w = max(_visible_len(l) for l in lines)
+        lines = [f"\033[48;2;{mean[0]};{mean[1]};{mean[2]}m{' ' * w}\033[0m" for _ in lines]
+        _inline_art['path'] = file_path
+    return art_str, lines
+
+
+def _art_fit(file_path: str, max_w: int, avail_h: int,
+             pre_art: str | None) -> tuple[str, list[str]]:
     """Fetch art at max_w; if the rendered output exceeds avail_h rows,
     compute a narrower width from the actual aspect ratio and re-fetch."""
     art_str = pre_art if pre_art else _get_art_cached(file_path, width=max_w)
@@ -487,8 +703,8 @@ def toggle_metadata() -> None:
     _ui_state['show_metadata'] = not _ui_state['show_metadata']
     _refresh_debug_flag()
 def toggle_help() -> None:
-    """Toggle display of the full keyboard-shortcut help line."""
-    _ui_state['show_help'] = not _ui_state['show_help']
+    """Show or hide the hint bar — the app-wide switch, so every screen follows."""
+    pc.toggle_hints()
 def _set_pane_mode(mode: str) -> None:
     """Set the right-pane mode and sync the show_lyrics/show_credits/show_queue flags to match it."""
     _ui_state['pane_mode'] = mode
@@ -553,15 +769,22 @@ def set_lyric_sources(track: str, files: list[str], estimated: bool = False) -> 
 
 
 def set_queue_context(titles: list[str], index: int, paths: list[str] | None = None) -> None:
-    """Register the current play queue so the queue view can render it."""
-    _queue_ctx['titles'] = list(titles or [])
-    _queue_ctx['paths'] = list(paths or [])
+    """Register the current play queue so the queue view can render it. The
+    per-track details are only gathered again when the queue itself changed —
+    moving to the next track changes just the index."""
+    titles, paths = list(titles or []), list(paths or [])
+    if titles != _queue_ctx['titles'] or paths != _queue_ctx['paths']:
+        _queue_ctx['meta'] = _queue_metadata(titles, paths)
+    _queue_ctx['titles'] = titles
+    _queue_ctx['paths'] = paths
     _queue_ctx['index'] = index
-    _queue_ctx['meta'] = _queue_metadata(_queue_ctx['titles'], _queue_ctx['paths'])
 
 
 def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
-    """Load a lightweight metadata cache for the queue pane."""
+    """Title/artist/album for each queued track: from the in-memory library,
+    reading a file's tags only when it isn't in there (a CLI-played file) —
+    reading every queued file used to stall each track change on a long queue."""
+    by_path = {t['path']: t for t in (live_library() or [])}
     meta: list[dict] = []
     for i, title in enumerate(titles):
         item = {
@@ -572,7 +795,7 @@ def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
         }
         if i < len(paths):
             try:
-                data = get_metadata(paths[i])
+                data = by_path.get(paths[i]) or get_metadata(paths[i])
                 item['title'] = data.get('title') or item['title']
                 item['artist'] = data.get('artist') or ''
                 item['album'] = data.get('album') or ''
@@ -586,44 +809,66 @@ def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
 def has_queue() -> bool:
     """Return whether there's more than one track in the queue worth showing."""
     return len(_queue_ctx['titles']) > 1
+_QUEUE_PLAYED_ABOVE = 2     # played tracks kept above the current one, for context
+_QUEUE_RIGHT_MARGIN = 2 * ui_utils.MARGIN_H   # breathing room before the screen edge
+_QUEUE_MIN_ROWS = 2         # the header and one track, or the pane isn't drawn at all
+# Screen row → (queue position, first column, last column) of each track row
+# drawn, so a click on one can play it.
+_queue_click_rows: dict[int, tuple[int, int, int]] = {}
+
+
+def queue_click_index(row: int, col: int) -> int | None:
+    """The queue position of the track row clicked at (row, col), if any."""
+    hit = _queue_click_rows.get(row)
+    return hit[0] if hit and hit[1] <= col <= hit[2] else None
+
+
+def _place_queue(log, top: int, left: int, width: int, rows: int) -> bool:
+    """Draw the queue at (top, left) within width × rows, or nothing when there
+    isn't room for even the header and one track. Returns whether it drew."""
+    _queue_click_rows.clear()
+    if rows < _QUEUE_MIN_ROWS or width < 10:
+        return False
+    lines = _build_queue_lines(width - _QUEUE_RIGHT_MARGIN, rows)
+    for qi, line in enumerate(lines):
+        log(f"\033[{top + qi};{left}H{line}")
+        if qi and qi - 1 < len(_queue_ctx['visible']):
+            _queue_click_rows[top + qi] = (_queue_ctx['visible'][qi - 1], left,
+                                           left + ui_utils.visual_len(line) - 1)
+    return True
+
+
+def _queue_window(total: int, current: int | None, rows: int) -> list[int]:
+    """Which queue positions fit in `rows`: the current track near the top with
+    up to _QUEUE_PLAYED_ABOVE played ones above it, then what's next; when the
+    end of the queue leaves room, more of what was played fills it."""
+    if rows <= 0 or total <= 0:
+        return []
+    if current is None:
+        return list(range(min(rows, total)))
+    start = max(0, current - _QUEUE_PLAYED_ABOVE)
+    start = max(0, min(start, total - rows))   # use spare rows at the end for history
+    return list(range(start, min(total, start + rows)))
+
+
 def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
-    """Render the play queue as a scrolling list centred on the current track."""
+    """Render the play queue: a header with the position, then the current
+    track near the top (see _queue_window)."""
     titles = _queue_ctx['titles']
     idx = _queue_ctx['index']
     meta = _queue_ctx['meta']
     if not titles:
         return [f"{C.DIM}(queue empty){C.RESET}"]
 
-    out = [f"{C.DIM}UP NEXT{C.RESET}"]
+    total = len(titles)
+    current = idx if 0 <= idx < total else None
+    pos = f"  {current + 1} of {total}" if current is not None else f"  {total}"
+    out = [f"{C.DIM}QUEUE{pos}{C.RESET}"]
     body_rows = max(0, max_rows - len(out))
     if body_rows <= 0:
         return out
-
-    total = len(titles)
-    current = idx if 0 <= idx < total else None
-    visible_indices: list[int] = []
-
-    if current is None:
-        visible_indices = list(range(min(body_rows, total)))
-    else:
-        remaining = body_rows
-        for i in range(current + 1, total):
-            if remaining <= 0:
-                break
-            visible_indices.append(i)
-            remaining -= 1
-
-        if remaining > 0:
-            visible_indices.append(current)
-            remaining -= 1
-
-        for i in range(current - 1, -1, -1):
-            if remaining <= 0:
-                break
-            visible_indices.append(i)
-            remaining -= 1
-
-        visible_indices.sort()
+    visible_indices = _queue_window(total, current, body_rows)
+    _queue_ctx['visible'] = visible_indices          # row i+1 ↔ queue position, for clicks
 
     show_artist = _queue_should_show_artist(meta)
     show_album = _queue_should_show_album(meta)
@@ -654,7 +899,9 @@ def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
         prefixes.append(prefix)
 
     specs = _queue_column_specs(cols)
-    widths = _table_widths(rows_cells, specs, max_w, pointer_w=0, right_margin=0)
+    # The ▶ / blank marker takes 2 columns ahead of every row: leave room for
+    # it, or each row runs 2 past the pane and wraps into the next screen row.
+    widths = _table_widths(rows_cells, specs, max_w, pointer_w=2, right_margin=0)
 
     for item_idx, row_kind, prefix in zip(visible_indices, row_kinds, prefixes):
         item = meta[item_idx] if item_idx < len(meta) else {'title': titles[item_idx], 'artist': '', 'album': '', 'album_artist': ''}
@@ -849,13 +1096,14 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
     status = " " * left_pad + controls
     _record_transport_cols(status)
 
-    if not _ui_state['show_help']:
+    if not pc.hints_visible():
+        # Hints are off app-wide, but the player keeps its way back to them.
         pairs = [('i', 'help')]
         _set_controls_hint_pairs(pairs)
-        return status, _hint(*pairs)
+        return status, _hint(*pairs, always=True)
 
     hint_args = [
-        ('space', 'play/pause'),
+        ('space/p', 'play/pause'),
         ('←→', '±5s'),
         ('j/l', '±1s'),
         (',/.', '±30s'),
@@ -863,11 +1111,9 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
         ('+/-', 'volume'),
         ('m', 'meta'),
     ]
-    if has_lyrics or has_credits or has_queue():
+    if _ui_state['panel_keys'] and (has_lyrics or has_credits or has_queue()):
         hint_args.append(('w', 'panel'))
-    if is_uslt:
-        hint_args.append(('↑↓', 'scroll'))
-    hint_args += [('i', 'hide help'), ('[/]', 'prev/next'), ('b', 'back'), ('q', 'quit')]
+    hint_args += [('i', 'hide help'), ('[/]', 'prev/next'), ('s', 'stop'), ('b', 'back'), ('q', 'quit')]
 
     _set_controls_hint_pairs(hint_args)
     return status, _hint(*hint_args)
@@ -1114,6 +1360,10 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     global _last_art_top, _last_art_height, _last_vol_bar_col
     mode = _layout_mode(cols)
     # Reset art geometry each frame; only branches that draw art repopulate it.
+    # Likewise the queue's click rows: only a frame that draws the queue has any,
+    # and the inline image: only a frame that lays out art has one.
+    _queue_click_rows.clear()
+    _inline_art['path'] = None
     _last_art_top = None
     _last_art_height = None
     _last_vol_bar_col = None
@@ -1267,9 +1517,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         # Queue view takes over the whole right pane when toggled on.
         if _ui_state['show_queue']:
-            pane_rows = max(3, (ctrl_row - 1) - _pane_top)
-            for qi, line in enumerate(_build_queue_lines(right_w, pane_rows)):
-                log(f"\033[{_pane_top + qi};{_last_right_left}H{line}")
+            _place_queue(log, _pane_top, _last_right_left, right_w, (ctrl_row - 1) - _pane_top)
             lyric_row = ctrl_row  # suppress the lyric area while the queue shows
             art_bottom_row = ctrl_row - 1
             _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
@@ -1375,9 +1623,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         if _ui_state['show_queue']:
             q_start = ctrl_row_end + 2
-            q_rows = max(3, rows - ui_utils.MARGIN_V - q_start)
-            for qi, line in enumerate(_build_queue_lines(cols - 2, q_rows)):
-                log(f"\033[{q_start + qi};1H\033[K{line}")
+            _place_queue(log, q_start, 1 + ui_utils.MARGIN_H, cols - ui_utils.MARGIN_H,
+                         rows - ui_utils.MARGIN_V - q_start)
             lyric_row = rows - ui_utils.MARGIN_V
             art_bottom_row = rows - ui_utils.MARGIN_V
             _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
@@ -1421,13 +1668,16 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             actual_art_w = max((_visible_len(l) for l in art_lines), default=art_w) if art_lines else art_w
             _last_art_left = max(0, (cols - actual_art_w) // 2)
             _last_art_width = actual_art_w
+            _last_art_height = len(art_lines)
             if art_lines and actual_art_w < cols:
                 top_pad = max(0, (rows - len(art_lines) - 1 - len(left_col) - control_rows - 1) // 2)
                 for _ in range(top_pad):
                     log("")
                 row_cursor += top_pad
             _last_art_top = row_cursor + 1
-            for line in art_lines: log(line)
+            # Printed where _last_art_left says it is (centred), which is where
+            # the image, the volume bar and clicks all take it to be.
+            for line in art_lines: log(" " * _last_art_left + line)
             row_cursor += len(art_lines)
             log("")
             row_cursor += 1

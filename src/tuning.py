@@ -60,8 +60,10 @@ IPC_LISTEN_BACKLOG = 8
 # tick is the finer of the two: it bounds how quickly the display reacts.
 LOOP_TICK_S = 0.02
 KEY_POLL_INTERVAL_S = 0.05
-# A terminal resize arrives as a burst of SIGWINCHes; redraw once it settles.
-RESIZE_DEBOUNCE_S = 0.15
+# A resize is redrawn as it arrives; this is how long the size must then hold
+# still before the player sends the full-quality art image. Brief pauses mid-drag
+# stay on the preview: a full send in progress holds up the next redraw.
+ART_FULL_IMAGE_SETTLE_S = 0.5
 # After arrowing through lyrics by hand, how long before the display returns to
 # following the audio.
 MANUAL_LYRIC_REVERT_S = 4.0

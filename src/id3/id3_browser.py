@@ -707,27 +707,6 @@ def _apic_art(apic_frame: APIC, width: int) -> str:
     return art
 
 
-def _rounded_header(left_styled: str, left_vis: int, right: str) -> list[str]:
-    """A one-line rounded box: styled text left, dim text right, then a blank row.
-
-    The same shape as this file's track header and the bulk-edit header, so the
-    art screen reads as part of the set. `right` is trimmed, then dropped
-    entirely, when the window is too narrow to hold both.
-    """
-    mh = ui_utils.MARGIN_H
-    inner = max(12, get_terminal_width() - 2 * mh - 4)
-    if right and left_vis + len(right) + 2 > inner:
-        right = ""                                  # no room for both
-    gap = max(1, inner - left_vis - len(right))
-    line = f"{left_styled}{' ' * gap}{C.DIM}{right}{C.RESET}"
-    return [
-        f"{' ' * mh}{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}",
-        f"{' ' * mh}{C.DIM}│{C.RESET} {line} {C.DIM}│{C.RESET}",
-        f"{' ' * mh}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}",
-        "",
-    ]
-
-
 def _picture_type_label(pic_type) -> str:
     """Human label for an APIC picture-type byte."""
     return dict(_PICTURE_TYPES).get(pic_type, f"type {pic_type}")
@@ -787,13 +766,14 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
         # The base frame id only: mutagen keys APIC frames by description, so
         # display_tag_id(tag_name) would print the description a second time.
         tag_txt = parse_composite_tag_id(key)[0] or "APIC"
-        left_plain = f"{tag_txt} · {pic_type}" + (f" · “{desc}”" if desc else "")
-        left = (f"{C.BOLD}{tag_txt}{C.RESET}{C.DIM} · {pic_type}{C.RESET}"
-                + (f"{C.DIM} · “{desc}”{C.RESET}" if desc else ""))
+        detail = f" · {pic_type}" + (f" · “{desc}”" if desc else "")
+        left_plain = tag_txt + detail
 
         inner = max(12, get_terminal_width() - 2 * ui_utils.MARGIN_H - 4)
-        lines = _rounded_header(left, len(left_plain),
-                               _apic_facts(apic_frame, max(0, inner - len(left_plain) - 2)))
+        toggle_w = prompt.help_corner_text()[1] + 2          # the hints toggle shares the row
+        lines = prompt.rounded_header(
+            tag_txt, detail,
+            _apic_facts(apic_frame, max(0, inner - len(left_plain) - 2 - toggle_w)))
         if _visible_rows() >= 14:
             lines.extend(_art_lines_boxed(apic_frame, _CHROME_ROWS))
         return lines
@@ -980,36 +960,8 @@ def inspect_tag_loop(
         if not title:
             title = os.path.splitext(os.path.basename(file_path))[0]
 
-        # Rounded box within the global margins: reserve mh on BOTH sides (the
-        # ' '*mh prefix is the left margin), so subtract 2*mh for an even right one.
-        mh = ui_utils.MARGIN_H
-        inner = max(12, cols - 2 * mh - 4)
-        right = f"[{ext}]{dur_str}{size_str}"
-        avail = max(4, inner - len(right) - 2)
-
-        if len(title) > avail:
-            title = title[:avail - 1] + "…"
-        left_styled = f"{C.BOLD}{title}{C.RESET}"
-        left_vis = len(title)
-        rem = avail - left_vis
-        if artist and rem > 5:
-            suffix = f" · {artist}"
-            if len(suffix) > rem:
-                suffix = suffix[:rem - 1] + "…"
-            left_styled += f"{C.DIM}{suffix}{C.RESET}"
-            left_vis += len(suffix)
-
-        gap = max(1, inner - left_vis - len(right))
-        title_line = f"{left_styled}{' ' * gap}{C.DIM}{right}{C.RESET}"
-
-        lines = [
-            f"{' ' * mh}{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}",
-            f"{' ' * mh}{C.DIM}│{C.RESET} {title_line} {C.DIM}│{C.RESET}",
-            f"{' ' * mh}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}",
-            "",
-        ]
-
-        return lines
+        return prompt.rounded_header(title, f" · {artist}" if artist else "",
+                                     f"[{ext}]{dur_str}{size_str}")
 
     while True:
         try:
@@ -1032,11 +984,11 @@ def inspect_tag_loop(
             val = summarize_tag_value(tag_id, audio[tag_id], display=True)
             return [[(display_tag_id(tag_id), 'primary'), (friendly, 'dynamic-dim')], category, val]
 
-        # Read-only filesystem path row — "⌁ File path" white (bold when active),
+        # Read-only filesystem path row — "File path" white (bold when active),
         # "(filesystem)" dimmed, both in column 1 (#36).
         filepath_row = prompt.Choice(
             title="File path", value="__filepath__",
-            cells=[[("⌁ File path", 'primary'), (" (filesystem)", 'dynamic-dim')], "", ""],
+            cells=[[("File path", 'primary'), (" (filesystem)", 'dynamic-dim')], "", ""],
         )
         non_id3_rows = [filepath_row]
         if _has_lyrics:
@@ -1046,7 +998,7 @@ def inspect_tag_loop(
             # top-level track action.
             non_id3_rows.append(prompt.Choice(
                 title="Lyrics", value="__lyrics__",
-                cells=[[("♪ Lyrics", 'primary'), (" (sync editor)", 'dynamic-dim')], "", ""],
+                cells=[[("Lyrics", 'primary'), (" (sync editor)", 'dynamic-dim')], "", ""],
             ))
         tag_choices = non_id3_rows + [prompt.separator()] + [
             prompt.Choice(title=t, value=t, cells=_tag_cells(t)) for t in tags

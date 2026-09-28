@@ -10,6 +10,7 @@ import select as _sel
 from typing import Any, Callable, Literal, overload
 
 from src.utils import ui_utils
+from src.utils.log import log, enabled as _logging
 C = ui_utils.Colors
 
 _IS_WINDOWS = os.name == "nt"
@@ -89,12 +90,52 @@ if _wake_r >= 0:
 # back on every keystroke. Rows are also written *absolutely*, with no newlines,
 # so a line-buffered stdout cannot flush a half-drawn frame.
 _screen: dict[int, str] = {}
+# The terminal size the model was painted at. A resize reflows what is on
+# screen, so the model no longer describes it: the next paint wipes the screen
+# and repaints every row, whether or not the screen's own code thought to clear.
+_screen_size: list = [None]
 
 
 def screen_invalidate() -> None:
     """Forget what is on screen — after a full clear, a resize, or a write by
-    something that doesn't go through here (the player view)."""
+    something that doesn't go through here (the player view). A clear at a new
+    size (a screen answering a resize) counts as the resize wipe too."""
+    size = ui_utils.get_terminal_size()
+    if _screen_size[0] is not None and size != _screen_size[0]:
+        _note_resize(_screen_size[0], size)
+        _screen_size[0] = size
     _screen.clear()
+
+
+def _note_resize(was: tuple, size: tuple) -> None:
+    """Log a resize: how long after the terminal reported it we're repainting,
+    and which rows of the old frame were wider than the new window — the ones
+    the terminal rewrapped before we could redraw."""
+    if not _logging():
+        return
+    wide = sorted(r for r, key in _screen.items() if _row_width(key.split("\x00", 1)[0]) > size[0])
+    log.debug("resize %sx%s -> %sx%s, repaint %.0f ms after the signal; %d old rows "
+              "wider than the new width (rewrapped by the terminal): %s",
+              was[0], was[1], size[0], size[1], ui_utils.ms_since_resize_signal(),
+              len(wide), wide[:20])
+
+
+def _resize_wipe() -> str:
+    """"" normally; after a terminal resize, a full clear (and a forgotten
+    model), so the frame being painted repaints everything."""
+    size = ui_utils.get_terminal_size()
+    if size == _screen_size[0]:
+        return ""
+    was, _screen_size[0] = _screen_size[0], size
+    if was is not None:
+        _note_resize(was, size)
+    _screen.clear()
+    return "\033[H\033[2J" if was is not None else ""
+
+
+def _row_width(text: str) -> int:
+    """Visible width of a painted row, ignoring colour codes."""
+    return ui_utils.visual_len(ui_utils.strip_ansi(text))
 
 
 def _register_screen_hooks() -> None:
@@ -149,11 +190,15 @@ def screen_row_paint(row: int, text: str, extra: str = "") -> str:
     whose overlay went away is erased rather than keeping stale glyphs. A blank
     row is content too: "" differs from anything previously drawn there.
     """
+    wipe = _resize_wipe()
     key = f"{text}\x00{extra}"
     if _screen.get(row) == key:
         return ""
     _screen[row] = key
-    return f"\033[{row};1H\033[2K{text}{extra}"
+    if _logging() and _row_width(text) > (_screen_size[0] or (0, 0))[0]:
+        log.warning("row %d painted %d wide in a %d-column window: %r", row,
+                    _row_width(text), _screen_size[0][0], ui_utils.strip_ansi(text)[:80])
+    return f"{wipe}\033[{row};1H\033[2K{text}{extra}"
 
 
 def screen_row_segment(row: int, text: str) -> str:
@@ -330,12 +375,125 @@ def _cols() -> int:
 
 
 
-def _hint(*pairs, extra="") -> str:
+# --- Hint bar visibility ------------------------------------------------------
+# One switch for every screen's hint bar, off until turned on (`i`, or a click on
+# the corner toggle each screen shows on its top line), remembered between runs.
+# Kept in its own small file rather than config.json: screens hold a loaded
+# config and save it back later, which would quietly undo a toggle made meanwhile.
+HINTS_CLICK = '\x00hints'     # the key a click on the corner toggle replays
+_hints_on: list = [None]      # None until first read
+
+
+def _hints_file():
+    from src.config import CONFIG_DIR
+    return CONFIG_DIR / "hints_on"
+
+
+def hints_visible() -> bool:
+    """Whether hint bars are shown."""
+    if _hints_on[0] is None:
+        try:
+            _hints_on[0] = _hints_file().exists()
+        except Exception:
+            _hints_on[0] = False
+    return _hints_on[0]
+
+
+def toggle_hints() -> None:
+    """Show or hide every hint bar, and remember it."""
+    _hints_on[0] = not hints_visible()
+    try:
+        f = _hints_file()
+        if _hints_on[0]:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.touch()
+        else:
+            f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def help_corner_text() -> tuple[str, int]:
+    """The header toggle, styled, and its width: `[i] help` / `[i] hide help`."""
+    label = "hide help" if hints_visible() else "help"
+    return (f"{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}i{C.RESET}{C.DIM}] {label}{C.RESET}",
+            4 + len(label))
+
+
+def add_help_corner(line: str, row: int, cells: dict, i_key: bool = False) -> str:
+    """`line` (a screen's top line, drawn on screen row `row`) with the toggle
+    right-aligned on it, clipping the line if the two would meet. Only the `i`
+    is clickable (a click replays HINTS_CLICK). `i_key`: pressing `i` toggles
+    here too; elsewhere `i` is typed or bound, and the click is the way."""
+    text, width = help_corner_text()
+    col = max(1, ui_utils.get_terminal_width() - ui_utils.MARGIN_H - width + 1)
+    room = col - 2                                   # keep one blank column before it
+    body = line if ui_utils.visual_len(ui_utils.strip_ansi(line)) <= room else _clip_ansi(line, room)
+    pad = max(1, col - 1 - ui_utils.visual_len(ui_utils.strip_ansi(body)))
+    cells[(row, col + 1)] = HINTS_CLICK              # the `i` of "[i]"
+    if i_key:
+        cells['__i_key__'] = True                    # consume_chrome: `i` toggles here
+    return f"{body}{C.RESET}{' ' * pad}{text}"
+
+
+def rounded_header(title: str, detail: str = "", right: str = "",
+                   subtitle: str | None = None) -> list[str]:
+    """The app's boxed header for a file (or a set of them): bold `title`, dim
+    `detail` after it (" · artist"), dim facts `right`-aligned, and the hints
+    toggle inline at the far right of the same row — then an optional dim
+    `subtitle` row and a blank row. When space runs out the detail is trimmed
+    first, then the facts dropped, then the title trimmed; the toggle stays."""
+    vl = ui_utils.visual_len
+    mh = ui_utils.MARGIN_H
+    inner = max(12, ui_utils.get_terminal_width() - 2 * mh - 4)
+    toggle, tw = help_corner_text()
+
+    def _fit(text: str, n: int) -> str:
+        return text if vl(text) <= n else (text[:max(0, n - 1)] + "…" if n > 1 else "")
+
+    tail = tw + (vl(right) + 2 if right else 0)
+    if right and vl(title) + tail + 1 > inner:
+        right, tail = "", tw                         # no room for the facts
+    avail = max(1, inner - tail - 1)
+    title = _fit(title, avail)
+    detail = _fit(detail, avail - vl(title)) if avail - vl(title) > 5 else ""
+    left = f"{C.BOLD}{title}{C.RESET}{C.DIM}{detail}{C.RESET}"
+    gap = max(1, inner - vl(title) - vl(detail) - tail)
+    facts = f"{C.DIM}{right}{C.RESET}  " if right else ""
+    edge = f"{' ' * mh}{C.DIM}"
+    lines = [f"{edge}╭{'─' * (inner + 2)}╮{C.RESET}",
+             f"{edge}│{C.RESET} {left}{' ' * gap}{facts}{toggle} {C.DIM}│{C.RESET}"]
+    if subtitle:
+        sub = _fit(subtitle, inner)
+        lines.append(f"{edge}│{C.RESET} {C.DIM}{sub}{' ' * (inner - vl(sub))}{C.RESET} {C.DIM}│{C.RESET}")
+    lines += [f"{edge}╰{'─' * (inner + 2)}╯{C.RESET}", ""]
+    return lines
+
+
+def place_help_toggle(out: list, first_row: int, cells: dict, i_key: bool = False) -> None:
+    """Make the hints toggle on a screen clickable: a header that already
+    carries it (rounded_header) gets its `i` registered where it is; otherwise
+    it is added to the top line, `out[0]`. `out[k]` is drawn on row first_row + k."""
+    for k, line in enumerate(out[:4]):
+        plain = ui_utils.strip_ansi(line)
+        at = plain.find("[i] ")
+        if at >= 0 and plain[at + 4:].startswith(("help", "hide help")):
+            cells[(first_row + k, ui_utils.visual_len(plain[:at]) + 2)] = HINTS_CLICK
+            if i_key:
+                cells['__i_key__'] = True
+            return
+    if out:
+        out[0] = add_help_corner(out[0], first_row, cells, i_key)
+
+
+def _hint(*pairs, extra="", always: bool = False) -> str:
     """
     Highly adaptive layout engine for bottom hints.
     Cascades: Centred Long Line -> Pyramid -> Grid -> Aligned Vertical Stack -> Split Vertical Stack.
+    Every hint bar comes through here, so hiding them (hints_visible) is one
+    check; `always` draws regardless (the player's own `[i] help` stays in its bar).
     """
-    if not pairs and not extra:
+    if (not pairs and not extra) or not (always or hints_visible()):
         return ""
 
     cols = _cols()
@@ -477,7 +635,7 @@ def _hint(*pairs, extra="") -> str:
 # maps to the SAME synthesised key the keyboard produces, so the widgets need no
 # extra per-key logic — a click just replays that key through their normal switch.
 
-_HINT_ARROWS = {'↑': 'UP', '↓': 'DOWN', '←': 'LEFT', '→': 'RIGHT'}
+_HINT_ARROWS = {'↑': 'UP', '↓': 'DOWN', '←': 'LEFT', '→': 'RIGHT', '⇞': 'PGUP', '⇟': 'PGDN'}
 _HINT_WORDS = {
     'space': 'SPACE', 'spc': 'SPACE', 'esc': 'ESC', 'tab': 'TAB', '↵': 'ENTER',
     'pgup': 'PGUP', 'pgdn': 'PGDN', '⇧tab': 'BACKTAB', 'home': 'HOME', 'end': 'END',

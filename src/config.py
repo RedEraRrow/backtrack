@@ -24,8 +24,24 @@ DEFAULT_CONFIG = {
     "show_lyrics_editor": True,
     "tag_name_preferences": {},
     "sort_list_delimiter": "/",
+    # The one sort chain albums and tracks follow everywhere — [field, "asc"|"desc"]
+    # pairs, first wins (fields: music_library.SORT_FIELDS). Empty = the default.
+    "sort_levels": [],
+    "sort_use_tags": True,
+    "sort_ignore_words": ["The", "A", "An"],
+    # A music directory's own chain, used when everything in a list is from it.
+    "library_sort_levels": {},
+    # Friendly names for music directories (directory → name), shown in Browse.
+    "library_names": {},
+    # Browse menu categories in order (menus.BROWSE_CATEGORIES keys); empty = default.
+    "browse_menu": [],
+    # Each non-album browse list's order (category → a _GROUP_SORTS mode), as last chosen with s.
+    "group_sorts": {},
     "plain_text_editing": False,
     "autoplay_on_select": False,
+    # Album art in the player as a real image rather than text blocks — iTerm2
+    # only (elsewhere the text art is used regardless). Experimental.
+    "art_inline_images": False,
     # Playback volume, 0–100. Owned by the player session: restored at launch and
     # written back whenever it changes.
     "volume": 100,
@@ -128,6 +144,12 @@ def music_dirs(config: dict | None = None) -> list[str]:
             seen.add(key)
             out.append(full)
     return out
+
+
+def library_name(config: dict, directory: str) -> str:
+    """A music directory's friendly name: the one given, else its folder name."""
+    return ((config.get("library_names") or {}).get(directory)
+            or os.path.basename(directory.rstrip(os.sep)) or directory)
 
 
 def set_music_dirs(config: dict, dirs: list[str]) -> list[str]:

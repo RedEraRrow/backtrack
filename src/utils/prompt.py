@@ -34,12 +34,19 @@ from src.utils.prompt_core import (
     _visible_rows, _cols, _rows, _hint_lines, _wrap_bordered_input_lines,
     _Widget,
     add_hint_click_cells, now_playing_click_action, _hint_pin_target, screen_paint, screen_invalidate, screen_takeover_next,
+    HINTS_CLICK, hints_visible, toggle_hints, add_help_corner, place_help_toggle, rounded_header,
+    help_corner_text,
 )
 from src.utils import ui_utils
 from src.utils import datetime_parse as dtp
 from src import state as _state
 from src.state import QuitToTerminal
 C = ui_utils.Colors
+
+# The one key pair that moves a row up or down, wherever a list's order can be
+# changed (select's on_move, list_edit).
+MOVE_UP_KEY, MOVE_DOWN_KEY = 'J', 'K'
+MOVE_HINT = (f"{MOVE_UP_KEY}/{MOVE_DOWN_KEY}", "move up/down")
 
 # Per-edit "raw text ↔ smart widget" toggle (#62). prompt_for_value enables the
 # flag around a value edit; the value widgets then treat Ctrl-T as a request to
@@ -102,9 +109,9 @@ def chrome_hint_pairs(pairs) -> list:
     items = list(pairs.items()) if isinstance(pairs, dict) else [tuple(p) for p in pairs]
     if ui_utils.now_playing_active() or ui_utils.now_playing_unboxed():
         if _transport_handler is not None:
-            items += [("^P", "play/pause"), ("^N/^B", "next/prev")]
+            items += [("^p", "play/pause"), ("^n/^b", "next/prev")]
         if _player_opener is not None:
-            items += [("^O", "player")]
+            items += [("^o", "player")]
     return items
 
 
@@ -115,7 +122,7 @@ def chrome_hint_lines(pairs, *, extra: str = "") -> list:
 
 
 def append_chrome(out: list, pairs, cells: dict, *, extra: str = "",
-                  pin: bool = True) -> list:
+                  pin: bool = True, i_key: bool = False) -> list:
     """Append the hint bar to a widget's rendered `out` lines, in place.
 
     Pads down to :func:`_hint_pin_target` so the bar sits just above the
@@ -123,6 +130,10 @@ def append_chrome(out: list, pairs, cells: dict, *, extra: str = "",
     redraws — otherwise a repeated click chases the bar as the content changes
     height. Records each bright key's screen cell in `cells` for
     :func:`consume_chrome` to look up.
+
+    The bar is empty unless hints are switched on; either way the top line
+    (`out[0]`) carries the corner toggle. `i_key`: this screen leaves `i` free,
+    so `i` toggles too and the corner says so.
     """
     items = chrome_hint_pairs(pairs)
     hint_lines = _hint(*items, extra=extra).splitlines()
@@ -139,6 +150,7 @@ def append_chrome(out: list, pairs, cells: dict, *, extra: str = "",
             # `_Widget.render` lays line j at terminal row anchor(1) + MARGIN_V + j.
             add_hint_click_cells(cells, out[start + k],
                                  1 + ui_utils.MARGIN_V + (start + k), items)
+    place_help_toggle(out, 1 + ui_utils.MARGIN_V, cells, i_key)
     return out
 
 
@@ -150,6 +162,9 @@ def consume_chrome(key: str, cells: dict):
     key string when a hint was clicked (replay it through the widget's own
     switch), or None when the key is not ours.
     """
+    if key == HINTS_CLICK or (key == 'i' and cells.get('__i_key__')):
+        toggle_hints()
+        return CHROME_REDRAW            # the bar appeared or went: re-lay the screen
     if key == _PLAYER_KEY and _player_opener is not None:
         _player_opener()
         if not _IS_WINDOWS:
@@ -184,6 +199,8 @@ def consume_chrome(key: str, cells: dict):
             _transport_handler(act)
             return CHROME_HANDLED
         hit = cells.get((row, col))
+        if hit in (_PLAYER_KEY, _PLAYPAUSE_KEY, _NEXT_KEY, _PREV_KEY, HINTS_CLICK):
+            return consume_chrome(hit, cells)   # a transport hint: act on it here
         if hit is not None:
             return hit                      # replay the clicked hint's key
     return None
@@ -246,7 +263,9 @@ def select(message: str, choices: list, *,
            row_actions: dict[str, Callable[[Any], None]] | None = ...,
            row_action_hints: dict[str, str] | None = ...,
            allow_back: bool = ...,
-           ) -> str | None: ...
+           actions: list[tuple[str, str, str]] | None = ...,
+           on_move: Callable[[Any, int], bool] | None = ...,
+           ) -> Any: ...
 @overload
 def select(message: str, choices: list, *,
            header: list | None | Callable[[], list[str]] = ...,
@@ -279,8 +298,10 @@ def select(message: str, choices: list, *,
            row_edit_col: int = 1,
            row_edit_key: str = 'e',
            allow_back: bool = True,
-           ) -> str | list[Any] | None:
-    """Arrow keys / jk to navigate; Enter / → to confirm; ← / b / Esc / q → None.
+           actions: list[tuple[str, str, str]] | None = None,
+           on_move: Callable[[Any, int], bool] | None = None,
+           ) -> Any:
+    """Arrow keys to navigate; Enter / → to confirm; ← / b / Esc → None; q quits the app.
 
     When multi=True, Space toggles the current item and Enter returns a list of
     all checked values (possibly empty).  Otherwise returns the single selected
@@ -299,11 +320,15 @@ def select(message: str, choices: list, *,
             at a time (multi=True only).
         on_inspect: Called with the current row's value when `inspect_key` is
             pressed; runs its own view and returns, leaving selection/checkbox
-            state intact (the list redraws afterwards).
+            state intact (the list redraws afterwards). If it returns something
+            other than None, select() returns that instead — for a caller that
+            must rebuild the list after the view changed what it shows.
         inspect_key: Key that triggers `on_inspect` (default 'd').
         row_actions: key→callback(current row value) map. Pressing the key runs
             the callback against the highlighted row and stays in the list (like
             on_inspect, but any number of keys) — e.g. queue the current track.
+            A callback that returns something other than None ends the list
+            with that as the result, for a caller that must rebuild it.
         row_action_hints: key→label map surfaced in the hint bar for row_actions.
         row_edit:   row value → the values `row_edit_key` cycles that row through,
             its current one first. Each press steps to the next, and one step past
@@ -314,11 +339,22 @@ def select(message: str, choices: list, *,
         row_edit_commit: called with (row value, chosen text) on ↵.
         row_edit_col: which cell of the row the editing happens in.
         row_edit_key: the key that opens the cycle and advances it (default 'e').
-        allow_back: when False, the cancel keys (←/b/h/Esc) are ignored so the
+        allow_back: when False, the cancel keys (←/b/Esc) are ignored so the
             list can only move forward (Enter) or quit (q) — used for top-level
             menus that have nowhere to go back to.
+        actions:    (key, label, value) list-wide actions (play all, shuffle…),
+            kept out of the rows so the cursor only moves through the list
+            itself: each is listed first in the hint bar, and its key (or a
+            click on it there) returns value.
+        on_move:    (row value, -1 up / +1 down) → whether the caller moved it.
+            MOVE_UP_KEY / MOVE_DOWN_KEY call it for the highlighted row, and on
+            True the row swaps with its neighbour on screen and the cursor
+            follows. Never called past a separator or the ends of the list.
     """
     items = _norm(choices)
+    if actions:
+        shortcuts   = {**(shortcuts or {}), **{k: v for k, _label, v in actions}}
+        extra_hints = {**{k: label for k, label, _v in actions}, **(extra_hints or {})}
     if not items:
         return None
 
@@ -372,7 +408,7 @@ def select(message: str, choices: list, *,
     # Toggle-all ('a') is offered only where it can't misbehave: multi-select with
     # no category interlock and no caller shortcut already bound to 'a'.
     _toggle_all_ok = multi and interlock_category_callback is None and not (shortcuts and ('a' in shortcuts or 'A' in shortcuts))
-    _back_hint = {"←/b/esc": "back"} if allow_back else {}
+    _back_hint = {"esc/b": "back"} if allow_back else {}
     if multi:
         base_hints = {"↑↓": "move", "space": "toggle", **_back_hint, "q": "quit app", "↵": "confirm"}
         if _toggle_all_ok:
@@ -390,6 +426,9 @@ def select(message: str, choices: list, *,
     if row_action_hints:
         combined_hints = {**{k: v for k, v in combined_hints.items() if k not in base_hints},
                           **row_action_hints, **base_hints}
+    if on_move is not None:
+        combined_hints = {**{k: v for k, v in combined_hints.items() if k not in base_hints},
+                          MOVE_HINT[0]: MOVE_HINT[1], **base_hints}
 
     # Inline row edit (opt-in, see row_edit): the cycle sits at _edit_i over
     # _edit_opts, with one position past the end being the text field. While
@@ -400,7 +439,7 @@ def select(message: str, choices: list, *,
     _edit_i     = 0
     _edit_buf: list = []
     _edit_pos   = 0
-    _edit_hints = {row_edit_key: "next", "↑↓": "cycle", "type": "custom",
+    _edit_hints = {row_edit_key: "next", "↑↓": "cycle",
                    "↵": "set", "esc": "cancel"}
     if row_edit is not None:
         combined_hints = {row_edit_key: "edit",
@@ -418,6 +457,13 @@ def select(message: str, choices: list, *,
         if header is None:
             return []
         return header() if callable(header) else list(header)
+
+    def _i_free() -> bool:
+        """Whether `i` can toggle the hints here: not bound by this list, and
+        not being typed into a cell."""
+        return not (_edit_on or 'i' in (shortcuts or {}) or 'i' in (row_actions or {})
+                    or (on_inspect is not None and inspect_key == 'i')
+                    or (row_edit is not None and row_edit_key == 'i'))
 
     def _editing_text() -> bool:
         """Whether the cycle has stepped past its options into the text field."""
@@ -550,7 +596,7 @@ def select(message: str, choices: list, *,
         # centres within _cols() (= width-2*MARGIN_H), so this makes it symmetric.
         # Pin the hint bar to the bottom (just above the miniplayer + status) so
         # its keys keep a fixed screen position across redraws / list sizes.
-        append_chrome(out, hints_now, _hint_cells, extra=layout_constraint)
+        append_chrome(out, hints_now, _hint_cells, extra=layout_constraint, i_key=_i_free())
         # Hard guarantee: no rendered line ever exceeds the terminal width, so
         # the list can never wrap no matter how narrow the window is.
         _w = ui_utils.get_terminal_width()          # once per frame, not per line
@@ -689,7 +735,9 @@ def select(message: str, choices: list, *,
                 # ending selection or losing checkbox state. The callback runs
                 # its own full-screen prompt, so re-arm mouse reporting and force
                 # a full redraw when it returns.
-                on_inspect(items[cursor].value)
+                _ret = on_inspect(items[cursor].value)
+                if _ret is not None:
+                    result = _ret; break
                 if not _IS_WINDOWS:
                     sys.stdout.write("\033[?1000h\033[?1006h")
                 sys.stdout.flush()
@@ -699,7 +747,18 @@ def select(message: str, choices: list, *,
             elif row_actions and key in row_actions and not items[cursor].disabled:
                 # Act on the highlighted row (e.g. queue this track) and stay in
                 # the list — the callback shows its own status; we just redraw.
-                row_actions[key](items[cursor].value)
+                _ret = row_actions[key](items[cursor].value)
+                if _ret is not None:
+                    result = _ret; break
+                _sel_last_click = None
+                w.render(_lines())
+            elif (on_move is not None and key in (MOVE_UP_KEY, MOVE_DOWN_KEY)
+                  and not items[cursor].disabled):
+                delta = -1 if key == MOVE_UP_KEY else 1
+                j = cursor + delta
+                if 0 <= j < len(items) and not items[j].disabled and on_move(items[cursor].value, delta):
+                    items[cursor], items[j] = items[j], items[cursor]
+                    cursor = j
                 _sel_last_click = None
                 w.render(_lines())
             elif shortcuts and key in shortcuts:  result = shortcuts[key]; break
@@ -824,7 +883,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
     _row_plain: dict[int, str] = {}
     _fixed_rows = [0]   # header + query + count + above-indicator lines, this frame
 
-    base_hints = {"type": "search", "↑↓": "results", "esc": "back", "↵": "confirm"}
+    base_hints = {"↑↓": "results", "esc": "back", "↵": "confirm"}
     if section_nav:
         base_hints["tab"] = "section"
     if on_cycle is not None and cycle_key is None:
@@ -1150,7 +1209,7 @@ def confirm(message: str, default: bool = False) -> bool:
             f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}",
         ]
         lines = list(head)
-        append_chrome(lines, pairs, _hint_cells)
+        append_chrome(lines, pairs, _hint_cells, i_key=True)
         w.render(lines)
 
     try:
@@ -1717,7 +1776,7 @@ def _build_list_edit_lines(
     if fixed_rows:
         base_hints = {"↑↓": "move", "e": "edit", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit app"}
     else:
-        base_hints = {"↑↓": "move", "a": "add", "e": "edit", "d": "delete", "K/J": "reorder", "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit app"}
+        base_hints = {"↑↓": "move", "a": "add", "e": "edit", "d": "delete", MOVE_HINT[0]: MOVE_HINT[1], "i": "import text", "f": "from file", "esc": "back", "↵": "save", "q": "quit app"}
     # Both variants answer ^t (see list_edit's key loop), so both advertise it.
     if _value_toggle_enabled:
         base_hints["^t"] = "raw text"
@@ -1751,7 +1810,7 @@ def _build_list_edit_lines(
         out.append(f"    {'─' * inner}")
 
     if edit_mode and (col_types or {}).get(edit_col) == 'timestamp':
-        edit_hints = {"0-9": "fill", "←→": "move part", "tab/⇧tab": "column",
+        edit_hints = {"←→": "move part", "tab/⇧tab": "column",
                       "esc": "back", "↵": "save"}
     if barrel_mode:
         edit_hints = {"↑↓": "cycle", "↵": "confirm", "esc": "back"}
@@ -2024,12 +2083,14 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
         _le_vis = new_vis
         _le_header_rows = new_hdr
         _hint_cells.clear()
-        if n_hint and not edit_mode:
+        if n_hint:              # edit-mode hints too: a hint shown is a key that works
             _hp = list(active_hints)
             _start = len(lines) - n_hint
             for _k in range(n_hint):
                 add_hint_click_cells(_hint_cells, lines[_start + _k],
                                      1 + ui_utils.MARGIN_V + (_start + _k), _hp)
+        if lines:               # `i` imports text here, so the corner is click-only
+            lines[0] = add_help_corner(lines[0], 1 + ui_utils.MARGIN_V, _hint_cells)
         w.render(lines)
 
     def _commit_edit_buffer():
@@ -2065,9 +2126,6 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
 
             key = _read_key(fd)
 
-            if _value_toggle_enabled and key == _MODE_TOGGLE_KEY and not edit_mode:
-                return MODE_TOGGLE  # type: ignore[return-value]
-
             # Transport keys and miniplayer/hint clicks work in every mode of
             # this widget, so they are consumed before the mode switches below.
             _ch = consume_chrome(key, _hint_cells)
@@ -2077,6 +2135,10 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                 w.anchor_reset(); _render(); continue
             if _ch is not None:
                 key = _ch
+
+            # After the replay, so a clicked ^t toggles as the typed one does.
+            if _value_toggle_enabled and key == _MODE_TOGGLE_KEY and not edit_mode:
+                return MODE_TOGGLE  # type: ignore[return-value]
 
             if edit_mode and barrel_mode:
                 if key == 'ESC':
@@ -2394,13 +2456,13 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                         cursor = 0
                     _render()
 
-                elif key == 'K' and items and not fixed_rows and cursor > 0:
+                elif key == MOVE_UP_KEY and items and not fixed_rows and cursor > 0:
                     items[cursor - 1], items[cursor] = items[cursor], items[cursor - 1]
                     cursor -= 1
                     _le_last_click = None
                     _render()
 
-                elif key == 'J' and items and not fixed_rows and cursor < len(items) - 1:
+                elif key == MOVE_DOWN_KEY and items and not fixed_rows and cursor < len(items) - 1:
                     items[cursor + 1], items[cursor] = items[cursor], items[cursor + 1]
                     cursor += 1
                     _le_last_click = None
@@ -3097,9 +3159,9 @@ def fraction_edit(message: str = "Edit metadata pair:",
         lines.append(row)
         lines.append(f"{C.DIM}{'─' * ui_utils.get_terminal_width()}{C.RESET}")
 
+        # No q: these fields take text, so q is a letter here.
         append_chrome(lines, _with_toggle_hint(
-            [("↵", "save"), ("tab/⇧tab", "field"),
-             ("esc", "back"), ("q", "quit app")]), _hint_cells)
+            [("↵", "save"), ("tab/⇧tab", "field"), ("esc", "back")]), _hint_cells)
         w.render(lines)
 
     result = None
@@ -3140,8 +3202,6 @@ def fraction_edit(message: str = "Edit metadata pair:",
                 break
             elif key == 'ESC':
                 break
-            elif key in ('q', 'Q'):
-                raise QuitToTerminal()   # q quits the app; it never just leaves a widget
             elif key in ('TAB', 'BACKTAB'):
                 # Shift+Tab is Tab in reverse, on every screen that has fields.
                 _step = -1 if key == 'BACKTAB' else 1
@@ -3157,8 +3217,8 @@ def fraction_edit(message: str = "Edit metadata pair:",
                 edit_positions[current_field] = max(0, pos - 1)
             elif key == 'RIGHT':
                 edit_positions[current_field] = min(len(buf), pos + 1)
-            elif len(key) == 1 and (key.isalnum() or key in ".- "):
-                buf.insert(pos, key)
+            elif key == 'SPACE' or (len(key) == 1 and (key.isalnum() or key in ".-")):
+                buf.insert(pos, ' ' if key == 'SPACE' else key)
                 edit_positions[current_field] = pos + 1
 
             _render()
@@ -3677,9 +3737,9 @@ def number_edit(message: str = "Edit number:", *, value: int = 0,
             f"  {C.ACCENT}▸{C.RESET} {C.BOLD}{shown}{C.RESET}{C.DIM}{unit_s}{C.RESET}   {C.DIM}({bounds}){C.RESET}",
         ]
         append_chrome(lines, _with_toggle_hint(
-            [("↑↓", "±1"), ("⇞⇟", "±10"), ("0-9", "type"),
+            [("↑↓", "±1"), ("⇞⇟", "±10"),
              ("↵", "save"), ("esc", "back"), ("q", "quit app")]),
-                      _hint_cells)
+                      _hint_cells, i_key=True)
         w.render(lines)
 
     result = None
@@ -3798,9 +3858,12 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
             f"  {_mark(1)} {_lab(1, 'Plays ')}   {cshown}",
             f"  {_mark(2)} {_lab(2, 'Rater ')}   {rater}",
         ]
-        append_chrome(lines, [("tab/⇧tab", "field"), ("←→", "adjust"), ("0-5", "stars"),
-                              ("↵", "save"), ("esc", "back"), ("q", "quit app")],
-                      _hint_cells)
+        # The keys of the focused row: stars, the play count, or (the Rater's
+        # e-mail) just typing — where q is a letter, not quit.
+        pairs = [("tab/⇧tab", "field")]
+        pairs += {0: [("←→", "stars")], 1: [("←→", "±1"), ("⇞⇟", "±10")]}.get(field, [])
+        pairs += [("↵", "save"), ("esc", "back")] + ([("q", "quit app")] if field != 2 else [])
+        append_chrome(lines, pairs, _hint_cells)
         w.render(lines)
 
     result = None
@@ -3922,7 +3985,7 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
                   ("↵", "save"), ("esc", "back"), ("q", "quit app")]
         lines = _eq_render_lines(bands, cursor, message, status, _cols(),
                                  _hint_pin_target() - len(chrome_hint_lines(_pairs)))
-        append_chrome(lines, _pairs, _hint_cells)
+        append_chrome(lines, _pairs, _hint_cells, i_key=True)
         w.render(lines)
 
     result = None
@@ -4054,7 +4117,11 @@ def system_editor_edit(initial_text: str) -> str | None:
         temp_path = tf.name
     try:
         editor = _find_editor() or 'nano'
-        subprocess.run(editor.split() + [temp_path], check=True)
+        sys.stdout.write("\033[?7h"); sys.stdout.flush()     # the editor expects wrapping on
+        try:
+            subprocess.run(editor.split() + [temp_path], check=True)
+        finally:
+            sys.stdout.write("\033[?7l")                     # ours again (see enter_alt_screen)
         # The editor owned the screen and left its own cursor visible: forget what
         # we thought was on screen and hide the cursor again before the caller
         # repaints, so no caret is left blinking over our frame.

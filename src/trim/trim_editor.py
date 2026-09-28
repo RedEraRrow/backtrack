@@ -419,32 +419,8 @@ def _header_box(title: str, artist: str, track_length: float) -> list[str]:
     """One-line rounded box, same shape as the rest of the app's per-file
     screens (id3_browser's tag list, the bulk-edit header): styled title (+
     dim artist) left, dim facts right, spanning the full terminal width."""
-    mh = ui_utils.MARGIN_H
-    cols = ui_utils.get_terminal_width()
-    inner = max(12, cols - 2 * mh - 4)
-    right = f"[MP3]  {_fmt(track_length)}"
-
-    avail = max(4, inner - len(right) - 2)
-    if len(title) > avail:
-        title = title[:avail - 1] + "…"
-    left_styled = f"{C.BOLD}{title}{C.RESET}"
-    left_vis = len(title)
-    rem = avail - left_vis
-    if artist and rem > 5:
-        suffix = f" · {artist}"
-        if len(suffix) > rem:
-            suffix = suffix[:rem - 1] + "…"
-        left_styled += f"{C.DIM}{suffix}{C.RESET}"
-        left_vis += len(suffix)
-
-    gap = max(1, inner - left_vis - len(right))
-    title_line = f"{left_styled}{' ' * gap}{C.DIM}{right}{C.RESET}"
-    return [
-        f"{' ' * mh}{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}",
-        f"{' ' * mh}{C.DIM}│{C.RESET} {title_line} {C.DIM}│{C.RESET}",
-        f"{' ' * mh}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}",
-        "",
-    ]
+    return _promptmod.rounded_header(title, f" · {artist}" if artist else "",
+                                     f"[MP3]  {_fmt(track_length)}")
 
 
 def _run_marking_screen(
@@ -590,10 +566,12 @@ def _run_marking_screen(
             pairs = [('tab/⇧tab', 'field'), ('←→', 'cursor'), ('↑↓', 'adjust')]
             if mp is not None:
                 pairs.append(('p', 'grab playhead'))
-            pairs += [('↵', 'apply'), ('esc', 'cancel'), ('q', 'quit')]
+            pairs += [('↵', 'apply'), ('esc', 'cancel')]
             return pairs
-        pairs = [('tab', 'in/out'), ('i/o', 'mark'), ('d', 'clear'), ('e', 'type'),
-                  ('←→', '1 frame'), (',/.', f'{_COARSE_STEP:g}s')]
+        pairs = [('tab', 'in/out')]
+        if mp is not None:                  # marks are taken from the playhead
+            pairs.append(('i/o', 'mark'))
+        pairs += [('d', 'clear'), ('e', 'type'), ('←→', '1 frame'), (',/.', f'{_COARSE_STEP:g}s')]
         if mp is not None:
             pairs += [('p', 'play in'), ('P', 'play to out'), ('j', 'audition join'),
                      ('[/]', 'silence marker')]

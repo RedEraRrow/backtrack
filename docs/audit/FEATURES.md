@@ -291,8 +291,8 @@ Exit; dispatches and unwinds on `QUIT_ALL`.
 
 **Browse** (`handle_browse` `:1161-1178` → `browse_menu` `:706-1158`) — a 5-level loop:
 - Level 2 (groups): grouping via `get_grouped_data`, an **A–Z letter index** that auto-enables on
-  overflow and toggles with `/`, sort options (`s`, `_GROUP_SORTS`/`_ALBUM_SORTS` `:70-76`), play-all
-  (`p`), and bulk-edit (`e`). Backing out of a drilled-in letter returns to the letter index with the
+  overflow and toggles with `/`, sort (`s`: artist/genre name order, or the shared/per-library chain from `music_library.sort_tracks`), play-all
+  (`p`), shuffle (`x`), bulk-edit all (`E`) or the highlighted row (`e`). Backing out of a drilled-in letter returns to the letter index with the
   cursor restored.
 - Level 3 (albums): album sublist for Artists/Genres with single-album handling.
 - Level 4 (tracks): rich track rows via structured columns — bright title (truncates), full featured
@@ -559,9 +559,10 @@ a player progress tick from 1346 bytes and a screen clear to **36 bytes**.
   `1963 · Classical · Track 1 of 4`. The whole panel is fed an `ID3` object, so it stays blank for
   non-MP3 playback.
 - **Panes** — toggleable metadata/credits/lyrics/help/queue flags with a single-key right-pane cycle
-  (`cycle_right_pane`, `:420-437`, skipping empty states); a redesigned **UP NEXT** queue pane
-  (`_build_queue_lines`, `:483`) — a **columnar** list (title + a **context-aware meta column**)
-  showing the upcoming tracks (current + following, backfilled with previous), laid out with the shared
+  (`cycle_right_pane`, `:420-437`, skipping empty states); a **QUEUE** pane with the position ("3 of 40")
+  (`_build_queue_lines`) — a **columnar** list (title + a **context-aware meta column**)
+  with the current track near the top, up to two played tracks above it, then what's next
+  (backfilled with history at the end of the queue), laid out with the shared
   `_table_widths` engine. The meta column only appears when it adds information: it shows the track
   artist when it differs from the album artist (featured artists / compilations,
   `_queue_should_show_artist` `:579`, `_queue_meta_value` `:596`) and the album when the queue spans
@@ -925,7 +926,7 @@ delegates here, so one implementation owns the conversion. Reaches:
 - **`text`** (`:723-818`) — wrapped free-text line editor with a bordered frame and Ctrl-T raw toggle.
 - **`path`** (`:821-1004`) — path editor with **Tab-cycling autocomplete** and a 5-item completion
   tooltip.
-- **`list_edit`** (`:1241-1632`) — editable table: add/edit-in-place/delete/reorder (`K`/`J`),
+- **`list_edit`** (`:1241-1632`) — editable table: add/edit-in-place/delete/reorder (`J` up / `K` down, `prompt.MOVE_UP_KEY`/`MOVE_DOWN_KEY`),
   barrel-mode value cycling, import from text (`i`) / from file (`f`, via `_parse_import_rows`
   auto-detecting CSV/TSV/`;`/`|`/`:`/columns), `locked_cols`, `fixed_rows`, Ctrl-T raw toggle.
 - **Value editors**: `calendar_select` (`:1706`, month/year/day nav, manual entry), `datetime_edit`

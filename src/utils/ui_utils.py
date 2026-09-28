@@ -23,11 +23,27 @@ _size_cache: tuple[int, int] | None = None
 _size_cache_at: float = 0.0
 _SIZE_TTL = 0.25
 
+_last_resize_signal = 0.0               # monotonic time of the last SIGWINCH
+
+
 def _sigwinch_handler(signum: int, frame: Any) -> None:
     """Mark that the terminal was resized; consume_resize() picks this up."""
-    global _resize_flag, _size_cache
+    global _resize_flag, _size_cache, _last_resize_signal
     _resize_flag = True
     _size_cache = None                   # the memoised size is now wrong
+    _last_resize_signal = _time.monotonic()
+
+
+def last_resize_signal_at() -> float:
+    """Monotonic time of the last resize report — to tell whether one arrived
+    while something slow was under way."""
+    return _last_resize_signal
+
+
+def ms_since_resize_signal() -> float:
+    """How long ago the terminal last reported a resize, in ms — for the
+    diagnostics log, to show how far behind the resize a redraw landed."""
+    return (_time.monotonic() - _last_resize_signal) * 1000
 
 # SIGWINCH doesn't exist on Windows — guard so importing ui_utils never raises there.
 _HAS_SIGWINCH = hasattr(signal, "SIGWINCH")
@@ -150,15 +166,20 @@ def enter_alt_screen() -> None:
 
     Also enables focus in/out reporting (\\033[?1004h) so editors can show a
     hollow cursor when the window loses focus; unsupported terminals ignore it.
+    And turns auto-wrap off (\\033[?7l): every row is placed explicitly, so a
+    row too wide for the window should be cut at the edge, not run onto the
+    next — which is what a write still sized for the old width does in the
+    moment between a resize and the redraw that answers it.
     """
-    sys.stdout.write("\033[?1049h\033[?1004h\033[H\033[3J\033[J" + Colors.HIDE)
+    sys.stdout.write("\033[?1049h\033[?1004h\033[?7l\033[H\033[3J\033[J" + Colors.HIDE)
     sys.stdout.flush()
     _screen_cleared()
 
 
 def exit_alt_screen() -> None:
-    """Restore the main screen buffer, disable focus reporting, show the cursor."""
-    sys.stdout.write("\033[?25h\033[?1004l\033[?1049l")
+    """Restore the main screen buffer, auto-wrap and focus reporting, and show
+    the cursor."""
+    sys.stdout.write("\033[?25h\033[?7h\033[?1004l\033[?1049l")
     sys.stdout.flush()
 
 

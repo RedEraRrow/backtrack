@@ -40,6 +40,7 @@ from src.playback.playback_ui import (
     cycle_right_pane,
 )
 from src.playback import playback_ui
+from src.utils.log import log
 from src.playback.session import (
     SESSION, is_client, has_other_windows,
 )
@@ -162,6 +163,7 @@ def open_client_player_view() -> dict:
     toast = ""
     toast_expiry = 0.0
     width = ui_utils.get_terminal_size()[0]
+    playback_ui._ui_state['panel_keys'] = False
     try:
         with raw_mode(sys.stdin):
             sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
@@ -274,8 +276,13 @@ def open_client_player_view() -> dict:
                         return {"status": "STOP"}
                     elif key.lower() == 'q':
                         return {"status": "QUIT_ALL"}
+                    elif key.lower() in ('i', 'm'):
+                        ui_utils.clear_screen()
+                        (toggle_help if key.lower() == 'i' else toggle_metadata)()
+                        last_sig = None                # redraw with the new layout
                 time.sleep(_LOOP_TICK_S)
     finally:
+        playback_ui._ui_state['panel_keys'] = True
         sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse on exit
         sys.stdout.flush()
         remote.release_view(token)
@@ -312,7 +319,6 @@ def _player_view_loop() -> dict:
     last_lyric_idx = -1
     resize_pending = False
     resize_timer = 0.0
-    pending_size = last_size
     in_uslt_tail = False
     prog_row = ctrl_row = lyric_row = art_bottom_row = 0
     pane = None
@@ -440,6 +446,7 @@ def _player_view_loop() -> dict:
         sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}")
         sys.stdout.flush()
 
+    playback_ui.set_resizing(False)      # in case the last visit ended mid-resize
     with raw_mode(sys.stdin):
         sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse (click + scroll)
         sys.stdout.flush()
@@ -452,19 +459,37 @@ def _player_view_loop() -> dict:
             if not SESSION.is_active():
                 return {"status": "OK"}
 
+            # Redraw at every size the window passes through, as soon as it's
+            # seen — the gap in which the terminal shows the old frame reflowed
+            # is one loop tick, not a debounce window. Mid-resize the art image
+            # is only the quick preview; once the size has held still for
+            # ART_FULL_IMAGE_SETTLE_S, the full-quality image goes on top.
             current_size = ui_utils.get_terminal_size()
             if current_size != last_size:
-                if not resize_pending:
-                    resize_pending = True
-                    pending_size = current_size
-                    resize_timer = time.time()
-                elif current_size != pending_size:
-                    pending_size = current_size
-                    resize_timer = time.time()
-            if resize_pending and (time.time() - resize_timer > tune.RESIZE_DEBOUNCE_S):
-                last_size = pending_size
-                resize_pending = False
+                last_size = current_size
+                resize_pending = True
+                resize_timer = time.time()
+                playback_ui.set_resizing(True)
+                # A group cover is drawn to the width, so render it again.
+                if SESSION.is_grouping:
+                    pre_art = _render_grouping_cover(SESSION.file_path or "", last_size[0])
+                # The terminal reflowed the old frame. No separate clear: the
+                # painter sees the new size and wipes in the same write as the
+                # new rows, so a drag doesn't flash blank at every step.
+                _t0 = time.monotonic()
                 _redraw_full()
+                log.debug("player redraw at %sx%s took %.0f ms (%.0f ms after the signal)",
+                          last_size[0], last_size[1], (time.monotonic() - _t0) * 1000,
+                          ui_utils.ms_since_resize_signal())
+            elif resize_pending and (time.time() - resize_timer > tune.ART_FULL_IMAGE_SETTLE_S):
+                resize_pending = False
+                playback_ui.set_resizing(False)
+                playback_ui.redraw_art_image()
+                log.debug("player resize settled at %sx%s", last_size[0], last_size[1])
+            elif not resize_pending and playback_ui.art_image_incomplete():
+                # A resize cut the full image short but didn't change the size
+                # (or already settled): send it again.
+                playback_ui.redraw_art_image()
 
             if toast_text and time.time() >= toast_expiry:
                 toast_text = ""
@@ -509,12 +534,19 @@ def _player_view_loop() -> dict:
                     # glyphs to the equivalent key, then let the switch handle it.
                     _mp = key.split(':'); _mr = int(_mp[2]); _mc = int(_mp[3])
                     _act = playback_ui.transport_click_action(_mr, _mc, ctrl_row)
+                    _qi = playback_ui.queue_click_index(_mr, _mc)
                     if _act == 'prev':
                         key = '['
                     elif _act == 'next':
                         key = ']'
                     elif _act == 'playpause':
                         key = ' '
+                    elif _qi is not None:
+                        # A track row in the queue pane: play it. The track
+                        # change is picked up (and redrawn) at the top of the loop.
+                        if _qi != SESSION.index:
+                            SESSION.jump(_qi)
+                        key = ''
                     else:
                         _vol = playback_ui.volume_from_click(_mr, _mc)
                         _frac = playback_ui.progress_from_click(_mr, _mc)
