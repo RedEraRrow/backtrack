@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, TIT2, CHAP, CTOC  # type: ignore[reportPrivateImportUsage]
 from mutagen.mp3 import MP3
+from mutagen import MutagenError
 
 from src.config import load_config, CONFIG_DIR
 from src.id3 import tag_writer as tw
@@ -580,9 +581,9 @@ def _load_manifest() -> list[dict]:
 def _write_manifest(entries: list[dict]) -> None:
     path = _manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
+    # The manifest indexes every backup: whole or not at all.
+    from src.utils.files import write_text_atomic
+    write_text_atomic(path, "".join(json.dumps(entry) + "\n" for entry in entries))
 
 
 def _copy_with_fsync(src: str, dst: Path) -> None:
@@ -602,9 +603,11 @@ def backup_chain(original_path: str) -> list[dict]:
     return [e for e in _load_manifest() if e["original_path"] == path]
 
 
-def _backup_original(path: str, snapped_in: float, snapped_out: float) -> dict:
+def _backup_original(path: str, snapped_in: float, snapped_out: float,
+                     reason: str = "trim") -> dict:
     """Copy the current (pre-trim) file into the store and record it in the
-    manifest, chained onto any earlier backup for the same original path."""
+    manifest, chained onto any earlier backup for the same original path.
+    `reason` says what was about to replace it ("trim", "restore")."""
     bdir = _backup_dir()
     bdir.mkdir(parents=True, exist_ok=True)
     entry_id = uuid.uuid4().hex[:12]
@@ -621,6 +624,7 @@ def _backup_original(path: str, snapped_in: float, snapped_out: float) -> dict:
         "timestamp": time.time(),
         "parent_id": chain[-1]["id"] if chain else None,
         "backup_file": backup_name,
+        "reason": reason,
     }
     entries = _load_manifest()
     entries.append(entry)
@@ -696,6 +700,14 @@ def restore_backup(entry_id: str, library: list | None = None) -> TrimResult:
         return TrimResult(ok=False, error="Backup file is missing from the store")
 
     dest = entry["original_path"]
+    # What's there now may carry changes made since that backup (tag edits, a
+    # later trim): back it up too, so the restore can itself be undone.
+    if os.path.exists(dest):
+        try:
+            length = MP3(dest).info.length
+            _backup_original(dest, 0.0, length, reason="restore")
+        except (OSError, MutagenError) as e:
+            return TrimResult(ok=False, error=f"Couldn't back up the current file first: {e}")
     d = os.path.dirname(dest) or "."
     fd, tmp_path = tempfile.mkstemp(prefix=".trimrestore_", suffix=".mp3", dir=d)
     os.close(fd)

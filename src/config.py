@@ -164,8 +164,25 @@ def set_music_dirs(config: dict, dirs: list[str]) -> list[str]:
         config["music_directory"] = config["music_directories"][0]
     return config["music_directories"]
 
+def update_config(changes: dict) -> dict:
+    """Save just `changes` into the config as it is on disk now, and return that
+    fresh config. The way every screen saves: writing back a whole dict loaded
+    earlier puts back anything changed since — the volume set in the player
+    while Settings was open, another window's edit, a CLI run."""
+    cfg = load_config()
+    cfg.update(changes)
+    save_config(cfg)
+    return cfg
+
+
+def changed_keys(before: dict, after: dict) -> dict:
+    """The entries of `after` that differ from `before` — what an edit made to a
+    working copy of the config, ready for update_config."""
+    return {k: v for k, v in after.items() if before.get(k, object()) != v}
+
+
 def save_config(config: dict) -> None:
     """Write the config dict to disk as JSON."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=4)
+    from src.utils.files import write_text_atomic
+    write_text_atomic(CONFIG_FILE, json.dumps(config, indent=4))

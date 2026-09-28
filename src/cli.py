@@ -135,7 +135,7 @@ class Ctx:
             from src.music_library import (build_library, load_library_cache,
                                            save_library_cache)
             from src.config import music_dirs
-            self._library = load_library_cache()
+            self._library = load_library_cache() or []
             if not self._library:
                 roots = music_dirs(self.config)
                 if roots:
@@ -143,7 +143,9 @@ class Ctx:
                         roots,
                         ignore_hidden=self.config.get('ignore_hidden_files', False))
                     save_library_cache(self._library, _async=False)
-        return self._library or []
+        # Always the same list: a fresh [] per access (for an empty library)
+        # meant each track added went into a throwaway list, saved on its own.
+        return self._library
 
     def targets(self, positional: str = 'target', *,
                 allow_stdin: bool = True) -> list[str]:

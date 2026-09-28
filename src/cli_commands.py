@@ -112,7 +112,12 @@ def _library_scan(ctx: Ctx) -> int:
 
     library = build_library(
         roots, ignore_hidden=ctx.config.get('ignore_hidden_files', False))
-    save_library_cache(library, _async=False)
+    if ctx.args.library:
+        # --library is for this run: scanning it must not replace the shared
+        # library cache (the app's whole library) with just these directories.
+        out.note("Scanned with --library: the library cache was left as it was.")
+    else:
+        save_library_cache(library, _async=False)
     out.record('library', {'tracks': len(library), 'directories': roots},
                human=f"  Scanned {len(library)} tracks in {len(roots)} "
                      f"director{'y' if len(roots) == 1 else 'ies'}.")
@@ -182,9 +187,11 @@ def _library_verify(ctx: Ctx) -> int:
 
 def _library_dirs(ctx: Ctx) -> int:
     """Show, add or remove the configured music directories."""
-    from src.config import music_dirs, normalise_dir, save_config, set_music_dirs
+    from src.config import load_config, music_dirs, normalise_dir, set_music_dirs, update_config
 
-    config = ctx.config
+    # The stored directories, not ctx.config: that has --library mixed in, which
+    # is for this run only and must never be saved as the music directories.
+    config = load_config()
     current = music_dirs(config)
     changed = False
 
@@ -205,7 +212,7 @@ def _library_dirs(ctx: Ctx) -> int:
 
     if changed and not ctx.dry_run():
         set_music_dirs(config, current)
-        save_config(config)
+        update_config({k: config[k] for k in ("music_directories", "music_directory")})
     elif changed:
         out.event('plan', action='set-directories', detail=', '.join(current))
 
@@ -353,7 +360,7 @@ def _config_set(ctx: Ctx) -> int:
     """Change one config value, parsed to the type the existing value has."""
     import json
 
-    from src.config import DEFAULT_CONFIG, save_config
+    from src.config import DEFAULT_CONFIG, update_config
 
     key, raw = ctx.args.key, ctx.args.value
     if key not in DEFAULT_CONFIG:
@@ -369,9 +376,7 @@ def _config_set(ctx: Ctx) -> int:
         out.event('plan', action='config-set', key=key,
                   detail=f"{key} = {_fmt_value(value)}")
         return out.OK
-    config = ctx.config
-    config[key] = value
-    save_config(config)
+    update_config({key: value})      # just this key: never --library's override
     out.record('config', {'key': key, 'value': value},
                human=f"  {key} = {_fmt_value(value)}")
     return out.OK
@@ -582,8 +587,8 @@ def _tag_copy(ctx: Ctx) -> int:
     from src.music_library import refresh_library_entry
 
     if not ctx.args.source:
-        return out.fail(out.USAGE, "No .lrc file given.",
-                        hint='pass --from track.lrc')
+        return out.fail(out.USAGE, "No source track given.",
+                        hint='pass --from track.mp3')
     source = os.path.abspath(os.path.expanduser(ctx.args.source))
     if not os.path.exists(source):
         return out.fail(out.NOT_FOUND, "No such source track.", path=source)
@@ -592,7 +597,11 @@ def _tag_copy(ctx: Ctx) -> int:
         return out.fail(out.USAGE, "No target tracks given.",
                         hint="pass paths after the source, or pipe them in")
 
-    src_tags = ID3(source)
+    from mutagen.id3._util import ID3NoHeaderError
+    try:
+        src_tags = ID3(source)
+    except (ID3NoHeaderError, OSError) as exc:
+        return out.fail(out.FAIL, "Couldn't read tags from the source.", path=source, detail=str(exc))
     wanted = {t.upper() for t in ctx.args.tag} if ctx.args.tag else None
     frames = [src_tags[k] for k in src_tags
               if wanted is None or k.split(':')[0].upper() in wanted]
@@ -610,9 +619,16 @@ def _tag_copy(ctx: Ctx) -> int:
     written = errors = 0
     for path in targets:
         try:
-            audio = ID3(path)
+            try:
+                audio = ID3(path)
+            except ID3NoHeaderError:
+                audio = ID3()
+            # Replace frame by frame (by its full key, e.g. TXXX:MOOD), as the
+            # tag editor does. setall(FrameID) replaced every frame of the type
+            # each time, so only the last TXXX/COMM/APIC copied survived.
             for frame in frames:
-                audio.setall(frame.FrameID, [_copy.deepcopy(frame)])
+                audio.delall(frame.HashKey)
+                audio.add(_copy.deepcopy(frame))
             save_id3(audio, path)
         except Exception as exc:
             errors += 1
@@ -1420,6 +1436,8 @@ def _lyrics_import(ctx: Ctx) -> int:
     if not os.path.exists(source):
         return out.fail(out.NOT_FOUND, "No such .lrc file.", path=source)
 
+    if not path.lower().endswith('.mp3'):
+        return out.fail(out.FAIL, "Lyrics can only be imported into MP3 files.", path=path)
     entries = ly.parse_lrc_file(source)
     if not entries:
         return out.fail(out.FAIL, "Nothing readable in that .lrc file.",
@@ -1907,7 +1925,7 @@ def _download_one(ctx: Ctx, item, target: str, feed_title: str) -> None:
     tw.write_fields(target, fields, set(fields), overwrite=True)
     if frames and tw.format_kind(target) == 'mp3':
         from src.id3 import bulk_ops as bo
-        bo.apply_frame_writes({target: list(frames.items())}, [], overwrite=True)
+        bo.apply_frame_writes({target: list(frames.items())}, ctx.library, overwrite=True)
     try:
         refresh_library_entry(ctx.library, target)
     except Exception:

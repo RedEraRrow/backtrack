@@ -2815,14 +2815,17 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                                 continue   # no match / not applicable — leave frame as-is
                         if new_val is None:
                             continue
-                        audio.delall(tag)
-                        try:
-                            new_frame = create_frame(tag, new_val)
-                            if new_frame:
-                                audio.add(new_frame)
-                                changed = True
-                        except ValueError:
-                            pass
+                        # Build the new frame first: if the value can't make
+                        # one, the old frame must survive (it was deleted
+                        # first, and saved away with another tag's change).
+                        new_frame = create_frame(tag, new_val)
+                        if new_frame:
+                            audio.delall(tag)
+                            audio.add(new_frame)
+                            changed = True
+                        else:
+                            ui_utils.show_status(
+                                f"{os.path.basename(path)}: {new_val!r} isn't a valid {tag}; kept the old value.")
 
             if changed:
                 save_id3(audio, path)   # explicit path: works for a fresh ID3 too

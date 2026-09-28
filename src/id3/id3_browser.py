@@ -32,7 +32,7 @@ from src.id3.id3_tag_handler import (
     summarize_tag_value,
     prompt_for_value,
     create_frame,
-    rename_frame,
+    rename_frame, rename_would_replace,
     save_id3,
     create_apic_frame,
     pick_nearby_cover,
@@ -915,7 +915,7 @@ def inspect_tag_loop(
 
     def _save(audio_obj):
         """Persist tags and refresh the in-memory library cache entry for this file."""
-        save_id3(audio_obj)
+        save_id3(audio_obj, file_path)      # explicit path: works for a fresh ID3 too
         if library is not None:
             try:
                 fresh = refresh_library_entry(library, file_path)
@@ -1179,7 +1179,9 @@ def inspect_tag_loop(
                         ui_utils.show_status(f"Renamed to {new_id}.")
                     else:
                         audio.add(old_frame)
-                        ui_utils.show_status("Rename failed.")
+                        ui_utils.show_status(
+                            f"{new_id} is already set on this file: delete or edit it instead."
+                            if rename_would_replace(audio, new_id) else "Rename failed.")
                     break
 
             elif action == "Edit":

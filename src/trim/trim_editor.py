@@ -820,8 +820,9 @@ def trim_editor(path: str, library: list | None = None) -> None:
     from mutagen.mp3 import MP3
     track_length = MP3(path).info.length
     track_name, track_artist = _track_title_artist(path)
-    library = library if library is not None else []
-    siblings = sibling_durations(library, path)
+    # `library` itself is passed on as given — None means "not tracking one",
+    # and a stand-in [] would be saved as the whole library cache on commit.
+    siblings = sibling_durations(library or [], path)
 
     marks = Marks()
     undo_stack: list[tuple] = []

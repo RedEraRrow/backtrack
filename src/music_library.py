@@ -642,7 +642,7 @@ def load_library_cache() -> list:
         return []
 
 
-def refresh_library_entry(library: list, file_path: str) -> dict:
+def refresh_library_entry(library: list | None, file_path: str) -> dict:
     """
     Re-read and update metadata for a single file.
 
@@ -652,8 +652,14 @@ def refresh_library_entry(library: list, file_path: str) -> dict:
 
     Returns:
         Updated track metadata
+
+    `library` None means the caller isn't tracking one: the fresh entry is
+    returned and nothing is saved. Never pass a stand-in list for "no library"
+    — it would be saved as the whole cache, one track long.
     """
     fresh = get_metadata(file_path)
+    if library is None:
+        return fresh
     for i, track in enumerate(library):
         if track['path'] == file_path:
             library[i] = fresh

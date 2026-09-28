@@ -20,7 +20,7 @@ from src.history import get_history, clear_history, get_recent_paths
 from src import search as _search
 from src.playback.playback import music_player
 from src.playback.session import REPEAT_OFF, REPEAT_ONE, REPEAT_ALL, active_session, is_client
-from src.config import load_config, save_config, music_dirs, set_music_dirs, library_name
+from src.config import load_config, music_dirs, set_music_dirs, library_name, update_config, changed_keys
 from src.state import NAV_STACK
 from src.id3.id3_browser import inspect_tag_loop
 from src.id3.bulk_id3_manager import bulk_id3_manager
@@ -148,6 +148,15 @@ def _chain_summary(levels: list) -> str:
     return f"Custom, {ui_utils.plural(len(levels), 'level')}"
 
 
+def _commit(cfg: dict, *keys: str) -> None:
+    """Save these keys of a screen's working config (update_config: into the
+    config as it is on disk now), and bring the working copy up to date with
+    anything saved meanwhile."""
+    fresh = update_config({k: cfg[k] for k in keys})
+    cfg.clear()
+    cfg.update(fresh)
+
+
 def _save_chain(cfg: dict, owner: str | None, levels: list | None) -> None:
     """Store a chain as the shared order (owner None) or a library's; None
     clears a library's so it follows the shared order again."""
@@ -160,7 +169,7 @@ def _save_chain(cfg: dict, owner: str | None, levels: list | None) -> None:
         else:
             libs.pop(owner, None)
         cfg["library_sort_levels"] = libs
-    save_config(cfg)
+    _commit(cfg, "sort_levels" if owner is None else "library_sort_levels")
 
 
 def _pick_chain(cfg: dict, owner: str | None, header, *, allow_shared: bool = False) -> bool:
@@ -772,7 +781,7 @@ def _handle_tag_name_preferences() -> None:
     changed = sum(1 for k, v in new_prefs.items() if prefs.get(k) != v) + \
               sum(1 for k in prefs if k not in new_prefs)
     config['tag_name_preferences'] = new_prefs
-    save_config(config)
+    _commit(config, 'tag_name_preferences')
     ui_utils.show_status(f"Tag name preferences saved ({changed} changed).")
 
 
@@ -831,7 +840,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
                 ui_utils.show_status("Already in the list.")
                 continue
             set_music_dirs(config, dirs + [full])
-            save_config(config)
+            _commit(config, "music_directories", "music_directory")
             n = _rescan_library(config, library_ref)
             ui_utils.show_status(f"Added — {n} tracks.")
             continue
@@ -862,7 +871,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
                     else:
                         names.pop(choice, None)          # blank → back to the folder name
                     config["library_names"] = names
-                    save_config(config)
+                    _commit(config, "library_names")
                 continue
             if act == "sort":
                 _pick_chain(config, choice, _menu_header(name, choice), allow_shared=True)
@@ -875,7 +884,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
             if len(dirs) > 1 and not prompt.confirm(f"Remove {os.path.basename(choice) or choice}?"):
                 continue
             set_music_dirs(config, [d for d in dirs if d != choice])
-            save_config(config)
+            _commit(config, "music_directories", "music_directory")
             n = _rescan_library(config, library_ref)
             ui_utils.show_status(f"Removed — {n} tracks.")
 
@@ -918,10 +927,15 @@ def _space_toggles(values) -> dict:
 
 def handle_settings(library_ref: list) -> None:
     """Run the interactive settings menu loop, applying and persisting each toggled option."""
-    config = load_config()
+    import copy
     _cursor = 0
 
     while True:
+        # A fresh copy each time round, and only what this action changed is
+        # saved (update_config) — never the whole dict back over newer changes.
+        config = load_config()
+        _before = copy.deepcopy(config)
+
         def _bool(key: str, default: bool) -> str:
             """Right-column glyph for an on/off setting."""
             return _state_glyph(config.get(key, default))
@@ -1075,7 +1089,8 @@ def handle_settings(library_ref: list) -> None:
             # Both states need a re-scan before the library reflects the change.
             _toggled("ignore_hidden_files", False, " — re-scan to apply.")
 
-        save_config(config)
+        if changed_keys(_before, config):
+            update_config(changed_keys(_before, config))
 
 
 def play_queue(paths: list, mode: str = "linear", library: list | None = None) -> str | None:
@@ -1425,7 +1440,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                 else:
                     _new = _pick_sort(_group_sort, _GROUP_SORTS, _header)
                     _cfg["group_sorts"] = {**(_cfg.get("group_sorts") or {}), cat: _new}
-                    save_config(_cfg)
+                    _commit(_cfg, "group_sorts")
                 continue
 
             if selection in _PLAY_ACTIONS:
@@ -1780,7 +1795,7 @@ def _edit_browse_menu(config: dict) -> None:
             return False
         shown[i], shown[j] = shown[j], shown[i]
         config["browse_menu"] = shown
-        save_config(config)
+        _commit(config, "browse_menu")
         return True
 
     while True:
@@ -1803,7 +1818,7 @@ def _edit_browse_menu(config: dict) -> None:
             return
         if sel == "__reset__":
             config["browse_menu"] = list(DEFAULT_BROWSE_MENU)
-            save_config(config)
+            _commit(config, "browse_menu")
             continue
         key = sel[1] if isinstance(sel, tuple) else sel
         shown = browse_menu_keys(config)             # J/K may have reordered it
@@ -1814,7 +1829,7 @@ def _edit_browse_menu(config: dict) -> None:
         else:
             ui_utils.show_status("Browse needs at least one category.")
         config["browse_menu"] = shown
-        save_config(config)
+        _commit(config, "browse_menu")
         follow = key
 
 

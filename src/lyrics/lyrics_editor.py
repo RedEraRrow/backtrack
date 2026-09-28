@@ -42,6 +42,8 @@ from src.utils.prompt import (
 )
 from src.utils.prompt_core import add_hint_click_cells_auto, _visible_rows, now_playing_click_action
 from src.utils import prompt as _promptmod
+from src.utils.files import write_text_atomic, backup_copy
+from src.utils.log import log
 
 _vlc = None
 try:
@@ -520,7 +522,9 @@ def _load(mp3_path: str) -> tuple[list, str, dict] | None:
                     seg['kind']     = 'stage_dir'
                     seg['_md_text'] = _m.group(1)  # stable reconciliation key
                 segs.append(seg)
-            return segs, SOURCE_SYLT, {'mp3': mp3_path}
+            # The frame edited: saving replaces just this one, so other SYLT
+            # frames (other languages / descriptions) survive.
+            return segs, SOURCE_SYLT, {'mp3': mp3_path, 'desc': sylt[0].desc, 'lang': sylt[0].lang}
 
         uslt = audio.getall('USLT')
         if uslt:
@@ -1806,6 +1810,19 @@ def lyrics_editor(mp3_path: str) -> None:
         _sync_seg_bounds(si)
         dirty = True; undo_stack.append(('word', si, wi, delta))
 
+    def _may_quit() -> bool:
+        """True to leave the editor: straight away with nothing unsaved,
+        otherwise only if the user agrees to lose the changes."""
+        if not dirty:
+            return True
+        _restore_term_attrs(fd, old)
+        sys.stdout.write("\033[?1000l\033[?1006l")
+        _ans = _prompt_text("You have unsaved changes (s saves). Quit without saving? (y/N)")
+        _set_raw(fd)
+        sys.stdout.write("\033[?1000h\033[?1006h")
+        w.anchor_reset()
+        return (_ans or "").strip().lower().startswith("y")
+
     def do_undo() -> None:
         """Pop and reverse the most recent undo-stack entry, restoring segs/cursor/mode as needed."""
         nonlocal dirty, cursor, mode
@@ -1841,7 +1858,10 @@ def lyrics_editor(mp3_path: str) -> None:
             cursor = idx
         elif op[0] == 'snapshot':
             segs[:] = op[1]
-        dirty = bool(undo_stack)
+        # Still unsaved: some edits (labels, dead air, fill gaps, credits) push
+        # no undo entry, so an empty undo stack doesn't mean nothing changed.
+        # Only a save clears this.
+        dirty = True
         # segs may have changed structurally — keep the overlay in sync so
         # nothing is left pointing at stale indices.
         if op[0] in ('split', 'join', 'delete', 'snapshot'):
@@ -1857,8 +1877,7 @@ def lyrics_editor(mp3_path: str) -> None:
             _ensure_ids(segs, aux['meta'])
             sdata = {'version': 1, 'source_json': os.path.basename(aux['jpath']),
                      'meta': aux['meta'], 'segments': segs}
-            with open(aux['sidecar'], 'w', encoding='utf-8') as f:
-                json.dump(sdata, f, indent=2, ensure_ascii=False)
+            write_text_atomic(aux['sidecar'], json.dumps(sdata, indent=2, ensure_ascii=False))
             ui_utils.show_status(
                 f"Saved to {os.path.basename(aux['sidecar'])} — press W to write transcript.json")
             dirty = False; undo_stack.clear()
@@ -1881,7 +1900,7 @@ def lyrics_editor(mp3_path: str) -> None:
                     _txt = f"*({_txt})*" if _txt else ""
                     if not _txt: continue
                 entries.append((_txt, max(0, int((s['start'] or 0) * 1000))))
-            save_sylt_entries(aux['mp3'], entries)
+            save_sylt_entries(aux['mp3'], entries, desc=aux.get('desc', ''), lang=aux.get('lang', 'eng'))
         changed: set[int] = set()
         for op in undo_stack:
             if   op[0] == 'seg':      changed.update(op[1])
@@ -1893,7 +1912,7 @@ def lyrics_editor(mp3_path: str) -> None:
         ui_utils.show_status(f"Saved — {len(changed)} line{'s' if len(changed) != 1 else ''} changed.")
         dirty = False; undo_stack.clear()
 
-    def do_commit() -> None:
+    def do_commit() -> bool:
         """Write timings back to transcript.json (+ .srt) in the ORIGINAL Whisper
         schema: spoken segments only.  The editor's stage-direction / dead-air
         beats and all bookkeeping fields (ids, alignment, kind) are dropped — they
@@ -1903,8 +1922,13 @@ def lyrics_editor(mp3_path: str) -> None:
         try:
             with open(jpath, encoding='utf-8') as f:
                 container = json.load(f)
-        except (OSError, json.JSONDecodeError):
+        except OSError:
             container = {}
+        except json.JSONDecodeError:
+            # Writing {} + segments would drop every other key it holds.
+            ui_utils.show_status(f"{os.path.basename(jpath)} can't be read as JSON; not overwritten.",
+                                 duration=5.0)
+            return False
         spoken = [s for s in segs if s.get('kind') not in ('stage_dir', 'dead_air', 'credit')]
         container['segments']      = [_clean_seg(s) for s in spoken]
         container['word_segments'] = [
@@ -1912,10 +1936,12 @@ def lyrics_editor(mp3_path: str) -> None:
              'end': w.get('end'), 'score': w.get('score')}
             for seg in spoken for w in seg.get('words', [])
         ]
-        with open(jpath, 'w', encoding='utf-8') as f:
-            json.dump(container, f, indent=2, ensure_ascii=False)
-        with open(jpath[:-5] + '.srt', 'w', encoding='utf-8') as f:
-            f.write(_rebuild_srt(segs))
+        # The originals are kept as .bak (the last commit's), and each file is
+        # written whole or not at all.
+        backup_copy(jpath)
+        backup_copy(jpath[:-5] + '.srt')
+        write_text_atomic(jpath, json.dumps(container, indent=2, ensure_ascii=False))
+        write_text_atomic(jpath[:-5] + '.srt', _rebuild_srt(segs))
         aux['meta']['source_fp'] = _file_fp(jpath)   # we now match the original
         # Also write an enriched sidecar (.sync.json) that preserves the
         # editor's stage-direction / dead-air beats so the player and editor
@@ -1924,10 +1950,11 @@ def lyrics_editor(mp3_path: str) -> None:
             _ensure_ids(segs, aux['meta'])
             sdata = {'version': 1, 'source_json': os.path.basename(jpath),
                      'meta': aux['meta'], 'segments': segs}
-            with open(jpath[:-5] + '.sync.json', 'w', encoding='utf-8') as f:
-                json.dump(sdata, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+            write_text_atomic(jpath[:-5] + '.sync.json', json.dumps(sdata, indent=2, ensure_ascii=False))
+        except Exception as exc:
+            log.warning("couldn't write %s.sync.json: %s", jpath[:-5], exc)
+            ui_utils.show_status(f"Committed, but the .sync.json couldn't be written: {exc}", duration=5.0)
+        return True
 
     def _pager(body: list, title: str) -> None:
         """Minimal scrollable full-screen viewer.  `body` lines are already
@@ -2419,6 +2446,7 @@ def lyrics_editor(mp3_path: str) -> None:
 
             if mode == TAP:
                 if key in ('q', 'CTRL_C'):
+                    if not _may_quit(): continue
                     do_stop(); break
                 elif key == 's':
                     do_save()
@@ -2458,6 +2486,7 @@ def lyrics_editor(mp3_path: str) -> None:
                 if aud_editing:
                     # inline timestamp editor at the bottom of the audition view
                     if key in ('q', 'CTRL_C'):
+                        if not _may_quit(): continue
                         aud_editing = False; do_stop(); break
                     elif key == 'ESC':
                         aud_editing = False                 # cancel, keep listening
@@ -2468,6 +2497,7 @@ def lyrics_editor(mp3_path: str) -> None:
                         _edit_field_key(key)
                     continue
                 if key in ('q', 'CTRL_C'):
+                    if not _may_quit(): continue
                     do_stop(); break
                 elif key == 'ESC':
                     mode = SEG; do_stop(); aud_now = None
@@ -2508,6 +2538,7 @@ def lyrics_editor(mp3_path: str) -> None:
             n_i   = len(items)
 
             if key in ('q', 'CTRL_C'):
+                if not _may_quit(): continue
                 if playing: do_stop()
                 break
             elif key == '?' and mode == SEG:
@@ -2523,12 +2554,11 @@ def lyrics_editor(mp3_path: str) -> None:
                 _set_raw(fd)
                 sys.stdout.write("\033[?1000h\033[?1006h")
                 w.anchor_reset()
-                if (_ans or "").strip().lower().startswith("y"):
-                    do_commit()    # writes transcript.json + refreshes fingerprint
-                    do_save()      # persist the refreshed fingerprint into the sidecar
-                    ui_utils.show_status(f"Written to {os.path.basename(aux['jpath'])} + .srt.")
-                else:
+                if not (_ans or "").strip().lower().startswith("y"):
                     ui_utils.show_status("Commit cancelled — working file untouched.")
+                elif do_commit():  # writes transcript.json + refreshes fingerprint;
+                    do_save()      # False (with its reason shown) if it couldn't
+                    ui_utils.show_status(f"Written to {os.path.basename(aux['jpath'])} + .srt.")
             elif key == 'V' and source == SOURCE_TRANSCRIPT:
                 do_verify()
             elif key == 'S' and mode == SEG and source == SOURCE_TRANSCRIPT:

@@ -267,7 +267,13 @@ def save_id3(audio: ID3, path: str | None = None) -> None:
 
     ID3v2.3 collapses multi-value text into one '/'-joined string (corrupting
     values that contain '/'), so files carrying any multi-value frame are saved
-    as v2.4. Single-value files stay v2.3 for maximum player compatibility."""
+    as v2.4. Single-value files stay v2.3 for maximum player compatibility.
+
+    Refuses any file that isn't an MP3: an ID3 header written onto an MP4 (a
+    fresh ID3() falls back to prepending one) corrupts the container."""
+    target = path or getattr(audio, 'filename', None)
+    if target and not str(target).lower().endswith('.mp3'):
+        raise ValueError(f"ID3 tags can only be written to MP3 files, not {os.path.basename(str(target))}")
     ver = 4 if _has_multivalue(audio) else 3
     if path is None:
         audio.save(v2_version=ver)
@@ -429,6 +435,12 @@ def create_apic_frame(data: bytes, mime: str = '', pic_type: int = 3, desc: str 
         return None
 
 
+def rename_would_replace(audio_obj: ID3, new_id: str) -> bool:
+    """Whether the file already has a frame with id `new_id` — adding the
+    renamed frame would replace it, so a rename onto it is refused."""
+    return bool(audio_obj.getall(new_id)) or new_id in audio_obj
+
+
 def rename_frame(audio_obj: ID3, old_frame, new_id: str) -> bool:
     """Rename a frame while preserving type and value.
 
@@ -440,6 +452,8 @@ def rename_frame(audio_obj: ID3, old_frame, new_id: str) -> bool:
     old_id = getattr(old_frame, 'HashKey', None) or getattr(old_frame, 'FrameID', None)
     if not old_id:
         return False
+    if rename_would_replace(audio_obj, new_id):
+        return False                  # never silently overwrite a frame already there
 
     old_info = get_tag_info(old_id)
     new_info = get_tag_info(new_id)
@@ -1110,10 +1124,10 @@ def apply_bulk_edit(
         if operation == 'set':
             if new_value is None:
                 return False
-            audio.delall(tag_id)
             new_frame = create_frame(tag_id, new_value)
             if not new_frame:
-                return False
+                return False              # an invalid value keeps the old frame
+            audio.delall(tag_id)
             audio.add(new_frame)
             return True
 

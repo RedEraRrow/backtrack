@@ -1014,15 +1014,23 @@ def import_lrc(audio_path: str, lrc_path: str) -> tuple[str, int]:
     text = "\n".join(t for t, _ in entries if t)
     if not text.strip():
         return '', 0
-    audio = ID3(audio_path)
-    audio.delall('USLT')
-    audio.add(USLT(encoding=3, lang='eng', desc='', text=text))
+    from mutagen.id3._util import ID3NoHeaderError
+    try:
+        audio = ID3(audio_path)
+    except ID3NoHeaderError:
+        audio = ID3()                       # an untagged MP3: start its tag
+    frame = USLT(encoding=3, lang='eng', desc='', text=text)
+    audio.delall(frame.HashKey)             # just this frame: other lyrics frames stay
+    audio.add(frame)
     save_id3(audio, audio_path)
     return 'USLT', len([t for t, _ in entries if t])
 
 
-def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]]) -> None:
-    """Write timestamped lyrics to the file's SYLT frame (replacing any existing)."""
+def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]],
+                      desc: str = '', lang: str = 'eng') -> None:
+    """Write timestamped lyrics to the file's SYLT frame for `desc`/`lang`,
+    replacing that one frame only — other SYLT frames (other languages or
+    descriptions) are kept."""
     from mutagen.id3 import ID3
     from mutagen.id3._frames import SYLT
     from mutagen.id3._util import ID3NoHeaderError
@@ -1032,8 +1040,9 @@ def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]]) -> No
             audio = ID3(file_path)
         except ID3NoHeaderError:
             audio = ID3()
-        audio.delall('SYLT')
-        audio.add(SYLT(encoding=3, lang='eng', format=2, type=1, text=sylt_entries))
+        frame = SYLT(encoding=3, lang=lang, desc=desc, format=2, type=1, text=sylt_entries)
+        audio.delall(frame.HashKey)
+        audio.add(frame)
         from src.id3.id3_tag_handler import save_id3
         save_id3(audio, file_path)   # v2.4 iff a multi-value frame is present
     except Exception as exc:
