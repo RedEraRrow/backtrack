@@ -12,11 +12,11 @@ from __future__ import annotations
 import os
 
 from src.cli import Arg, Cmd, Ctx, Flag
-from src.utils import output as out
-from src.utils import prompt_core as pc
-from src.utils import timefmt, ui_utils
+from backbone import output as out
+from backbone import prompt_core as pc
+from backbone import timefmt, ui as ui_utils
 from src.config import setting
-from src.utils.log import quietly
+from backbone.log import quietly
 
 
 # --- shared column specs ----------------------------------------------------

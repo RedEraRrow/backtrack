@@ -24,7 +24,7 @@ import time
 
 from src.config import CONFIG_DIR
 from src import tuning as tune
-from src.utils.log import quietly
+from backbone.log import quietly
 
 SESSIONS_DIR = CONFIG_DIR / "sessions"
 

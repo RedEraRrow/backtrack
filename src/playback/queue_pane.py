@@ -3,10 +3,10 @@ and the rows a click can play."""
 from __future__ import annotations
 import re
 from src.music_library import get_metadata, format_tag_values, live_library
-from src.utils import ui_utils
-from src.utils.prompt_core import Column, _table_widths
-from src.utils.ui_utils import Colors as C
-from src.utils.log import quietly
+from backbone import ui as ui_utils
+from backbone.prompt_core import Column, _table_widths
+from backbone.ui import Colors as C
+from backbone.log import quietly
 
 
 # Up-next context for the queue view: list of display titles + current index.

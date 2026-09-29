@@ -1,7 +1,7 @@
 """Top-level TUI menu hierarchy: browse, search, history, settings, and playback."""
 from __future__ import annotations
 
-from src.utils import prompt
+from backbone import prompt
 from src.menus.common import _idx_of, _menu_header
 from src.menus.browse import handle_browse
 from src.menus.history import handle_history

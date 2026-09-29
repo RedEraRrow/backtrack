@@ -1,8 +1,8 @@
 """Time formatting and the segmented start/end time fields (mm:ss.mmm) shared by
 the lyrics editor and the trim editor."""
 from __future__ import annotations
-from src.utils.ui_utils import Colors as C
-from src.utils import timefmt
+from backbone.ui import Colors as C
+from backbone import timefmt
 
 
 # Segmented timestamp editor (EDIT mode): start and end as MM:SS.mmm, each field

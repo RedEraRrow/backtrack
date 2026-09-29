@@ -10,10 +10,10 @@ from __future__ import annotations
 import os
 import sys
 
-from src.state import QuitToTerminal
+from backbone.nav import QuitToTerminal
 import time
 
-from src.utils import ui_utils
+from backbone import ui as ui_utils
 from src.art.album_art import get_art_from_mp3
 from src.lyrics import lyric_pane
 from src.lyrics.lyrics import (
@@ -32,13 +32,13 @@ from src.playback.playback_ui import (
 )
 from src.playback import playback_ui
 from src.playback.player_geom import geom
-from src.utils.log import log
+from backbone.log import log
 from src.music_library import drop_moved
-from src.utils import prompt_core as pc
+from backbone import prompt_core as pc
 from src.playback.session import (
     SESSION, is_client, has_other_windows,
 )
-from src.utils.terminal_input import (
+from backbone.terminal_input import (
     get_key_non_blocking,
     raw_mode,
 )

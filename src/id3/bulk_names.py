@@ -2,12 +2,12 @@
 from __future__ import annotations
 import os
 import re
-from src.utils import prompt
+from backbone import prompt
 from src.id3 import filename_parser as fp
 from src.id3 import tag_writer as tw
 from src.id3 import bulk_ops as bo
 from src.id3 import file_namer as fnm
-from src.utils import ui_utils
+from backbone import ui as ui_utils
 from src.id3.bulk_common import _RENAME_PICK_COLUMNS, _SKIP, _SORT_BASE, _num_pair, _plan_write, _show_tokens, _sort_value, _walk
 
 

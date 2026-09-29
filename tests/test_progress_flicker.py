@@ -8,7 +8,7 @@ import unittest
 from mutagen.id3 import ID3, TIT2
 
 from src.playback import playback_ui as ui
-from src.utils import ui_utils
+from backbone import ui as ui_utils
 
 
 def _quiet(fn, *a, **k):

@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from src import config
-from src.utils import ui_utils as u
+from backbone import ui as u
 
 
 class AccentTest(unittest.TestCase):
@@ -42,7 +42,7 @@ class AccentTest(unittest.TestCase):
 
 def _pick(keys, typed=None):
     """Drive Settings → Accent colour with scripted keys; returns the config."""
-    from src.utils.prompt import lists
+    from backbone.prompt import lists
     from src.menus import settings
 
     class W:

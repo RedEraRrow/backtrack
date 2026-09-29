@@ -1,9 +1,9 @@
 """What every menu screen shares: headers, list columns, the settings-row
 glyphs, the Browse categories, and small helpers for cursors and saving."""
 from __future__ import annotations
-from src.utils.ui_utils import Colors as C
-from src.utils import prompt
-from src.utils import ui_utils
+from backbone.ui import Colors as C
+from backbone import prompt
+from backbone import ui as ui_utils
 from src.music_library import derive_album_credit
 from src.config import load_config, update_config
 from src.config import setting

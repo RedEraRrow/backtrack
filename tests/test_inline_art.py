@@ -100,7 +100,7 @@ class InlineArtTest(unittest.TestCase):
         art._inline_art['path'] = None
 
     def test_full_screen_mode_turns_auto_wrap_off_and_back_on(self):
-        from src.utils import ui_utils
+        from backbone import ui as ui_utils
         buf = io.StringIO()
         with redirect_stdout(buf):
             ui_utils.enter_alt_screen()

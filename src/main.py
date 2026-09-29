@@ -3,7 +3,7 @@ import os
 import time
 
 from src.config import load_config, music_dirs, set_music_dirs, setting, update_config
-from src.utils.log import log, configure as log_setup, quietly
+from backbone.log import log, configure as log_setup, quietly
 from src.playback.session import SESSION
 from src.music_library import (
     build_library, load_library_cache, save_library_cache,
@@ -11,8 +11,8 @@ from src.music_library import (
 )
 from src.menus import main_menu
 from src.id3.tag_registry import TAG_REGISTRY
-from src.state import QuitToTerminal
-from src.utils import prompt, ui_utils
+from backbone.nav import QuitToTerminal
+from backbone import prompt, ui as ui_utils
 
 
 def _init_tag_preferences(config: dict) -> dict:
@@ -147,7 +147,7 @@ def _wire_keyboard() -> None:
     that lands on a neighbouring key ranks above one that needs an unrelated
     letter. Best-effort: unknown or unreadable settings leave it on QWERTY, and
     BACKTRACK_KEYBOARD overrides both (the only thing that works over SSH)."""
-    from src.utils import keyboard
+    from backbone import keyboard
     from src import search
     search.use_layout(keyboard.rows())
 
@@ -159,7 +159,7 @@ def _wire_playback() -> None:
     from src.playback import now_playing_box
     from src.playback.playback import open_player_view
 
-    ui_utils.set_now_playing_provider(now_playing_box.format_now_playing_bar)
+    ui_utils.set_footer_provider(now_playing_box.format_now_playing_bar)
 
     def _open_player() -> None:
         from src.playback import session as sess
@@ -190,7 +190,7 @@ def _wire_playback() -> None:
             a.next()
         elif action == 'prev':
             a.prev()
-        ui_utils.pulse_now_playing()
+        ui_utils.pulse_footer()
 
     prompt.set_transport_handler(_transport)
 

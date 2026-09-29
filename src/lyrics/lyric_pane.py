@@ -27,9 +27,9 @@ import bisect
 from dataclasses import dataclass
 
 from src import tuning as tune
-from src.utils import prompt_core as _pc
-from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C
+from backbone import prompt_core as _pc
+from backbone import ui as ui_utils
+from backbone.ui import Colors as C
 
 LINE, DIRECTION, SILENCE = 'line', 'direction', 'silence'
 

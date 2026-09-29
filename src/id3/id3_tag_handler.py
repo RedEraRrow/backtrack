@@ -16,10 +16,10 @@ import mutagen.id3
 import os
 import re
 import time
-from src.utils import prompt, ui_utils
-from src.utils.prompt import chrome as prompt_chrome
+from backbone import prompt, ui as ui_utils
+from backbone.prompt import chrome as prompt_chrome
 from src.config import setting
-from src.utils.log import quietly
+from backbone.log import quietly
 
 
 

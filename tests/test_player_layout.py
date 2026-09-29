@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from src.playback import playback_ui as ui
 from src.playback import queue_pane as qp
-from src.utils import prompt_core as pc, ui_utils
+from backbone import prompt_core as pc, ui as ui_utils
 
 
 class QueueTest(unittest.TestCase):
@@ -100,7 +100,7 @@ class UniversalHintsTest(unittest.TestCase):
         self.assertIn("shuffle", ui_utils.strip_ansi(pc._hint(("x", "shuffle"))))
 
     def test_top_line_carries_a_clickable_corner_and_i_only_where_free(self):
-        from src.utils import prompt
+        from backbone import prompt
         with patch.object(ui_utils, 'get_terminal_width', lambda: 60):
             cells: dict = {}
             out = prompt.append_chrome(["  Artists"], [("x", "shuffle")], cells, pin=False, i_key=True)
@@ -121,7 +121,7 @@ class UniversalHintsTest(unittest.TestCase):
 
 class BoxedHeaderTest(unittest.TestCase):
     def test_toggle_sits_inside_the_box_and_the_corners_survive(self):
-        from src.utils import prompt
+        from backbone import prompt
         for width in (60, 100):
             with patch.object(ui_utils, 'get_terminal_width', lambda w=width: w):
                 cells: dict = {}

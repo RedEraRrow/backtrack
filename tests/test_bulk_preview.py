@@ -18,7 +18,7 @@ class PreviewAndApplyTest(unittest.TestCase):
             self.shown = choices
             return ticked
         with patch.object(bulk_common.prompt, 'select', select), \
-             patch('src.utils.ui_utils.show_status', lambda m, **k: status.append(m)), \
+             patch('backbone.ui.show_status', lambda m, **k: status.append(m)), \
              patch.object(bo, 'refresh_library_entry', lambda *a: None):
             bulk_common.preview_and_apply(
                 plan, [], lambda sub: (lambda: [sub]), lambda c: written.append(c.path),

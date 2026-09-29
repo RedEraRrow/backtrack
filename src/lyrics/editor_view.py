@@ -2,16 +2,16 @@
 audition strip and the inline editors are drawn. Rendering only, with no input
 and no state of its own (it also holds the optional vlc import the editor uses)."""
 from __future__ import annotations
-from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C
-from src.utils.prompt_core import _cols
-from src.utils.prompt_core import _visible_rows
-from src.utils import prompt as _promptmod
+from backbone import ui as ui_utils
+from backbone.ui import Colors as C
+from backbone.prompt_core import _cols
+from backbone.prompt_core import _visible_rows
+from backbone import prompt as _promptmod
 from src.lyrics.lyrics import _apply_markdown_formatting
 from src.lyrics.md_overlay import _sd_scope, _is_framed
 from src.lyrics.time_fields import _render_edit_fields
 from src.lyrics.sync_doc import SOURCE_TRANSCRIPT
-from src.utils import timefmt
+from backbone import timefmt
 
 
 # Audio is optional: without python-vlc the editor still edits, it just can't play.
@@ -105,7 +105,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     # Refresh the now-playing box height, then budget the body with the same
     # helper the list menus use (it reserves the status bar, the now-playing box
     # and the vertical margins), so the editor never paints under the player.
-    ui_utils.now_playing_lines(ui_utils.get_terminal_width())
+    ui_utils.footer_lines(ui_utils.get_terminal_width())
     avail = _visible_rows()
     n    = len(segs)
     vp   = viewport

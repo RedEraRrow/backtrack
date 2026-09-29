@@ -2,8 +2,8 @@
 menu screen: transport glyphs, the track, and the clock over a progress border."""
 from __future__ import annotations
 from src.music_library import format_tag_values
-from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C
+from backbone import ui as ui_utils
+from backbone.ui import Colors as C
 
 
 def _clip_ansi_to_width(text: str, max_cols: int) -> str:
@@ -70,20 +70,20 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     from src.playback.session import current_now_playing
     np = current_now_playing()
     if np is None:
-        ui_utils.set_now_playing_signature(None)
-        ui_utils.set_now_playing_unboxed(False)
+        ui_utils.set_footer_signature(None)
+        ui_utils.set_footer_unboxed(False)
         return None
     # When the full player view is open in ANY window of the session, the player
     # itself is the now-playing display, so hide the ambient bar everywhere else so
     # it doesn't double up (#14). view_holder is the token of whichever window
     # holds the view (broadcast to joined windows), or None when no view is open.
     if np.get('view_holder'):
-        ui_utils.set_now_playing_signature(None)
-        ui_utils.set_now_playing_unboxed(False)
+        ui_utils.set_footer_signature(None)
+        ui_utils.set_footer_unboxed(False)
         return None
     # Identity of this track for the idle-tick redraw: a change here forces the
     # now-playing box to repaint even if the styled rows happen to match (#14).
-    ui_utils.set_now_playing_signature((
+    ui_utils.set_footer_signature((
         np.get('file_path'), np.get('generation'), np.get('paused'),
         np.get('index'), np.get('count'), np.get('view_holder'),
     ))
@@ -97,7 +97,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     # terminal draws them from a fallback whose advance width this process
     # cannot know, and over-estimating is the direction that fails safely.
     pp_icon = '⏵' if np['paused'] else '⏸'
-    icon = f"{pp_icon}  ⏭  "                  # the glyphs at ui_utils.NP_GLYPH_COLS
+    icon = f"{pp_icon}  ⏭  "                  # the glyphs at ui_utils.FOOTER_GLYPH_COLS
     # Just the elapsed/total time; volume + queue position live elsewhere (the
     # player view, and the queue pane inside it).
     # The player's own formatter (int: whole seconds), so an hour-long track
@@ -115,10 +115,10 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     if inner < ui_utils.visual_len(icon) + _MIN_TITLE + 2 + len(right):
         # No box: the hint bar advertises the transport keys instead, so they
         # are never both unadvertised and live.
-        ui_utils.set_now_playing_unboxed(True)
+        ui_utils.set_footer_unboxed(True)
         return None
 
-    ui_utils.set_now_playing_unboxed(False)
+    ui_utils.set_footer_unboxed(False)
 
     left_segs: list = [(icon, C.BOLD), (np['title'] or '?', C.BOLD)]
     if np['artist']:

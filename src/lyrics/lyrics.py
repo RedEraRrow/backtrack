@@ -6,8 +6,8 @@ import re
 import textwrap
 from pathlib import Path
 
-from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C
+from backbone import ui as ui_utils
+from backbone.ui import Colors as C
 # The MD script is overlaid onto the timed transcript by the same alignment the
 # lyrics editor uses, so the player renders the same speakers / directions / text.
 from src.lyrics.md_overlay import build_md_overlay, _reading_time

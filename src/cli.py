@@ -23,9 +23,9 @@ import sys
 from dataclasses import dataclass, field
 from typing import Callable
 
-from src.utils import output as out
+from backbone import output as out
 from src.config import setting
-from src.utils.log import quietly
+from backbone.log import quietly
 
 
 @dataclass
@@ -176,7 +176,7 @@ class Ctx:
             return True
         if not sys.stdin.isatty() or not out.is_tty():
             return default
-        from src.utils import prompt
+        from backbone import prompt
         return bool(prompt.confirm(question, default=default))
 
     def dry_run(self) -> bool:
@@ -476,7 +476,7 @@ def main(argv: list) -> int:
                   colour=False if args.no_colour else None)
 
     ctx = Ctx(args)
-    from src.utils import ui_utils
+    from backbone import ui as ui_utils
     ui_utils.set_accent(ctx.config.get('accent_colour'))
     _resolve_defaults(args, getattr(args, '_cmd', None), ctx.config
                       if getattr(args, '_cmd', None) else {})

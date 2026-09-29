@@ -5,18 +5,18 @@ whose state and actions these read and call."""
 from __future__ import annotations
 import sys, os, time
 from src.music_library import format_value_list
-from src.utils import ui_utils
-from src.utils.prompt_core import _set_raw, _restore_term_attrs
-from src.utils.prompt import text as _prompt_text
-from src.utils.prompt_core import now_playing_click_action
-from src.utils import prompt as _promptmod
-from src.utils.prompt import chrome as _prompt_chrome
+from backbone import ui as ui_utils
+from backbone.prompt_core import _set_raw, _restore_term_attrs
+from backbone.prompt import text as _prompt_text
+from backbone.prompt_core import footer_click_action
+from backbone import prompt as _promptmod
+from backbone.prompt import chrome as _prompt_chrome
 from src.lyrics.md_overlay import _SD_SCOPES, _sd_scope, build_md_overlay as _build_md_overlay
 from src.lyrics.time_fields import _EDIT_END, _EDIT_START, _ts_parts
 from src.lyrics.sync_doc import SOURCE_TRANSCRIPT, _make_stage_dir
 from src.lyrics.verify import _make_dead_air
 from src.lyrics.editor_view import AUDITION, EDIT, SEG, TAP, WORD, _AUD_COARSE, _AUD_STEP, _HAS_VLC
-from src.state import QuitToTerminal
+from backbone.nav import QuitToTerminal
 from src import tuning as tune
 
 def _np_transport(action: str) -> None:
@@ -27,7 +27,7 @@ def _np_transport(action: str) -> None:
     if   action == 'playpause': a.pause_toggle()
     elif action == 'next':      a.next()
     elif action == 'prev':      a.prev()
-    ui_utils.pulse_now_playing()
+    ui_utils.pulse_footer()
 
 
 _QUIT = object()     # a key handler's "leave the editor" (Esc; q quits the app)
@@ -73,7 +73,7 @@ class _KeyHandlers:
                 _mp = key.split(':')
                 _mr = int(_mp[2]) if len(_mp) > 2 else 0
                 _mc = int(_mp[3]) if len(_mp) > 3 else 1
-                _act = now_playing_click_action(_mr, _mc)
+                _act = footer_click_action(_mr, _mc)
                 if _act in ('playpause', 'next', 'prev'):
                     _np_transport(_act); return
                 if _act == 'open':

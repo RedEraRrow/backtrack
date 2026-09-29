@@ -36,14 +36,14 @@ from __future__ import annotations
 import sys, os, json, time
 
 from src.music_library import drop_moved, track_title
-from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C
-from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs, _cols
-from src.utils.prompt import text as _prompt_text
-from src.utils.prompt_core import add_hint_click_cells_auto, _visible_rows
-from src.utils import prompt as _promptmod
-from src.utils.files import write_text_atomic, backup_copy
-from src.utils.log import log, quietly
+from backbone import ui as ui_utils
+from backbone.ui import Colors as C
+from backbone.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs, _cols
+from backbone.prompt import text as _prompt_text
+from backbone.prompt_core import add_hint_click_cells_auto, _visible_rows
+from backbone import prompt as _promptmod
+from backbone.files import write_text_atomic, backup_copy
+from backbone.log import log, quietly
 
 # The MD↔JSON alignment is shared with the playback lyric display so the two
 # always agree on speakers, stage directions and line text (see md_overlay).
@@ -484,7 +484,7 @@ class _Session(_KeyHandlers):
                    _promptmod.chrome_hint_lines(
                        [('↑↓/j/k', 'scroll'), ('PgUp/PgDn', 'page'),
                         ('Home/End', 'ends'), ('q', 'back')])
-            ui_utils.now_playing_lines(ui_utils.get_terminal_width())
+            ui_utils.footer_lines(ui_utils.get_terminal_width())
             cols = _cols()
             avail = _visible_rows()
             vis = max(3, avail - len(foot) - 2)

@@ -1,9 +1,9 @@
 """The Settings screen and the editors it opens: music directories, tag name preferences, the Browse menu, rescans."""
 from __future__ import annotations
 import os
-from src.utils import prompt
-from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C
+from backbone import prompt
+from backbone import ui as ui_utils
+from backbone.ui import Colors as C
 from src.music_library import (
     build_library, save_library_cache, start_background_sync, sort_options,
 )
@@ -333,7 +333,7 @@ def handle_settings(library_ref: list) -> None:
                                      else "Could not clear history.")
 
         elif choice == "debug":
-            from src.utils.log import configure, log_path
+            from backbone.log import configure, log_path
             _toggled("debug", f", writing to {log_path()}" if not config.get("debug") else "")
             configure(bool(config.get("debug")))
 

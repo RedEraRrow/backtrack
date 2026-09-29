@@ -1,9 +1,9 @@
 """The activity centre."""
 from __future__ import annotations
-from src.utils.ui_utils import Colors as C
-from src.utils import prompt
-from src.utils import prompt_core
-from src.utils import ui_utils
+from backbone.ui import Colors as C
+from backbone import prompt
+from backbone import prompt_core
+from backbone import ui as ui_utils
 
 
 def activity_centre() -> None:
@@ -13,7 +13,7 @@ def activity_centre() -> None:
     shows a placeholder when nothing is running."""
     import sys
     import time
-    from src.utils.terminal_input import raw_mode, get_key_non_blocking
+    from backbone.terminal_input import raw_mode, get_key_non_blocking
 
     _hint_pairs = [("esc/b", "back")]
     hint_cells: dict = {}

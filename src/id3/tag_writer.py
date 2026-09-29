@@ -16,7 +16,7 @@ import mutagen.id3 as _mid3
 from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TSST, TDRC, TCMP  # type: ignore[reportPrivateImportUsage]  # noqa: E501
 from mutagen.mp4 import MP4, MP4Cover  # type: ignore[reportPrivateImportUsage]
 from src.id3 import tag_registry as _reg
-from src.utils.log import quietly
+from backbone.log import quietly
 from src.music_library import first_text
 
 # The fields this writer understands (track/disc carry their totals). The

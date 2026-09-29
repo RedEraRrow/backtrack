@@ -13,7 +13,7 @@ import mutagen
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from src.config import setting
-from src.utils.log import quietly
+from backbone.log import quietly
 from src import tuning as tune
 
 
@@ -198,8 +198,8 @@ def drop_moved(paths: list) -> list:
     missing = [p for p in paths if p not in kept]
 
     from src.config import load_config, music_dirs as _music_dirs
-    from src.utils import ui_utils
-    from src.utils.log import log
+    from backbone import ui as ui_utils
+    from backbone.log import log
     cfg = load_config()
     roots = _music_dirs(cfg)
     gone_roots = sorted({r for p in missing if (r := library_of(p, roots)) and not os.path.isdir(r)})
@@ -227,7 +227,7 @@ def drop_moved(paths: list) -> list:
 def _sync_worker(library: list) -> None:
     """Worker thread for background library synchronization."""
     global _cache_mtime
-    from src.utils import ui_utils
+    from backbone import ui as ui_utils
 
     while True:
         library = _sync_state.get("library") or library
@@ -643,7 +643,7 @@ def save_library_cache(library: list, _async: bool = False) -> None:
         except (OSError, TypeError, ValueError) as e:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            from src.utils.ui_utils import show_status as _show
+            from backbone.ui import show_status as _show
             _show(f"Cache save error: {e}", duration=tune.STATUS_WARNING_S)
 
     if _async:

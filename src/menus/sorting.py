@@ -1,8 +1,8 @@
 """Sorting in the menus: the artist/genre name orders, the shared sort chain's
 presets, the s picker, and the level editor."""
 from __future__ import annotations
-from src.utils import prompt
-from src.utils import ui_utils
+from backbone import prompt
+from backbone import ui as ui_utils
 from src.music_library import (
     get_group_sort_key, sort_options, valid_levels, SORT_FIELDS, DEFAULT_SORT_LEVELS,
 )

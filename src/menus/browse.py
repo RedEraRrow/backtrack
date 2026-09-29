@@ -1,16 +1,16 @@
 """Browse: the category menu, each category's list, and the libraries view."""
 from __future__ import annotations
 import string
-from src.utils.numbering import roman
-from src.utils import prompt
-from src.utils import ui_utils
+from backbone.numbering import roman
+from backbone import prompt
+from backbone import ui as ui_utils
 from src.music_library import (
     get_grouped_data, get_group_sort_key, format_tag_values, to_num, sort_tracks, sort_albums,
     resolve_levels, library_of,
 )
 from src.playback.playback import music_player
 from src.config import load_config, music_dirs, library_name
-from src.state import NAV_STACK
+from backbone.nav import NAV_STACK
 from src.id3.id3_browser import inspect_tag_loop
 from src.id3.bulk_id3_manager import bulk_id3_manager
 from src.menus.common import BROWSE_CATEGORIES, _ALBUM_COLUMNS, _TRACK_COLUMNS, _album_artist_of, _commit, _idx_of, _menu_header, browse_menu_keys

@@ -4,14 +4,14 @@ from __future__ import annotations
 import os
 import mutagen.id3
 from mutagen.id3 import ID3
-from src.utils import prompt
+from backbone import prompt
 from src.id3.id3_tag_handler import get_tag_info, create_frame, load_id3, save_id3
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import tag_writer as tw
 from src.id3 import bulk_ops as bo
 from src import bulk_pattern as bp
-from src.utils import ui_utils
-from src.utils.log import log, quietly
+from backbone import ui as ui_utils
+from backbone.log import log, quietly
 from src import tuning as tune
 from src.music_library import refresh_library_entry, first_text
 from src.id3.bulk_common import _RENUMBER_COLUMNS, _walk

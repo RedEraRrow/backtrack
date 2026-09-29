@@ -1,7 +1,7 @@
 """Search from the menus: the query screen, the grouped results, and playing an entity from them."""
 from __future__ import annotations
-from src.utils import prompt
-from src.utils import ui_utils
+from backbone import prompt
+from backbone import ui as ui_utils
 from src.music_library import format_tag_values
 from src.history import get_recent_paths
 from src import search as _search

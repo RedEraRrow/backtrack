@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from src import config, music_library as ml
-from src.utils import ui_utils
+from backbone import ui as ui_utils
 
 
 class DropMovedTest(unittest.TestCase):

@@ -1,13 +1,13 @@
 """Bulk album art: setting the cover from nearby images, and the picture type."""
 from __future__ import annotations
 import os
-from src.utils import prompt
+from backbone import prompt
 from src.id3.id3_tag_handler import _prompt_for_picture_type, pick_nearby_cover, CLEAR_COVER
 from src.id3 import tag_writer as tw
 from src.id3 import bulk_ops as bo
 from src.id3 import file_namer as fnm
 from src.id3 import cover_matcher as cm
-from src.utils import ui_utils
+from backbone import ui as ui_utils
 from collections import Counter
 from src.id3.bulk_common import _RENAME_PICK_COLUMNS, _SKIP, _show_tokens, _walk
 from src.id3.bulk_common import preview_and_apply

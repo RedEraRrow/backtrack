@@ -95,6 +95,10 @@ def _default_config_dir() -> Path:
 CONFIG_DIR = Path(os.getenv("BACKTRACK_CONFIG_DIR") or _default_config_dir())
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
+# backbone keeps the diagnostics log and the hints switch in this folder too.
+from backbone import app as _app  # noqa: E402
+_app.configure("backtrack", CONFIG_DIR)
+
 def load_config() -> dict:
     """Load the config file, creating it with defaults if missing, and filling
     in any keys added to DEFAULT_CONFIG since it was written."""
@@ -191,5 +195,5 @@ def changed_keys(before: dict, after: dict) -> dict:
 def save_config(config: dict) -> None:
     """Write the config dict to disk as JSON."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    from src.utils.files import write_text_atomic
+    from backbone.files import write_text_atomic
     write_text_atomic(CONFIG_FILE, json.dumps(config, indent=4))

@@ -13,7 +13,7 @@ from mutagen.id3 import ID3, SYLT
 
 import src.lyrics.editor_keys as keys_mod
 import src.lyrics.lyrics_editor as le
-from src.utils import ui_utils
+from backbone import ui as ui_utils
 
 
 def _word(w, s, e):
@@ -98,7 +98,7 @@ class LyricsEditorKeysTest(unittest.TestCase):
         self.assertIsNone(saved)                            # quit without saving
 
     def test_q_quits_the_app_and_esc_goes_back(self):
-        from src.state import QuitToTerminal
+        from backbone.nav import QuitToTerminal
         with self.assertRaises(QuitToTerminal):
             run_editor(['DOWN', 'q'])
         saved, _, _ = run_editor(['DOWN', 'LEFT', 'ESC', 'ESC'], answers=['y'])  # leave without saving

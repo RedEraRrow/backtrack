@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import re
 
-from src.utils import numbering
+from backbone import numbering
 
 from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[attr-defined]
 from mutagen.mp4 import MP4  # type: ignore[reportPrivateImportUsage]

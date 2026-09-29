@@ -4,7 +4,7 @@ import os
 import re
 import mutagen.id3
 from mutagen.id3 import ID3
-from src.utils import prompt
+from backbone import prompt
 from src.id3.id3_tag_handler import (
     prompt_for_value, get_tag_info, get_tag_category, display_tag_id, create_frame, save_id3,
     _prompt_for_image_metadata, _prompt_for_picture_type, pick_nearby_cover, picture_type_name,
@@ -17,8 +17,8 @@ from src.id3 import bulk_ops as bo
 from src.id3 import cover_matcher as cm
 from src import bulk_pattern as bp
 from src.music_library import format_value_list, drop_moved, refresh_library_entry
-from src.utils import ui_utils
-from src.utils.ui_utils import get_terminal_width
+from backbone import ui as ui_utils
+from backbone.ui import get_terminal_width
 from src.trim import trim as _trim
 from src.trim.trim_bulk import trim_conveyor, apply_replaygain_op
 
@@ -37,7 +37,7 @@ from src.id3.bulk_assign import (
     assign_by_pattern, bulk_fraction_editor, bulk_people_editor,
 )
 from src.id3.bulk_common import preview_and_apply
-from src.utils.log import quietly
+from backbone.log import quietly
 
 # Structured columns for the bulk tag picker. Column 1 holds the tag id AND the
 # friendly name as two styled segments (TAG bright + friendly dim) in one column.

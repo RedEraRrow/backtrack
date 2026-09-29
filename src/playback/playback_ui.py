@@ -5,15 +5,15 @@ import re
 import sys
 
 from src.music_library import format_value_list, track_title, first_text
-from src.utils import prompt_core as pc
-from src.utils import ui_utils
+from backbone import prompt_core as pc
+from backbone import ui as ui_utils
 from src.playback.player_geom import geom
-from src.utils import numbering
-from src.utils.prompt_core import _hint
-from src.utils.prompt_core import add_hint_click_cells
-from src.utils.ui_utils import Colors as C
+from backbone import numbering
+from backbone.prompt_core import _hint
+from backbone.prompt_core import add_hint_click_cells
+from backbone.ui import Colors as C
 from src import tuning as tune
-from src.utils.log import log
+from backbone.log import log
 from src.playback.queue_pane import (  # noqa: F401 (re-exported)
     _place_queue, _queue_click_rows, has_queue, queue_click_index, set_queue_context,
 )

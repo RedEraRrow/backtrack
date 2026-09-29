@@ -17,7 +17,7 @@ import mutagen.id3
 
 from src.history import log_listening_history
 from src.music_library import drop_moved, get_song_duration, track_title, first_text
-from src.utils.log import quietly
+from backbone.log import quietly
 
 # vlc.State attributes are dynamic; expose safe aliases.
 _VLC_STATE_PAUSED = getattr(vlc.State, 'Paused', None)
@@ -578,7 +578,7 @@ class PlaybackSession:
         t.start()
 
     def _tick_loop(self) -> None:
-        from src.utils import ui_utils
+        from backbone import ui as ui_utils
         while not self._tick_stop.is_set():
             with quietly():
                 # The attached view drives ticking itself (so it can reload lyric
@@ -588,7 +588,7 @@ class PlaybackSession:
                     self.tick()
                     # Keep any menu's now-playing box live (clock + auto-advance)
                     # without waiting for a keystroke there (#14).
-                    ui_utils.pulse_now_playing()
+                    ui_utils.pulse_footer()
             time.sleep(_TICK_INTERVAL_S)
 
     # -- snapshot for the now-playing bar / views ---------------------------
@@ -847,10 +847,10 @@ def client_link(socket_path: str, session_id: str):
     join uses: each mirrored snapshot repaints this window's now-playing box, and
     losing the host starts the hand-off election."""
     from src.playback import ipc
-    from src.utils import ui_utils
+    from backbone import ui as ui_utils
     return ipc.SessionClient(
         socket_path,
-        on_snapshot=lambda _snap: ui_utils.pulse_now_playing(),
+        on_snapshot=lambda _snap: ui_utils.pulse_footer(),
         on_disconnect=lambda: attempt_handoff(session_id, socket_path),
     )
 

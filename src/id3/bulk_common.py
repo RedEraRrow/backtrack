@@ -1,11 +1,11 @@
 """What the bulk operations share: the step walker, the sort helpers, and the
 column layouts and token list more than one of them shows."""
 from __future__ import annotations
-from src.utils import prompt
+from backbone import prompt
 from src.id3 import bulk_ops as bo
 from src.id3 import tag_registry as _reg
 from src.id3 import file_namer as fnm
-from src.utils import numbering
+from backbone import numbering
 
 
 # Sentinel: this step does not apply to the answers so far: step over it,
@@ -102,7 +102,7 @@ def preview_and_apply(plan, library: list, header, writer, verb: str, *, count: 
     ones ticked, live counts in the header, then the one-line summary. Only a
     row that changes can be ticked: the rest are listed greyed out, saying
     `unchanged(c)`, so the selection is visibly complete."""
-    from src.utils import ui_utils
+    from backbone import ui as ui_utils
     if not plan.changed:
         ui_utils.show_status("Nothing to change.")
         return

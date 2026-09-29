@@ -38,15 +38,15 @@ from mutagen.id3 import ID3
 from src.config import load_config
 from src.trim import trim
 from src.music_library import drop_moved, track_title, first_text
-from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C
-from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
-from src.utils.prompt import confirm as _confirm
-from src.utils import prompt as _promptmod
+from backbone import ui as ui_utils
+from backbone.ui import Colors as C
+from backbone.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
+from backbone.prompt import confirm as _confirm
+from backbone import prompt as _promptmod
 from src.lyrics.time_fields import edit_changed, _EDIT_END, edit_key, edit_seconds, _EDIT_START, new_edit, _render_edit_fields, _ts_parts
-from src.utils import timefmt
+from backbone import timefmt
 from src.config import setting
-from src.utils.log import quietly
+from backbone.log import quietly
 from src import tuning as tune
 
 # Same shape as AUDITION's nudge scheme (editor_view's _AUD_* steps): a coarse step
@@ -664,7 +664,7 @@ def _run_marking_screen(
                 continue
 
             if key in ('q', 'CTRL_C'):
-                from src.state import QuitToTerminal
+                from backbone.nav import QuitToTerminal
                 raise QuitToTerminal()
             if key == 'ESC':
                 do_stop()

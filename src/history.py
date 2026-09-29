@@ -4,7 +4,7 @@ import os
 import datetime
 from src.config import CONFIG_DIR
 from src.config import setting
-from src.utils.log import log
+from backbone.log import log
 
 HISTORY_FILE = CONFIG_DIR / 'history.log'
 

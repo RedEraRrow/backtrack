@@ -26,7 +26,7 @@ from src import bulk_pattern as bp
 from src.id3 import tag_writer as tw
 from src.id3.id3_tag_handler import apply_bulk_edit, load_id3, picture_type_name, save_id3
 from src.music_library import refresh_library_entry, first_text
-from src.utils.log import quietly
+from backbone.log import quietly
 
 
 @dataclass
@@ -166,7 +166,7 @@ def summarise(applied: Applied, verb: str, noun: str = "file",
     """The one-line report every operation ends with: "Renumbered 12 files.
     2 unsupported skipped. 1 error."
     """
-    from src.utils import ui_utils
+    from backbone import ui as ui_utils
     msg = f"{verb} {ui_utils.plural(applied.written, noun)}."
     if applied.kept:
         msg += f" {applied.kept} {kept_note}."

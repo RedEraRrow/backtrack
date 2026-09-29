@@ -4,9 +4,9 @@ average colour, then a quick preview, then full quality."""
 from __future__ import annotations
 import os
 import sys
-from src.utils import ui_utils
+from backbone import ui as ui_utils
 from src.playback.player_geom import geom
-from src.utils.log import log
+from backbone.log import log
 from src.art.album_art import get_art, get_art_bytes
 from src.config import setting
 

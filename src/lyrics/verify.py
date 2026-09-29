@@ -2,14 +2,14 @@
 candidates, the match-up report, and splitting a segment at word boundaries."""
 from __future__ import annotations
 import os
-from src.utils.ui_utils import Colors as C
+from backbone.ui import Colors as C
 from src.lyrics.lyrics_text import (align_tokens as _align_tokens,
                                     pair_tokens as _pair_tokens,
                                     ends_a_thought as _ends_a_thought)
 from src.lyrics.md_overlay import (
     _norm_words, _spoken_text, _inline_stage_dirs, line_speaker as _line_speaker,
 )
-from src.utils import timefmt
+from backbone import timefmt
 
 
 

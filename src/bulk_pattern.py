@@ -15,8 +15,8 @@ import datetime
 import os
 import re
 
-from src.utils import datetime_parse as dtp
-from src.utils import numbering
+from backbone import datetime_parse as dtp
+from backbone import numbering
 
 
 def _num(v) -> int:
@@ -161,7 +161,7 @@ def norm_time(t) -> str | None:
     """Normalise a 'HH:MM' / 'HH:MM:SS' time to 'HH:MM:SS', or None if invalid.
 
     Kept as the name the schedule code already calls; the rules live with every
-    other date/time reading in :mod:`src.utils.datetime_parse`.
+    other date/time reading in :mod:`backbone.datetime_parse`.
     """
     return dtp.parse_time(t)
 
@@ -196,7 +196,7 @@ def assign_dates(ordered: list, start_iso: str, interval_days: int,
 def parse_start(raw) -> tuple:
     """Parse a schedule's start cell into ``(date, time_or_None, error)``.
 
-    Reads whatever :func:`src.utils.datetime_parse.parse_datetime` accepts and
+    Reads whatever :func:`backbone.datetime_parse.parse_datetime` accepts and
     keeps any time given.  A schedule steps in whole days, so a year- or
     month-only start is rejected here rather than being completed to the 1st
     behind your back; that is this caller's rule, not the parser's.

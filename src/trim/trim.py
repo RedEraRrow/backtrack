@@ -23,7 +23,7 @@ from src.config import load_config, CONFIG_DIR
 from src.id3 import tag_writer as tw
 from src.id3.id3_tag_handler import save_id3
 from src.music_library import refresh_library_entry, first_text
-from src.utils.log import quietly
+from backbone.log import quietly
 
 _EPS = 1e-9
 
@@ -579,7 +579,7 @@ def _write_manifest(entries: list[dict]) -> None:
     path = _manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # The manifest indexes every backup: whole or not at all.
-    from src.utils.files import write_text_atomic
+    from backbone.files import write_text_atomic
     write_text_atomic(path, "".join(json.dumps(entry) + "\n" for entry in entries))
 
 

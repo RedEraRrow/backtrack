@@ -6,7 +6,7 @@ from src import tuning as tune
 from mutagen.id3 import ID3, ID3NoHeaderError
 from src.lyrics.lyrics import _find_timing_files_for_audio
 from src.lyrics.md_overlay import _SD_SCOPES
-from src.utils import timefmt
+from backbone import timefmt
 
 
 SOURCE_TRANSCRIPT = 'transcript'

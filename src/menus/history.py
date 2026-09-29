@@ -1,8 +1,8 @@
 """The listening history screen."""
 from __future__ import annotations
 import datetime
-from src.utils import prompt
-from src.utils import ui_utils
+from backbone import prompt
+from backbone import ui as ui_utils
 from src.music_library import format_tag_values, track_title
 from src.history import get_history
 from src.playback.playback import music_player

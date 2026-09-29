@@ -95,7 +95,7 @@ class ConfigSaveTest(_Tmp):
         self.assertFalse(fresh["sort_use_tags"])
 
     def test_a_crash_mid_write_leaves_the_old_file(self):
-        from src.utils.files import write_text_atomic
+        from backbone.files import write_text_atomic
         path = os.path.join(self.tmp, "x.json")
         write_text_atomic(path, "old")
         with patch("os.replace", side_effect=OSError("disk gone")):

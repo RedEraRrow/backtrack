@@ -10,7 +10,7 @@ import subprocess
 import numpy as np
 import cv2
 
-from src.utils import prompt
+from backbone import prompt
 from src.lyrics.lyrics_editor import lyrics_editor
 from src.lyrics.sync_doc import find_lyrics
 from src.lyrics import lyrics as _lyrics
@@ -20,9 +20,9 @@ from mutagen.id3 import ID3
 import mutagen.id3
 from mutagen.id3._frames import APIC
 
-from src.utils import ui_utils
-from src.utils.prompt_core import _visible_rows
-from src.utils.ui_utils import Colors as C, get_terminal_width
+from backbone import ui as ui_utils
+from backbone.prompt_core import _visible_rows
+from backbone.ui import Colors as C, get_terminal_width
 from src.art.album_art import render_album_art
 from src.music_library import drop_moved, refresh_library_entry, track_title, first_text
 
@@ -34,7 +34,7 @@ from src.id3.id3_tag_handler import (
 )
 from src.id3 import tag_registry as _reg
 from src.config import setting
-from src.utils.log import quietly
+from backbone.log import quietly
 from src import tuning as tune
 from src.id3.id3_tag_handler import picture_type_name
 

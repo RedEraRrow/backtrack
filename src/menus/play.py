@@ -3,7 +3,7 @@ a list of tracks to the player."""
 from __future__ import annotations
 import os
 import random
-from src.utils import ui_utils
+from backbone import ui as ui_utils
 from src.music_library import drop_moved, sort_tracks, track_title
 from src.playback.playback import music_player
 from src.playback.session import REPEAT_OFF, active_session, is_client

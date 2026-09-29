@@ -29,7 +29,7 @@ from pathlib import Path
 from mutagen.id3 import ID3, TALB, TCON, TIT2, TPE1, TPOS, TRCK  # type: ignore[reportPrivateImportUsage]
 
 from src import cli
-from src.utils import output as out
+from backbone import output as out
 
 
 def _mp3(path: str, title: str, artist: str, album: str, track: str,
@@ -376,14 +376,14 @@ class OutputModeTest(CliTest):
         self.assertNotIn('\033', err)
 
     def test_no_colour_flag_strips_styling_on_a_terminal_too(self):
-        from src.utils import ui_utils
+        from backbone import ui as ui_utils
         out.configure(colour=True)
         self.assertNotEqual(ui_utils.Colors.DIM, '')
         self.run_cli('config', 'list', '--no-colour')
         self.assertEqual(ui_utils.Colors.DIM, '')
 
     def test_no_color_environment_variable_is_honoured(self):
-        from src.utils import ui_utils
+        from backbone import ui as ui_utils
         saved = os.environ.get('NO_COLOR')
         os.environ['NO_COLOR'] = '1'
         try:
@@ -395,7 +395,7 @@ class OutputModeTest(CliTest):
                 os.environ['NO_COLOR'] = saved
 
     def test_cursor_control_survives_colour_being_switched_off(self):
-        from src.utils import ui_utils
+        from backbone import ui as ui_utils
         ui_utils.set_colour(False)
         self.assertEqual(ui_utils.Colors.DIM, '')
         self.assertNotEqual(ui_utils.Colors.HIDE, '')

@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 import mutagen.id3
 from mutagen.id3 import ID3
-from src.utils import prompt
+from backbone import prompt
 from src.id3 import bulk_ops as bo
 from src.id3 import tag_registry as _reg
-from src.utils import ui_utils
+from backbone import ui as ui_utils
 from src.id3.bulk_common import _SKIP, _SORT_SRC, _sort_value, _walk
 from src.config import setting
 from src.music_library import first_text

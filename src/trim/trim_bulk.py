@@ -61,12 +61,12 @@ from src.trim.trim_editor import (
     Marks, set_in, set_out, resulting_duration, sibling_durations,
     _run_marking_screen, _track_title_artist, resolve_chapters,
 )
-from src.utils import prompt
-from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C
-from src.utils import timefmt
+from backbone import prompt
+from backbone import ui as ui_utils
+from backbone.ui import Colors as C
+from backbone import timefmt
 from src.config import setting
-from src.utils.log import quietly
+from backbone.log import quietly
 
 # Preview columns for the commit pass: file · cut points · resulting duration.
 _COMMIT_COLUMNS = [
@@ -260,7 +260,7 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
         return
     apply_set = set(sel)
 
-    from src.utils.terminal_input import raw_mode, get_key_non_blocking
+    from backbone.terminal_input import raw_mode, get_key_non_blocking
 
     task_id = "trim_bulk"
     count = errors = 0
