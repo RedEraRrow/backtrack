@@ -1,9 +1,9 @@
-# Script etiquette — writing a dialogue markdown a transcript can be matched to
+# Script etiquette: writing a dialogue markdown a transcript can be matched to
 
 Backtrack's lyric editor and dialogue playback take **two** files for a spoken-word
 track: a timed transcript (`.json`, word-level timings from Whisper or equivalent) and a
 markdown **script** (`{track}.md`) next to the audio. The transcript owns *when* each word
-is said. The script owns everything the timing cannot carry — who is speaking, the real
+is said. The script owns everything the timing cannot carry: who is speaking, the real
 punctuation and capitalisation, emphasis, and the stage directions.
 
 The two are joined by a single word-level alignment
@@ -32,7 +32,7 @@ write one that matches.
   `*(Flight deck door opens.)*`. It becomes a beat of its own.
 - **An inline stage direction** is a parenthetical inside a line. It splits the line into
   separate beats at that point.
-- **Continuation lines** — a line with no `**NAME**:` header — are appended to the speaker
+- **Continuation lines** (a line with no `**NAME**:` header) are appended to the speaker
   above, which is how a song or a limerick stays one turn.
 
 ### One turn per line
@@ -71,7 +71,7 @@ around it:
 
 This is the one rule where getting it wrong costs you *words*, not just formatting. A
 direction's text is never spoken, so anything swept into one is deleted from the script's
-word stream, silently — it will not appear as a missing word in the verify report, because
+word stream, silently. It will not appear as a missing word in the verify report, because
 as far as the matcher is concerned you never wrote it.
 
 The emphasis markers must balance either side of the bracket: `*(dir)*` or `(dir)`, not
@@ -84,8 +84,8 @@ and stays in the dialogue:
 
 | Written | Read as |
 |---|---|
-| `That's nice(!)` | dialogue — the sarcasm marker is kept and displayed |
-| `do you have (a) a bottle and (b) a corkscrew` | dialogue — "a" and "b" are spoken |
+| `That's nice(!)` | dialogue; the sarcasm marker is kept and displayed |
+| `do you have (a) a bottle and (b) a corkscrew` | dialogue; "a" and "b" are spoken |
 | `(Ding)` | a stage direction |
 | `for the BBC! (In Spanish accent)` | a stage direction |
 
@@ -115,7 +115,7 @@ the whole-line check runs before the `Speaker:` split.
 
 A direction gets a beat of its own by cutting the segment at that point, and the bulk split
 (`S`) will only cut where the script has **already punctuated its way out** of the word
-before it — `. ! ? , ; : -- ...` or a closing `♪`. A direction that interrupts a sentence
+before it (`. ! ? , ; : -- ...` or a closing `♪`). A direction that interrupts a sentence
 is reported as `· MID-LINE` and left alone:
 
 ```markdown
@@ -126,7 +126,7 @@ is reported as `· MID-LINE` and left alone:
 **DOUGLAS**: Captain *(he assumes a French accent)* Martin duCref, who joins us today.
 ```
 
-The mid-sentence one may well deserve its own beat — that is a judgement about the
+The mid-sentence one may well deserve its own beat; that is a judgement about the
 performance, and one to make by hand rather than have done to three hundred segments
 unattended. Punctuating the script where the delivery really breaks is the way to make it
 automatic. A speaker change is never mid-sentence and is always cut.
@@ -146,7 +146,7 @@ dropped from the spoken stream wherever it appears, and shown as a beat of its o
 is a whole line.
 
 Prefer a plain direction, `*(Transcriber's note: he lisps throughout.)*`, for anything you
-want on screen — a long one is given the silence around it in proportion to its reading
+want on screen: a long one is given the silence around it in proportion to its reading
 time, and rides along on the neighbouring line when there is not enough silence to read it
 in.
 
@@ -156,15 +156,15 @@ in.
 
 The matcher normalises both sides before comparing: case, accents, and punctuation are
 ignored; hyphens, full stops and slashes become word breaks. You do **not** need to match
-the transcript's spelling for any of these — a difference in convention is reconciled
+the transcript's spelling for any of these: a difference in convention is reconciled
 automatically and reported as a match:
 
 | Script | Transcript | Result |
 |---|---|---|
-| `take-off`, `no-one` | `takeoff`, `noone` | matched — word boundaries only |
-| `twenty-five`, `seven thousand` | `25`, `7000` | matched — same number |
+| `take-off`, `no-one` | `takeoff`, `noone` | matched: word boundaries only |
+| `twenty-five`, `seven thousand` | `25`, `7000` | matched: same number |
 | `C.P.L.` | `CPL` | matched |
-| `Molokaʻi` | `Molokai` | matched — the ʻokina is punctuation |
+| `Molokaʻi` | `Molokai` | matched: the ʻokina is punctuation |
 | `'cause`, `'til`, `'ave` | `because`, `until`, `have` | matched **and flagged** `≈ ELIDED` |
 
 An elision is deliberately still reported. It is matched so the timing stays continuous,
@@ -173,9 +173,9 @@ eye.
 
 Two things the matcher does **not** reconcile, because they are not spelling:
 
-- **Times and years read as digit pairs** — `eleven thirty` against `11:30` pairs word for
+- **Times and years read as digit pairs**: `eleven thirty` against `11:30` pairs word for
   word, but `nineteen forty-three` against `1943` does not.
-- **Anything genuinely different.** If the transcript heard a different word, you get a
+- **Anything really different.** If the transcript heard a different word, you get a
   `~ CHANGED` row. That is the point.
 
 ### `♪` and `...`
@@ -188,18 +188,30 @@ line before.
 
 ## Checking your work
 
-Open the track in the lyric editor:
+Open the track in the lyric editor (the **Lyrics** row in its tag editor):
 
-- **`V`** — verify. Diffs the whole spoken word stream against the script and reports every
-  `– MISSING`, `+ EXTRA`, `~ CHANGED` and `≈ ELIDED` word, with a match percentage. A
+- **`V`**: verify. Diffs the whole spoken word stream against the script and reports every
+  `MISSING`, `+ EXTRA`, `~ CHANGED` and `≈ ELIDED` word, with a match percentage. A
   well-matched script sits at or near 100%.
-- **`S`** — split. Cuts every segment the script says is more than one beat, at speaker
+- **`S`**: split. Cuts every segment the script says is more than one beat, at speaker
   changes and at inline stage directions that follow punctuation, so there is one segment
-  per beat. Confirmed and undoable.
+  per beat. It asks first, and can be undone.
 
 The verify report also lists two things `S` will not do for you:
 
-- `· MID-LINE` — a direction that would cut mid-sentence. Split it by hand if the delivery
+- `· MID-LINE`: a direction that would cut mid-sentence. Split it by hand if the delivery
   warrants it, or punctuate the script so it qualifies.
-- `✦ UNPLACED` — a direction the script puts between two words the transcript has no
+- `✦ UNPLACED`: a direction the script puts between two words the transcript has no
   boundary for, usually because it misheard the word it stands against.
+
+The same report is available from the command line: `backtrack lyrics verify track.mp3`.
+
+For a transcript, `s` saves your edits to the working copy (`.sync.json`) beside it, and `W`
+writes them back to the transcript itself (and its `.srt`).
+
+### Timing a script you already have
+
+When the script is complete and only the timing is missing, `tools/align_script.py` times it
+against the audio, using a Whisper-style transcription for the timing, and writes the transcript
+JSON with words that match the script by construction (`--help` lists the options).
+`tools/check_alignment.py track.mp3` then sanity-checks the result.

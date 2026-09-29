@@ -1,8 +1,8 @@
 # Backtrack
 
 A terminal music player and tag editor for macOS and Linux. Backtrack plays your library with
-VLC, renders album art as Unicode half-blocks right in the terminal, shows synced and unsynced
-lyrics, and includes a full ID3/MP4 tag editor with a suite of bulk-automation tools.
+VLC, draws album art as Unicode half-blocks in the terminal, shows synced and unsynced lyrics,
+and has an ID3/MP4 tag editor with bulk operations for whole albums.
 
 > **Status:** in active development. Core playback, browsing, search, lyrics, and the tag editor
 > (including bulk operations) are working; expect rough edges and changing internals.
@@ -12,25 +12,25 @@ lyrics, and includes a full ID3/MP4 tag editor with a suite of bulk-automation t
 ## Features
 
 **Library & browsing**
-- Browse by **artist**, **album**, or **genre**, with an A–Z letter index for large collections.
-- Rich track rows (featured-artist marker, cached durations) and clean disc/work separators.
-- A background cache keeps the library fresh — it re-scans on an interval and reconciles against the
-  filesystem, picking up external adds, deletes, renames, and moves.
+- Browse by **artist**, **album**, **genre** and more, with an A-Z letter index for large collections.
+- Track rows show a featured-artist marker and cached durations, with disc and work separators.
+- A background sync keeps the library fresh: it re-scans on an interval and reconciles against the
+  filesystem, picking up adds, deletes, renames and moves made outside the app.
 
 **Search**
-- **Fuzzy live search** that re-ranks on every keystroke, with the matched characters highlighted in
-  each field. Cycle the scope (all / title / artist / album / genre / people) with `Tab`.
+- Fuzzy live search that re-ranks on every keystroke and highlights the matched characters.
 
 **Playback**
-- VLC/libvlc-backed audio with full transport controls and a live progress bar.
-- **In-terminal album art** rendered as Unicode half-blocks (no external viewer).
-- A full-height **volume bar** beside the art, and toggleable panes for **lyrics**, an up-next
+- VLC/libvlc-backed audio with transport controls and a live progress bar.
+- Album art drawn in the terminal as half-blocks, or as a real image in iTerm2 (opt-in).
+- A full-height **volume bar** beside the art, and a side panel for **lyrics**, the up-next
   **queue**, and cast/crew **credits**.
-- **Equaliser** — 24 presets applied during playback via libvlc; stored per file as an `EQU2` tag.
+- **Equaliser**: 24 presets applied during playback via libvlc, stored per file as an `EQU2` tag.
+- Several terminal windows can share one session (see [Several windows](#several-windows)).
 
 **Lyrics**
-- Display **synced (`SYLT`)** and **unsynced (`USLT`)** lyrics; interactive sync tool to time
-  un-timed lyrics; import from `.lrc`; append writing credits.
+- Shows **synced (`SYLT`)** and **unsynced (`USLT`)** lyrics, and markdown dialogue scripts for
+  spoken-word tracks. A lyric editor times un-timed lyrics as the track plays.
 
 **Tag editing (MP3)**
 - Edit every ID3 frame through a widget suited to its type: date/time with a **world-map timezone
@@ -38,20 +38,19 @@ lyrics, and includes a full ID3/MP4 tag editor with a suite of bulk-automation t
   a **graphic equaliser** (`EQU2`) and **dB gain** meter (`RVA2`), **numeric spinners**, and
   enum/bool pickers (musical key, media type, a validated ISRC field, a compilation toggle).
 - **Multi-value** frames (artists, composers, genres…), automatic **sort-order** generation, and a
-  power-user **plain-text** mode.
+  **plain-text** mode.
 
-**Bulk automation** (MP3 **and** MP4, with a preview before anything is written)
-- **Derive from filename** — fill tags from file/folder names.
-- **Rename files from tags** — the inverse, collision-safe.
-- **Set album art from files** — embed per-track or per-disc/series covers found beside the tracks.
-- **Apply sort orders**, **Renumber tracks** (disc ↔ continuous), **Reflow disc numbering**
-  (renumber discs to a dense 1…N after inserting a `1.5`, deleting a disc, or appending one, and
-  fix the totals), **Assign by range/schedule** — including a **per-range schedule** where each
-  disc/series carries its own start date and cadence, entered in a split date/time cell where you
-  type only the digits — **Copy from first track**, plus
-  set/rename/delete tags across a selection.
+**Bulk operations** (with a preview before anything is written)
+- Tag add / set / rename / delete across a selection, plus automations: derive tags from file
+  names, rename files from tags, set album art, assign by range or schedule, sort orders,
+  renumbering and more (see [Metadata editing](#metadata-editing)).
 - Track/disc **number pairs** edit in bulk without collateral damage: whichever half the files
   already share is editable, and the half that differs shows as a greyed `──` and is left alone.
+
+**Trimming** (needs ffmpeg)
+- Cut the start or end off an MP3 losslessly, one track at a time (`t` in the tag editor) or
+  across an album (bulk *Trim tracks…*). The original is backed up and a trim can be undone.
+- Measure loudness and set ReplayGain across a selection.
 
 **History & settings**
 - Listening history with relative timestamps, and a sectioned settings screen.
@@ -60,13 +59,13 @@ lyrics, and includes a full ID3/MP4 tag editor with a suite of bulk-automation t
 
 ## Requirements
 
-- **Python 3.8+** (developed against 3.13/3.14).
+- **Python 3.10+** (developed against 3.13/3.14).
 - **VLC / libvlc** installed on your system (provides audio playback).
-- **ffmpeg** on your `PATH` (or set `trim_ffmpeg_path` in config) — only needed for the track
-  trimmer's lossless cut; without it the trimmer is hidden and everything else works as normal.
+- **ffmpeg** on your `PATH` (or set `trim_ffmpeg_path` in config): only needed for trimming and
+  ReplayGain. Without it those options are hidden and everything else works as normal.
 - Python packages from `requirements.txt`: `mutagen`, `python-vlc`, `opencv-python`, `numpy`,
-  `pyperclip`, `colorama`. Album art is rendered **in-project** (OpenCV + NumPy) — no external image
-  viewer is needed.
+  `pyperclip`, `colorama`. Album art is rendered in-project with OpenCV and NumPy, so no external
+  image viewer is needed.
 
 ## Installation
 
@@ -82,7 +81,7 @@ Ubuntu / Debian:
 sudo apt update && sudo apt install vlc
 ```
 
-**1a. (Optional) install ffmpeg, for the track trimmer**
+**1a. (Optional) install ffmpeg, for trimming and ReplayGain**
 
 macOS (Homebrew):
 ```bash
@@ -115,9 +114,9 @@ backtrack
 ```
 
 On first run, Backtrack asks for a music directory and builds a cached library for faster
-subsequent startups.
+startups after that.
 
-**With arguments, `backtrack` is an ordinary command-line tool** instead — see
+**With arguments, `backtrack` is an ordinary command-line tool** instead: see
 [Command line](#command-line) below. Everything the menus can do is reachable from there.
 
 ---
@@ -126,36 +125,44 @@ subsequent startups.
 
 ### Main menu
 
-Browse Library · Search · Listening History · Settings · Exit.
+Browse · Search · Listening History · Settings · Exit.
 
-Navigation is consistent everywhere: `↑↓` move, `→`/`Enter` confirm, `←`/`b`/`Esc` go
-back, `q` quits the app from anywhere (it never just closes a widget). Lists never wrap, restore the
-cursor when you back out, and support mouse clicks and `Tab`-based select-all where relevant. The
-hint bar (pinned to the bottom of the screen) is clickable too — click any highlighted key to trigger
-it. When audio is playing, the mini-player's ⏯/⏭ icons are clickable, and clicking anywhere else on it
-reopens the player. In the full player, the ⏮/⏯/⏭ controls, the hint bar, and the vertical volume bar
-are all clickable (click the volume bar at the height you want).
+Navigation is the same everywhere: `↑↓` move, `→`/`Enter` confirm, `←`/`b`/`Esc` go back, and
+`q` quits the app from anywhere (it never just closes a widget). In a field you type into, `q` is
+typed as a letter; in the live search, Ctrl-C quits instead. Lists never wrap, keep the cursor on
+the same item after a re-sort or an edit, restore it when you back out, and support mouse clicks;
+`a` selects all in a multi-select list. The hint bar (pinned to the bottom of the screen) is
+clickable too: click any highlighted key to trigger it. When audio is playing, the mini-player's
+⏯/⏭ icons are clickable, and clicking anywhere else on it reopens the player. In the full player,
+the ⏮/⏯/⏭ controls, the hint bar, and the vertical volume bar are all clickable (click the volume
+bar at the height you want).
+
+If a file has been moved or renamed since the library was scanned, Backtrack notices when you act
+on it, re-syncs the library and says so. If a whole music folder has moved, the message asks you to
+update it in Settings → Music directories.
 
 ### Browse
 
 Explore by **Artist**, **Album**, **Genre** and more (composer, lyricist, people, year, decade,
-grouping, work: choose which appear, and their order, in Settings → Browse menu), across everything or within one music directory
-(Browse → Libraries, each under the name you give it in Settings → Music directories). Drilling into
-a letter in the A–Z index and backing out returns you to the index. Play all (`p`), shuffle (`x`),
-album shuffle (`X`) and edit all (`E`) are in the hint bar at the bottom of each list; `e` edits
-just the highlighted row.
+grouping, work: choose which appear, and their order, in Settings → Browse menu), across
+everything or within one music directory (Browse → Libraries, each under the name you give it in
+Settings → Music directories). Drilling into a letter in the A-Z index and backing out returns you
+to the index. Play all (`p`), shuffle (`x`), album shuffle (`X`) and edit all (`E`) are in the hint
+bar at the bottom of each list; `e` edits just the highlighted row. While something is playing,
+`n` plays the highlighted row next and `a` adds it to the queue.
 
 Albums and tracks follow one sort order, set with `s` in any list or in Settings → Sorting: a
 chain of levels (album, album year, disc, track, title, date…), each ascending or descending, with
-presets such as broadcast order. A music directory can have its own. Selecting a track offers Play / Edit tags (or plays immediately if
-*Auto-play on select* is enabled).
+presets such as broadcast order. A music directory can have its own. Selecting a track offers Play
+/ Edit tags (or plays immediately if *Auto-play on select* is enabled).
 
 ### Search
 
-Fuzzy search across title, artist, album, genre, people, and file path. Type to filter; results
-re-rank live with the matched characters highlighted. `^f` cycles the search scope and `Tab` jumps
-between result sections; `^e` edits the highlighted track and `^a` every result; `Enter` opens a
-result; `Esc` backs out.
+Fuzzy search across title, artist, album, composer, lyricist, genre and people, and by disc
+("disc 2"). Type to filter; results re-rank live with the matched characters highlighted. `^f`
+cycles the scope (all / title / artist / album / composer / lyricist / genre / people) and `Tab`
+jumps between result sections; `^e` edits the highlighted track and `^a` every result; `Enter`
+opens a result (with Play next / Add to queue offered while something is playing); `Esc` backs out.
 
 ### Playback controls
 
@@ -166,15 +173,24 @@ result; `Esc` backs out.
 | `j` / `l` | Seek ∓1 s |
 | `,` / `.` | Seek ∓30 s |
 | `+` / `-` | Volume up / down |
-| `m` | Toggle extended metadata (year · genre · work/movement …) |
-| `w` | Cycle the side panel (lyrics → queue → lyrics+credits) |
+| `m` | Show or hide the track details line (year · genre · disc/track …); remembered. Also Settings → Track details in player |
+| `w` | Cycle the side panel: off → lyrics → queue → lyrics+credits. Views with nothing in them are skipped |
 | `i` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[i] help` (click the `i`; it also works where `i` is typed as a letter); in the player it stays in the hint bar. Also Settings → Key hints |
 | `[` / `]` | Previous / next track |
-| `b` / `Esc` | Minimise — leave the player but keep the audio playing in the background (pinned while another window shares the session) |
+| `e` | Jump to the last 35 s (only with Settings → Diagnostics log on) |
+| `b` / `Esc` | Minimise: leave the player but keep the audio playing in the background (pinned while another window is attached) |
 | `s` | Stop playback |
 | `q` | Quit the application |
 
-From any menu while audio is playing: **Ctrl-O** reopens the player, and **Ctrl-P** / **Ctrl-N** / **Ctrl-B** control play-pause / next / previous.
+From any menu while audio is playing: **Ctrl-O** reopens the player, and **Ctrl-P** / **Ctrl-N** /
+**Ctrl-B** control play-pause / next / previous.
+
+### Several windows
+
+Start a second `backtrack` while one is playing and it offers **Start a new session** (this window
+plays its own audio) or **Join** the running one. A joined window browses and queues as normal and
+controls the host's audio; its player shows what the host is playing. Only one window has the
+player open at a time, and while another window is attached, `b` won't leave the player.
 
 ### Listening history
 
@@ -183,22 +199,44 @@ Recent tracks in aligned columns (title · artist · album · when · listened),
 
 ### Lyrics
 
-Tracks with `SYLT`/`USLT` show lyrics during playback. Use the interactive **Sync Lyrics** tool to
-time un-timed lyrics as the track plays, **import** from an `.lrc` file, or **append** Music-by /
-Words-by credits.
+Tracks with `SYLT`/`USLT` lyrics, or a transcript and markdown script, show them during playback.
+To time or fix them, open the track's tag editor and choose the **Lyrics** row, which appears when
+the track has lyrics or a transcript (and Settings → Lyrics editor is on). The lyric editor taps in
+timings as the track plays, adds Music by / Words by credits (`c`), and for spoken-word tracks
+checks the script against the transcript (`V`). An `.lrc` file can be imported from a `SYLT` or
+`USLT` tag's actions. For writing dialogue scripts, see
+[script etiquette](docs/script-etiquette.md).
 
 ### Metadata editing
 
-From a track, choose **Edit tags** to open the single-track ID3 editor; from **Browse**, choose
-*Edit tags* on an album (or press `e`) for the **bulk** editor. Bulk operations live under a two-level
-menu — **TAGS** (add / set / rename / delete) and **Automation…** (derive, rename files, set album
-art, assign by range/schedule, apply sort orders, renumber tracks, reflow disc numbering, copy from
-first track). Every operation previews its changes and, by default, only fills blank tags.
+From a track, choose **Edit tags** to open the single-track editor; from **Browse**, choose
+*Edit tags* on an album (or press `e`) for the **bulk** editor. The bulk editor has the tag
+operations (add, set, rename, delete) and an **Automation…** menu:
+
+- **Derive from filename**: fill tags from file and folder names.
+- **Rename files from tags**: the inverse, collision-safe.
+- **Set album art from files**: embed per-track or per-disc/series covers found beside the tracks.
+- **Assign by range / schedule**: including a per-range schedule where each disc/series carries
+  its own start date and cadence, entered in a split date/time cell where you type only the digits.
+- **Apply sort orders**.
+- **Renumber tracks** (disc ↔ continuous).
+- **Reflow disc numbering**: renumber discs to a dense 1…N after inserting a `1.5`, deleting a
+  disc, or appending one, and fix the totals.
+- **Remove single-disc numbering**: drop `1/1` disc numbers.
+- **Strip stale length tags**: remove stale `TLEN` and non-zero `TDLY` frames.
+- **Trim tracks…** and **Measure loudness / set ReplayGain…** (need ffmpeg).
+- **Set picture type**: retype embedded art (for example to front cover) without touching the image.
+- **Copy from first track**.
+
+Every operation previews its changes and, by default, only fills blank tags. In the tidy-up
+previews (renumber, reflow, remove single-disc numbering, strip length tags, set picture type),
+rows that wouldn't change are greyed out.
 
 Disc and track numbering is read from the files themselves rather than the library cache, so
 renumbering and reflowing stay correct even right after you have hand-numbered a disc.
 
-See the guides below to get the most out of tagging and auto-detection.
+The guides under [Documentation](#documentation) cover tagging practice and what *Derive from
+filename* recognises.
 
 ---
 
@@ -218,9 +256,9 @@ backtrack feed sync --name comedy
 ```
 
 `backtrack --help` lists the groups; `backtrack <group> <verb> --help` documents one command
-and shows a worked example. `backtrack schema` prints the whole tree — commands, flags,
-output shapes and exit codes — as JSON, generated from the same definitions the parser is
-built from, so it cannot drift.
+and shows a worked example. `backtrack schema` prints the whole tree (commands, flags, output
+shapes and exit codes) as JSON. The parser, the schema and the shell completions are all generated
+from the same command definitions, so they always agree.
 
 ### Command groups
 
@@ -236,11 +274,13 @@ built from, so it cannot drift.
 | `lyrics` | `show` `import` `export` `verify` |
 | `trim` | `detect` `cut` `list` `restore` |
 | `feed` | `add` `list` `remove` `sync` `fetch` |
-| `search`, `history`, `config`, `schema`, `completion` | |
+| `history` | `list` `clear` |
+| `config` | `list` `get` `set` |
+| `search`, `schema`, `completion` | |
 
 Three things stay in the app, because they are "mark this by ear while it plays" and need a
 person: **lyric tap-sync and audition**, the **trim marking screen**, and the **rendered
-player view**. Their non-interactive halves all have commands — `lyrics import/export`,
+player view**. Their non-interactive halves all have commands: `lyrics import/export`,
 `trim detect`, `trim cut --start --end`, and the `session` transport.
 
 ### Global flags
@@ -291,12 +331,10 @@ Errors go to stderr; under `--json` they are `{"error": {"code", "message", "con
 ### Nothing blocks
 
 `--yes` accepts every confirmation. When stdin is not a terminal, a confirmation takes its
-default rather than waiting — an agent with no human attached never hangs on a read that
+default rather than waiting, so an agent with no human attached never hangs on a read that
 will never come. `--dry-run` works on every command that writes.
 
 ### Shell completion
-
-Generated from the command definitions, so it cannot describe a CLI that no longer exists:
 
 ```bash
 backtrack completion zsh  > ~/.zfunc/_backtrack
@@ -324,59 +362,76 @@ backtrack feed sync --name comedy --output ~/Music/Podcasts
 ```
 
 `sync` downloads what is new, dedupes on GUID (falling back to the enclosure URL), and tags
-each episode from its title — show, series, episode, title and date — keeping the raw title
+each episode from its title (show, series, episode, title and date), keeping the raw title
 verbatim in a comment. Re-running it downloads nothing and duplicates nothing.
 
 `pubDate` is usually an upload time rather than a broadcast date, so a date found in the
 title wins; where the title gives a day and month but no year, the year comes from `pubDate`
 and each episode records which happened.
 
-Downloads enter the library the way any other new file does — written into a music
+Downloads enter the library the way any other new file does: written into a music
 directory and handed to the same refresh the app uses.
 
 ---
 
 ## Documentation
 
-- **[Tag etiquette](docs/tag-etiquette.md)** — good ID3 practice, and how Backtrack reads each tag.
-- **[Filesystem etiquette](docs/filesystem-etiquette.md)** — how to organise a library on disk.
-- **[Library layout & naming](docs/library-layout.md)** — the exact folder/name patterns the
+- **[Tag etiquette](docs/tag-etiquette.md)**: good ID3 practice, and how Backtrack reads each tag.
+- **[Filesystem etiquette](docs/filesystem-etiquette.md)**: how to organise a library on disk.
+- **[Library layout & naming](docs/library-layout.md)**: the exact folder/name patterns the
   *Derive from filename* parser recognises, including template and regex overrides.
-- **[Developer notes](docs/DEVELOPER.md)** — internals and architecture.
+- **[Script etiquette](docs/script-etiquette.md)**: writing a dialogue script a transcript can be
+  matched to.
+- **[Developer notes](docs/DEVELOPER.md)**: internals and architecture.
 
 ---
 
 ## Configuration
 
-Settings are managed in-app under **Settings** (playback, library, editors, history) and stored in a
-JSON config created on first run. Notable keys include `music_directories` (a list — add or remove
-them under **Settings → Music Directories**; the older single `music_directory` key is migrated
-automatically and kept in step with the first entry), `volume` (restored at launch and saved
-whenever you change it), `history_enabled`,
-`search_weights`, `lyric_lead_in`, and the editor options (sort-list delimiter, plain-text editing,
-auto-play on select, tag-name preferences). Prefer the Settings screen over hand-editing the file.
+Settings are managed in-app under **Settings**, in seven sections:
+
+- **Playback**: lyric lead-in, auto-play on select, key hints, image album art (iTerm2), track
+  details in player.
+- **Appearance**: accent colour (colours from your terminal's palette, fixed colours, or a custom
+  hex value).
+- **Library**: music directories, the activity centre, the hidden file filter, the Browse menu.
+- **Sorting**: the sort order, whether to use sort-order tags, and ignored leading words.
+- **Editors**: metadata editor, lyrics editor, plain-text editing, tag name preferences, sort
+  list delimiter.
+- **Diagnostics**: the diagnostics log, which writes `~/.config/backtrack/backtrack.log`.
+- **History**: listening history on or off, and clearing the log.
+
+They are stored in a JSON config created on first run. `music_directories` is a list (add or remove
+them under Settings → Music directories; the older single `music_directory` key is migrated
+automatically and kept in step with the first entry), and `volume` is restored at launch and saved
+whenever you change it. Prefer the Settings screen or `backtrack config set` over hand-editing the
+file.
 
 ## Supported formats
 
-- **Audio:** MP3, M4A, MP4, M4P, AAC.
-- **Tags:** ID3v2 (MP3) and MP4 atoms. Single-track tag *editing* is MP3-only; the bulk operations
-  write both MP3 and MP4.
+- **Audio:** MP3, M4A, MP4, M4P and AAC. Raw `.aac` plays but can't be tagged.
+- **Tags:** ID3v2 (MP3) and MP4 atoms (`.m4a`/`.mp4`/`.m4p`). The single-track editor is MP3 only.
+  In bulk, derive, rename files, album art, renumber, reflow and remove single-disc numbering
+  write both MP3 and MP4; the tag operations, assign, sort orders and the rest are MP3 only.
 - **Lyrics:** `USLT` (unsynced) and `SYLT` (synced).
-- **Album art:** embedded MP3 `APIC` and MP4 `covr` (JPEG/PNG), rendered in-terminal as half-blocks.
+- **Album art:** embedded MP3 `APIC` and MP4 `covr` (JPEG/PNG), drawn in the terminal as half-blocks.
 
 ## Troubleshooting
 
-**Playback fails** — ensure VLC / libvlc is installed and the file is a supported format, and that
-the terminal can read your music directory.
+**Playback fails**: check that VLC / libvlc is installed, the file is a supported format, and the
+terminal can read your music directory.
 
-**Album art doesn't render** — confirm the file actually has embedded art; very narrow terminals
-shrink or omit the art. (No external viewer is required — art is rendered in-project.)
+**Album art doesn't render**: check the file actually has embedded art; very narrow terminals
+shrink or omit the art.
 
-**Lyrics don't appear** — not all files have embedded lyrics; use **Sync Lyrics** to add timings, or
-import an `.lrc`.
+**Lyrics don't appear**: not all files have embedded lyrics. Import an `.lrc` from the tag editor,
+or time existing lyrics in the lyric editor.
 
-**Tag editing says "MP3 only"** — the single-track editor edits ID3/MP3; use the bulk Automation
+**Tag editing says "MP3 only"**: the single-track editor edits ID3/MP3; use the bulk Automation
 tools for MP4 tag changes.
+
+**Something else went wrong**: turn on Settings → Diagnostics log, repeat what you did, and look
+in `~/.config/backtrack/backtrack.log`.
 
 ## License
 

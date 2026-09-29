@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sanity-check a transcript produced by align_script.py, before trusting 28 of them.
+"""Sanity-check a transcript produced by align_script.py.
 
 Checks the things a forced alignment can get wrong without saying so: words it
 never placed, times that run backwards, a segment that claims more of the clock
@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.lyrics.lyrics import _find_markdown_for_audio          # noqa: E402
-from src.lyrics.lyrics_editor import _verify_matchup, _split_candidates  # noqa: E402
+from src.lyrics.verify import _verify_matchup, _split_candidates        # noqa: E402
 
 
 def check(mp3: str) -> int:

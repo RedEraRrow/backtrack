@@ -5,12 +5,12 @@ lyrics editor and the player read.
 The script is the ground truth here, not a guess at it: every spoken word is
 already written down, so this only ever asks WHEN each of those words is said,
 never WHICH word it was. The result is a transcript whose word stream is identical
-to the script's by construction — so `build_md_overlay` has nothing to reconcile,
+to the script's by construction, so `build_md_overlay` has nothing to reconcile,
 every segment is already one script line, and `line_ref` is known rather than
 inferred.
 
 Timing comes from a transcription of the same audio (MacWhisper, WhisperX, the
-OpenAI tooling — anything that writes segments with timestamps). That transcription
+OpenAI tooling: anything that writes segments with timestamps). That transcription
 is wrong about plenty of WORDS and right about WHEN, which is the half that is
 wanted. It measures a boundary roughly every one and a half seconds, so the script
 is pinned to a measurement that often and its error is bounded by the distance
@@ -18,18 +18,20 @@ between two of them. It cannot accumulate. This runs in about a second per episo
 and needs nothing installed.
 
 `--mfa` then refines those times to the phoneme with Montreal Forced Aligner. It is
-a refinement and is allowed to fail: a passage MFA will not align — singing, or two
-people at once — simply keeps the time it already had. Alignment is never the thing
+a refinement and is allowed to fail: a passage MFA will not align (singing, or two
+people at once) simply keeps the time it already had. Alignment is never the thing
 holding the timeline together.
 
     tools/align_script.py "1-04 Douz.mp3"           # one episode, seconds
     tools/align_script.py *.mp3                     # the set
     tools/align_script.py --mfa "1-04 Douz.mp3"     # and refine it, minutes
     tools/align_script.py --validate-only *.mp3     # just the OOV report
+    tools/align_script.py --anchors timings/douz.json "1-04 Douz.mp3"   # anchors from elsewhere
 
 Anchors are looked for beside the audio as `<stem>.whisper.json`, or in
-`timings/<stem>.json`. `--mfa` needs Montreal Forced Aligner with the english_mfa
-acoustic model and the english_uk_mfa dictionary/G2P (`mfa model download ...`).
+`timings/<stem>.json`; `--anchors JSON` names the file instead. `--mfa` needs
+Montreal Forced Aligner with the english_mfa acoustic model and the
+english_uk_mfa dictionary/G2P (`mfa model download ...`).
 """
 from __future__ import annotations
 
