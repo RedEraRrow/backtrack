@@ -52,7 +52,7 @@ from src.config import setting
 from src.utils.log import quietly
 from src import tuning as tune
 
-# Same shape as AUDITION's nudge scheme (lyrics_editor's _AUD_* steps): a coarse step
+# Same shape as AUDITION's nudge scheme (editor_view's _AUD_* steps): a coarse step
 # on ',' and '.', and a fine step that here is one frame rather than a fixed
 # 0.05s — probed per file, since frame length varies with sample rate (2.3).
 _COARSE_STEP = 0.25
