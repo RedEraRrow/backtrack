@@ -10,7 +10,7 @@ from src.lyrics.lyrics_text import (align_tokens as _align_tokens,
 from src.lyrics.md_overlay import (
     _norm_words, _spoken_text, _inline_stage_dirs, line_speaker as _line_speaker,
 )
-from src.lyrics.time_fields import _fmt
+from src.utils import timefmt
 
 
 _AIR_GAP_THRESHOLD = _AIR_THRESHOLD   # use the shared threshold from src.lyrics.lyrics
@@ -252,7 +252,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
         """One aligned, colour-coded verification-report row: timestamp, badge, location, detail."""
         # Aligned, colour-coded row: dim timestamp · coloured badge · dim location
         # · the actual WORDS bright, so the eye lands on what differs.
-        ts    = _fmt(t) if t is not None else "  --:--  "
+        ts    = timefmt.clock(t) if t is not None else "  --:--  "
         badge = f"{col}{sym} {label:<7}{C.RESET}"          # 9 visible cols
         locf  = f"{C.DIM}{(loc or '')[:16]:<16}{C.RESET}"  # 16 visible cols
         return f"{C.DIM}{ts}{C.RESET}  {badge}  {locf}  {detail}"

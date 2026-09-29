@@ -14,6 +14,7 @@ import os
 from src.cli import Arg, Cmd, Ctx, Flag
 from src.utils import output as out
 from src.utils import prompt_core as pc
+from src.utils import timefmt
 
 
 # --- shared column specs ----------------------------------------------------
@@ -1403,8 +1404,7 @@ def _ms(value) -> str:
     """A millisecond timestamp as [mm:ss.mmm], or blank when untimed."""
     if value is None:
         return ''
-    total = int(value)
-    return f"[{total // 60000:02d}:{total // 1000 % 60:02d}.{total % 1000:03d}]"
+    return f"[{timefmt.clock(int(value) / 1000)}]"
 
 
 def _lyrics_show(ctx: Ctx) -> int:
@@ -1486,7 +1486,7 @@ def _lyrics_export(ctx: Ctx) -> int:
             start = int(row['time_ms'] or 0)
             end = int(rows[i]['time_ms']) if i < len(rows) and rows[i]['time_ms'] \
                 else start + 3000
-            parts.append(f"{i}\n{_srt(start)} --> {_srt(end)}\n{row['text']}\n")
+            parts.append(f"{i}\n{timefmt.srt(start / 1000)} --> {timefmt.srt(end / 1000)}\n{row['text']}\n")
         text = "\n".join(parts)
     else:
         text = "\n".join(r['text'] for r in rows)
@@ -1506,12 +1506,6 @@ def _lyrics_export(ctx: Ctx) -> int:
                           'source': source},
                human=f"  Wrote {len(rows)} lines to {target}.")
     return out.OK
-
-
-def _srt(ms_value: int) -> str:
-    """A millisecond timestamp in SRT's HH:MM:SS,mmm form."""
-    return (f"{ms_value // 3600000:02d}:{ms_value // 60000 % 60:02d}:"
-            f"{ms_value // 1000 % 60:02d},{ms_value % 1000:03d}")
 
 
 def _lyrics_verify(ctx: Ctx) -> int:

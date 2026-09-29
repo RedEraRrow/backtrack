@@ -59,11 +59,12 @@ from src.music_library import refresh_library_entry
 from src.trim import trim
 from src.trim.trim_editor import (
     Marks, set_in, set_out, resulting_duration, sibling_durations,
-    _run_marking_screen, _track_title_artist, _fmt, resolve_chapters,
+    _run_marking_screen, _track_title_artist, resolve_chapters,
 )
 from src.utils import prompt
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
+from src.utils import timefmt
 
 # Preview columns for the commit pass: file · cut points · resulting duration.
 _COMMIT_COLUMNS = [
@@ -255,7 +256,7 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
         rows.append(prompt.Choice(
             title=os.path.basename(p), value=p, checked=True,
             cells=[os.path.basename(p),
-                   f"{_fmt(m.in_snapped)} → {_fmt(m.out_snapped)}",
+                   f"{timefmt.clock(m.in_snapped)} → {timefmt.clock(m.out_snapped)}",
                    f"{dur:.1f}s" if dur is not None else "—"]))
 
     sub = ui_utils.plural(len(todo), "track") + " marked"
@@ -376,7 +377,7 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
         mp.pause()
 
     choices = [
-        prompt.Choice(title=f"{_fmt(c['start'])} → {_fmt(c['end'])}  (score {c['score']:.2f})",
+        prompt.Choice(title=f"{timefmt.clock(c['start'])} → {timefmt.clock(c['end'])}  (score {c['score']:.2f})",
                      value=(c['start'], c['end']))
         for c in candidates
     ]

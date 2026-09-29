@@ -2,26 +2,7 @@
 the lyrics editor and the trim editor."""
 from __future__ import annotations
 from src.utils.ui_utils import Colors as C
-
-
-def _srt(t: float) -> str:
-    """Format seconds as an SRT timestamp (HH:MM:SS,mmm)."""
-    t = max(0.0, float(t))
-    h, r = divmod(t, 3600); m, s = divmod(r, 60)
-    ms = round((s % 1) * 1000); s = int(s)
-    if ms == 1000: ms, s = 0, s + 1
-    return f"{int(h):02d}:{int(m):02d}:{s:02d},{ms:03d}"
-
-
-def _fmt(t: float | None) -> str:
-    """Format seconds as MM:SS.mmm, or a dashed placeholder when t is None."""
-    if t is None:
-        return "──:──.───"
-    t = max(0.0, float(t))
-    m, s = divmod(t, 60)
-    ms = round((s % 1) * 1000); s = int(s)
-    if ms == 1000: ms, s = 0, s + 1
-    return f"{int(m):02d}:{s:02d}.{ms:03d}"
+from src.utils import timefmt
 
 
 # Segmented timestamp editor (EDIT mode): start and end as MM:SS.mmm, each field
@@ -42,12 +23,10 @@ _EDIT_END    = ('em', 'es', 'ems')
 
 
 def _ts_parts(v: float | None) -> tuple[str, str, str]:
-    """(MM, SS, mmm) zero-padded strings for a timestamp, matching `_fmt`."""
-    v = max(0.0, float(v or 0.0))
-    m, s = divmod(v, 60)
-    ms = round((s % 1) * 1000); s = int(s)
-    if ms == 1000: ms, s = 0, s + 1
-    return f"{int(m):02d}", f"{s:02d}", f"{ms:03d}"
+    """(MM, SS, mmm) zero-padded strings for a timestamp, matching timefmt.clock."""
+    m, rest = timefmt.clock(v or 0.0).split(':')
+    s, ms = rest.split('.')
+    return m, s, ms
 
 
 def _is_ms(fk: str) -> bool:

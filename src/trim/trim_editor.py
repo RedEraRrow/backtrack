@@ -44,8 +44,9 @@ from src.utils.prompt import confirm as _confirm
 from src.utils import prompt as _promptmod
 from src.lyrics.time_fields import (
     _EDIT_ORDER, _EDIT_MAXLEN, _EDIT_LIM, _EDIT_START, _EDIT_END,
-    _ts_parts, _field_value, _field_str, _render_edit_fields, _fmt,
+    _ts_parts, _field_value, _field_str, _render_edit_fields,
 )
+from src.utils import timefmt
 
 # Same shape as AUDITION's nudge scheme (lyrics_editor's _AUD_* steps): a coarse step
 # on ',' and '.', and a fine step that here is one frame rather than a fixed
@@ -416,7 +417,7 @@ def _header_box(title: str, artist: str, track_length: float) -> list[str]:
     screens (id3_browser's tag list, the bulk-edit header): styled title (+
     dim artist) left, dim facts right, spanning the full terminal width."""
     return _promptmod.rounded_header(title, f" · {artist}" if artist else "",
-                                     f"[MP3]  {_fmt(track_length)}")
+                                     f"[MP3]  {timefmt.clock(track_length)}")
 
 
 def _run_marking_screen(
@@ -586,7 +587,7 @@ def _run_marking_screen(
         marker = f"{C.ACCENT}▸{C.RESET} " if active == key else "  "
         if req is None:
             return f"{indent}{marker}{label}: {C.DIM}not set{C.RESET}"
-        return f"{indent}{marker}{label}: {_fmt(req)} → snapped {C.BOLD}{_fmt(snap)}{C.RESET}"
+        return f"{indent}{marker}{label}: {timefmt.clock(req)} → snapped {C.BOLD}{timefmt.clock(snap)}{C.RESET}"
 
     def _render() -> tuple[list[str], int, int, dict]:
         out: list[str] = list(strip_lines or []) + list(_header_box(track_name, track_artist, track_length))
@@ -598,7 +599,7 @@ def _run_marking_screen(
         dur = resulting_duration(marks)
         head = removed_head(marks)
         tail = removed_tail(marks, track_length)
-        out.append(f"{indent}Resulting duration: {C.BOLD}{_fmt(dur)}{C.RESET}"
+        out.append(f"{indent}Resulting duration: {C.BOLD}{timefmt.clock(dur)}{C.RESET}"
                    f" · removed head {head:.1f}s · tail {tail:.1f}s")
         if siblings:
             avg = sum(siblings) / len(siblings)
@@ -610,7 +611,7 @@ def _run_marking_screen(
         # play glyph (2 visible cols) · bar · elapsed/total, no fixed cap.
         cols = ui_utils.get_terminal_width()
         avail = max(10, cols - 2 * ui_utils.MARGIN_H)
-        timer_plain = f" {_fmt(play_pos)} / {_fmt(track_length)}"
+        timer_plain = f" {timefmt.clock(play_pos)} / {timefmt.clock(track_length)}"
         play_glyph = f"{C.ACCENT}▸{C.RESET} " if playing else "  "
         bar_width = max(10, avail - len(timer_plain) - 2)
         prog_row = len(out)
@@ -828,12 +829,12 @@ def trim_editor(path: str, library: list | None = None) -> None:
     min_score = float(cfg.get("trim_sting_min_score", 0.3))
     head = _sting_suggestion(path, 'head', window_s, min_score)
     if head is not None and _confirm(
-            f"Found a matching opening sting from an earlier trim in this folder (in-point {_fmt(head[0])}) — use it?",
+            f"Found a matching opening sting from an earlier trim in this folder (in-point {timefmt.clock(head[0])}) — use it?",
             default=True):
         set_in(marks, head[0], frame_dur)
     tail = _sting_suggestion(path, 'tail', window_s, min_score)
     if tail is not None and _confirm(
-            f"Found a matching closing sting from an earlier trim in this folder (out-point {_fmt(tail[0])}) — use it?",
+            f"Found a matching closing sting from an earlier trim in this folder (out-point {timefmt.clock(tail[0])}) — use it?",
             default=True):
         set_out(marks, tail[0], frame_dur, track_length)
 
@@ -851,7 +852,7 @@ def trim_editor(path: str, library: list | None = None) -> None:
         chapters = resolve_chapters(path, marks.in_snapped, marks.out_snapped)
 
         dur = resulting_duration(marks)
-        msg = (f"Trim to {_fmt(marks.in_snapped)} → {_fmt(marks.out_snapped)} ({dur:.1f}s)?"
+        msg = (f"Trim to {timefmt.clock(marks.in_snapped)} → {timefmt.clock(marks.out_snapped)} ({dur:.1f}s)?"
                f" The original is backed up, so this can be undone.")
         if not _confirm(msg, default=False):
             continue   # back to the marking screen, marks intact

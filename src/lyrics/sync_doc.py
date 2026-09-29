@@ -6,7 +6,7 @@ from src import tuning as tune
 from mutagen.id3 import ID3, ID3NoHeaderError
 from src.lyrics.lyrics import load_transcript
 from src.lyrics.md_overlay import _SD_SCOPES
-from src.lyrics.time_fields import _srt
+from src.utils import timefmt
 
 
 SOURCE_TRANSCRIPT = 'transcript'
@@ -232,7 +232,7 @@ def _rebuild_srt(segs: list) -> str:
         if _kind == 'dead_air' and not txt:
             continue  # pure silence — no SRT block
         if txt and s is not None:
-            blocks.append(f"{i}\n{_srt(s)} --> {_srt(e if e is not None else s)}\n{txt}\n")
+            blocks.append(f"{i}\n{timefmt.srt(s)} --> {timefmt.srt(e if e is not None else s)}\n{txt}\n")
     return "\n".join(blocks)
 
 

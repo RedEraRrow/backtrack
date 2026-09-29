@@ -58,7 +58,7 @@ from src.lyrics.md_overlay import (
 )
 from src.lyrics.time_fields import (
     _EDIT_END, _EDIT_LIM, _EDIT_MAXLEN, _EDIT_ORDER, _EDIT_START, _field_str, _field_value,
-    _fmt, _render_edit_fields, _ts_parts,
+    _render_edit_fields, _ts_parts,
 )
 from src.lyrics.sync_doc import (
     SOURCE_SYLT, SOURCE_TRANSCRIPT, SOURCE_USLT, _REVIEW_PHASE_NAME, _REVIEW_PROGRAMS, _best_split_index, _clean_seg, _ensure_ids, _file_fp, _load, _make_stage_dir, _rebuild_srt, _review_phase_issues, _shift_seg, _shift_word,
@@ -66,6 +66,7 @@ from src.lyrics.sync_doc import (
 from src.lyrics.verify import (
     _AIR_GAP_THRESHOLD, _make_dead_air, _split_candidates, _split_seg_at, _verify_matchup,
 )
+from src.utils import timefmt
 
 SEG, WORD, EDIT, TAP, AUDITION = 'seg', 'word', 'edit', 'tap', 'audition'
 
@@ -202,7 +203,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     if dirty:
         right_disp += f"{C.ACCENT}●{C.RESET}   "; right_plain += "●   "
     if playing:
-        _pp = f"▶ {_fmt(play_pos)}"
+        _pp = f"▶ {timefmt.clock(play_pos)}"
         right_disp += f"{C.ACCENT}{_pp}{C.RESET}   "; right_plain += _pp + "   "
     right_disp += f"{C.DIM}{pos_str}{C.RESET}"; right_plain += pos_str
     right_w = len(right_plain)
@@ -246,7 +247,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             ptr = f"{indent}{C.ACCENT}▶{C.RESET} " if arrow else indent + "  "
             if seg is None:
                 return f"{ptr} {C.DIM}──{C.RESET}"
-            ts_v = _fmt(seg['start']) if seg.get("start") is not None else " " * 9
+            ts_v = timefmt.clock(seg['start']) if seg.get("start") is not None else " " * 9
             ts   = f"{C.DIM}{ts_v}{C.RESET}"
             col  = C.BOLD + C.PRIMARY if bold else C.DIM
             budget = max(4, B - 3 - 9 - 3)   # ptr(3) + ts(9) + gaps(3)
@@ -279,7 +280,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
 
         if total_s > 0:
             pct = min(play_pos / total_s, 1.0)
-            _clock = f"{_fmt(play_pos)} / {_fmt(total_s)}"
+            _clock = f"{timefmt.clock(play_pos)} / {timefmt.clock(total_s)}"
             bar = ui_utils.get_progress_bar(pct, max(4, B - len(_clock) - 4))  # -4: bar's own [ ] + 2-space gap
             out.append(f"{indent}{C.DIM}{bar}  {_clock}{C.RESET}")
         else:
@@ -312,7 +313,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         else:
             def _mark(lbl, val, on) -> str:
                 """Render one 'label value' marker, accented when `on` (the clip currently playing)."""
-                v = _fmt(val) if val is not None else "──:──.───"
+                v = timefmt.clock(val)
                 c = C.ACCENT + C.BOLD if on else C.DIM
                 return f"{c}{lbl} {v}{C.RESET}"
             marks = (f"{_mark('start', s_t, aud_now == 'start')}"
@@ -347,7 +348,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         prog_geo = None
         if total_s > 0:
             pct = min(play_pos / total_s, 1.0)
-            _clock = f"{_fmt(play_pos)} / {_fmt(total_s)}"
+            _clock = f"{timefmt.clock(play_pos)} / {timefmt.clock(total_s)}"
             _bar_w = max(4, B - len(_clock) - 4)   # -4: bar's own [ ] + 2-space gap
             bar = ui_utils.get_progress_bar(pct, _bar_w)
             out.append(f"{indent}{C.DIM}{bar}  {_clock}{C.RESET}")
@@ -455,7 +456,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         its own column.  Returns (display_string, visible_width)."""
         parts: list[tuple[str, str]] = []
         if is_cur and s_t is not None and e_t is not None:
-            parts.append((C.DIM, f"→ {_fmt(e_t)}"))
+            parts.append((C.DIM, f"→ {timefmt.clock(e_t)}"))
         parts.extend(flags)                              # warnings BEFORE duration
         if s_t is not None:
             parts.append((C.DIM, _dur(s_t, e_t).strip() or "·"))   # duration pinned rightmost
@@ -514,7 +515,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             overlap = (prev is not None and s_t is not None
                        and prev.get("end") is not None and s_t < prev["end"])
             ptr     = f"{C.ACCENT}›{C.RESET}" if is_cur else " "
-            start_d = f"{C.DIM}{_fmt(s_t)}{C.RESET}" if s_t is not None else " " * 9
+            start_d = f"{C.DIM}{timefmt.clock(s_t)}{C.RESET}" if s_t is not None else " " * 9
             prefix  = f"{ptr}   {start_d}  "   # ptr + 3sp fills the chk slot → offset 15
             flags   = [(C.YELLOW, "⚠ overlap")] if overlap else []
             rhs_d, rhs_w = _rhs(s_t, e_t, is_cur, flags)
@@ -677,7 +678,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
                         if _mq['score'] == 0.0:    flags.append((C.DIM,    "? md"))
                         elif _mq['score'] < 0.75:  flags.append((C.YELLOW, "≈ md"))
 
-                start_d = f"{C.DIM}{_fmt(s_t)}{C.RESET}" if s_t is not None else " " * 9
+                start_d = f"{C.DIM}{timefmt.clock(s_t)}{C.RESET}" if s_t is not None else " " * 9
                 prefix  = f"{ptr} {chk} {start_d}  "
                 rhs_disp, rhs_w = _rhs(s_t, e_t, is_cur, flags)
 
