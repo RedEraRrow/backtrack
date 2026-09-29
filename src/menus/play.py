@@ -65,6 +65,23 @@ def _edit_paths(library: list, paths: list, value) -> tuple:
     return ("__edited__", value)
 
 
+def _list_result(res, library: list, paths, sort) -> bool:
+    """What every browse list does alike with select()'s result: rebuild after
+    an edit, re-sort (`sort()`), play or shuffle, or bulk-edit everything listed
+    (`paths()`, in the order shown). True when handled — go round again."""
+    if isinstance(res, tuple) and res[0] == "__edited__":
+        return True
+    if res == "__sort__":
+        sort()
+    elif res in _PLAY_ACTIONS:
+        _play_list(res, paths(), library)
+    elif res == "__bulk_edit__":
+        bulk_id3_manager(library, paths=paths())
+    else:
+        return False
+    return True
+
+
 def _play_list(action: str, paths: list, library: list) -> str | None:
     """Play a list in order (Play all), shuffled (Shuffle), or with its albums
     in random order but each album's tracks kept in order (Album shuffle)."""

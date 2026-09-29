@@ -14,7 +14,9 @@ from src.state import NAV_STACK
 from src.id3.id3_browser import inspect_tag_loop
 from src.id3.bulk_id3_manager import bulk_id3_manager
 from src.menus.common import BROWSE_CATEGORIES, _ALBUM_COLUMNS, _TRACK_COLUMNS, _album_artist_of, _commit, _idx_of, _menu_header, browse_menu_keys
-from src.menus.play import _PLAY_ACTIONS, _edit_paths, _list_actions, _play_list, _queue_shortcut_kwargs, _sorted_paths, play_queue
+from src.menus.play import (
+    _edit_paths, _list_actions, _list_result, _queue_shortcut_kwargs, _sorted_paths, play_queue,
+)
 from src.menus.sorting import _GROUP_SORTS, _pick_chain, _pick_sort, _sort_groups
 
 
@@ -153,16 +155,13 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     continue
                 break
 
-            if isinstance(selection, tuple) and selection[0] == "__edited__":
-                continue
-
             if selection == "__toggle__":
                 _letter_mode   = not _letter_mode
                 _letter_filter = None
                 _group_place.reset()
                 continue
 
-            if selection == "__sort__":
+            def _sort_this() -> None:
                 if _field == 'album':
                     _tracks = [t for n in names for t in grouped[n]]
                     _pick_chain(_cfg, resolve_levels(_tracks, _cfg)[1], _header)
@@ -170,18 +169,9 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     _new = _pick_sort(_group_sort, _GROUP_SORTS, _header)
                     _cfg["group_sorts"] = {**(_cfg.get("group_sorts") or {}), cat: _new}
                     _commit(_cfg, "group_sorts")
-                continue
 
-            if selection in _PLAY_ACTIONS:
-                _play_list(selection, _sorted_paths([grouped[n] for n in names], _cfg), library)
-                continue
-
-            if selection == "__bulk_edit__":
-                # dict.fromkeys: a track under two groups (multi-value genre/artist)
-                # is one entry here, not one per group it appears in.
-                paths = list(dict.fromkeys(
-                    s['path'] for name in names for s in grouped[name]))
-                bulk_id3_manager(library, paths=paths)
+            if _list_result(selection, library,
+                            lambda: _sorted_paths([grouped[n] for n in names], _cfg), _sort_this):
                 continue
 
             if _letter_mode and selection in letters_found:
@@ -242,20 +232,9 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     if not alb:
                         break
 
-                    if isinstance(alb, tuple) and alb[0] == "__edited__":
-                        continue
-
-                    if alb == "__sort__":
-                        _pick_chain(_cfg, resolve_levels(selected_songs, _cfg)[1],
-                                    _menu_header(selection, cat_choice))
-                        continue
-
-                    if alb in _PLAY_ACTIONS:
-                        _play_list(alb, _sorted_paths([selected_songs], _cfg), library)
-                        continue
-
-                    if alb == "__bulk_edit__":
-                        bulk_id3_manager(library, paths=[s['path'] for s in selected_songs])
+                    if _list_result(alb, library, lambda: _sorted_paths([selected_songs], _cfg),
+                                    lambda: _pick_chain(_cfg, resolve_levels(selected_songs, _cfg)[1],
+                                                        _menu_header(selection, cat_choice))):
                         continue
 
                     NAV_STACK.append(alb)
@@ -381,20 +360,9 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     if not path_choice_obj:
                         break
 
-                    if isinstance(path_choice_obj, tuple) and path_choice_obj[0] == "__edited__":
-                        continue
-
-                    if path_choice_obj == "__sort__":
-                        _pick_chain(_cfg, resolve_levels(final_tracks, _cfg)[1],
-                                    _menu_header(_track_context, _subtitle))
-                        continue
-
-                    if path_choice_obj in _PLAY_ACTIONS:
-                        _play_list(path_choice_obj, [t['path'] for t in final_tracks], library)
-                        continue
-
-                    if path_choice_obj == "__bulk_edit__":
-                        bulk_id3_manager(library, paths=[t['path'] for t in final_tracks])
+                    if _list_result(path_choice_obj, library, lambda: [t['path'] for t in final_tracks],
+                                    lambda: _pick_chain(_cfg, resolve_levels(final_tracks, _cfg)[1],
+                                                        _menu_header(_track_context, _subtitle))):
                         continue
 
                     # Disc header selected — play that disc directly.
