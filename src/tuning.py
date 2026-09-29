@@ -69,6 +69,9 @@ ART_FULL_IMAGE_SETTLE_S = 0.5
 TOAST_SHORT_S = 1.0
 TOAST_MEDIUM_S = 2.0
 TOAST_LONG_S = 2.5
+# Status-bar messages: an ordinary one, and a warning or error worth reading.
+STATUS_S = 3.0
+STATUS_WARNING_S = 5.0
 # The 'e' key's jump to near the end of a track.
 NEAR_END_JUMP_S = 35
 

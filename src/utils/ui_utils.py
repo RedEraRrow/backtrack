@@ -11,6 +11,7 @@ import unicodedata
 
 from src.state import NAV_STACK
 from src.utils.log import quietly
+from src import tuning as tune
 
 _resize_flag = False
 _np_layout_dirty = False
@@ -408,7 +409,7 @@ def clear_inline_progress() -> None:
     sys.stdout.flush()
 
 
-def show_status(message: str, duration: float = 3.0) -> None:
+def show_status(message: str, duration: float = tune.STATUS_S) -> None:
     """Flash a one-shot message in the status bar for `duration` seconds."""
     global _toast_message, _toast_expiry
     _toast_message = message

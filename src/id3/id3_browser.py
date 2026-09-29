@@ -44,6 +44,7 @@ from src.id3.id3_tag_handler import (
 from src.id3 import tag_registry as _reg
 from src.config import setting
 from src.utils.log import quietly
+from src import tuning as tune
 
 # Structured columns for the tag list. Column 1 holds the tag id AND the friendly
 # name as two styled segments (TAG bright + friendly dim) in a single column.
@@ -890,7 +891,7 @@ def inspect_tag_loop(
     # mp4/m4a that happens to carry a stray ID3 header, which would otherwise slip
     # past the per-load check and crash downstream) — one clean, early message.
     if not file_path.lower().endswith('.mp3'):
-        ui_utils.show_status("Tag editing is only supported for MP3 files.", duration=4.0)
+        ui_utils.show_status("Tag editing is only supported for MP3 files.", duration=tune.STATUS_WARNING_S)
         return
     if not drop_moved([file_path]):
         return
@@ -967,7 +968,7 @@ def inspect_tag_loop(
         try:
             audio = load_id3(file_path)   # untagged MP3 (guaranteed .mp3 above): a fresh tag
         except OSError as e:
-            ui_utils.show_status(f"Could not open file: {e}", duration=4.0)
+            ui_utils.show_status(f"Could not open file: {e}", duration=tune.STATUS_WARNING_S)
             break
         tags = sorted(audio.keys())
 

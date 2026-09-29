@@ -298,11 +298,11 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
     ui_utils.set_status(task_id, None)
     ui_utils.clear_inline_progress()
 
-    msg = f"Trimmed {count} file(s)."
+    msg = f"Trimmed {ui_utils.plural(count, 'file')}."
     if interrupted:
         msg += " Stopped early (Esc)."
     if errors:
-        msg += f" {errors} error(s)."
+        msg += f" {ui_utils.plural(errors, 'error')}."
     ui_utils.show_status(msg)
 
 
@@ -487,7 +487,7 @@ def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bou
         else:
             skipped += 1
 
-    msg = f"Seeded {seeded} track(s) from the {which} sting" + (" (learned from an earlier trim)." if used_history else ".")
+    msg = f"Seeded {ui_utils.plural(seeded, 'track')} from the {which} sting" + (" (learned from an earlier trim)." if used_history else ".")
     if skipped:
         msg += f" {skipped} left unseeded (low match score)."
     ui_utils.show_status(msg)
@@ -535,7 +535,7 @@ def _propagate_absolute_offset(paths: list[str], state: dict[str, _TrackState]) 
         seeded += 1
 
     ui_utils.show_status(
-        f"Propagated the same timestamps to {seeded} other track(s) — "
+        f"Propagated the same timestamps to {ui_utils.plural(seeded, 'other track')} — "
         f"review each one, padding may vary.")
 
 
@@ -712,7 +712,7 @@ def apply_replaygain_op(paths: list, library: list, header) -> None:
         with quietly():
             refresh_library_entry(library, path)
 
-    msg = f"Wrote gain tags for {count} file(s)."
+    msg = f"Wrote gain tags for {ui_utils.plural(count, 'file')}."
     if errors:
-        msg += f" {errors} error(s)."
+        msg += f" {ui_utils.plural(errors, 'error')}."
     ui_utils.show_status(msg)

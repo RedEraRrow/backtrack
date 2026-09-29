@@ -66,6 +66,7 @@ from src.lyrics.verify import (
     _AIR_GAP_THRESHOLD, _make_dead_air, _split_candidates, _split_seg_at, _verify_matchup,
 )
 from src.utils import timefmt
+from src import tuning as tune
 
 SEG, WORD, EDIT, TAP, AUDITION = 'seg', 'word', 'edit', 'tap', 'audition'
 
@@ -759,7 +760,7 @@ def lyrics_editor(mp3_path: str) -> None:
     track_name = track_title(mp3_path, read_tags=True)
     if aux.get('drift'):
         ui_utils.show_status(
-            "⚠ transcript.json changed since this working copy — W will overwrite it.", 6.0)
+            "⚠ transcript.json changed since this working copy — W will overwrite it.", duration=tune.STATUS_WARNING_S)
 
     # Lead-in offset for tap sync (compensates for reaction time)
     try:
@@ -1149,8 +1150,7 @@ def lyrics_editor(mp3_path: str) -> None:
             container = {}
         except json.JSONDecodeError:
             # Writing {} + segments would drop every other key it holds.
-            ui_utils.show_status(f"{os.path.basename(jpath)} can't be read as JSON; not overwritten.",
-                                 duration=5.0)
+            ui_utils.show_status(f"{os.path.basename(jpath)} can't be read as JSON; not overwritten.", duration=tune.STATUS_WARNING_S)
             return False
         spoken = [s for s in segs if s.get('kind') not in ('stage_dir', 'dead_air', 'credit')]
         container['segments']      = [_clean_seg(s) for s in spoken]
@@ -1176,7 +1176,7 @@ def lyrics_editor(mp3_path: str) -> None:
             write_text_atomic(jpath[:-5] + '.sync.json', json.dumps(sdata, indent=2, ensure_ascii=False))
         except Exception as exc:
             log.warning("couldn't write %s.sync.json: %s", jpath[:-5], exc)
-            ui_utils.show_status(f"Committed, but the .sync.json couldn't be written: {exc}", duration=5.0)
+            ui_utils.show_status(f"Committed, but the .sync.json couldn't be written: {exc}", duration=tune.STATUS_WARNING_S)
         return True
 
     def _pager(body: list, title: str) -> None:

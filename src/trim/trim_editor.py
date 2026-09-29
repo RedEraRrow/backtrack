@@ -50,6 +50,7 @@ from src.lyrics.time_fields import (
 from src.utils import timefmt
 from src.config import setting
 from src.utils.log import quietly
+from src import tuning as tune
 
 # Same shape as AUDITION's nudge scheme (lyrics_editor's _AUD_* steps): a coarse step
 # on ',' and '.', and a fine step that here is one frame rather than a fixed
@@ -531,7 +532,7 @@ def _run_marking_screen(
             flags['join_warned'] = True
             ui_utils.show_status(
                 "Approximate — a VLC seek isn't sample-accurate. Play back the "
-                "written file to check the real join.", duration=5.0)
+                "written file to check the real join.", duration=tune.STATUS_WARNING_S)
 
     def do_undo() -> None:
         if undo_stack:
@@ -604,7 +605,7 @@ def _run_marking_screen(
                    f" · removed head {head:.1f}s · tail {tail:.1f}s")
         if siblings:
             avg = sum(siblings) / len(siblings)
-            out.append(f"{indent}{C.DIM}Siblings: avg {avg:.0f}s over {len(siblings)} track(s)"
+            out.append(f"{indent}{C.DIM}Siblings: avg {avg:.0f}s over {ui_utils.plural(len(siblings), 'track')}"
                        f" · this track {track_length:.0f}s{C.RESET}")
         out.append("")
 

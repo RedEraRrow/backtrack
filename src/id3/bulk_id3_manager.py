@@ -75,7 +75,7 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
         """Which numbering to lay down."""
         sel = prompt.select("Renumber to:", choices=_MODES,
                             index=_MODES.index(state['mode_sel']),
-                            header=header(f"{len(ordered)} tracks in disc/track order"))
+                            header=header(f"{ui_utils.plural(len(ordered), 'track')} in disc/track order"))
         if not sel:
             return False
         state['mode_sel'] = sel
@@ -134,7 +134,7 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
 
     runs = bp.disc_ranges(ordered)
     disc_list = ', '.join(lab for _, _, lab in runs[:8]) + ('…' if len(runs) > 8 else '')
-    sub = f"{len(ordered)} tracks · discs {disc_list}"
+    sub = f"{ui_utils.plural(len(ordered), 'track')} · discs {disc_list}"
 
     mode_sel = prompt.select(
         "Disc numbering:",
@@ -261,7 +261,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
     cols = get_terminal_width()
 
-    ui_utils.show_status(f"Scanning {len(album_tracks)} tracks…")
+    ui_utils.show_status(f"Scanning {ui_utils.plural(len(album_tracks), 'track')}…")
     all_tag_counts: Counter = Counter()
     tag_values: dict = {}
     # The first real frame seen for each tag.  `tag_values` holds *display*
@@ -730,7 +730,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         if not apic_apply and not non_apic_tags:
             ui_utils.show_status("No tracks selected.")
             return
-    elif not prompt.confirm(f"Apply {op_display} to {len(album_tracks)} tracks?"):
+    elif not prompt.confirm(f"Apply {op_display} to {ui_utils.plural(len(album_tracks), 'track')}?"):
         return
 
     # For copy-from-first, read source frames once from the first track.

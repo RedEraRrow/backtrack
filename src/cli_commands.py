@@ -14,7 +14,7 @@ import os
 from src.cli import Arg, Cmd, Ctx, Flag
 from src.utils import output as out
 from src.utils import prompt_core as pc
-from src.utils import timefmt
+from src.utils import timefmt, ui_utils
 from src.config import setting
 from src.utils.log import quietly
 
@@ -43,7 +43,6 @@ _KV_COLS = [
 
 def _dur(seconds) -> str:
     """A track duration as m:ss, or blank when the cache has no length."""
-    from src.utils import ui_utils
     try:
         value = float(seconds or 0)
     except (TypeError, ValueError):
@@ -122,7 +121,7 @@ def _library_scan(ctx: Ctx) -> int:
     else:
         save_library_cache(library, _async=False)
     out.record('library', {'tracks': len(library), 'directories': roots},
-               human=f"  Scanned {len(library)} tracks in {len(roots)} "
+               human=f"  Scanned {ui_utils.plural(len(library), 'track')} in {len(roots)} "
                      f"director{'y' if len(roots) == 1 else 'ies'}.")
     return out.OK
 
@@ -146,7 +145,6 @@ def _library_stat(ctx: Ctx) -> int:
     """Counts and totals for the whole library."""
     from src.config import music_dirs
     from src.music_library import CACHE_PATH, get_grouped_data
-    from src.utils import ui_utils
 
     library = ctx.library
     total = sum(float(s.get('duration') or 0) for s in library)
@@ -546,10 +544,10 @@ def _tag_apply(ctx: Ctx, operation: str, value=None) -> int:
         for path in paths:
             out.event('plan', path=path, operation=operation, tags=tags,
                       detail=f"{verb.lower()} {', '.join(tags)} on {os.path.basename(path)}")
-        out.note(f"{len(paths)} files would change.")
+        out.note(f"{ui_utils.plural(len(paths), 'file')} would change.")
         return out.OK
     if operation == 'delete' and not ctx.confirm(
-            f"Delete {', '.join(tags)} from {len(paths)} file(s)?"):
+            f"Delete {', '.join(tags)} from {ui_utils.plural(len(paths), 'file')}?"):
         out.note("Left alone.")
         return out.OK
 
@@ -561,7 +559,6 @@ def _tag_apply(ctx: Ctx, operation: str, value=None) -> int:
         fail += bad
         out.event('written' if good and not bad else 'error', path=path,
                   detail=f"{', '.join(tags)} on {os.path.basename(path)}")
-    from src.utils import ui_utils
     out.note(f"{verb}d {ui_utils.plural(ok, 'tag')} across "
              f"{ui_utils.plural(len(paths), 'file')}."
              + (f" {ui_utils.plural(fail, 'failure')}." if fail else ""))
@@ -619,7 +616,7 @@ def _tag_copy(ctx: Ctx) -> int:
         for path in targets:
             out.event('plan', path=path,
                       detail=f"{len(frames)} frames from {os.path.basename(source)}")
-        out.note(f"{len(targets)} files would change.")
+        out.note(f"{ui_utils.plural(len(targets), 'file')} would change.")
         return out.OK
 
     written = errors = 0
@@ -641,7 +638,6 @@ def _tag_copy(ctx: Ctx) -> int:
         with quietly():
             refresh_library_entry(ctx.library, path)
         out.event('written', path=path, detail=os.path.basename(path))
-    from src.utils import ui_utils
     out.note(f"Copied {ui_utils.plural(len(frames), 'tag')} onto "
              f"{ui_utils.plural(written, 'file')}."
              + (f" {ui_utils.plural(errors, 'error')}." if errors else ""))
@@ -659,7 +655,6 @@ def _run_plan(ctx: Ctx, plan, writer, verb: str, **summary) -> int:
     so `--json` streams rather than buffering.
     """
     from src.id3 import bulk_ops as bo
-    from src.utils import ui_utils
 
     if plan.message:
         out.note(plan.message)
@@ -696,7 +691,6 @@ def _reporter(ctx: Ctx, total: int):
     It is drawn only when stdout is a terminal, so a pipe and `--json` stay
     clean.
     """
-    from src.utils import ui_utils
 
     interactive = out.is_tty() and not out.json_mode() and not ctx.args.quiet
     done = [0]
@@ -716,7 +710,6 @@ def _reporter(ctx: Ctx, total: int):
 
 def _clear_progress(ctx: Ctx) -> None:
     """Erase the inline progress line, if one was drawn."""
-    from src.utils import ui_utils
     if out.is_tty() and not out.json_mode() and not ctx.args.quiet:
         ui_utils.clear_inline_progress()
 
@@ -877,7 +870,6 @@ def _bulk_sortorders(ctx: Ctx) -> int:
     # the dry run and the confirmation; the write goes through in one call.
     if plan.message or ctx.dry_run():
         return _run_plan(ctx, plan, lambda c: None, "Wrote sort orders for")
-    from src.utils import ui_utils
     if not ctx.confirm(f"Write sort orders on "
                        f"{ui_utils.plural(len(changes), 'file')}?", default=True):
         out.note("Left alone.")
@@ -897,7 +889,6 @@ def _bulk_rename(ctx: Ctx) -> int:
     from src.id3 import bulk_ops as bo
     from src.id3 import file_namer as fnm
     from src.id3 import tag_writer as tw
-    from src.utils import ui_utils
 
     paths, code = _bulk_paths(ctx)
     if not paths:
@@ -942,7 +933,6 @@ def _bulk_art(ctx: Ctx) -> int:
     from src.id3 import bulk_ops as bo
     from src.id3 import cover_matcher as cm
     from src.id3 import tag_writer as tw
-    from src.utils import ui_utils
 
     paths, code = _bulk_paths(ctx)
     if not paths:
@@ -1009,7 +999,6 @@ def _bulk_assign(ctx: Ctx) -> int:
     from src import bulk_pattern as bp
     from src.id3 import bulk_ops as bo
     from src.id3 import tag_writer as tw
-    from src.utils import ui_utils
 
     paths, code = _bulk_paths(ctx)
     if not paths:
@@ -1265,7 +1254,6 @@ def _play_here(ctx: Ctx, paths: list, titles: list) -> int:
     import time
 
     from src.playback.session import SESSION
-    from src.utils import ui_utils
 
     SESSION.bind_config(ctx.config)
     SESSION.start(paths[0], queue=paths, titles=titles, index=0,
@@ -1311,7 +1299,6 @@ def _queue_next(ctx: Ctx) -> int:
 
 def _queue_send(ctx: Ctx, command: str, verb: str) -> int:
     """The shared body of `queue add` and `queue next`."""
-    from src.utils import ui_utils
 
     songs = _resolve_queue(ctx)
     if not songs:
@@ -1821,7 +1808,6 @@ def _feed_fetch(ctx: Ctx) -> int:
 def _feed_sync(ctx: Ctx) -> int:
     """Download everything new from one feed, or all of them."""
     from src import feed as fd
-    from src.utils import ui_utils
 
     feeds = fd.load_feeds()
     # A named feed that does not exist is not found, whether or not any others
@@ -1902,7 +1888,6 @@ def _download_one(ctx: Ctx, item, target: str, feed_title: str) -> None:
     from src import feed as fd
     from src.id3 import tag_writer as tw
     from src.music_library import refresh_library_entry
-    from src.utils import ui_utils
 
     interactive = out.is_tty() and not out.json_mode() and not ctx.args.quiet
     label = item.parsed.title or item.parsed.raw

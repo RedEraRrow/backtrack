@@ -12,6 +12,7 @@ from src.id3 import bulk_ops as bo
 from src import bulk_pattern as bp
 from src.utils import ui_utils
 from src.utils.log import log, quietly
+from src import tuning as tune
 from src.music_library import refresh_library_entry
 from src.id3.bulk_common import _RENUMBER_COLUMNS, _walk
 
@@ -100,7 +101,7 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
         choices.append(prompt.Choice(title="＋  Add person to all files…", value="__add__"))
         choices.append(prompt.Choice(title="✔ Save changes", value="__save__"))
 
-        sub = f"{total} file(s) · Enter a row to edit/remove"
+        sub = f"{ui_utils.plural(total, 'file')} · Enter a row to edit/remove"
         sel = prompt.select(f"Bulk edit {label}:", choices=choices,
                             columns=_PEOPLE_COLUMNS, header=header(sub),
                             shortcuts={'a': '__add__'}, extra_hints={'a': 'add'})
@@ -174,7 +175,7 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
         changed += 1
         refresh_library_entry(library, p)
 
-    ui_utils.show_status(f"Updated {label} in {changed} file(s)."
+    ui_utils.show_status(f"Updated {label} in {ui_utils.plural(changed, 'file')}."
                          + (f" {failed} couldn't be written." if failed else ""))
 
 
@@ -224,7 +225,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
             frozenset({'total'}): 'the totals differ, the number is shared',
             frozenset({'current', 'total'}): 'numbers and totals both differ',
             }[frozenset(varies)]
-    res = prompt.fraction_edit(f"{label} across {len(existing)} file(s) — {note}:",
+    res = prompt.fraction_edit(f"{label} across {ui_utils.plural(len(existing), 'file')} — {note}:",
                                tag=base_id, value=seed, varies=varies)
     if res is None or res is prompt.MODE_TOGGLE:
         return
@@ -290,11 +291,11 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
         except Exception:
             errors += 1
 
-    msg = f"Set {label} on {count} file(s)."
+    msg = f"Set {label} on {ui_utils.plural(count, 'file')}."
     if skipped_fmt:
         msg += f" {skipped_fmt} non-MP3 skipped."
     if errors:
-        msg += f" {errors} error(s)."
+        msg += f" {ui_utils.plural(errors, 'error')}."
     ui_utils.show_status(msg)
 
 
@@ -466,7 +467,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             if row_errors:
                 ui_utils.show_status("  ·  ".join(row_errors[:3])
                                      + (f"  (+{len(row_errors) - 3} more)"
-                                        if len(row_errors) > 3 else ""), duration=5.0)
+                                        if len(row_errors) > 3 else ""), duration=tune.STATUS_WARNING_S)
                 if not specs:
                     return False
                 if not prompt.confirm(f"{len(row_errors)} row(s) unusable — "

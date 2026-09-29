@@ -673,7 +673,7 @@ def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]],
         audio.add(frame)
         save_id3(audio, file_path)   # v2.4 iff a multi-value frame is present
     except Exception as exc:
-        ui_utils.show_status(f"Failed to save SYLT: {exc}", duration=4.0)
+        ui_utils.show_status(f"Failed to save SYLT: {exc}", duration=tune.STATUS_WARNING_S)
         raise
 
 

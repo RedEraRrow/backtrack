@@ -14,6 +14,7 @@ from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from src.config import setting
 from src.utils.log import quietly
+from src import tuning as tune
 
 
 
@@ -221,7 +222,7 @@ def drop_moved(paths: list) -> list:
         msg = f"“{os.path.basename(missing[0])}” was moved or renamed — library updated."
     else:
         msg = f"{len(missing)} files were moved or renamed — library updated."
-    ui_utils.show_status(msg, duration=5.0)
+    ui_utils.show_status(msg, duration=tune.STATUS_WARNING_S)
     return present
 
 
@@ -645,7 +646,7 @@ def save_library_cache(library: list, _async: bool = False) -> None:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             from src.utils.ui_utils import show_status as _show
-            _show(f"Cache save error: {e}", duration=4.0)
+            _show(f"Cache save error: {e}", duration=tune.STATUS_WARNING_S)
 
     if _async:
         threading.Thread(target=_write, daemon=True).start()

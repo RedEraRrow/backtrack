@@ -100,7 +100,7 @@ def _run(config: dict) -> None:
     library = load_library_cache()
 
     if library:
-        ui_utils.show_status(f"Library: {len(library)} tracks.")
+        ui_utils.show_status(f"Library: {ui_utils.plural(len(library), 'track')}.")
         # Keep the cache fresh in the background (adds/removes/edits).
         start_background_sync(library)
 
@@ -135,7 +135,7 @@ def _run(config: dict) -> None:
     )
 
     save_library_cache(library, _async=False)
-    ui_utils.show_status(f"Library built: {len(library)} tracks.")
+    ui_utils.show_status(f"Library built: {ui_utils.plural(len(library), 'track')}.")
 
     start_background_sync(library)
 

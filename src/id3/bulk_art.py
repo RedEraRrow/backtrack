@@ -32,7 +32,7 @@ def set_picture_type_op(paths: list, library: list, header) -> None:
     seen = ' · '.join(f"{_picture_type_name(t)} ×{n}" for t, n in counts.most_common())
 
     pic_type = _prompt_for_picture_type(
-        initial=3, header=lambda: header(f"{len(art)} file(s) with art · {seen}")())
+        initial=3, header=lambda: header(f"{ui_utils.plural(len(art), 'file')} with art · {seen}")())
     if pic_type is None:
         return
 
@@ -43,7 +43,7 @@ def set_picture_type_op(paths: list, library: list, header) -> None:
 
     preview_and_apply(plan, library, header, lambda c: tw.retype_cover(c.path, pic_type),
                       f"Set {_picture_type_name(pic_type)} on",
-                      count=f"{len(art)} file(s) with art", changing="to retype",
+                      count=f"{ui_utils.plural(len(art), 'file')} with art", changing="to retype",
                       unchanged=lambda c: "already correct", skipped=skipped,
                       skipped_note="without art or not MP3")
 
@@ -285,7 +285,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             here down, a counted run from here, or this track alone.
             """
             below = shown[shown.index(path):]
-            choices = [prompt.Choice(title=f"All {len(shown)} tracks", value="all")]
+            choices = [prompt.Choice(title=f"All {ui_utils.plural(len(shown), 'track')}", value="all")]
             if len(below) > 1 and len(below) != len(shown):
                 choices.append(prompt.Choice(
                     title=f"This track and the {len(below) - 1} below it", value="down"))
