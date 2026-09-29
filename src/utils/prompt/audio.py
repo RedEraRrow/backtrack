@@ -2,12 +2,14 @@
 from __future__ import annotations
 import sys
 from src.utils.prompt_core import (
-    _IS_WINDOWS, _get_term_attrs, _set_raw, _restore_term_attrs, _wait_for_keypress, _read_key,
-    _cols, _Widget, _hint_pin_target, screen_takeover_next,
+    _get_term_attrs, _set_raw, _restore_term_attrs, _wait_for_keypress, _read_key, _cols,
+    _Widget, _hint_pin_target, screen_takeover_next,
 )
 from src.utils import ui_utils
 from src.state import QuitToTerminal
-from src.utils.prompt.chrome import CHROME_HANDLED, CHROME_REDRAW, append_chrome, chrome_hint_lines, consume_chrome
+from src.utils.prompt.chrome import (
+    append_chrome, CHROME_HANDLED, chrome_hint_lines, CHROME_REDRAW, consume_chrome, disable_mouse, enable_mouse,
+)
 from src.utils.prompt.text import text
 from src.utils.prompt_core import C
 
@@ -263,8 +265,7 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
     result = None
     try:
         _set_raw(fd)
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
@@ -306,8 +307,7 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
                 gain = 0.0; _render()
 
     finally:
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 
@@ -371,8 +371,7 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
     result = None
     try:
         _set_raw(fd)
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
@@ -432,12 +431,10 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
                 note = f"preset: {name}"; _render()
             elif key in ('a', 'A'):
                 _restore_term_attrs(fd, old)
-                if not _IS_WINDOWS:
-                    sys.stdout.write("\033[?1000l\033[?1006l")
+                disable_mouse()
                 freq_str = text("Add band frequency (Hz):")
                 _set_raw(fd)
-                if not _IS_WINDOWS:
-                    sys.stdout.write("\033[?1000h\033[?1006h")
+                enable_mouse()
                 screen_takeover_next()   # paint over the previous screen, no flash
                 w.anchor_reset()
                 if freq_str:
@@ -466,8 +463,7 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
                     note = ""; _render()
 
     finally:
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 

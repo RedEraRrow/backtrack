@@ -4,16 +4,17 @@ import re
 import sys
 import os
 from src.utils.prompt_core import (
-    _IS_WINDOWS, _get_term_attrs, _set_raw, _restore_term_attrs, _wait_for_keypress, _hint,
-    block_cursor, block_cursor_width, _read_key, _visible_rows, _cols, _Widget,
-    add_hint_click_cells, now_playing_click_action, _hint_pin_target, screen_takeover_next,
-    add_help_corner,
+    _get_term_attrs, _set_raw, _restore_term_attrs, _wait_for_keypress, _hint, block_cursor,
+    block_cursor_width, _read_key, _visible_rows, _cols, _Widget, add_hint_click_cells,
+    now_playing_click_action, _hint_pin_target, screen_takeover_next, add_help_corner,
 )
 from src.utils import ui_utils
 from src.utils import datetime_parse as dtp
 from src.state import QuitToTerminal
 from src.utils.prompt import chrome
-from src.utils.prompt.chrome import CHROME_HANDLED, CHROME_REDRAW, MODE_TOGGLE, MOVE_DOWN_KEY, MOVE_HINT, MOVE_UP_KEY, _MODE_TOGGLE_KEY, chrome_hint_pairs, consume_chrome
+from src.utils.prompt.chrome import (
+    CHROME_HANDLED, chrome_hint_pairs, CHROME_REDRAW, consume_chrome, disable_mouse, enable_mouse, MODE_TOGGLE, _MODE_TOGGLE_KEY, MOVE_DOWN_KEY, MOVE_HINT, MOVE_UP_KEY,
+)
 from src.utils.prompt.lists import confirm
 from src.utils.prompt.text import path, system_editor_edit
 from src.utils.prompt_core import C
@@ -561,8 +562,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
     _le_last_click: int | None = None
     try:
         _set_raw(fd)
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         screen_takeover_next()   # paint over the previous screen, no flash
         _render()
 
@@ -812,8 +812,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     _act = now_playing_click_action(_mr, _mc)
                     if _act == 'open' and chrome._player_opener is not None:
                         chrome._player_opener()
-                        if not _IS_WINDOWS:
-                            sys.stdout.write("\033[?1000h\033[?1006h")
+                        enable_mouse()
                         sys.stdout.flush()
                         w.anchor_reset(); _le_last_click = None; _render(); continue
                     if _act in ('playpause', 'next', 'prev') and chrome._transport_handler is not None:
@@ -956,8 +955,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                             except OSError:
                                 ui_utils.show_status(f"Couldn't read {file_path}")
                                 text_input = None
-                    if not _IS_WINDOWS:
-                        sys.stdout.write("\033[?1000h\033[?1006h")   # re-arm mouse
+                    enable_mouse()   # re-arm mouse
                     screen_takeover_next()   # paint over the previous screen, no flash
                     w.anchor_reset()
                     if text_input:
@@ -975,8 +973,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     break
 
     finally:
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 

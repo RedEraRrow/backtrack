@@ -5,15 +5,16 @@ import re
 import sys
 from typing import Any, Callable, Literal, overload
 from src.utils.prompt_core import (
-    _IS_WINDOWS, _COLUMNS_MAX_WIDTH, _EDGE_MARGIN, _get_term_attrs, _set_raw,
-    _restore_term_attrs, _wait_for_keypress, _table_widths, _render_table_row, _clip_ansi,
-    _norm, block_cursor, _read_key, _visible_rows, _cols, _Widget, _hint_pin_target,
-    screen_takeover_next,
+    _COLUMNS_MAX_WIDTH, _EDGE_MARGIN, _get_term_attrs, _set_raw, _restore_term_attrs,
+    _wait_for_keypress, _table_widths, _render_table_row, _clip_ansi, _norm, block_cursor,
+    _read_key, _visible_rows, _cols, _Widget, _hint_pin_target, screen_takeover_next,
 )
 from src.utils import ui_utils
 from src.state import QuitToTerminal
 from src.utils.prompt import chrome
-from src.utils.prompt.chrome import CHROME_HANDLED, CHROME_REDRAW, MOVE_DOWN_KEY, MOVE_HINT, MOVE_UP_KEY, _plain, append_chrome, chrome_hint_lines, consume_chrome
+from src.utils.prompt.chrome import (
+    append_chrome, CHROME_HANDLED, chrome_hint_lines, CHROME_REDRAW, consume_chrome, disable_mouse, enable_mouse, MOVE_DOWN_KEY, MOVE_HINT, MOVE_UP_KEY, _plain,
+)
 from src.utils.prompt_core import C
 
 
@@ -400,8 +401,7 @@ def select(message: str, choices: list, *,
     _sel_last_click: int | None = None
     try:
         _set_raw(fd)
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         screen_takeover_next()   # paint over the previous screen, no flash
         w.render(_lines())
 
@@ -525,8 +525,7 @@ def select(message: str, choices: list, *,
                 _ret = on_inspect(items[cursor].value)
                 if _ret is not None:
                     result = _ret; break
-                if not _IS_WINDOWS:
-                    sys.stdout.write("\033[?1000h\033[?1006h")
+                enable_mouse()
                 sys.stdout.flush()
                 _sel_last_click = None
                 w.anchor_reset()
@@ -560,8 +559,7 @@ def select(message: str, choices: list, *,
                         and r >= ui_utils.get_terminal_height()
                         and ui_utils.has_background_tasks()):
                     chrome._notification_opener()
-                    if not _IS_WINDOWS:
-                        sys.stdout.write("\033[?1000h\033[?1006h")
+                    enable_mouse()
                     sys.stdout.flush()
                     _sel_last_click = None
                     w.anchor_reset()
@@ -619,8 +617,7 @@ def select(message: str, choices: list, *,
                     w.render(_lines())
 
     finally:
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
         if place is not None and items:
@@ -840,8 +837,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
     result = None
     try:
         _set_raw(fd)
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         screen_takeover_next()   # paint over the previous screen, no flash
         w.render(_lines())
 
@@ -958,8 +954,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
                 query.insert(qpos, key); qpos += 1
                 _recompute(); w.render(_lines())
     finally:
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 
@@ -989,8 +984,7 @@ def confirm(message: str, default: bool = False) -> bool:
 
     try:
         _set_raw(fd)
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         _render()
         while True:
             if not _wait_for_keypress(0.05):
@@ -1018,8 +1012,7 @@ def confirm(message: str, default: bool = False) -> bool:
             elif key.lower() == 'y': result = True;  break
             elif key.lower() == 'n': result = False; break
     finally:
-        if not _IS_WINDOWS:
-            sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 
