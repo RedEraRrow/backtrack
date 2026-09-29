@@ -10,7 +10,13 @@ class SeekKeysTest(unittest.TestCase):
         self.assertEqual(_seek_step('', 'D', 100, 10), (-5, 'Seek Backward -5s'))
         self.assertEqual([_seek_step(k, None, 100, 10)[0] for k in ',.jJlL'], [-30, 30, -1, -1, 1, 1])
         from src import tuning as tune
-        self.assertEqual(_seek_step('e', None, 100, 10)[0], 100 - tune.NEAR_END_JUMP_S - 10)
+        from src.playback import playback_ui
+        self.assertIsNone(_seek_step('e', None, 100, 10))          # Diagnostics off
+        playback_ui._ui_state['debug'] = True
+        try:
+            self.assertEqual(_seek_step('e', None, 100, 10)[0], 100 - tune.NEAR_END_JUMP_S - 10)
+        finally:
+            playback_ui._ui_state['debug'] = False
         self.assertIsNone(_seek_step('p', None, 100, 10))
         self.assertIsNone(_seek_step('', None, 100, 10))
 

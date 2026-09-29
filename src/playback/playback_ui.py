@@ -110,9 +110,9 @@ _ui_state = {
     'show_lyrics': False,
     'show_queue': False,
     'pane_mode': 'off',   # off → lyrics → queue → lyrics+credits (single-key cycle)
-    # False in a joined window's player view, which draws no side panel — so
-    # its hint bar doesn't offer `w` (a hint shown is a key that works).
-    'panel_keys': True,
+    # False in a joined window's player view: lyrics are only painted by the
+    # window playing the audio, so there the panel offers credits and the queue.
+    'lyrics_pane': True,
 }
 # Clickable-control geometry (set by _controls_line / the draw): transport-icon
 # columns on the controls row, the active hint pairs, and the hint-glyph cell map.
@@ -261,7 +261,7 @@ def draw_volume_bar(volume: int) -> None:
 def toggle_metadata() -> None:
     """Toggle display of the extended metadata details line."""
     _ui_state['show_metadata'] = not _ui_state['show_metadata']
-    _refresh_debug_flag()
+    refresh_debug_flag()
 def toggle_help() -> None:
     """Show or hide the hint bar — the app-wide switch, so every screen follows."""
     pc.toggle_hints()
@@ -274,9 +274,10 @@ def _set_pane_mode(mode: str) -> None:
 
 
 def cycle_right_pane(has_lyrics: bool = True, has_credits: bool = True,
-                     has_queue_flag: bool = True) -> None:
+                     has_queue_flag: bool = True) -> bool:
     """Advance the right column through the available views with a single key:
-    off → lyrics → queue → lyrics+credits → off (states with no content are skipped)."""
+    off → lyrics → queue → lyrics+credits → off (states with no content are skipped).
+    False when there is nothing to switch to, so the caller need not redraw."""
     states = ['off']
     if has_lyrics:
         states.append('lyrics')
@@ -290,13 +291,17 @@ def cycle_right_pane(has_lyrics: bool = True, has_credits: bool = True,
     cur = _ui_state.get('pane_mode', 'off')
     if cur not in states:
         cur = 'off'
-    _set_pane_mode(states[(states.index(cur) + 1) % len(states)])
+    new = states[(states.index(cur) + 1) % len(states)]
+    if new == _ui_state.get('pane_mode', 'off'):
+        return False
+    _set_pane_mode(new)
+    return True
 
 
 _lyric_src: dict = {'track': '', 'files': [], 'estimated': False}
 
 
-def _refresh_debug_flag() -> None:
+def refresh_debug_flag() -> None:
     """Re-read the `debug` config key into `_ui_state`.
 
     Called when a track loads and when the metadata panel is toggled — both rare,
@@ -322,7 +327,7 @@ def set_lyric_sources(track: str, files: list[str], estimated: bool = False) -> 
     track. Naming another episode's files would be worse than naming none, and a
     module-level record outlives the track that set it.
     """
-    _refresh_debug_flag()
+    refresh_debug_flag()
     _lyric_src['track'] = track or ''
     _lyric_src['files'] = [f for f in (files or []) if f]
     _lyric_src['estimated'] = estimated
@@ -418,11 +423,11 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
         ('←→', '±5s'),
         ('j/l', '±1s'),
         (',/.', '±30s'),
-        ('e', 'last 35s'),          # TEMP shortcut
-        ('+/-', 'volume'),
-        ('m', 'meta'),
     ]
-    if _ui_state['panel_keys'] and (has_lyrics or has_credits or has_queue()):
+    if _ui_state['debug']:                       # Diagnostics: checking end credits
+        hint_args.append(('e', f'last {tune.NEAR_END_JUMP_S}s'))
+    hint_args += [('+/-', 'volume'), ('m', 'meta')]
+    if has_lyrics or has_credits or has_queue():
         hint_args.append(('w', 'panel'))
     hint_args += [('i', 'hide help'), ('[/]', 'prev/next'), ('s', 'stop'), ('b', 'back'), ('q', 'quit')]
 
@@ -700,7 +705,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     cast_people = _get_people(audio, 'TMCL')
     crew_people = _get_people(audio, 'TIPL')
     has_cast = bool(cast_people or crew_people)
-    has_lyrics = bool(audio.getall('SYLT') or audio.getall('USLT'))
+    has_lyrics = _ui_state['lyrics_pane'] and bool(audio.getall('SYLT') or audio.getall('USLT'))
 
     row_cursor = 0
 

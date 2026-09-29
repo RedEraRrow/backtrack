@@ -5,8 +5,9 @@ from pathlib import Path
 
 DEFAULT_CONFIG = {
     # Diagnostics for working on the library itself, not for listening: the
-    # player names the files a track's lyrics came from, and anything added later
-    # that answers "why is it doing that" rather than "what is playing".
+    # player names the files a track's lyrics came from, `e` jumps to near the end
+    # (checking end credits), and anything added later that answers "why is it
+    # doing that" rather than "what is playing".
     "debug": False,
     "history_enabled": True,
     "lyric_lead_in": 2.0,

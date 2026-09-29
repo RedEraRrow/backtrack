@@ -133,10 +133,10 @@ _SEEK_KEYS = {',': -30, '.': 30, 'j': -1, 'J': -1, 'l': 1, 'L': 1}
 
 def _seek_step(key: str, arrow, duration: float, elapsed: float) -> tuple[float, str] | None:
     """The seek a player key asks for, as (seconds to move, toast), or None when
-    the key isn't a seek. `e` (temporary) jumps to near the end."""
+    the key isn't a seek. `e`, with Diagnostics on, jumps to near the end."""
     if arrow in ('C', 'D'):
         secs = 5 if arrow == 'C' else -5
-    elif key in ('e', 'E'):
+    elif key in ('e', 'E') and playback_ui._ui_state['debug']:
         return (duration - tune.NEAR_END_JUMP_S) - elapsed, f'Skip to last {tune.NEAR_END_JUMP_S}s'
     elif key in _SEEK_KEYS:
         secs = _SEEK_KEYS[key]
@@ -187,7 +187,8 @@ def open_client_player_view() -> dict:
     toast = ""
     toast_expiry = 0.0
     width = ui_utils.get_terminal_size()[0]
-    playback_ui._ui_state['panel_keys'] = False
+    playback_ui._ui_state['lyrics_pane'] = False
+    playback_ui.refresh_debug_flag()
     try:
         with raw_mode(sys.stdin):
             sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
@@ -299,9 +300,14 @@ def open_client_player_view() -> dict:
                         ui_utils.clear_screen()
                         (toggle_help if key.lower() == 'i' else toggle_metadata)()
                         last_sig = None                # redraw with the new layout
+                    elif key.lower() == 'w' and audio is not None:
+                        if cycle_right_pane(False, bool(audio.getall('TMCL') or audio.getall('TIPL')),
+                                            playback_ui.has_queue()):
+                            ui_utils.clear_screen()
+                            last_sig = None
                 time.sleep(_LOOP_TICK_S)
     finally:
-        playback_ui._ui_state['panel_keys'] = True
+        playback_ui._ui_state['lyrics_pane'] = True
         sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse on exit
         sys.stdout.flush()
         remote.release_view(token)
@@ -606,9 +612,9 @@ def _player_view_loop() -> dict:
                     toggle_help()
                     _redraw_full()
                 elif key.lower() == 'w':
-                    ui_utils.clear_screen()
-                    cycle_right_pane(has_lyrics, has_credits, playback_ui.has_queue())
-                    _redraw_full()
+                    if cycle_right_pane(has_lyrics, has_credits, playback_ui.has_queue()):
+                        ui_utils.clear_screen()
+                        _redraw_full()
                 elif key.lower() == 'm':
                     ui_utils.clear_screen()
                     toggle_metadata()
