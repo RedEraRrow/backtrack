@@ -64,7 +64,8 @@ and has an ID3/MP4 tag editor with bulk operations for whole albums.
 - **ffmpeg** on your `PATH` (or set `trim_ffmpeg_path` in config): only needed for trimming and
   ReplayGain. Without it those options are hidden and everything else works as normal.
 - Python packages from `requirements.txt`: `mutagen`, `python-vlc`, `opencv-python`, `numpy`,
-  `pyperclip`, `colorama`. Album art is rendered in-project with OpenCV and NumPy, so no external
+  `pyperclip`, `colorama`, and `backbone` (the back* tools' shared terminal library, fetched from
+  GitHub). Album art is rendered in-project with OpenCV and NumPy, so no external
   image viewer is needed.
 
 ## Installation

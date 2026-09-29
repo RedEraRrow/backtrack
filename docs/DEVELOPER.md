@@ -50,6 +50,9 @@ screens are thin layers over them. This is what lets most behaviour be tested he
 
 ### Project layout
 
+The terminal layer every back* tool shares (colours, prompt widgets, the painter, dates, logging,
+CLI output) lives in [backbone](https://github.com/RedEraRrow/backbone), not here. Change it there.
+
 ```
 backtrack/
 ├── main.py                       # Root launcher → src.main:main (console-script: `backtrack`)
@@ -63,7 +66,6 @@ backtrack/
 │   ├── music_library.py          # Library scan, ID3/MP4 extraction, background sync + reconcile, cache
 │   ├── search.py                 # PURE fuzzy matcher/ranker (tiered exact→prefix→word→substring→typo)
 │   ├── bulk_pattern.py           # PURE range/every-N/date-schedule assignment + track renumbering
-│   ├── state.py                  # Shared nav state (NAV_STACK), QuitToTerminal
 │   ├── tuning.py                 # Every timing, threshold and weight the app is tuned on
 │   ├── art/
 │   │   └── album_art.py          # Half-block art rendering (OpenCV → ANSI); APIC extraction
@@ -112,32 +114,10 @@ backtrack/
 │   │   ├── now_playing_box.py    # The mini-player above the status bar on every menu screen
 │   │   ├── player_art.py         # The player's art: half-blocks, or the real image on iTerm2
 │   │   └── player_geom.py        # Where the last frame put things (art, bars, panes) for clicks and redraws
-│   ├── trim/
-│   │   ├── trim.py               # Lossless MP3 trim engine: ffmpeg stream copy, tag copy, backups
-│   │   ├── trim_editor.py        # Single-track trim screen (`t` in the tag editor)
-│   │   └── trim_bulk.py          # Bulk trim (detection, sting seeding, the conveyor), ReplayGain
-│   └── utils/
-│       ├── prompt_core.py        # Terminal primitives: raw mode, key decode, _Widget, table layout,
-│       │                         #   hint engine, edit_line, block_cursor, the persistent screen model
-│       ├── prompt/               # The widget library built on prompt_core (see "Prompt widgets")
-│       │   ├── __init__.py       #   re-exports the widgets as `prompt.*`
-│       │   ├── chrome.py         #   hint bar, help corner, transport keys, mouse, MODE_TOGGLE
-│       │   ├── lists.py          #   select, live_select, confirm, ListPlace
-│       │   ├── text.py           #   text, path, system_editor_edit
-│       │   ├── list_edit.py      #   the multi-column row editor
-│       │   ├── dates.py          #   calendar_select, datetime_edit
-│       │   ├── values.py         #   fraction_edit, time_edit, number_edit, rating_edit
-│       │   └── audio.py          #   rva2_edit, equaliser_edit
-│       ├── tz_widget.py          # Full-screen world-map timezone picker (runnable standalone)
-│       ├── terminal_input.py     # Raw key reads and escape-sequence decoding
-│       ├── datetime_parse.py     # The one date/time parser (precision-aware, human errors)
-│       ├── timefmt.py            # clock (mm:ss.mmm) and srt (HH:MM:SS,mmm)
-│       ├── numbering.py          # Arabic, roman or written-out numbers for the patterning tools
-│       ├── files.py              # Atomic writes (write_text_atomic)
-│       ├── log.py                # The diagnostics log, and `with quietly():`
-│       ├── keyboard.py           # Detects the keyboard layout family (typo scoring in search.py)
-│       ├── output.py             # The CLI's one output path: human table / JSON / NDJSON, exit codes
-│       └── ui_utils.py           # ANSI helpers, accent colour, terminal size, margins, status bar, plural
+│   └── trim/
+│       ├── trim.py               # Lossless MP3 trim engine: ffmpeg stream copy, tag copy, backups
+│       ├── trim_editor.py        # Single-track trim screen (`t` in the tag editor)
+│       └── trim_bulk.py          # Bulk trim (detection, sting seeding, the conveyor), ReplayGain
 ├── tools/
 │   ├── align_script.py           # Time a markdown script against its audio → transcript JSON
 │   └── check_alignment.py        # Sanity-check a transcript align_script.py produced
@@ -183,8 +163,8 @@ app against a throwaway config/cache without touching your own.
   |---|---|
   | Read a setting | `config.setting(cfg, key)`. Defaults live only in `DEFAULT_CONFIG`; never `cfg.get(key, default)` |
   | Save settings | `config.update_config(changes)` with just what changed, never the whole dict back |
-  | Note what happened | `log.debug(...)` etc., after `from src.utils.log import log` |
-  | Carry on past an error on purpose | `with quietly():` (`from src.utils.log import quietly`); it logs the error when Diagnostics is on |
+  | Note what happened | `log.debug(...)` etc., after `from backbone.log import log` |
+  | Carry on past an error on purpose | `with quietly():` (`from backbone.log import quietly`); it logs the error when Diagnostics is on |
   | Show a time | `timefmt.clock(t)` (mm:ss.mmm), `timefmt.srt(t)` |
   | A track's name on screen | `music_library.track_title(path, song)` |
   | A text frame's first value | `music_library.first_text(frame)` |
@@ -193,7 +173,7 @@ app against a throwaway config/cache without touching your own.
   | Keep a rebuilt list's cursor | `prompt.ListPlace`, passed as `select(place=...)` |
   | A line-editing key in a text field | `prompt_core.edit_line(buf, pos, key)` |
   | Preview a bulk plan and apply it | `bulk_common.preview_and_apply` |
-  | "3 tracks" / "1 track" | `ui_utils.plural(n, "track")` |
+  | "3 tracks" / "1 track" | `backbone.ui.plural(n, "track")` |
 
 - **Test headlessly, then live.** Pure logic + writes are checked with `pyright src` (kept at
   **0/0**) and small headless scripts (create→save→read round-trips). Interactive widgets get a
@@ -229,7 +209,7 @@ computed `disc_label`; "disc 2" / "cd 2" is an exact disc lookup.
 
 The typo tier is keyboard-aware: at equal edit distance, a slip onto a neighbouring key
 ("radiohesd") outranks the same distance reached with an unrelated letter ("radiohepd").
-`utils/keyboard.py` detects the layout family at startup (macOS via the HIToolbox plist, Linux via
+`backbone.keyboard` detects the layout family at startup (macOS via the HIToolbox plist, Linux via
 `setxkbmap`/`localectl`/`/etc/default/keyboard`, Windows via `GetKeyboardLayout`) and hands the key
 rows to `search.use_layout()`, keeping `search.py` itself free of I/O. Only letter positions matter,
 so British/US/Canadian/ABC are all one QWERTY; the families that differ are QWERTZ, AZERTY, Dvorak
@@ -276,7 +256,7 @@ the only thing that can be right over SSH, where the keyboard is on the *other* 
   the answers, so it is transparent in both directions. Validation failures re-ask on the spot
   rather than reporting a back, which on the first screen would end the operation over a typo.
 
-### Dates and times: `utils/datetime_parse.py`, `utils/timefmt.py`
+### Dates and times: `backbone.datetime_parse`, `backbone.timefmt`
 
 Every hand-typed date in the app goes through `parse_datetime`. It takes year-first dates with any
 of `-` `/` `.` (or spaces) between the parts, zero-padding optional, the compact `20080702` form,
@@ -299,7 +279,7 @@ to MP3 (ID3, fresh header for a blank file) or MP4 atoms (`.m4a`/`.mp4`/`.m4p`),
 `WriteResult` (`written`/`skipped_existing`/`skipped_format`/`error`/`unsupported`). Raw `.aac` has
 no atoms and is skipped. `has_cover`/`present_fields` back the fill-blanks previews.
 
-### Prompt widgets: `utils/prompt/` (over `prompt_core.py`)
+### Prompt widgets: `backbone.prompt` (over `backbone.prompt_core`)
 
 `prompt_core` provides the raw-terminal primitives (mode switching, key decode, the anchored
 `_Widget` renderer, the structured column/table layout, the adaptive hint engine, and `edit_line`,
@@ -356,7 +336,7 @@ them, so callers write `prompt.select(...)`:
   over the miniplayer.
 
 
-### Command line: `cli.py`, `cli_commands.py`, `utils/output.py`
+### Command line: `cli.py`, `cli_commands.py`, `backbone.output`
 
 `src/main.py:main` sends any invocation with arguments to `cli.main`; bare `backtrack` opens
 the app.
@@ -371,10 +351,10 @@ which is the usual way a hand-written completion script rots.
 hands the result to `output`. If a handler starts deciding *what an operation does*, that
 decision belongs in a shared module: `id3/bulk_ops.py` is the worked example.
 
-**One output path.** `utils/output.py` has `table` / `record` / `event` / `note` / `fail`, and
+**One output path.** `backbone.output` has `table` / `record` / `event` / `note` / `fail`, and
 the format decision lives only there. Human tables go through `prompt_core._table_widths` and
 `_render_table_row`, the same engine every list in the app uses. Colour is switched process-wide
-by `ui_utils.set_colour`, so existing render paths lose colour on a pipe without knowing about
+by `backbone.ui.set_colour`, so existing render paths lose colour on a pipe without knowing about
 it. A list command prints its table on a terminal and one path per line when it is not, which
 is what makes `backtrack track list | backtrack tag read` compose with no flag.
 
@@ -458,7 +438,7 @@ are legacy from the old `viu` dependency; the binary is gone.)
   add a `*_op(paths, library, header)` in the `bulk_*` module it belongs with (preview with
   `bulk_common.preview_and_apply` or `_walk`, write via `tag_writer`) and register it in
   `bulk_id3_manager`'s `Automation…` list, `op_map`, and dispatch.
-- **A tag widget:** add the widget to the fitting `utils/prompt/` module and export it from
+- **A tag widget:** add the widget to the fitting `backbone.prompt` module and export it from
   `prompt/__init__.py` (model an existing one; support `MODE_TOGGLE` if it has a plain-text form),
   route it in `prompt_for_value` (by `base_id` for binary frames, else by
   `format_spec`/`ui_category`), and add matching `create_frame` + `summarize_tag_value` branches.
@@ -489,7 +469,7 @@ round-trip create→save→read). Reserve live runs for the interactive widgets 
 ## Debugging
 
 - **The diagnostics log.** Turn on Settings → Diagnostics log and Backtrack writes
-  `CONFIG_DIR/backtrack.log`. Log through it (`from src.utils.log import log`; `log.debug(...)`)
+  `CONFIG_DIR/backtrack.log`. Log through it (`from backbone.log import log`; `log.debug(...)`)
   at points where a failure would be hard to work out afterwards, rather than adding ad hoc prints
   or files. Where an error is swallowed on purpose, use `with quietly():` so it still leaves a line
   in the log. Diagnostics also turns on the player's `e` (jump to the last 35 s) and shows which
