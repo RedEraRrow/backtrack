@@ -158,10 +158,10 @@ def _wire_playback() -> None:
     """Register the now-playing bar provider, the Ctrl-O player opener, and the
     Ctrl-P/N/B transport hotkeys (#14), so menus/browse can show background audio
     and control (or reopen) the player from anywhere."""
-    from src.playback import playback_ui
+    from src.playback import now_playing_box
     from src.playback.playback import open_player_view
 
-    ui_utils.set_now_playing_provider(playback_ui.format_now_playing_bar)
+    ui_utils.set_now_playing_provider(now_playing_box.format_now_playing_bar)
 
     def _open_player() -> None:
         from src.playback import session as sess

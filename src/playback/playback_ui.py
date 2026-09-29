@@ -4,18 +4,22 @@ import os
 import re
 import sys
 
-from src.music_library import get_metadata, format_tag_values, format_value_list, live_library
+from src.music_library import format_value_list
 from src.utils import prompt_core as pc
 from src.utils import ui_utils
-from src.utils.log import log
+from src.playback.player_geom import geom
 from src.utils import numbering
-from src.art.album_art import get_art, get_art_bytes
 from src.utils.prompt import _hint
-from src.utils.prompt_core import Column, _table_widths, add_hint_click_cells
+from src.utils.prompt_core import add_hint_click_cells
 from src.utils.ui_utils import Colors as C
 from src import tuning as tune
+from src.playback.queue_pane import (  # noqa: F401 — re-exported
+    _place_queue, _queue_click_rows, has_queue, queue_click_index, set_queue_context,
+)
+from src.playback.player_art import (  # noqa: F401 — re-exported
+    ART_MAX_WIDTH, _art_width_for_height, _draw_inline_art, _inline_art, art_image_incomplete, inline_art_enabled, redraw_art_image, set_resizing,
+)
 
-ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
 
 # Absolute cursor positioning (\033[<row>;<col>H) — must require the trailing
 # 'H' so it does NOT also match a 24-bit colour prefix like \033[38;2;r;g;bm,
@@ -25,14 +29,6 @@ ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
 _ABS_ROW_RE = re.compile(r'^\033\[\d+;\d+H')
 
 _WIDE_SPLIT_GUTTER = 3
-
-# When fitting art to the terminal height would only shave off a few columns, the
-# art lands in a "dead band": too narrow to fill edge-to-edge, too wide to leave a
-# clean volume-bar gutter — so the centred art shows thin, lopsided side margins.
-# Within this many columns of the full width, snap UP to full width and clip the
-# extra bottom pixel-row(s) instead, so the art is always either edge-to-edge or
-# has a comfortable gutter.
-_ART_SNAP_TO_FULL = 4
 
 
 _player_prev_rows = [0]          # flow-row count of the previous player frame
@@ -107,7 +103,6 @@ PLAYER_CREDITS_ROLES = [
 
 _CREW_ORDER = ['creator', 'writer', 'producer', 'director', 'script editor', 'composer']
 
-_art_cache: dict = {}
 _ui_state = {
     'show_metadata': False,
     'debug': False,
@@ -119,27 +114,6 @@ _ui_state = {
     # its hint bar doesn't offer `w` (a hint shown is a key that works).
     'panel_keys': True,
 }
-# Up-next context for the queue view: list of display titles + current index.
-_queue_ctx: dict = {'titles': [], 'paths': [], 'index': 0, 'meta': [], 'visible': []}
-# Last rendered artwork width (visible characters) used to align progress/controls
-_last_art_width: int | None = None
-# Left pad (columns) where the artwork starts when printed
-_last_art_left: int | None = None
-# Artwork vertical geometry (1-based top row and rendered height in rows), used
-# to draw the full-height volume bar to the right of the art.
-_last_art_top: int | None = None
-_last_art_height: int | None = None
-# Explicit 1-based column where the volume bar is drawn (None = no room / hidden).
-_last_vol_bar_col: int | None = None
-# Progress-bar geometry from the last update_progress_ui: its row, the 1-based
-# column of the bar's first cell (just past the '[' cap), and its width in cells.
-# Used to turn a click on the bar into a seek.
-_last_prog_row: int | None = None
-_last_prog_col: int | None = None
-_last_prog_w: int = 0
-# Right pane geometry when in wide mode (1-based column of start, and width)
-_last_right_left: int | None = None
-_last_right_width: int | None = None
 # Clickable-control geometry (set by _controls_line / the draw): transport-icon
 # columns on the controls row, the active hint pairs, and the hint-glyph cell map.
 _last_transport_cols: dict[str, int] = {}
@@ -156,270 +130,6 @@ def _layout_mode(cols: int) -> str:
     return 'minimal'
 
 
-def _get_art_cached(file_path: str, width: int) -> str:
-    """Return the rendered album art for file_path at width, cached by (path, width, mtime)."""
-    # Key on the file's mtime so editing the file (e.g. adding album art)
-    # invalidates the cached render — otherwise a "No album art found." result
-    # would stick until the program restarts.
-    try:
-        mtime = os.path.getmtime(file_path)
-    except OSError:
-        mtime = 0.0
-    key = (file_path, width, mtime)
-    if key not in _art_cache:
-        # Drop stale-mtime entries for this file+width so repeated edits don't
-        # grow the cache unbounded.
-        for k in [k for k in _art_cache if k[0] == file_path and k[1] == width and k[2] != mtime]:
-            del _art_cache[k]
-        _art_cache[key] = get_art(file_path, width=width)
-    return _art_cache[key]
-
-
-def _clip_ansi_to_width(text: str, max_cols: int) -> str:
-    """Truncate text to max_cols visible columns, preserving embedded ANSI escapes.
-
-    The player composes a clipped line into a wider row (borders, padding), so
-    it asks for no trailing reset — the caller closes its own styling.
-    """
-    return ui_utils.clip_ansi(text, max_cols, reset=False)
-
-
-# --- Real-image album art (iTerm2 inline images), opt-in -----------------------
-# The half-block art is still rendered — it sizes the layout exactly as before —
-# but in image mode its cells show the cover's average colour, then a small
-# quick-to-decode image, then the full-quality one, all at those same cells.
-# The text art itself is only the fallback for when there's no image to show. Every position the layout records (clicks, the volume bar,
-# the lyric pane) is unchanged. Off unless the `art_inline_images` setting is on
-# AND the terminal is iTerm2 (not inside tmux, which would swallow the image).
-_inline_art: dict = {'path': None,       # set when this frame's art is an image
-               'resizing': False,        # mid-resize: the preview only (see set_resizing)
-               'incomplete': False}      # the full image was cut short by a resize
-
-
-def set_resizing(on: bool) -> None:
-    """While the window is still being resized the player redraws at every size
-    it passes through; only the small preview image is sent for those, and the
-    full-quality one once the size settles (redraw_art_image)."""
-    _inline_art['resizing'] = on
-
-
-def redraw_art_image() -> None:
-    """Send the full-quality image again without repainting any rows — after a
-    resize settles, when the rows are right and the preview is already showing,
-    or after a resize cut the last send short."""
-    _draw_inline_art(full_only=True)
-    sys.stdout.flush()
-
-
-def art_image_incomplete() -> bool:
-    """Whether the last full-quality image was cut short and still needs sending."""
-    return _inline_art['incomplete']
-_inline_art_cache: dict = {}             # (path, mtime, cols, rows) → (base64, byte count)
-_INLINE_PX_PER_COL = 10                  # image pixels per cell column: sharp on a Retina
-                                         # screen, a fraction of a full-size cover to send
-_INLINE_CHUNK = 16 * 1024                # a full image goes out in pieces this size, so a
-                                         # resize mid-send can cut it short (_send_image)
-_INLINE_PREVIEW_PX = 3                   # the quick first image: ~1/16 the pixels
-
-
-_inline_cfg: dict = {}                   # the setting, cached on config.json's mtime
-
-
-def inline_art_enabled() -> bool:
-    """Whether art should be drawn as a real image here. Cheap to ask often
-    (the miniplayer asks every second): the setting is re-read only when the
-    config file changes."""
-    if os.environ.get('TMUX'):
-        return False
-    if (os.environ.get('TERM_PROGRAM') != 'iTerm.app'
-            and os.environ.get('LC_TERMINAL') != 'iTerm2'):
-        return False
-    from src.config import CONFIG_FILE, load_config
-    try:
-        mtime = CONFIG_FILE.stat().st_mtime
-    except OSError:
-        mtime = None
-    if _inline_cfg.get('mtime', object()) != mtime:
-        _inline_cfg.update(mtime=mtime, on=bool(load_config().get('art_inline_images', False)))
-    return _inline_cfg['on']
-
-
-_decoded_cache: dict = {}                # (path, mtime) → (raw bytes, decoded image or None)
-_WORKING_PX = 1400                       # decoded covers are kept at most this big
-
-
-def _cover_decoded(file_path: str) -> tuple | None:
-    """The cover's raw bytes and decoded pixels, read and decoded once per file
-    (a large cover takes a noticeable moment to decode — do it once, not per
-    colour, preview and full image). None when the file has no cover."""
-    import cv2
-    import numpy as np
-    try:
-        key = (file_path, os.path.getmtime(file_path))
-    except OSError:
-        return None
-    if key not in _decoded_cache:
-        if len(_decoded_cache) > 4:            # decoded covers are large: keep a few
-            _decoded_cache.clear()
-        raw = get_art_bytes(file_path)
-        img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR) if raw else None
-        if img is not None and max(img.shape[:2]) > _WORKING_PX:
-            # A 4000-pixel cover is shrunk once, here, to a working size still
-            # above anything the player shows — every later step works on that.
-            f = _WORKING_PX / max(img.shape[:2])
-            img = cv2.resize(img, (round(img.shape[1] * f), round(img.shape[0] * f)),
-                             interpolation=cv2.INTER_AREA)
-        _decoded_cache[key] = (raw, img) if raw else None
-    return _decoded_cache[key]
-
-
-def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
-                     px: int = _INLINE_PX_PER_COL) -> tuple[str, int] | None:
-    """The cover as base64 for the image escape, scaled to the cells it fills
-    (cols × rows at `px` pixels per column) and cached per file and size — so a
-    resize back to a size already seen costs nothing. The preview size is also
-    saved at a lower quality: it's only on screen for a moment."""
-    import base64
-    import cv2
-    try:
-        key = (file_path, os.path.getmtime(file_path), cols, rows, px)
-    except OSError:
-        return None
-    if key not in _inline_art_cache:
-        if len(_inline_art_cache) > 24:
-            _inline_art_cache.clear()
-        dec = _cover_decoded(file_path)
-        data = None
-        if dec:
-            raw, img = dec
-            data = raw
-            if img is not None and cols and rows:
-                size = (cols * px, rows * 2 * px)           # cells are ~1:2
-                if size[0] < img.shape[1]:                  # only ever scale down
-                    img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
-                quality = 70 if px == _INLINE_PREVIEW_PX else 85
-                ok, jpg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, quality])
-                if ok and len(jpg) < len(raw):              # a heavy original still shrinks
-                    data = jpg.tobytes()
-        _inline_art_cache[key] = (base64.b64encode(data).decode('ascii'), len(data)) if data else None
-    return _inline_art_cache[key]
-
-
-_mean_cache: dict = {}                   # (path, mtime) → the cover's average colour
-
-
-def _cover_mean(file_path: str) -> tuple[int, int, int] | None:
-    """The cover's average colour (r, g, b), or None when it can't be decoded —
-    in which case the text art is the fallback."""
-    try:
-        key = (file_path, os.path.getmtime(file_path))
-    except OSError:
-        return None
-    if key not in _mean_cache:
-        if len(_mean_cache) > 64:
-            _mean_cache.clear()
-        dec = _cover_decoded(file_path)
-        img = dec[1] if dec else None
-        import cv2
-        _mean_cache[key] = (None if img is None else
-                            tuple(int(v) for v in cv2.mean(img)[2::-1]))    # BGR → RGB
-    return _mean_cache[key]
-
-
-def _draw_inline_art(full_only: bool = False) -> None:
-    """Draw this frame's image over its cells: the small preview, then the
-    full-quality image, which replaces it once the terminal has decoded it
-    (mid-resize, only the preview; at a settle, only the full one — the preview
-    is already there). Called after every frame's rows are written — a
-    repainted row erases whatever image was under it."""
-    path = _inline_art['path']
-    if not (path and _last_art_top and _last_art_width and _last_art_height):
-        return
-    if not full_only:
-        _send_image(path, _INLINE_PREVIEW_PX)
-    if not _inline_art['resizing']:
-        _inline_art['incomplete'] = not _send_image(path, _INLINE_PX_PER_COL, chunked=True)
-
-
-def _send_image(path: str, px: int, chunked: bool = False) -> bool:
-    """Write one image escape for the art's cells (cursor left where it was).
-
-    `chunked`: the full image is big enough that writing it blocks for a
-    noticeable time while the terminal takes it in, and a resize arriving then
-    had to wait — the window showed the old frame rewrapped until it finished.
-    So it goes out in pieces, and if the terminal reports a resize in between,
-    the rest is dropped: the escape is closed early (the terminal discards a
-    truncated image) and False returned, for the image to be sent again later.
-    """
-    data = _inline_art_data(path, _last_art_width, _last_art_height, px)
-    if not data:
-        return True
-    b64, size = data
-    head = (f"\0337\033[{_last_art_top};{(_last_art_left or 0) + 1}H"
-            f"\033]1337;File=inline=1;size={size};width={_last_art_width};"
-            f"height={_last_art_height};preserveAspectRatio=0;doNotMoveCursor=1:")
-    if not chunked:
-        sys.stdout.write(head + b64 + "\a\0338")
-        return True
-    import time
-    start = time.monotonic()
-    sys.stdout.write(head)
-    for i in range(0, len(b64), _INLINE_CHUNK):
-        if ui_utils.last_resize_signal_at() > start:
-            sys.stdout.write("\a\0338")
-            sys.stdout.flush()
-            log.debug("art image cut short by a resize after %d of %d KB (%.0f ms)",
-                      i // 1024, len(b64) // 1024, (time.monotonic() - start) * 1000)
-            return False
-        sys.stdout.write(b64[i:i + _INLINE_CHUNK])
-        sys.stdout.flush()
-    sys.stdout.write("\a\0338")
-    sys.stdout.flush()
-    log.debug("art image %sx%s cells: %d KB in %.0f ms", _last_art_width, _last_art_height,
-              len(b64) // 1024, (time.monotonic() - start) * 1000)
-    return True
-
-
-def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
-                          pre_art: str | None) -> tuple[str, list[str]]:
-    """The art for the layout (see _art_fit). In image mode its cells become the
-    cover's average colour, to be drawn over by the image (_draw_inline_art);
-    the text art stays only when there's no image to show — no cover, one that
-    won't decode, or a group cover, which is a composite of several."""
-    art_str, lines = _art_fit(file_path, max_w, avail_h, pre_art)
-    _inline_art['path'] = None
-    mean = _cover_mean(file_path) if (lines and not pre_art and inline_art_enabled()) else None
-    if mean:
-        w = max(_visible_len(l) for l in lines)
-        lines = [f"\033[48;2;{mean[0]};{mean[1]};{mean[2]}m{' ' * w}\033[0m" for _ in lines]
-        _inline_art['path'] = file_path
-    return art_str, lines
-
-
-def _art_fit(file_path: str, max_w: int, avail_h: int,
-             pre_art: str | None) -> tuple[str, list[str]]:
-    """Fetch art at max_w; if the rendered output exceeds avail_h rows,
-    compute a narrower width from the actual aspect ratio and re-fetch."""
-    art_str = pre_art if pre_art else _get_art_cached(file_path, width=max_w)
-    lines = art_str.splitlines()
-    if not lines or len(lines) <= avail_h:
-        return art_str, lines
-
-    actual_h = len(lines)
-    actual_w = max((_visible_len(l) for l in lines), default=max_w)
-    ratio = actual_w / actual_h if actual_h > 0 else 2.0
-    fit_w = max(10, min(max_w - 1, int(avail_h * ratio)))
-
-    # Snap-to-full: if fitting to height only trims a handful of columns, keep the
-    # full width and clip the extra bottom row(s) rather than sit in the dead band
-    # (see _ART_SNAP_TO_FULL). Larger deficits fall through to a genuine re-fetch.
-    if max_w - fit_w <= _ART_SNAP_TO_FULL:
-        return art_str, lines[:avail_h]
-
-    art_str2 = _get_art_cached(file_path, width=fit_w)
-    lines2 = art_str2.splitlines()
-    return art_str2, lines2[:avail_h]  # safety cap in case ratio was off
-
 
 def update_progress_ui(row: int, elapsed: float, duration: float, width: int) -> None:
     """Update the default progress bar display."""
@@ -427,11 +137,10 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
     duration_str = ui_utils.format_time(int(duration))
     timer_text = f" {elapsed_str.rjust(5)} / {duration_str.ljust(5)} "
 
-    global _last_prog_row, _last_prog_col, _last_prog_w
 
-    if _last_art_width and _last_art_width > 0:
-        container_w = _last_art_width
-        left_pad = _last_art_left if _last_art_left is not None else 0
+    if geom.art_width and geom.art_width > 0:
+        container_w = geom.art_width
+        left_pad = geom.art_left if geom.art_left is not None else 0
     else:
         container_w = width
         left_pad = 0
@@ -444,16 +153,11 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
     # Remember where the bar landed so a click on it can be mapped back to a
     # position: get_progress_bar brackets the cells, so cell 0 sits one column
     # past the pad's '[' cap.
-    _last_prog_row, _last_prog_col, _last_prog_w = row, left_pad + 2, bar_width
+    geom.prog_row, geom.prog_col, geom.prog_w = row, left_pad + 2, bar_width
 
     sys.stdout.write(f"\033[{row};1H\033[K{pad}{bar}{timer_text}")
     pc.screen_forget_rows(row, row)     # painted outside the frame: model unknown
     sys.stdout.flush()
-
-
-def _visible_len(text: str) -> int:
-    """Columns `text` occupies, ignoring ANSI escapes."""
-    return ui_utils.visual_len(text)
 
 
 def _get_people(audio, tag_key: str) -> list[tuple[str, str]]:
@@ -486,14 +190,14 @@ def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4)
 def _volume_bar_geometry() -> tuple[int, int, int] | None:
     """Return (column, top_row, height) for the volume bar, or None if there
     is no rendered artwork or no horizontal room to the right of it."""
-    if not (_last_vol_bar_col and _last_art_top and _last_art_height):
+    if not (geom.vol_bar_col and geom.art_top and geom.art_height):
         return None
-    if _last_art_height < 3:
+    if geom.art_height < 3:
         return None
     cols = ui_utils.get_terminal_width()
-    if _last_vol_bar_col < 1 or _last_vol_bar_col + 1 > cols:
+    if geom.vol_bar_col < 1 or geom.vol_bar_col + 1 > cols:
         return None
-    return _last_vol_bar_col, _last_art_top, _last_art_height
+    return geom.vol_bar_col, geom.art_top, geom.art_height
 
 
 def _volume_bar_cells(volume: int) -> list[str]:
@@ -552,149 +256,6 @@ def draw_volume_bar(volume: int) -> None:
             _, top, height = geo         # record — let the next frame repaint them
             pc.screen_forget_rows(top, top + height)
 
-
-def _np_fmt_time(seconds: float) -> str:
-    """Seconds → m:ss for the now-playing bar."""
-    s = max(0, int(seconds))
-    return f"{s // 60}:{s % 60:02d}"
-
-
-def _fit_segments(segs: list, budget: int) -> tuple[str, int]:
-    """Style-render (text, style) segments to fit ``budget`` plain **columns**,
-    truncating the tail with an ellipsis. Returns (styled_string, plain_width).
-
-    Widths are counted in columns, not codepoints: the transport glyphs carry a
-    text-presentation selector that occupies no column of its own, so counting
-    codepoints would over-measure them and shrink the title to compensate.
-    Truncation walks the string a column at a time for the same reason — slicing
-    by index could sever a glyph from the selector that decides its width.
-    """
-    out = ""
-    used = 0
-    for text, style in segs:
-        if used >= budget:
-            break
-        remain = budget - used
-        if ui_utils.visual_len(text) > remain:
-            text = _clip_to_cols(text, max(0, remain - 1)) + "…"
-        out += (f"{style}{text}{C.RESET}" if style else text)
-        used += ui_utils.visual_len(text)
-    return out, used
-
-
-def _clip_to_cols(text: str, cols: int) -> str:
-    """First `cols` display columns of `text`, keeping each glyph's zero-width
-    presentation selector attached to it."""
-    if cols <= 0:
-        return ""
-    out = []
-    used = 0
-    for ch in text:
-        w = ui_utils.char_cols(ch)
-        if w == 0:                           # selector — rides with the previous glyph
-            out.append(ch)
-            continue
-        if used + w > cols:                  # a 2-cell glyph needs 2 cells free
-            break
-        out.append(ch)
-        used += w
-    return "".join(out)
-
-
-def format_now_playing_bar(width: int) -> list[str] | None:
-    """The background-audio now-playing box (#14), styling only (no colour): a
-    rounded box whose bottom border doubles as the progress bar. Row 1 = top
-    border; row 2 = ``⏮ ⏸ ⏭  Title · Artist · Album … m:ss / m:ss`` (bold
-    title, dim rest); row 3 = the progress border (heavy ``━`` elapsed / light
-    ``─`` remaining). The transport keys are advertised in the hint bar with
-    every other key, not on the border.
-
-    Returns a list of styled rows, or None when nothing plays or the terminal is
-    too narrow for a box."""
-    from src.playback.session import current_now_playing
-    np = current_now_playing()
-    if np is None:
-        ui_utils.set_now_playing_signature(None)
-        ui_utils.set_now_playing_unboxed(False)
-        return None
-    # When the full player view is open in ANY window of the session, the player
-    # itself is the now-playing display — hide the ambient bar everywhere else so
-    # it doesn't double up (#14). view_holder is the token of whichever window
-    # holds the view (broadcast to joined windows), or None when no view is open.
-    if np.get('view_holder'):
-        ui_utils.set_now_playing_signature(None)
-        ui_utils.set_now_playing_unboxed(False)
-        return None
-    # Identity of this track for the idle-tick redraw: a change here forces the
-    # now-playing box to repaint even if the styled rows happen to match (#14).
-    ui_utils.set_now_playing_signature((
-        np.get('file_path'), np.get('generation'), np.get('paused'),
-        np.get('index'), np.get('count'), np.get('view_holder'),
-    ))
-    mh = 2
-    box_w = width - 2 * mh
-    inner = box_w - 4                       # content columns between "│ " and " │"
-
-    # Play/pause then next. The glyph shows the action the key would take — ⏵
-    # while paused, ⏸ while playing. Widths come from ui_utils.char_cols, which
-    # deliberately over-estimates these: no monospace font carries them, so the
-    # terminal draws them from a fallback whose advance width this process
-    # cannot know, and over-estimating is the direction that fails safely.
-    pp_icon = '⏵' if np['paused'] else '⏸'
-    icon = f"{pp_icon}  ⏭  "                  # the glyphs at ui_utils.NP_GLYPH_COLS
-    # Just the elapsed/total time; volume + queue position live elsewhere (the
-    # player view, and the queue pane inside it).
-    right = f"{_np_fmt_time(np['elapsed'])} / {_np_fmt_time(np['duration'])}"
-
-    # How narrow the box may get, in terms of what it is actually being asked to
-    # hold. A fixed threshold can't know: `right` grows with the track (an hour-
-    # long file spends three more columns on the clock), and if the left side is
-    # squeezed past its floor the gap below bottoms out at 1 and the content row
-    # runs *wider than its own border* — a visibly ragged box. Two tiers:
-    # glyphs + a readable stub of title, or no box at all.
-    _MIN_TITLE = 6
-    if inner < ui_utils.visual_len(icon) + _MIN_TITLE + 2 + len(right):
-        # No box — the hint bar advertises the transport keys instead, so they
-        # are never both unadvertised and live.
-        ui_utils.set_now_playing_unboxed(True)
-        return None
-
-    ui_utils.set_now_playing_unboxed(False)
-
-    left_segs: list = [(icon, C.BOLD), (np['title'] or '?', C.BOLD)]
-    if np['artist']:
-        left_segs += [("  ·  ", C.DIM), (format_tag_values(np['artist']), C.DIM)]
-    if np['album']:
-        left_segs += [("  ·  ", C.DIM), (np['album'], C.DIM + C.ITALIC)]
-
-    left_budget = max(6, inner - len(right) - 2)
-    left_styled, _left_used = _fit_segments(left_segs, left_budget)
-
-    pad = ' ' * mh
-    top = f"{pad}{C.DIM}╭{'─' * (box_w - 2)}╮{C.RESET}"
-
-    # The clock and the closing border are placed by absolute column (CSI G)
-    # rather than by counting what precedes them. Everything left of the clock
-    # contains transport glyphs whose real width is a fallback font's business,
-    # not this process's — so a row built purely by counting puts its right-hand
-    # border wherever that guess happened to land. Pinning both to the columns
-    # they belong in makes the box square whatever the glyphs turn out to be;
-    # the only thing that varies is the size of the gap before the clock.
-    pipe_col = mh + box_w                    # 1-based column of the closing │
-    time_col = pipe_col - 1 - len(right)
-    mid = (f"{pad}{C.DIM}│{C.RESET} {left_styled}"
-           f"\033[{time_col}G{C.DIM}{right}{C.RESET}"
-           f"\033[{pipe_col}G{C.DIM}│{C.RESET}")
-
-    # Progress along the bottom border: heavy ━ for the elapsed fraction, light ─
-    # for the rest (the join to the rounded corners is intentionally light).
-    cells = box_w - 2
-    pct = (np['elapsed'] / np['duration']) if np['duration'] else 0.0
-    filled = max(0, min(cells, round(pct * cells)))
-    prog = f"{C.BOLD}{'━' * filled}{C.RESET}{C.DIM}{'─' * (cells - filled)}{C.RESET}"
-    bot = f"{pad}{C.DIM}╰{C.RESET}{prog}{C.DIM}╯{C.RESET}"
-
-    return [_clip_ansi_to_width(ln, width) for ln in (top, mid, bot)]
 
 
 def toggle_metadata() -> None:
@@ -767,259 +328,7 @@ def set_lyric_sources(track: str, files: list[str], estimated: bool = False) -> 
     _lyric_src['estimated'] = estimated
 
 
-def set_queue_context(titles: list[str], index: int, paths: list[str] | None = None) -> None:
-    """Register the current play queue so the queue view can render it. The
-    per-track details are only gathered again when the queue itself changed —
-    moving to the next track changes just the index."""
-    titles, paths = list(titles or []), list(paths or [])
-    if titles != _queue_ctx['titles'] or paths != _queue_ctx['paths']:
-        _queue_ctx['meta'] = _queue_metadata(titles, paths)
-    _queue_ctx['titles'] = titles
-    _queue_ctx['paths'] = paths
-    _queue_ctx['index'] = index
 
-
-def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
-    """Title/artist/album for each queued track: from the in-memory library,
-    reading a file's tags only when it isn't in there (a CLI-played file) —
-    reading every queued file used to stall each track change on a long queue."""
-    by_path = {t['path']: t for t in (live_library() or [])}
-    meta: list[dict] = []
-    for i, title in enumerate(titles):
-        item = {
-            'title': title or '',
-            'artist': '',
-            'album': '',
-            'album_artist': '',
-        }
-        if i < len(paths):
-            try:
-                data = by_path.get(paths[i]) or get_metadata(paths[i])
-                item['title'] = data.get('title') or item['title']
-                item['artist'] = data.get('artist') or ''
-                item['album'] = data.get('album') or ''
-                item['album_artist'] = data.get('album_artist') or ''
-            except Exception:
-                pass
-        meta.append(item)
-    return meta
-
-
-def has_queue() -> bool:
-    """Return whether there's more than one track in the queue worth showing."""
-    return len(_queue_ctx['titles']) > 1
-_QUEUE_PLAYED_ABOVE = 2     # played tracks kept above the current one, for context
-_QUEUE_RIGHT_MARGIN = 2 * ui_utils.MARGIN_H   # breathing room before the screen edge
-_QUEUE_MIN_ROWS = 2         # the header and one track, or the pane isn't drawn at all
-# Screen row → (queue position, first column, last column) of each track row
-# drawn, so a click on one can play it.
-_queue_click_rows: dict[int, tuple[int, int, int]] = {}
-
-
-def queue_click_index(row: int, col: int) -> int | None:
-    """The queue position of the track row clicked at (row, col), if any."""
-    hit = _queue_click_rows.get(row)
-    return hit[0] if hit and hit[1] <= col <= hit[2] else None
-
-
-def _place_queue(log, top: int, left: int, width: int, rows: int) -> bool:
-    """Draw the queue at (top, left) within width × rows, or nothing when there
-    isn't room for even the header and one track. Returns whether it drew."""
-    _queue_click_rows.clear()
-    if rows < _QUEUE_MIN_ROWS or width < 10:
-        return False
-    lines = _build_queue_lines(width - _QUEUE_RIGHT_MARGIN, rows)
-    for qi, line in enumerate(lines):
-        log(f"\033[{top + qi};{left}H{line}")
-        if qi and qi - 1 < len(_queue_ctx['visible']):
-            _queue_click_rows[top + qi] = (_queue_ctx['visible'][qi - 1], left,
-                                           left + ui_utils.visual_len(line) - 1)
-    return True
-
-
-def _queue_window(total: int, current: int | None, rows: int) -> list[int]:
-    """Which queue positions fit in `rows`: the current track near the top with
-    up to _QUEUE_PLAYED_ABOVE played ones above it, then what's next; when the
-    end of the queue leaves room, more of what was played fills it."""
-    if rows <= 0 or total <= 0:
-        return []
-    if current is None:
-        return list(range(min(rows, total)))
-    start = max(0, current - _QUEUE_PLAYED_ABOVE)
-    start = max(0, min(start, total - rows))   # use spare rows at the end for history
-    return list(range(start, min(total, start + rows)))
-
-
-def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
-    """Render the play queue: a header with the position, then the current
-    track near the top (see _queue_window)."""
-    titles = _queue_ctx['titles']
-    idx = _queue_ctx['index']
-    meta = _queue_ctx['meta']
-    if not titles:
-        return [f"{C.DIM}(queue empty){C.RESET}"]
-
-    total = len(titles)
-    current = idx if 0 <= idx < total else None
-    pos = f"  {current + 1} of {total}" if current is not None else f"  {total}"
-    out = [f"{C.DIM}QUEUE{pos}{C.RESET}"]
-    body_rows = max(0, max_rows - len(out))
-    if body_rows <= 0:
-        return out
-    visible_indices = _queue_window(total, current, body_rows)
-    _queue_ctx['visible'] = visible_indices          # row i+1 ↔ queue position, for clicks
-
-    show_artist = _queue_should_show_artist(meta)
-    show_album = _queue_should_show_album(meta)
-    cols = ['meta'] if show_artist or show_album else []
-
-    rows: list[str] = []
-    same_album = _queue_all_same_album(meta)
-    same_album_compilation = same_album and _queue_is_compilation_without_album_artist(meta)
-    rows_cells = []
-    row_kinds = []
-    prefixes = []
-    for item_idx in visible_indices:
-        item = meta[item_idx] if item_idx < len(meta) else {'title': titles[item_idx], 'artist': '', 'album': '', 'album_artist': ''}
-        prefix = f"{C.ACCENT}▶ {C.RESET}" if item_idx == current else "  "
-        if current is None:
-            row_kind = 'next'
-        elif item_idx < current:
-            row_kind = 'prev'
-        elif item_idx == current:
-            row_kind = 'current'
-        else:
-            row_kind = 'next'
-        rows_cells.append([
-            item.get('title', ''),
-            ui_utils.strip_ansi(_queue_meta_value(item, same_album, same_album_compilation))
-        ])
-        row_kinds.append(row_kind)
-        prefixes.append(prefix)
-
-    specs = _queue_column_specs(cols)
-    # The ▶ / blank marker takes 2 columns ahead of every row: leave room for
-    # it, or each row runs 2 past the pane and wraps into the next screen row.
-    widths = _table_widths(rows_cells, specs, max_w, pointer_w=2, right_margin=0)
-
-    for item_idx, row_kind, prefix in zip(visible_indices, row_kinds, prefixes):
-        item = meta[item_idx] if item_idx < len(meta) else {'title': titles[item_idx], 'artist': '', 'album': '', 'album_artist': ''}
-        meta_text = _queue_meta_value(item, same_album, same_album_compilation)
-        line = _render_queue_row(item, cols, specs, widths, row_kind, prefix, meta_text)
-        rows.append(line)
-
-    out.extend(rows)
-    return out
-
-
-def _normalize_album_name(name: str) -> str:
-    return re.sub(r'\s+', ' ', name.strip().casefold())
-
-
-def _queue_all_same_album(meta: list[dict]) -> bool:
-    albums = [_normalize_album_name(item['album']) for item in meta if item.get('album')]
-    return len(albums) > 0 and len(set(albums)) == 1
-
-
-def _queue_is_compilation_without_album_artist(meta: list[dict]) -> bool:
-    if any(item.get('album_artist') for item in meta):
-        return False
-    artists = [item['artist'] for item in meta if item.get('artist')]
-    return len(set(artists)) > 1
-
-
-def _queue_should_show_artist(meta: list[dict]) -> bool:
-    if _queue_all_same_album(meta):
-        return any(
-            item.get('artist') and item.get('album_artist') and item['artist'] != item['album_artist']
-            for item in meta
-        ) or _queue_is_compilation_without_album_artist(meta)
-
-    artists = [item['artist'] for item in meta if item.get('artist')]
-    if len(set(artists)) > 1:
-        return True
-    for item in meta:
-        if item.get('artist') and item.get('album_artist') and item['artist'] != item['album_artist']:
-            return True
-    return False
-
-
-def _queue_meta_value(item: dict, same_album: bool = False, compilation_without_album_artist: bool = False) -> str:
-    if same_album or compilation_without_album_artist:
-        artist = item.get('artist')
-        album_artist = item.get('album_artist')
-        if not artist:
-            return ''
-        if compilation_without_album_artist:
-            return format_tag_values(artist)
-        if not album_artist or artist != album_artist:
-            return format_tag_values(artist)
-        return ''
-
-    pieces = []
-    if item.get('artist'):
-        pieces.append(format_tag_values(item['artist']))
-    if item.get('album'):
-        album = item['album']
-        pieces.append(f"{C.DIM}{C.ITALIC}{album}{C.RESET}")
-    return ' — '.join(pieces)
-
-
-def _queue_should_show_album(meta: list[dict]) -> bool:
-    if _queue_all_same_album(meta) or _queue_is_compilation_without_album_artist(meta):
-        return False
-    albums = [item['album'] for item in meta if item.get('album')]
-    return len(set(albums)) > 1
-
-
-def _queue_column_specs(columns: list[str]) -> list[Column]:
-    if not columns:
-        return [Column(style='normal', align='left', flex=True, min_width=10, max_frac=1.0, gap=0)]
-
-    return [
-        Column(style='normal', align='left', flex=False, min_width=6, max_width=40, max_frac=0.65, gap=0),
-        Column(style='normal', align='left', flex=True, min_width=10, max_width=None, max_frac=1.0, priority=1),
-    ]
-
-
-def _render_queue_row(item: dict, columns: list[str], specs: list[Column], widths: list[int], row_kind: str, prefix: str, meta_text: str = '') -> str:
-    title = item.get('title', '')
-    values = [title, meta_text] if columns else [title]
-
-    if row_kind == 'current':
-        title_style = f"{C.BOLD}{C.WHITE}"
-        other_style = f"{C.BOLD}{C.DIM}"
-    elif row_kind == 'prev':
-        title_style = C.DIM
-        other_style = C.DIM
-    else:
-        title_style = C.WHITE
-        other_style = C.DIM
-
-    row = prefix
-    first = True
-    for i, width in enumerate(widths):
-        if width < 0:
-            continue
-        raw = values[i] if i < len(values) else ''
-        if ui_utils.visual_len(raw) > width:
-            if width <= 1:
-                text = ui_utils.clip_ansi(raw, width)
-            else:
-                clipped = ui_utils.clip_ansi(raw, max(0, width - 1))
-                if clipped.endswith(C.RESET):
-                    clipped = clipped[:-len(C.RESET)]
-                text = clipped + '…'
-        else:
-            text = raw
-        text = text + ' ' * max(0, width - ui_utils.visual_len(text))
-        styled = f"{title_style if i == 0 else other_style}{text}{C.RESET}"
-        if first:
-            row += styled
-            first = False
-        else:
-            row += ' ' * specs[i].gap + styled
-    return row
 def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
                      cast_names: list[str] | None = None,
                      limit: int = 4) -> list[str]:
@@ -1081,14 +390,14 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
     controls = "  ".join(transport_icons)
 
     if width:
-        art_left = _last_art_left or 0
-        left_pad = art_left + max(0, (width - _visible_len(controls)) // 2)
-    elif _last_art_width:
-        art_left = _last_art_left or 0
-        left_pad = art_left + max(0, (_last_art_width - _visible_len(controls)) // 2)
+        art_left = geom.art_left or 0
+        left_pad = art_left + max(0, (width - ui_utils.visual_len(controls)) // 2)
+    elif geom.art_width:
+        art_left = geom.art_left or 0
+        left_pad = art_left + max(0, (geom.art_width - ui_utils.visual_len(controls)) // 2)
     else:
         cols = ui_utils.get_terminal_size()[0]
-        left_pad = max(0, (cols - _visible_len(controls)) // 2)
+        left_pad = max(0, (cols - ui_utils.visual_len(controls)) // 2)
 
     status = " " * left_pad + controls
     _record_transport_cols(status)
@@ -1185,16 +494,16 @@ def progress_from_click(row: int, col: int) -> float | None:
     """If (row, col) lands on the horizontal progress bar, return the fraction of
     the track that column represents (0.0–1.0); else None. The '[' and ']' caps
     count as the two ends, so clicking either edge seeks to the start / end."""
-    if _last_prog_row is None or _last_prog_col is None or _last_prog_w <= 0:
+    if geom.prog_row is None or geom.prog_col is None or geom.prog_w <= 0:
         return None
-    if row != _last_prog_row:
+    if row != geom.prog_row:
         return None
-    lo, hi = _last_prog_col - 1, _last_prog_col + _last_prog_w   # include the caps
+    lo, hi = geom.prog_col - 1, geom.prog_col + geom.prog_w   # include the caps
     if not (lo <= col <= hi):
         return None
-    if _last_prog_w <= 1:
+    if geom.prog_w <= 1:
         return 0.0
-    frac = (col - _last_prog_col) / (_last_prog_w - 1)
+    frac = (col - geom.prog_col) / (geom.prog_w - 1)
     return max(0.0, min(1.0, frac))
 
 
@@ -1325,11 +634,11 @@ def _align_art_lines(art_lines: list[str], cols: int) -> list[str]:
     """Center art_lines horizontally within cols, padding every line to a uniform width."""
     if not art_lines:
         return []
-    art_width = max(_visible_len(line) for line in art_lines)
+    art_width = max(ui_utils.visual_len(line) for line in art_lines)
     left_pad = max(0, (cols - art_width) // 2)
     aligned = []
     for line in art_lines:
-        extra_padding = max(0, art_width - _visible_len(line))
+        extra_padding = max(0, art_width - ui_utils.visual_len(line))
         aligned.append(" " * left_pad + line + " " * extra_padding)
     return aligned
 
@@ -1340,7 +649,7 @@ def _center_lines(lines: list[str], cols: int) -> list[str]:
         return []
     centered: list[str] = []
     for line in lines:
-        vis = _visible_len(line)
+        vis = ui_utils.visual_len(line)
         left = max(0, (cols - vis) // 2)
         centered.append(" " * left + line)
     return centered
@@ -1358,24 +667,13 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     """Render the full playback screen (art, metadata, controls, and any active pane)
     for the current layout mode, returning the progress/control/lyric row positions and art bottom row."""
     cols, rows = size
-    global _last_art_width, _last_art_left, _last_right_left, _last_right_width
-    global _last_art_top, _last_art_height, _last_vol_bar_col
     mode = _layout_mode(cols)
     # Reset art geometry each frame; only branches that draw art repopulate it.
     # Likewise the queue's click rows: only a frame that draws the queue has any,
     # and the inline image: only a frame that lays out art has one.
     _queue_click_rows.clear()
     _inline_art['path'] = None
-    # All of it, not just some: a layout that doesn't set one (minimal has no
-    # side pane) must not inherit the last frame's (the lyric pane drew at the
-    # old wide layout's column).
-    _last_art_top = None
-    _last_art_height = None
-    _last_vol_bar_col = None
-    _last_art_width = None
-    _last_art_left = None
-    _last_right_left = None
-    _last_right_width = None
+    geom.reset_frame()
 
     # 1. Clear terminal — home first (no scroll), erase saved lines, erase to end.
     frame_buffer = ["\033[H\033[3J\033[J"]
@@ -1407,22 +705,22 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             avail_h = max(3, rows - len(left_col) - len(shortcut_lines) - 5 - 2 * ui_utils.MARGIN_V)
 
             art_str, art_lines = _art_width_for_height(file_path, content_w_max, avail_h, pre_art)
-            actual_art_w = max((_visible_len(l) for l in art_lines), default=content_w_max) if art_lines else content_w_max
+            actual_art_w = max((ui_utils.visual_len(l) for l in art_lines), default=content_w_max) if art_lines else content_w_max
             left_margin = max(ui_utils.MARGIN_H, (cols - actual_art_w) // 2)
 
-            _last_art_left = left_margin
-            _last_art_width = actual_art_w
-            _last_art_height = len(art_lines)
-            _last_vol_bar_col = left_margin + actual_art_w + 2
-            _last_right_left = None
-            _last_right_width = None
+            geom.art_left = left_margin
+            geom.art_width = actual_art_w
+            geom.art_height = len(art_lines)
+            geom.vol_bar_col = left_margin + actual_art_w + 2
+            geom.right_left = None
+            geom.right_width = None
 
             if art_lines:
                 top_pad = max(ui_utils.MARGIN_V, (rows - len(art_lines) - 1 - len(left_col) - len(shortcut_lines) - 5) // 2)
                 for _ in range(top_pad):
                     log("")
                 row_cursor += top_pad
-            _last_art_top = row_cursor + 1
+            geom.art_top = row_cursor + 1
 
             for line in art_lines:
                 log(" " * left_margin + line)
@@ -1476,15 +774,15 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         art_inner_w = max(10, art_w * 3 // 4)
         art_str, art_lines = _art_width_for_height(file_path, art_inner_w, avail_h, pre_art)
 
-        art_vis_w = max((_visible_len(a) for a in art_lines), default=art_inner_w) if art_lines else art_inner_w
+        art_vis_w = max((ui_utils.visual_len(a) for a in art_lines), default=art_inner_w) if art_lines else art_inner_w
         left_margin = max(ui_utils.MARGIN_H, (art_w - art_vis_w) // 2)
 
-        _last_art_width = art_vis_w
-        _last_art_left = left_margin
-        _last_art_height = len(art_lines)
-        _last_right_left = art_w + _WIDE_SPLIT_GUTTER
-        _last_right_width = right_w
-        _last_vol_bar_col = left_margin + art_vis_w + 2
+        geom.art_width = art_vis_w
+        geom.art_left = left_margin
+        geom.art_height = len(art_lines)
+        geom.right_left = art_w + _WIDE_SPLIT_GUTTER
+        geom.right_width = right_w
+        geom.vol_bar_col = left_margin + art_vis_w + 2
 
         if art_lines:
             # Counting the hint rows too, as the no-pane layout does: otherwise
@@ -1494,7 +792,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             for _ in range(top_pad):
                 log("")
             row_cursor += top_pad
-        _last_art_top = row_cursor + 1
+        geom.art_top = row_cursor + 1
 
         for line in art_lines:
             log(" " * left_margin + line)
@@ -1506,7 +804,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             log(cell)
 
         for line in left_col:
-            vis = _visible_len(line)
+            vis = ui_utils.visual_len(line)
             pad = ' ' * max(0, (art_w - vis) // 2)
             log(f"{pad}{line}")
         row_cursor += len(left_col)
@@ -1525,11 +823,11 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
         compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
 
-        _pane_top = _last_art_top  # right pane aligns with art top after any vertical centering
+        _pane_top = geom.art_top  # right pane aligns with art top after any vertical centering
 
         # Queue view takes over the whole right pane when toggled on.
         if _ui_state['show_queue']:
-            _place_queue(log, _pane_top, _last_right_left, right_w, (ctrl_row - 1) - _pane_top)
+            _place_queue(log, _pane_top, geom.right_left, right_w, (ctrl_row - 1) - _pane_top)
             lyric_row = ctrl_row  # suppress the lyric area while the queue shows
             art_bottom_row = ctrl_row - 1
             _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
@@ -1553,11 +851,11 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             for i in range(max(len(c_lines), len(cr_lines))):
                 lft = c_lines[i] if i < len(c_lines) else ''
                 rgt = cr_lines[i] if i < len(cr_lines) else ''
-                pad_c = ' ' * max(0, cast_col_w - _visible_len(lft))
+                pad_c = ' ' * max(0, cast_col_w - ui_utils.visual_len(lft))
                 credits_lines.append(f"  {lft}{pad_c}{gap}{rgt}")
 
         for idx, line in enumerate(credits_lines):
-            log(f"\033[{_pane_top + idx};{_last_right_left}H{line}")
+            log(f"\033[{_pane_top + idx};{geom.right_left}H{line}")
 
         lyric_row = _pane_top + len(credits_lines) + (1 if credits_lines else 0)
         # Cap the right pane at the row above the transport controls so the
@@ -1569,8 +867,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
 
     elif mode == 'standard':
-        _last_right_left = None
-        _last_right_width = None
+        geom.right_left = None
+        geom.right_width = None
 
         meta_val_w = cols - 12
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
@@ -1585,25 +883,25 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         max_art_h = max(3, rows - reserved_rows - 2 * ui_utils.MARGIN_V)
 
         art_str, art_lines = _art_width_for_height(file_path, cols, max_art_h, pre_art)
-        actual_art_w = max((_visible_len(l) for l in art_lines), default=cols) if art_lines else cols
+        actual_art_w = max((ui_utils.visual_len(l) for l in art_lines), default=cols) if art_lines else cols
         if actual_art_w < cols:
             # Art was narrowed to fit terminal height — centre it.
             art_lines = _align_art_lines(art_lines, cols)
-            _last_art_left = max(0, (cols - actual_art_w) // 2)
-            _last_art_width = actual_art_w
+            geom.art_left = max(0, (cols - actual_art_w) // 2)
+            geom.art_width = actual_art_w
         else:
-            _last_art_left = 0
-            _last_art_width = cols if art_lines else 0
+            geom.art_left = 0
+            geom.art_width = cols if art_lines else 0
 
-        _last_art_height = len(art_lines)
-        _last_vol_bar_col = (_last_art_left or 0) + (_last_art_width or 0) + 2
+        geom.art_height = len(art_lines)
+        geom.vol_bar_col = (geom.art_left or 0) + (geom.art_width or 0) + 2
 
         if art_lines and actual_art_w < cols:
             top_pad = max(0, (rows - len(art_lines) - 1 - len(left_col) - control_rows - 1) // 2)
             for _ in range(top_pad):
                 log("")
             row_cursor += top_pad
-        _last_art_top = row_cursor + 1
+        geom.art_top = row_cursor + 1
 
         for line in art_lines: log(line)
         row_cursor += len(art_lines)
@@ -1656,7 +954,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             for i in range(max(len(c_lines), len(cr_lines))):
                 lft = c_lines[i] if i < len(c_lines) else ''
                 rgt = cr_lines[i] if i < len(cr_lines) else ''
-                pad = ' ' * max(0, col_w - _visible_len(lft))
+                pad = ' ' * max(0, col_w - ui_utils.visual_len(lft))
                 log(f"\033[{ctrl_row_end + 2 + i};1H\033[K{lft}{pad}{gap}{rgt}")
 
         lyric_row = ctrl_row_end + 2 + max(len(c_lines), len(cr_lines)) + 1
@@ -1677,19 +975,19 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             art_w = cols
             max_art_h = max(3, rows - reserved_rows - 2 * ui_utils.MARGIN_V)
             art_str, art_lines = _art_width_for_height(file_path, art_w, max_art_h, pre_art)
-            actual_art_w = max((_visible_len(l) for l in art_lines), default=art_w) if art_lines else art_w
-            _last_art_left = max(0, (cols - actual_art_w) // 2)
-            _last_art_width = actual_art_w
-            _last_art_height = len(art_lines)
+            actual_art_w = max((ui_utils.visual_len(l) for l in art_lines), default=art_w) if art_lines else art_w
+            geom.art_left = max(0, (cols - actual_art_w) // 2)
+            geom.art_width = actual_art_w
+            geom.art_height = len(art_lines)
             if art_lines and actual_art_w < cols:
                 top_pad = max(0, (rows - len(art_lines) - 1 - len(left_col) - control_rows - 1) // 2)
                 for _ in range(top_pad):
                     log("")
                 row_cursor += top_pad
-            _last_art_top = row_cursor + 1
-            # Printed where _last_art_left says it is (centred), which is where
+            geom.art_top = row_cursor + 1
+            # Printed where geom.art_left says it is (centred), which is where
             # the image, the volume bar and clicks all take it to be.
-            for line in art_lines: log(" " * _last_art_left + line)
+            for line in art_lines: log(" " * geom.art_left + line)
             row_cursor += len(art_lines)
             log("")
             row_cursor += 1

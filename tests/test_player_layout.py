@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from src.playback import playback_ui as ui
+from src.playback import queue_pane as qp
 from src.utils import prompt_core as pc, ui_utils
 
 
@@ -13,18 +14,18 @@ class QueueTest(unittest.TestCase):
         titles = [f"Track {i} with a fairly long title to force clipping" for i in range(n)]
         lib = [{'path': f'/m/{i}.mp3', 'title': titles[i], 'artist': f'Artist {i % 3}',
                 'album': f'Album {i % 2}', 'album_artist': ''} for i in range(n)]
-        with patch.object(ui, 'live_library', lambda: lib), \
-             patch.object(ui, 'get_metadata', side_effect=AssertionError("read from disk")):
-            ui.set_queue_context(titles, index, [t['path'] for t in lib])
+        with patch.object(qp, 'live_library', lambda: lib), \
+             patch.object(qp, 'get_metadata', side_effect=AssertionError("read from disk")):
+            qp.set_queue_context(titles, index, [t['path'] for t in lib])
 
     def test_rows_fit_the_pane_including_the_marker(self):
         self._set(30, 5)
-        for line in ui._build_queue_lines(40, 12):
+        for line in qp._build_queue_lines(40, 12):
             self.assertLessEqual(ui_utils.visual_len(line), 40, ui_utils.strip_ansi(line))
 
     def test_current_track_near_the_top_with_position(self):
         self._set(40, 9)
-        lines = [ui_utils.strip_ansi(l) for l in ui._build_queue_lines(80, 8)]
+        lines = [ui_utils.strip_ansi(l) for l in qp._build_queue_lines(80, 8)]
         self.assertIn("10 of 40", lines[0])
         self.assertTrue(lines[3].startswith("▶"))           # 2 played tracks above it
         self.assertIn("Track 7", lines[1])
@@ -32,31 +33,31 @@ class QueueTest(unittest.TestCase):
     def test_not_drawn_without_room_for_the_header_and_a_track(self):
         self._set(10, 0)
         out = []
-        self.assertFalse(ui._place_queue(out.append, 20, 3, 60, 1))
+        self.assertFalse(qp._place_queue(out.append, 20, 3, 60, 1))
         self.assertEqual(out, [])
-        self.assertIsNone(ui.queue_click_index(20, 5))
+        self.assertIsNone(qp.queue_click_index(20, 5))
 
     def test_margin_on_the_right_and_rows_are_clickable(self):
         self._set(10, 4)
         out = []
-        self.assertTrue(ui._place_queue(out.append, 10, 3, 50, 6))
+        self.assertTrue(qp._place_queue(out.append, 10, 3, 50, 6))
         for line in out:
             body = line.split('H', 1)[1]
-            self.assertLessEqual(ui_utils.visual_len(body), 50 - ui._QUEUE_RIGHT_MARGIN)
-        self.assertIsNone(ui.queue_click_index(10, 5))       # the header row
-        first = ui._queue_ctx['visible'][0]
-        self.assertEqual(ui.queue_click_index(11, 3), first)
-        self.assertIsNone(ui.queue_click_index(11, 2))        # left of the pane
+            self.assertLessEqual(ui_utils.visual_len(body), 50 - qp._QUEUE_RIGHT_MARGIN)
+        self.assertIsNone(qp.queue_click_index(10, 5))       # the header row
+        first = qp._queue_ctx['visible'][0]
+        self.assertEqual(qp.queue_click_index(11, 3), first)
+        self.assertIsNone(qp.queue_click_index(11, 2))        # left of the pane
 
     def test_end_of_queue_fills_with_history(self):
-        self.assertEqual(ui._queue_window(10, 9, 5), [5, 6, 7, 8, 9])
-        self.assertEqual(ui._queue_window(10, 0, 5), [0, 1, 2, 3, 4])
+        self.assertEqual(qp._queue_window(10, 9, 5), [5, 6, 7, 8, 9])
+        self.assertEqual(qp._queue_window(10, 0, 5), [0, 1, 2, 3, 4])
 
     def test_next_track_reuses_the_details(self):
         self._set(5, 0)
-        meta = ui._queue_ctx['meta']
-        ui.set_queue_context(list(ui._queue_ctx['titles']), 1, list(ui._queue_ctx['paths']))
-        self.assertIs(ui._queue_ctx['meta'], meta)
+        meta = qp._queue_ctx['meta']
+        qp.set_queue_context(list(qp._queue_ctx['titles']), 1, list(qp._queue_ctx['paths']))
+        self.assertIs(qp._queue_ctx['meta'], meta)
 
 
 class PlayerHelpHintTest(unittest.TestCase):

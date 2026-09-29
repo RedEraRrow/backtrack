@@ -74,7 +74,7 @@ MARGIN_H = 2   # columns reserved on each horizontal side (left and right)
 MARGIN_V = 1   # rows reserved on each vertical side (top and bottom)
 
 # Now-playing box transport geometry, shared so both places that depend on it
-# can't drift apart: `playback_ui.format_now_playing_bar` draws the glyphs here
+# can't drift apart: `now_playing_box.format_now_playing_bar` draws the glyphs here
 # and `prompt_core.now_playing_click_action` maps a click back to the one under
 # the pointer. (start column, width) of ⏸/⏵ and ⏭ in the box's content columns.
 #

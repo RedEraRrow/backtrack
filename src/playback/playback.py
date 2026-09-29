@@ -29,6 +29,7 @@ from src.playback.playback_ui import (
     cycle_right_pane,
 )
 from src.playback import playback_ui
+from src.playback.player_geom import geom
 from src.utils.log import log
 from src.utils import prompt_core as pc
 from src.playback.session import (
@@ -407,8 +408,8 @@ def _player_view_loop() -> dict:
             pane.paint(sys.stdout, (_ms / 1000.0) if _ms and _ms > 0 else 0.0,
                        lyric_pane.Geometry(
                            row=lyric_row,
-                           col=playback_ui._last_right_left or 1,
-                           width=playback_ui._last_right_width or current_width,
+                           col=geom.right_left or 1,
+                           width=geom.right_width or current_width,
                            bottom=art_bottom_row or last_size[1]),
                        force=True)
             sys.stdout.flush()
@@ -640,8 +641,8 @@ def _player_view_loop() -> dict:
                 # written, so an unchanged frame costs nothing.
                 pane.paint(sys.stdout, elapsed, lyric_pane.Geometry(
                     row=lyric_row,
-                    col=playback_ui._last_right_left or 1,
-                    width=playback_ui._last_right_width or current_width,
+                    col=geom.right_left or 1,
+                    width=geom.right_width or current_width,
                     bottom=art_bottom_row or last_size[1]))
                 sys.stdout.flush()
 
