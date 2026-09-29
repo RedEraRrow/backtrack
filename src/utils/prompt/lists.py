@@ -16,6 +16,7 @@ from src.utils.prompt.chrome import (
     append_chrome, CHROME_HANDLED, chrome_hint_lines, CHROME_REDRAW, consume_chrome, disable_mouse, enable_mouse, MOVE_DOWN_KEY, MOVE_HINT, MOVE_UP_KEY, _plain,
 )
 from src.utils.prompt_core import C
+from src.utils.prompt_core import edit_line
 
 
 class ListPlace:
@@ -450,21 +451,8 @@ def select(message: str, choices: list, *,
                         # opens on something to amend rather than empty.
                         _edit_buf = list(was)
                         _edit_pos = len(_edit_buf)
-                elif _editing_text():
-                    if key == 'BACKSPACE':
-                        if _edit_pos > 0:
-                            del _edit_buf[_edit_pos - 1]; _edit_pos -= 1
-                    elif key == 'DELETE':
-                        if _edit_pos < len(_edit_buf):
-                            del _edit_buf[_edit_pos]
-                    elif key == 'LEFT':   _edit_pos = max(0, _edit_pos - 1)
-                    elif key == 'RIGHT':  _edit_pos = min(len(_edit_buf), _edit_pos + 1)
-                    elif key == 'HOME':   _edit_pos = 0
-                    elif key == 'END':    _edit_pos = len(_edit_buf)
-                    elif key == 'SPACE':
-                        _edit_buf.insert(_edit_pos, ' '); _edit_pos += 1
-                    elif len(key) == 1 and key.isprintable():
-                        _edit_buf.insert(_edit_pos, key); _edit_pos += 1
+                elif _editing_text() and (new_pos := edit_line(_edit_buf, _edit_pos, key)) is not None:
+                    _edit_pos = new_pos
                 _sel_last_click = None
                 w.render(_lines())
                 continue

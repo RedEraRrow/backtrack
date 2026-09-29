@@ -1074,6 +1074,32 @@ def _render_table_row(cells: list, columns: list, is_current: bool,
     return left
 
 
+def edit_line(buf: list, pos: int, key: str) -> int | None:
+    """Apply one line-editing key to `buf` (a list of characters) in place —
+    typing, space, backspace, delete, ←/→, Home/End — and return the caret's new
+    position, or None when `key` isn't one of them. The one editor every text
+    field uses, so a key works the same in each."""
+    if key == 'BACKSPACE':
+        if pos > 0:
+            del buf[pos - 1]; pos -= 1
+    elif key == 'DELETE':
+        if pos < len(buf):
+            del buf[pos]
+    elif key == 'LEFT':
+        pos = max(0, pos - 1)
+    elif key == 'RIGHT':
+        pos = min(len(buf), pos + 1)
+    elif key == 'HOME':
+        pos = 0
+    elif key == 'END':
+        pos = len(buf)
+    elif key == 'SPACE' or (len(key) == 1 and key.isprintable()):
+        buf.insert(pos, ' ' if key == 'SPACE' else key); pos += 1
+    else:
+        return None
+    return pos
+
+
 def block_cursor(text: str, pos: int, base: str = '') -> str:
     """`text` with a white block cursor sitting *on* the character at `pos`.
 

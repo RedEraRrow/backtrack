@@ -18,6 +18,7 @@ from src.utils.prompt.chrome import (
 from src.utils.prompt.lists import confirm
 from src.utils.prompt.text import path, system_editor_edit
 from src.utils.prompt_core import C
+from src.utils.prompt_core import edit_line
 
 
 # ---------------------------------------------------------------------------
@@ -767,40 +768,13 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                             barrel_idx = 0
                         _render()
 
-                elif key == 'BACKSPACE' and edit_pos > 0:
-                    edit_buf.pop(edit_pos - 1)
-                    edit_pos -= 1
-                    _render()
-
                 elif key == 'BACKSPACE' and edit_pos == 0 and len(barrel_hints) >= 2:
                     barrel_mode = True
                     barrel_idx = 0
                     _render()
 
-                elif key == 'LEFT' and edit_pos > 0:
-                    edit_pos -= 1
-                    _render()
-
-                elif key == 'RIGHT' and edit_pos < len(edit_buf):
-                    edit_pos += 1
-                    _render()
-
-                elif key == 'HOME':
-                    edit_pos = 0
-                    _render()
-
-                elif key == 'END':
-                    edit_pos = len(edit_buf)
-                    _render()
-
-                elif key == 'SPACE':
-                    edit_buf.insert(edit_pos, ' ')
-                    edit_pos += 1
-                    _render()
-
-                elif len(key) == 1 and key.isprintable():
-                    edit_buf.insert(edit_pos, key)
-                    edit_pos += 1
+                elif (new_pos := edit_line(edit_buf, edit_pos, key)) is not None:
+                    edit_pos = new_pos
                     _render()
 
             else:

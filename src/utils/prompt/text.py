@@ -13,6 +13,7 @@ from src.utils import ui_utils
 from src.utils.prompt import chrome
 from src.utils.prompt.chrome import CHROME_HANDLED, CHROME_REDRAW, MODE_TOGGLE, _MODE_TOGGLE_KEY, append_chrome, consume_chrome, disable_mouse, enable_mouse
 from src.utils.prompt_core import C
+from src.utils.prompt_core import edit_line
 
 
 def text(message: str, default: str = "") -> str | None:
@@ -100,24 +101,12 @@ def text(message: str, default: str = "") -> str | None:
             if   key == 'CTRL_C':             result = None;         break
             elif key == 'ESC':                result = None;         break
             elif key == 'ENTER':              result = "".join(buf); break
-            elif key == 'BACKSPACE' and pos > 0:
-                buf.pop(pos - 1); pos -= 1; _render()
-            elif key == 'LEFT' and pos > 0:
-                pos -= 1; _render()
-            elif key == 'RIGHT' and pos < len(buf):
-                pos += 1; _render()
             elif key == 'UP':
                 pos = max(0, pos - _cols()); _render()
             elif key == 'DOWN':
                 pos = min(len(buf), pos + _cols()); _render()
-            elif key == 'HOME':
-                pos = 0; _render()
-            elif key == 'END':
-                pos = len(buf); _render()
-            elif key == 'SPACE':
-                buf.insert(pos, ' '); pos += 1; _render()
-            elif len(key) == 1 and key.isprintable():
-                buf.insert(pos, key); pos += 1; _render()
+            elif (new_pos := edit_line(buf, pos, key)) is not None:
+                pos = new_pos; _render()
     finally:
         disable_mouse()
         _restore_term_attrs(fd, old)
@@ -299,30 +288,15 @@ def path(message: str, default: str = "") -> str | None:
                 _render()
                 continue
 
-            elif key == 'BACKSPACE' and pos > 0:
-                buf.pop(pos - 1); pos -= 1
-                _tab_matches = _completions("".join(buf))
-                _tab_index = 0
-                _render()
-            elif key == 'SPACE':
-                buf.insert(pos, ' '); pos += 1
-                _tab_matches = _completions("".join(buf))
-                _tab_index = 0
-                _render()
-            elif key == 'LEFT'  and pos > 0:
-                pos -= 1; _render()
-            elif key == 'RIGHT' and pos < len(buf):
-                pos += 1; _render()
-            elif key == 'HOME':
-                pos = 0; _render()
-            elif key == 'END':
-                pos = len(buf); _render()
-            elif len(key) == 1 and key.isprintable():
-                buf.insert(pos, key); pos += 1
-
-                _tab_matches = _completions("".join(buf))
-                _tab_index = 0
-                _render()
+            else:
+                before = list(buf)
+                new_pos = edit_line(buf, pos, key)
+                if new_pos is not None:
+                    pos = new_pos
+                    if buf != before:              # the text changed: fresh completions
+                        _tab_matches = _completions("".join(buf))
+                        _tab_index = 0
+                    _render()
 
     finally:
         disable_mouse()
