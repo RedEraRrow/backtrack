@@ -92,3 +92,36 @@ def _show_tokens(header) -> None:
     rows.append(prompt.Choice(title="Back", value="__back__"))
     prompt.select("Available tokens:", choices=rows, columns=_TOKENS_COLUMNS,
                   header=header("token reference"))
+
+
+def preview_and_apply(plan, library: list, header, writer, verb: str, *, count: str,
+                      changing: str, unchanged, skipped: int = 0,
+                      skipped_note: str = "unsupported skipped",
+                      columns=None, positions: bool = True) -> None:
+    """Preview a plan and write what is ticked: every file listed, the changing
+    ones ticked, live counts in the header, then the one-line summary. Only a
+    ticked row that changes is written — ticking one that says `unchanged(c)`
+    must not rewrite it."""
+    from src.utils import ui_utils
+    choices = [
+        prompt.Choice(title=name, value=c.path, checked=c.changed,
+                      cells=([str(pos)] if positions else []) + [name, why or unchanged(c)])
+        for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
+
+    def _header():
+        ticked = sum(1 for ch in choices if ch.checked)
+        bits = [count, f"{len(plan.changed)} {changing}", f"{ticked} ticked"]
+        if skipped:
+            bits.append(f"{skipped} {skipped_note}")
+        return header(' · '.join(bits))()
+
+    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+                        columns=columns or _RENUMBER_COLUMNS, header=_header, multi=True)
+    if sel is None:
+        return
+    apply_set = set(sel) & {c.path for c in plan.changed}
+    if not apply_set:
+        ui_utils.show_status("No tracks selected.")
+        return
+    applied = bo.apply_changes(plan, library, writer, selected=apply_set)
+    ui_utils.show_status(bo.summarise(applied, verb, skipped_note=skipped_note))

@@ -9,7 +9,8 @@ from src.id3 import file_namer as fnm
 from src.id3 import cover_matcher as cm
 from src.utils import ui_utils
 from collections import Counter
-from src.id3.bulk_common import _RENAME_PICK_COLUMNS, _RENUMBER_COLUMNS, _SKIP, _show_tokens, _walk
+from src.id3.bulk_common import _RENAME_PICK_COLUMNS, _SKIP, _show_tokens, _walk
+from src.id3.bulk_common import preview_and_apply
 
 
 _picture_type_name = bo.picture_type_name
@@ -40,33 +41,11 @@ def set_picture_type_op(paths: list, library: list, header) -> None:
         ui_utils.show_status(plan.message)
         return
 
-    choices = [
-        prompt.Choice(title=name, value=c.path, checked=c.changed,
-                      cells=[str(pos), name, why or "already correct"])
-        for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
-    n_changed = len(plan.changed)
-
-    def _type_header():
-        """Live counts for the preview."""
-        nk = sum(1 for ch in choices if ch.checked)
-        bits = [f"{len(art)} file(s) with art", f"{n_changed} to retype", f"{nk} ticked"]
-        if skipped:
-            bits.append(f"{skipped} without art or not MP3")
-        return header(' · '.join(bits))()
-
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
-                        columns=_RENUMBER_COLUMNS, header=_type_header, multi=True)
-    if sel is None:
-        return
-    apply_set = set(sel)
-    if not apply_set:
-        ui_utils.show_status("No tracks selected.")
-        return
-
-    applied = bo.apply_changes(
-        plan, library, lambda c: tw.retype_cover(c.path, pic_type), selected=apply_set)
-    ui_utils.show_status(bo.summarise(applied, f"Set {_picture_type_name(pic_type)} on",
-                                      skipped_note="without art or not MP3"))
+    preview_and_apply(plan, library, header, lambda c: tw.retype_cover(c.path, pic_type),
+                      f"Set {_picture_type_name(pic_type)} on",
+                      count=f"{len(art)} file(s) with art", changing="to retype",
+                      unchanged=lambda c: "already correct", skipped=skipped,
+                      skipped_note="without art or not MP3")
 
 
 # Per-file album art: track · matched cover image · confidence. Confidence is

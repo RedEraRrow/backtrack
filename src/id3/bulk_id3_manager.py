@@ -37,6 +37,7 @@ from src.id3.bulk_sort import apply_sort_orders
 from src.id3.bulk_assign import (
     assign_by_pattern, bulk_fraction_editor, bulk_people_editor,
 )
+from src.id3.bulk_common import preview_and_apply
 
 # Structured columns for the bulk tag picker. Column 1 holds the tag id AND the
 # friendly name as two styled segments (TAG bright + friendly dim) in one column.
@@ -160,37 +161,11 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
         ui_utils.show_status(plan.message)
         return
 
-    # Unchanged rows stay listed but unticked — no point rewriting a file whose
-    # numbering the reflow leaves exactly as it was.
-    choices = [
-        prompt.Choice(title=name, value=c.path, checked=c.changed,
-                      cells=[str(pos), name, why or 'no change'])
-        for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
-    n_changed = len(plan.changed)
-
-    def _reflow_header():
-        """Live counts for the reflow preview."""
-        nk = sum(1 for ch in choices if ch.checked)
-        bits = [ui_utils.plural(len(ordered), "track"), f"{n_changed} changing", f"{nk} ticked"]
-        if skipped_fmt:
-            bits.append(f"{skipped_fmt} unsupported skipped")
-        return header(' · '.join(bits))()
-
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
-                        columns=_RENUMBER_COLUMNS, header=_reflow_header, multi=True)
-    if sel is None:
-        return
-    apply_set = set(sel)
-    if not apply_set:
-        ui_utils.show_status("No tracks selected.")
-        return
-
     fields = {'disc'} | ({'track'} if track_totals else set())
-    applied = bo.apply_changes(
-        plan, library,
-        lambda c: tw.write_fields(c.path, c.fields, fields, overwrite=True),
-        selected=apply_set)
-    ui_utils.show_status(bo.summarise(applied, "Reflowed disc numbering on"))
+    preview_and_apply(plan, library, header,
+                      lambda c: tw.write_fields(c.path, c.fields, fields, overwrite=True),
+                      "Reflowed disc numbering on", count=ui_utils.plural(len(ordered), "track"),
+                      changing="changing", unchanged=lambda c: 'no change', skipped=skipped_fmt)
 
 
 
@@ -217,32 +192,9 @@ def strip_single_disc_op(paths: list, library: list, header) -> None:
         stored = c.fields.get('keeps', '')
         return f"keeps disc {stored}" if stored else "no disc number"
 
-    choices = [
-        prompt.Choice(title=name, value=c.path, checked=c.changed,
-                      cells=[str(pos), name, why or _kept(c)])
-        for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
-    n_changed = len(plan.changed)
-
-    def _strip_header():
-        """Live counts for the preview."""
-        nk = sum(1 for ch in choices if ch.checked)
-        bits = [ui_utils.plural(len(ordered), "track"), f"{n_changed} with 1/1", f"{nk} ticked"]
-        if skipped_fmt:
-            bits.append(f"{skipped_fmt} unsupported skipped")
-        return header(' · '.join(bits))()
-
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
-                        columns=_RENUMBER_COLUMNS, header=_strip_header, multi=True)
-    if sel is None:
-        return
-    apply_set = set(sel)
-    if not apply_set:
-        ui_utils.show_status("No tracks selected.")
-        return
-
-    applied = bo.apply_changes(
-        plan, library, lambda c: tw.clear_fields(c.path, {'disc'}), selected=apply_set)
-    ui_utils.show_status(bo.summarise(applied, "Removed the disc number from"))
+    preview_and_apply(plan, library, header, lambda c: tw.clear_fields(c.path, {'disc'}),
+                      "Removed the disc number from", count=ui_utils.plural(len(ordered), "track"),
+                      changing="with 1/1", unchanged=_kept, skipped=skipped_fmt)
 
 
 def strip_length_tags_op(paths: list, library: list, header) -> None:
@@ -263,32 +215,10 @@ def strip_length_tags_op(paths: list, library: list, header) -> None:
         ui_utils.show_status(plan.message)
         return
 
-    choices = [
-        prompt.Choice(title=name, value=c.path, checked=c.changed,
-                      cells=[name, why or "no stale tags"])
-        for (_pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
-    n_changed = len(plan.changed)
-
-    def _strip_header():
-        """Live counts for the preview."""
-        nk = sum(1 for ch in choices if ch.checked)
-        bits = [ui_utils.plural(len(songs), "track"), f"{n_changed} with stale tags", f"{nk} ticked"]
-        if skipped_fmt:
-            bits.append(f"{skipped_fmt} unsupported skipped")
-        return header(' · '.join(bits))()
-
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
-                        columns=_STRIP_LENGTH_COLUMNS, header=_strip_header, multi=True)
-    if sel is None:
-        return
-    apply_set = set(sel)
-    if not apply_set:
-        ui_utils.show_status("No tracks selected.")
-        return
-
-    applied = bo.apply_changes(plan, library, bo.strip_length_writer,
-                               selected=apply_set & {c.path for c in plan.changed})
-    ui_utils.show_status(bo.summarise(applied, "Stripped stale length tags from"))
+    preview_and_apply(plan, library, header, bo.strip_length_writer,
+                      "Stripped stale length tags from", count=ui_utils.plural(len(songs), "track"),
+                      changing="with stale tags", unchanged=lambda c: "no stale tags",
+                      skipped=skipped_fmt, columns=_STRIP_LENGTH_COLUMNS, positions=False)
 
 
 
