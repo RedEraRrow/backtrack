@@ -1,4 +1,4 @@
-"""The activity (notification) centre."""
+"""The activity centre."""
 from __future__ import annotations
 from src.utils.ui_utils import Colors as C
 from src.utils import prompt
@@ -6,7 +6,7 @@ from src.utils import prompt_core
 from src.utils import ui_utils
 
 
-def notification_centre() -> None:
+def activity_centre() -> None:
     """A live panel of current background activities — opens from Settings or by
     clicking the status-bar ● beacon. Lists each running job with its live status
     and a pulsing dot, updating as they start/finish; closes on Esc / b / q, and

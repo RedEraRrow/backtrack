@@ -220,14 +220,14 @@ def set_transport_handler(fn) -> None:
     _transport_handler = fn
 
 
-_notification_opener = None
+_activity_opener = None
 
 
-def set_notification_opener(fn) -> None:
-    """Register a ``callable()`` that opens the activity/notification centre —
+def set_activity_opener(fn) -> None:
+    """Register a ``callable()`` that opens the activity centre —
     invoked when the status-bar ● beacon is clicked."""
-    global _notification_opener
-    _notification_opener = fn
+    global _activity_opener
+    _activity_opener = fn
 
 
 def _plain(s: str) -> str:

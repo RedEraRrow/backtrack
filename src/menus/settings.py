@@ -10,7 +10,7 @@ from src.music_library import (
 from src.history import get_history, clear_history
 from src.config import load_config, music_dirs, set_music_dirs, library_name, update_config, changed_keys
 from src.id3.tag_registry import TAG_REGISTRY
-from src.menus.activity import notification_centre
+from src.menus.activity import activity_centre
 from src.menus.common import BROWSE_CATEGORIES, DEFAULT_BROWSE_MENU, OFF_GLYPH, ON_GLYPH, _SETTINGS_COLUMNS, _commit, _idx_of, _menu_header, _space_toggles, _state_glyph, browse_menu_keys
 from src.menus.sorting import _chain_summary, _pick_chain
 from src.config import setting
@@ -320,7 +320,7 @@ def handle_settings(library_ref: list) -> None:
             ui_utils.show_status(f"{_labels[choice]} {glyph}{note}")
 
         if choice == "activity":
-            notification_centre()
+            activity_centre()
 
         elif choice == "history":
             _toggled("history_enabled")

@@ -14,7 +14,7 @@ from src.utils.prompt import chrome as _prompt_chrome
 from src.lyrics.md_overlay import _SD_SCOPES, _sd_scope, build_md_overlay as _build_md_overlay
 from src.lyrics.time_fields import _EDIT_END, _EDIT_START, _ts_parts
 from src.lyrics.sync_doc import SOURCE_TRANSCRIPT, _make_stage_dir
-from src.lyrics.verify import _AIR_GAP_THRESHOLD, _make_dead_air
+from src.lyrics.verify import _make_dead_air
 from src.lyrics.editor_view import AUDITION, EDIT, SEG, TAP, WORD, _AUD_COARSE, _AUD_STEP, _HAS_VLC
 from src.state import QuitToTerminal
 from src import tuning as tune
@@ -523,7 +523,7 @@ class _KeyHandlers:
             if (_nxt is not None
                     and _cur.get("end") is not None
                     and _nxt.get("start") is not None
-                    and _nxt["start"] - _cur["end"] >= _AIR_GAP_THRESHOLD
+                    and _nxt["start"] - _cur["end"] >= tune.LYRIC_AIR_THRESHOLD_S
                     and _nxt.get("kind") not in _skip_kinds
                     and _cur.get("kind") not in _skip_kinds):
                 _gap_start = float(_cur["end"])

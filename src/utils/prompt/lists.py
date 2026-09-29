@@ -543,10 +543,10 @@ def select(message: str, choices: list, *,
                 r, col = int(parts[2]), int(parts[3]) if len(parts) > 3 else 1
                 # Click on the status-bar row's pulsing ● beacon → open the
                 # activity centre (only while something is actually running).
-                if (chrome._notification_opener is not None
+                if (chrome._activity_opener is not None
                         and r >= ui_utils.get_terminal_height()
                         and ui_utils.has_background_tasks()):
-                    chrome._notification_opener()
+                    chrome._activity_opener()
                     enable_mouse()
                     sys.stdout.flush()
                     _sel_last_click = None

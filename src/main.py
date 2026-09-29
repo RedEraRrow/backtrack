@@ -195,8 +195,8 @@ def _wire_playback() -> None:
     prompt.set_transport_handler(_transport)
 
     # Clicking the status-bar activity beacon opens the live activity centre.
-    from src.menus.activity import notification_centre
-    prompt.set_notification_opener(notification_centre)
+    from src.menus.activity import activity_centre
+    prompt.set_activity_opener(activity_centre)
 
 
 def main() -> int | None:

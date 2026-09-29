@@ -3,7 +3,6 @@ candidates, the match-up report, and splitting a segment at word boundaries."""
 from __future__ import annotations
 import os
 from src.utils.ui_utils import Colors as C
-from src.lyrics.lyrics import _AIR_THRESHOLD
 from src.lyrics.lyrics_text import (align_tokens as _align_tokens,
                                     pair_tokens as _pair_tokens,
                                     ends_a_thought as _ends_a_thought)
@@ -13,7 +12,6 @@ from src.lyrics.md_overlay import (
 from src.utils import timefmt
 
 
-_AIR_GAP_THRESHOLD = _AIR_THRESHOLD   # use the shared threshold from src.lyrics.lyrics
 
 
 # The MD side of `_word_streams`, memoised on the script's mtime+size. Verify and

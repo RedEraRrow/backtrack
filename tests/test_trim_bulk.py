@@ -184,7 +184,7 @@ class SeedBySting(unittest.TestCase):
     def test_start_anchor_keeps_sting_in_output(self):
         ep = os.path.join(self.tmp, "ep.mp3")
         _make_episode(ep, lead_in_s=2.0)
-        results = tb.seed_by_sting(self.reference_pcm, self.sting_dur, 'start', 0.0, [ep])
+        results = trim.seed_by_sting(self.reference_pcm, self.sting_dur, 'start', 0.0, [ep])
         self.assertIsNotNone(results[ep])
         in_point, score = results[ep]
         self.assertGreater(score, 0.3)
@@ -193,7 +193,7 @@ class SeedBySting(unittest.TestCase):
     def test_end_anchor_drops_sting_from_output(self):
         ep = os.path.join(self.tmp, "ep.mp3")
         _make_episode(ep, lead_in_s=2.0)
-        results = tb.seed_by_sting(self.reference_pcm, self.sting_dur, 'end', 0.0, [ep])
+        results = trim.seed_by_sting(self.reference_pcm, self.sting_dur, 'end', 0.0, [ep])
         self.assertIsNotNone(results[ep])
         in_point, score = results[ep]
         self.assertGreater(score, 0.3)
@@ -205,7 +205,7 @@ class SeedBySting(unittest.TestCase):
                         "-f", "lavfi", "-i", "sine=frequency=222:duration=25",
                         "-ar", "44100", "-ac", "2", "-c:a", "libmp3lame", "-b:a", "128k", no_sting],
                        check=True, capture_output=True)
-        results = tb.seed_by_sting(self.reference_pcm, self.sting_dur, 'start', 0.0, [no_sting])
+        results = trim.seed_by_sting(self.reference_pcm, self.sting_dur, 'start', 0.0, [no_sting])
         self.assertIsNone(results[no_sting])
 
     def test_each_track_gets_its_own_offset_in_one_batch_call(self):
@@ -219,7 +219,7 @@ class SeedBySting(unittest.TestCase):
             _make_episode(path, lead_in)
             eps[path] = lead_in
 
-        results = tb.seed_by_sting(self.reference_pcm, self.sting_dur, 'start', 0.0, list(eps))
+        results = trim.seed_by_sting(self.reference_pcm, self.sting_dur, 'start', 0.0, list(eps))
 
         found_offsets = []
         for path, true_lead_in in eps.items():
@@ -266,7 +266,7 @@ class SeedBySting_Tail(unittest.TestCase):
         ep = os.path.join(self.tmp, "ep.mp3")
         _make_closing_episode(ep, tail_pad_s=2.0)
         # True sting position: 20s programme, sting from 20-23s, then 2s tail.
-        results = tb.seed_by_sting(self.reference_pcm, self.sting_dur, 'end', 0.0,
+        results = trim.seed_by_sting(self.reference_pcm, self.sting_dur, 'end', 0.0,
                                    [ep], region='tail')
         self.assertIsNotNone(results[ep])
         out_point, score = results[ep]
@@ -276,7 +276,7 @@ class SeedBySting_Tail(unittest.TestCase):
     def test_start_anchor_drops_closing_beep(self):
         ep = os.path.join(self.tmp, "ep.mp3")
         _make_closing_episode(ep, tail_pad_s=2.0)
-        results = tb.seed_by_sting(self.reference_pcm, self.sting_dur, 'start', 0.0,
+        results = trim.seed_by_sting(self.reference_pcm, self.sting_dur, 'start', 0.0,
                                    [ep], region='tail')
         self.assertIsNotNone(results[ep])
         out_point, score = results[ep]
@@ -286,7 +286,7 @@ class SeedBySting_Tail(unittest.TestCase):
     def test_window_bounds_tail_measures_from_the_end(self):
         ep = os.path.join(self.tmp, "ep.mp3")
         _make_closing_episode(ep, tail_pad_s=2.0)
-        start_s, dur_s = tb._window_bounds(ep, window_s=10.0, region='tail')
+        start_s, dur_s = trim.window_bounds(ep, window_s=10.0, region='tail')
         from mutagen.mp3 import MP3
         length = MP3(ep).info.length
         self.assertAlmostEqual(start_s, length - 10.0, places=1)
@@ -299,7 +299,7 @@ def _make_history_episode(path: str, lead_in_s: float, programme_tremolo_f: floa
     non-degenerate envelope shape of their own: a *stationary* tone's log-RMS
     envelope is flat, and two flat regions correlate as a false "perfect
     match" regardless of content (an mp3-quantization-noise artifact, not a
-    real one) — exactly the failure mode `_learn_sting_from_history`'s margin
+    real one) — exactly the failure mode `trim.learn_sting_from_history`'s margin
     check guards against, so the fixture must not manufacture it by accident.
     `programme_tremolo_f` differs between episodes so their programme tails
     don't coincidentally resemble each other either."""
@@ -321,7 +321,7 @@ def _make_history_episode(path: str, lead_in_s: float, programme_tremolo_f: floa
 
 @unittest.skipUnless(trim.HAS_FFMPEG, "ffmpeg not installed")
 class LearnStingFromHistoryTest(unittest.TestCase):
-    """`_learn_sting_from_history` (section 4.4): a shared sting learned from
+    """`trim.learn_sting_from_history` (section 4.4): a shared sting learned from
     an already-committed trim in the same folder, direction (kept vs
     dropped) discovered by correlating each way against a fresh track —
     never assumed from which mark field the old commit happened to set."""
@@ -339,7 +339,7 @@ class LearnStingFromHistoryTest(unittest.TestCase):
     def test_none_without_history(self):
         new_ep = os.path.join(self.tmp, "new.mp3")
         _make_history_episode(new_ep, lead_in_s=6.0, programme_tremolo_f=3.7)
-        self.assertIsNone(tb._learn_sting_from_history([new_ep], 'head', 90.0, 0.3))
+        self.assertIsNone(trim.learn_sting_from_history([new_ep], 'head', 90.0, 0.3))
 
     def test_detects_dropped_sting_from_an_old_commit(self):
         # Old episode: 2s lead-in + 3s sting, committed so the sting is cut
@@ -352,7 +352,7 @@ class LearnStingFromHistoryTest(unittest.TestCase):
         new_ep = os.path.join(self.tmp, "new.mp3")
         _make_history_episode(new_ep, lead_in_s=6.0, programme_tremolo_f=3.7)
 
-        result = tb._learn_sting_from_history([new_ep], 'head', 90.0, 0.3)
+        result = trim.learn_sting_from_history([new_ep], 'head', 90.0, 0.3)
         self.assertIsNotNone(result)
         backup_path, start, end, side = result
         self.assertTrue(os.path.exists(backup_path))
@@ -371,7 +371,7 @@ class LearnStingFromHistoryTest(unittest.TestCase):
         new_ep = os.path.join(self.tmp, "new.mp3")
         _make_history_episode(new_ep, lead_in_s=6.0, programme_tremolo_f=3.7)
 
-        result = tb._learn_sting_from_history([new_ep], 'head', 90.0, 0.3)
+        result = trim.learn_sting_from_history([new_ep], 'head', 90.0, 0.3)
         self.assertIsNotNone(result)
         _backup_path, start, end, side = result
         self.assertEqual(side, 'start')
@@ -387,7 +387,7 @@ class LearnStingFromHistoryTest(unittest.TestCase):
 
         new_ep = os.path.join(self.tmp, "new.mp3")
         _make_history_episode(new_ep, lead_in_s=6.0, programme_tremolo_f=3.7)
-        self.assertIsNone(tb._learn_sting_from_history([new_ep], 'head', 90.0, 0.3))
+        self.assertIsNone(trim.learn_sting_from_history([new_ep], 'head', 90.0, 0.3))
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from src.utils.prompt.chrome import (  # noqa: F401
     CHROME_HANDLED, CHROME_REDRAW, MODE_TOGGLE, MOVE_DOWN_KEY, MOVE_HINT, MOVE_UP_KEY,
     append_chrome, chrome_hint_lines, chrome_hint_pairs, consume_chrome,
     disable_mouse, enable_mouse,
-    set_notification_opener, set_player_opener, set_transport_handler,
+    set_activity_opener, set_player_opener, set_transport_handler,
 )
 from src.utils.prompt.text import path, system_editor_edit, text  # noqa: F401
 from src.utils.prompt.lists import ListPlace, confirm, live_select, select  # noqa: F401

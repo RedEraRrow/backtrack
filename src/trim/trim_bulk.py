@@ -196,14 +196,6 @@ def group_duration_mismatch(library: list, *, mismatch_ratio: float = 1.10) -> l
 # output, no marks mutation; the conveyor decides what to do with the result.
 # ---------------------------------------------------------------------------
 
-# window_bounds and seed_by_sting are pure engine logic (no terminal/VLC
-# touch) and are shared with trim_editor.py's single-track suggestion, so
-# they live in trim.py; kept as local aliases since every call site here
-# already refers to them by these names.
-_window_bounds = trim.window_bounds
-seed_by_sting = trim.seed_by_sting
-
-
 # ---------------------------------------------------------------------------
 # The conveyor (section 5.2).
 # ---------------------------------------------------------------------------
@@ -345,9 +337,9 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
         return _mark_manually()
 
     window_s = float(setting(load_config(), "trim_sting_window_s"))
-    ref_start_s, ref_dur_s = _window_bounds(reference_path, window_s, region)
+    ref_start_s, ref_dur_s = trim.window_bounds(reference_path, window_s, region)
     pcm_a = trim.decode_mono_pcm(reference_path, ref_start_s, ref_dur_s)
-    cmp_start_s, cmp_dur_s = _window_bounds(paths[1], window_s, region)
+    cmp_start_s, cmp_dur_s = trim.window_bounds(paths[1], window_s, region)
     pcm_b = trim.decode_mono_pcm(paths[1], cmp_start_s, cmp_dur_s)
     candidates = trim.find_candidate_stings(pcm_a, pcm_b)
     if not candidates:
@@ -404,11 +396,6 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
     return picked
 
 
-# Also pure engine logic (see the window_bounds/seed_by_sting note above) —
-# shared with trim_editor.py's single-track suggestion.
-_learn_sting_from_history = trim.learn_sting_from_history
-
-
 def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bound: str = 'in') -> None:
     """Pick the sting once — learned from an earlier trim in this folder,
     auto-discovered against the reference track (paths[0]), or marked by hand
@@ -423,7 +410,7 @@ def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bou
     window_s = float(setting(cfg, "trim_sting_window_s"))
     min_score = float(setting(cfg, "trim_sting_min_score"))
 
-    learned = _learn_sting_from_history(paths, region, window_s, min_score)
+    learned = trim.learn_sting_from_history(paths, region, window_s, min_score)
     used_history = learned is not None and prompt.confirm(
         f"Found a matching {which} sting from an earlier trim in this folder — use it?", default=True)
 
@@ -473,7 +460,7 @@ def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bou
 
     sting_dur = sting_end - sting_start
     reference_pcm = trim.decode_mono_pcm(reference_path, sting_start, sting_dur)
-    results = seed_by_sting(reference_pcm, sting_dur, side, 0.0, others,
+    results = trim.seed_by_sting(reference_pcm, sting_dur, side, 0.0, others,
                             window_s=window_s, min_score=min_score, region=region)
 
     seeded, skipped = (0 if used_history else 1), 0
