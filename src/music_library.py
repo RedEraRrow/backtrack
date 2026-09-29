@@ -13,6 +13,7 @@ import mutagen
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from src.config import setting
+from src.utils.log import quietly
 
 
 
@@ -352,11 +353,9 @@ def get_metadata(file_path: str) -> dict:
 
     # Extract from ID3 tags (MP3)
     if file_path.lower().endswith('.mp3'):
-        try:
+        with quietly():
             tags = ID3(file_path)
             metadata.update(_extract_id3_metadata(tags))
-        except Exception:
-            pass
 
     # Extract from MP4 tags (M4A, MP4, M4P)
     elif file_path.lower().endswith(('.m4a', '.mp4', '.m4p')):
@@ -370,12 +369,10 @@ def get_metadata(file_path: str) -> dict:
 
     # Cache the audio duration (seconds) so track lists can show it without
     # re-reading every file during browse.
-    try:
+    with quietly():
         mf = mutagen.File(file_path)  # type: ignore[reportPrivateImportUsage]
         if mf is not None and getattr(mf, "info", None) is not None:
             metadata["duration"] = float(getattr(mf.info, "length", 0.0) or 0.0)
-    except Exception:
-        pass
 
     return metadata
 

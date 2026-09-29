@@ -10,7 +10,7 @@ import select as _sel
 from typing import Any
 
 from src.utils import ui_utils
-from src.utils.log import log, enabled as _logging
+from src.utils.log import log, enabled as _logging, quietly
 C = ui_utils.Colors
 
 _IS_WINDOWS = os.name == "nt"
@@ -322,19 +322,15 @@ def _wait_for_keypress(timeout: float = 0.05) -> bool:
     now = time.time()
     if now - _np_last_draw[0] >= 0.12:
         _np_last_draw[0] = now
-        try:
+        with quietly():
             _render_now_playing_bar()
-        except Exception:
-            pass
         # Keep the background-activity notice live: while a task is running the
         # status bar is re-stamped each tick so it stays up for the whole job and
         # its cyan ● pulses; one extra redraw after the last task clears the bar.
         active = ui_utils.has_background_tasks()
         if active or _status_prev_active[0]:
-            try:
+            with quietly():
                 _render_status_bar()
-            except Exception:
-                pass
         _status_prev_active[0] = active
     if _IS_WINDOWS:
         end = time.time() + timeout
@@ -351,10 +347,8 @@ def _wait_for_keypress(timeout: float = 0.05) -> bool:
         except OSError:
             pass
         _np_last_draw[0] = time.time()    # this pulse counts as the tick
-        try:
+        with quietly():
             _render_now_playing_bar()     # repaint immediately on a state change
-        except Exception:
-            pass
     return sys.stdin in ready             # a wake alone is not a keypress
 
 

@@ -2,8 +2,8 @@
 import os
 import time
 
-from src.config import load_config, save_config, music_dirs, set_music_dirs
-from src.utils.log import log, configure as log_setup
+from src.config import load_config, music_dirs, set_music_dirs, setting, update_config
+from src.utils.log import log, configure as log_setup, quietly
 from src.playback.session import SESSION
 from src.music_library import (
     build_library, load_library_cache, save_library_cache,
@@ -13,7 +13,6 @@ from src.menus import main_menu
 from src.id3.tag_registry import TAG_REGISTRY
 from src.state import QuitToTerminal
 from src.utils import prompt, ui_utils
-from src.config import setting
 
 
 def _init_tag_preferences(config: dict) -> dict:
@@ -96,7 +95,7 @@ def _run(config: dict) -> None:
     config = _init_tag_preferences(config)
     # Persist immediately so first-run tag preferences survive an instant quit;
     # the settings menu also autosaves, so "save & quit" (q) needs nothing more.
-    save_config(config)
+    update_config({'tag_name_preferences': config['tag_name_preferences']})
 
     library = load_library_cache()
 
@@ -127,7 +126,7 @@ def _run(config: dict) -> None:
 
     # More can be added later in Settings → Music Directories.
     set_music_dirs(config, roots)
-    save_config(config)
+    update_config({k: config[k] for k in ('music_directories', 'music_directory')})
 
     ui_utils.show_loading("Building library…")
     library = build_library(
@@ -217,11 +216,9 @@ def main() -> int | None:
 def _run_app() -> None:
     """Set up the terminal, load config, and run the interactive app."""
     # Enable ANSI escape processing on Windows consoles (no-op elsewhere).
-    try:
+    with quietly():
         import colorama
         colorama.just_fix_windows_console()
-    except Exception:
-        pass
 
     config = load_config()
     log_setup(bool(setting(config, "debug")))
@@ -239,14 +236,12 @@ def _run_app() -> None:
     finally:
         # Stop any background audio / restore stderr, and drop any joined-session
         # client link (#14).
-        try:
+        with quietly():
             from src.playback import session as sess
             if sess.is_client():
                 sess._client_link.close()  # type: ignore[union-attr]
                 sess.set_client_link(None)
             sess.SESSION.shutdown()
-        except Exception:
-            pass
         ui_utils.exit_alt_screen()
 
 

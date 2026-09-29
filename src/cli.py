@@ -25,6 +25,7 @@ from typing import Callable
 
 from src.utils import output as out
 from src.config import setting
+from src.utils.log import quietly
 
 
 @dataclass
@@ -502,10 +503,8 @@ def main(argv: list) -> int:
         return out.fail(out.FAIL, "Interrupted.")
     except BrokenPipeError:
         # `backtrack track list | head` — the reader left, which is not an error.
-        try:
+        with quietly():
             sys.stdout.close()
-        except Exception:
-            pass
         return out.OK
     except Exception as exc:
         return out.fail(out.FAIL, str(exc) or exc.__class__.__name__,

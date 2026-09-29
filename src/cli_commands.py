@@ -16,6 +16,7 @@ from src.utils import output as out
 from src.utils import prompt_core as pc
 from src.utils import timefmt
 from src.config import setting
+from src.utils.log import quietly
 
 
 # --- shared column specs ----------------------------------------------------
@@ -637,10 +638,8 @@ def _tag_copy(ctx: Ctx) -> int:
             out.event('error', path=path, detail=str(exc))
             continue
         written += 1
-        try:
+        with quietly():
             refresh_library_entry(ctx.library, path)
-        except Exception:
-            pass
         out.event('written', path=path, detail=os.path.basename(path))
     from src.utils import ui_utils
     out.note(f"Copied {ui_utils.plural(len(frames), 'tag')} onto "
@@ -1457,10 +1456,8 @@ def _lyrics_import(ctx: Ctx) -> int:
     if not tag_id:
         return out.fail(out.FAIL, "Nothing readable in that .lrc file.",
                         path=source)
-    try:
+    with quietly():
         refresh_library_entry(ctx.library, path)
-    except Exception:
-        pass
     out.record('lyrics', {'path': path, 'tag': tag_id, 'lines': count},
                human=f"  Imported {count} lines into {tag_id}.")
     return out.OK
@@ -1926,10 +1923,8 @@ def _download_one(ctx: Ctx, item, target: str, feed_title: str) -> None:
     if frames and tw.format_kind(target) == 'mp3':
         from src.id3 import bulk_ops as bo
         bo.apply_frame_writes({target: list(frames.items())}, ctx.library, overwrite=True)
-    try:
+    with quietly():
         refresh_library_entry(ctx.library, target)
-    except Exception:
-        pass
 
 
 # --- the tree ---------------------------------------------------------------

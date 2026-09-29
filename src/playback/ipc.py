@@ -24,6 +24,7 @@ import time
 
 from src.config import CONFIG_DIR
 from src import tuning as tune
+from src.utils.log import quietly
 
 SESSIONS_DIR = CONFIG_DIR / "sessions"
 
@@ -248,10 +249,8 @@ class SessionServer:
         try:
             for msg in _iter_messages(conn):
                 if msg.get("t") == "cmd":
-                    try:
+                    with quietly():
                         self._on_command(msg.get("name", ""), msg.get("args") or {})
-                    except Exception:
-                        pass
         finally:
             with self._clients_lock:
                 self._clients.discard(conn)
@@ -346,16 +345,12 @@ class SessionClient:
                     self._latest = msg.get("data")
                     self._latest_at = time.time()
                 if self._on_snapshot:
-                    try:
+                    with quietly():
                         self._on_snapshot(self._latest)
-                    except Exception:
-                        pass
         self.connected = False
         if not self._stop.is_set() and self._on_disconnect:
-            try:
+            with quietly():
                 self._on_disconnect()
-            except Exception:
-                pass
 
     def latest(self) -> dict | None:
         """The most recent now-playing snapshot from the host (or None)."""

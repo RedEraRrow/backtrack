@@ -30,6 +30,7 @@ import mutagen.id3
 
 from src.history import log_listening_history
 from src.music_library import drop_moved, get_song_duration, track_title
+from src.utils.log import quietly
 
 # vlc.State attributes are dynamic; expose safe aliases (mirrors playback.py).
 _VLC_STATE_PAUSED = getattr(vlc.State, 'Paused', None)
@@ -363,10 +364,8 @@ class PlaybackSession:
     def _log_history(self) -> None:
         """Log the currently-loaded track to listening history, at most once."""
         if self.file_path and not self._history_logged:
-            try:
+            with quietly():
                 log_listening_history(self.file_path, self.track_start, time.time())
-            except Exception:
-                pass
             self._history_logged = True
 
     def stop(self) -> None:
@@ -375,10 +374,8 @@ class PlaybackSession:
         with self._lock:
             self._log_history()
             if self.mp is not None:
-                try:
+                with quietly():
                     self.mp.stop()
-                except Exception:
-                    pass
             self.file_path = None
             self.audio = None
             self.duration = 0.0
@@ -389,17 +386,13 @@ class PlaybackSession:
         with self._lock:
             self._tick_stop.set()
             if self._server is not None:
-                try:
+                with quietly():
                     self._server.stop()
-                except Exception:
-                    pass
                 self._server = None
             self.stop()
             if self._old_stderr is not None:
-                try:
+                with quietly():
                     _restore_stderr(self._old_stderr)
-                except Exception:
-                    pass
                 self._old_stderr = None
 
     # -- transport ----------------------------------------------------------
@@ -443,14 +436,10 @@ class PlaybackSession:
         must never interrupt playback."""
         if self._config is not None:
             self._config['volume'] = vol
-        try:
-            from src.config import load_config, save_config
-            cfg = load_config()
-            if cfg.get('volume') != vol:
-                cfg['volume'] = vol
-                save_config(cfg)
-        except Exception:
-            pass
+        with quietly():
+            from src.config import load_config, update_config
+            if load_config().get('volume') != vol:
+                update_config({'volume': vol})
 
     def set_volume(self, vol: int) -> int:
         with self._lock:
@@ -605,7 +594,7 @@ class PlaybackSession:
     def _tick_loop(self) -> None:
         from src.utils import ui_utils
         while not self._tick_stop.is_set():
-            try:
+            with quietly():
                 # The attached view drives ticking itself (so it can reload lyric
                 # state on change); the background thread only advances when the
                 # player is running unattended.
@@ -614,8 +603,6 @@ class PlaybackSession:
                     # Keep any menu's now-playing box live (clock + auto-advance)
                     # without waiting for a keystroke there (#14).
                     ui_utils.pulse_now_playing()
-            except Exception:
-                pass
             time.sleep(_TICK_INTERVAL_S)
 
     # -- snapshot for the now-playing bar / views ---------------------------
@@ -848,10 +835,8 @@ def _become_host_from(session_id: str, snap: dict | None) -> None:
     old = _client_link
     set_client_link(None)
     if old is not None:
-        try:
+        with quietly():
             old.close()
-        except Exception:
-            pass
     if not snap or not snap.get('file_path'):
         return                                   # nothing to resume → session ends
     SESSION._session_id = session_id             # keep the socket so losers reconnect
@@ -861,12 +846,10 @@ def _become_host_from(session_id: str, snap: dict | None) -> None:
                   index=int(snap.get('index', 0)),
                   mode=snap.get('mode'),
                   is_grouping=bool(snap.get('is_grouping', False)))
-    try:
+    with quietly():
         SESSION.seek_to(float(snap.get('elapsed') or 0.0))
         if snap.get('paused'):
             SESSION.pause_toggle()
-    except Exception:
-        pass
     SESSION.start_background_tick()
 
 

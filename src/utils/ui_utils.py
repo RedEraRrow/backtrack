@@ -10,6 +10,7 @@ import re
 import unicodedata
 
 from src.state import NAV_STACK
+from src.utils.log import quietly
 
 _resize_flag = False
 _np_layout_dirty = False
@@ -218,10 +219,8 @@ def set_screen_invalidator(fn) -> None:
 def _screen_cleared() -> None:
     """Tell the painter the screen was wiped outside its own frame writes."""
     if _screen_invalidator is not None:
-        try:
+        with quietly():
             _screen_invalidator()
-        except Exception:
-            pass
 
 
 def enter_alt_screen() -> None:
@@ -305,10 +304,8 @@ def pulse_now_playing() -> None:
     """Ask the active menu poll to repaint the now-playing box now (no-op if no
     poll is listening — e.g. the full player view drives its own redraws)."""
     if _np_waker is not None:
-        try:
+        with quietly():
             _np_waker()
-        except Exception:
-            pass
 
 
 def now_playing_signature() -> tuple | None:

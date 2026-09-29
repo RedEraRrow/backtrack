@@ -38,6 +38,7 @@ from src.id3.bulk_assign import (
     assign_by_pattern, bulk_fraction_editor, bulk_people_editor,
 )
 from src.id3.bulk_common import preview_and_apply
+from src.utils.log import quietly
 
 # Structured columns for the bulk tag picker. Column 1 holds the tag id AND the
 # friendly name as two styled segments (TAG bright + friendly dim) in one column.
@@ -849,10 +850,8 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             if changed:
                 save_id3(audio, path)   # explicit path: works for a fresh ID3 too
                 count_modified += 1
-                try:
+                with quietly():
                     refresh_library_entry(library, path)
-                except Exception:
-                    pass
         except Exception as e:
             ui_utils.show_status(f"Could not process track {os.path.basename(path)}: {e}")
 

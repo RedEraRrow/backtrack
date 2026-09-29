@@ -17,6 +17,7 @@ import time
 from src.utils import prompt, ui_utils
 from src.utils.prompt import chrome as prompt_chrome
 from src.config import setting
+from src.utils.log import quietly
 
 
 
@@ -1195,10 +1196,8 @@ def apply_bulk_operation_to_files(
             if changed:
                 save_id3(audio)
                 if library is not None:
-                    try:
+                    with quietly():
                         refresh_library_entry(library, path)
-                    except Exception:
-                        pass
         except (mutagen.id3.ID3NoHeaderError, OSError, IOError):  # type: ignore[reportPrivateImportUsage]
             fail_count += len(tag_ids)
 

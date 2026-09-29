@@ -11,7 +11,7 @@ from src.id3 import tag_writer as tw
 from src.id3 import bulk_ops as bo
 from src import bulk_pattern as bp
 from src.utils import ui_utils
-from src.utils.log import log
+from src.utils.log import log, quietly
 from src.music_library import refresh_library_entry
 from src.id3.bulk_common import _RENUMBER_COLUMNS, _walk
 
@@ -285,10 +285,8 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
             audio.add(frame)
             save_id3(audio, p)
             count += 1
-            try:
+            with quietly():
                 refresh_library_entry(library, p)
-            except Exception:
-                pass
         except Exception:
             errors += 1
 

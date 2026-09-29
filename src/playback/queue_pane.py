@@ -6,6 +6,7 @@ from src.music_library import get_metadata, format_tag_values, live_library
 from src.utils import ui_utils
 from src.utils.prompt_core import Column, _table_widths
 from src.utils.ui_utils import Colors as C
+from src.utils.log import quietly
 
 
 # Up-next context for the queue view: list of display titles + current index.
@@ -38,14 +39,12 @@ def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
             'album_artist': '',
         }
         if i < len(paths):
-            try:
+            with quietly():
                 data = by_path.get(paths[i]) or get_metadata(paths[i])
                 item['title'] = data.get('title') or item['title']
                 item['artist'] = data.get('artist') or ''
                 item['album'] = data.get('album') or ''
                 item['album_artist'] = data.get('album_artist') or ''
-            except Exception:
-                pass
         meta.append(item)
     return meta
 

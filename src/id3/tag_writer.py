@@ -22,6 +22,7 @@ import mutagen.id3 as _mid3
 from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TSST, TDRC, TCMP  # type: ignore[reportPrivateImportUsage]  # noqa: E501
 from mutagen.mp4 import MP4, MP4Cover  # type: ignore[reportPrivateImportUsage]
 from src.id3 import tag_registry as _reg
+from src.utils.log import quietly
 
 # The fields this writer understands (track/disc carry their totals). The
 # compilation flag is not a user field — it rides along when a compilation is
@@ -172,7 +173,7 @@ def present_fields(path: str) -> dict[str, bool]:
     Returns all-False if the file can't be read or isn't writable.
     """
     kind = format_kind(path)
-    try:
+    with quietly():
         if kind == 'mp3':
             try:
                 return _id3_present(ID3(path))
@@ -180,8 +181,6 @@ def present_fields(path: str) -> dict[str, bool]:
                 return {f: False for f in FIELDS}
         if kind == 'mp4':
             return _mp4_present(MP4(path))
-    except Exception:
-        pass
     return {f: False for f in FIELDS}
 
 
@@ -197,7 +196,7 @@ def read_number_pairs(path: str) -> dict:
     """
     kind = format_kind(path)
     out = {'track': '', 'total_tracks': '', 'disc': '', 'total_discs': ''}
-    try:
+    with quietly():
         if kind == 'mp3':
             try:
                 audio = ID3(path)
@@ -221,8 +220,6 @@ def read_number_pairs(path: str) -> dict:
                     continue
                 out[cur] = str(n) if n else ''
                 out[tot] = str(t) if t else ''
-    except Exception:
-        pass
     return out
 
 
@@ -440,7 +437,7 @@ def has_cover(path: str) -> bool:
     a bad file is treated as blank (and the fill-blanks preview offers to fill).
     """
     kind = format_kind(path)
-    try:
+    with quietly():
         if kind == 'mp3':
             try:
                 audio = ID3(path)
@@ -450,8 +447,6 @@ def has_cover(path: str) -> bool:
         if kind == 'mp4':
             audio = MP4(path)
             return bool(audio.tags and audio.tags.get('covr'))
-    except Exception:
-        pass
     return False
 
 

@@ -43,6 +43,7 @@ from src.id3.id3_tag_handler import (
 )
 from src.id3 import tag_registry as _reg
 from src.config import setting
+from src.utils.log import quietly
 
 # Structured columns for the tag list. Column 1 holds the tag id AND the friendly
 # name as two styled segments (TAG bright + friendly dim) in a single column.
@@ -945,14 +946,12 @@ def inspect_tag_loop(
 
         def _from_tags(frame: str, meta_key: str) -> str:
             """Read a live tag value, falling back to cached library metadata (placeholders excluded)."""
-            try:
+            with quietly():
                 fr = audio.get(frame)
                 if fr is not None and getattr(fr, "text", None):
                     val = str(fr.text[0]).strip()
                     if val:
                         return val
-            except Exception:
-                pass
             val = str(meta.get(meta_key, "")).strip()
             return "" if val in _PLACEHOLDERS else val
 
@@ -1033,13 +1032,11 @@ def inspect_tag_loop(
             # A commit changes the file's duration — refresh the cached value
             # this screen's header reads, same as `_save` does after a tag write.
             if library is not None:
-                try:
+                with quietly():
                     fresh = refresh_library_entry(library, file_path)
                     if library_metadata is not None:
                         library_metadata.update(fresh)
                     _cached_dur = float(fresh.get("duration") or 0.0)
-                except Exception:
-                    pass
             continue
 
         if choice == "__filepath__":

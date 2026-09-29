@@ -66,6 +66,7 @@ from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
 from src.utils import timefmt
 from src.config import setting
+from src.utils.log import quietly
 
 # Preview columns for the commit pass: file · cut points · resulting duration.
 _COMMIT_COLUMNS = [
@@ -708,10 +709,8 @@ def apply_replaygain_op(paths: list, library: list, header) -> None:
             errors += 1
             continue
         count += 1
-        try:
+        with quietly():
             refresh_library_entry(library, path)
-        except Exception:
-            pass
 
     msg = f"Wrote gain tags for {count} file(s)."
     if errors:

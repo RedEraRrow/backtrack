@@ -40,7 +40,7 @@ from src.utils.prompt_core import add_hint_click_cells_auto, _visible_rows, now_
 from src.utils import prompt as _promptmod
 from src.utils.prompt import chrome as _prompt_chrome
 from src.utils.files import write_text_atomic, backup_copy
-from src.utils.log import log
+from src.utils.log import log, quietly
 
 _vlc = None
 try:
@@ -1309,11 +1309,9 @@ def lyrics_editor(mp3_path: str) -> None:
             _restore_term_attrs(fd, old)
             sys.stdout.write("\033[?1000l\033[?1006l")
             sys.stdout.flush()
-            try:                     # drop a click's pending mouse-release bytes so
+            with quietly():  # drop a click's pending mouse-release bytes so
                 import termios       # they don't leak into the text prompt
                 termios.tcflush(fd, termios.TCIFLUSH)
-            except Exception:
-                pass
             _lbl = _prompt_text("Stage direction text:")
             _set_raw(fd)
             sys.stdout.write("\033[?1000h\033[?1006h")

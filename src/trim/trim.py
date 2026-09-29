@@ -23,6 +23,7 @@ from src.config import load_config, CONFIG_DIR
 from src.id3 import tag_writer as tw
 from src.id3.id3_tag_handler import save_id3
 from src.music_library import refresh_library_entry
+from src.utils.log import quietly
 
 _EPS = 1e-9
 
@@ -721,10 +722,8 @@ def restore_backup(entry_id: str, library: list | None = None) -> TrimResult:
             os.remove(tmp_path)
 
     if library is not None:
-        try:
+        with quietly():
             refresh_library_entry(library, dest)
-        except Exception:
-            pass
     return TrimResult(ok=True, out_path=dest)
 
 

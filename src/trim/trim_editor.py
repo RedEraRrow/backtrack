@@ -49,6 +49,7 @@ from src.lyrics.time_fields import (
 )
 from src.utils import timefmt
 from src.config import setting
+from src.utils.log import quietly
 
 # Same shape as AUDITION's nudge scheme (lyrics_editor's _AUD_* steps): a coarse step
 # on ',' and '.', and a fine step that here is one frame rather than a fixed
@@ -318,14 +319,12 @@ def _silence_markers(path: str, track_length: float) -> list[float]:
     noise_db = float(setting(cfg, "trim_silence_noise_db"))
     min_s = float(setting(cfg, "trim_silence_min_s"))
     markers: set[float] = set()
-    try:
+    with quietly():
         for s, e in trim.detect_silence(path, 0.0, min(window_s, track_length), noise_db, min_s):
             markers.add(round(s, 3)); markers.add(round(e, 3))
         tail_start = max(0.0, track_length - window_s)
         for s, e in trim.detect_silence(path, tail_start, track_length - tail_start, noise_db, min_s):
             markers.add(round(s, 3)); markers.add(round(e, 3))
-    except Exception:
-        pass
     return sorted(markers)
 
 

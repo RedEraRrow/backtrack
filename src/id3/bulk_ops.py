@@ -30,6 +30,7 @@ from src import bulk_pattern as bp
 from src.id3 import tag_writer as tw
 from src.id3.id3_tag_handler import apply_bulk_edit, load_id3, save_id3
 from src.music_library import refresh_library_entry
+from src.utils.log import quietly
 
 
 @dataclass
@@ -148,10 +149,8 @@ def apply_changes(plan: Plan, library: list, writer: Callable[[Change], object],
             _emit(on_event, 'kept', change, change.why)
         elif getattr(result, 'written', True):
             out.written += 1
-            try:
+            with quietly():
                 refresh_library_entry(library, change.path)
-            except Exception:
-                pass
             _emit(on_event, 'written', change, change.why)
         else:
             _emit(on_event, 'skipped', change, change.why)
@@ -588,10 +587,8 @@ def rename_files(pairs: list, library: list, *,
             if track.get('path') == orig:
                 track['path'] = final
                 break
-        try:
+        with quietly():
             refresh_library_entry(library, final)
-        except Exception:
-            pass
         _emit(on_event, 'written', Change(path=orig, why=os.path.basename(final)),
               os.path.basename(final))
     return out
@@ -635,10 +632,8 @@ def apply_covers(covers: dict, library: list, *, overwrite: bool = False,
             _emit(on_event, 'error', change, str(result.error))
         elif result.written:
             out.written += 1
-            try:
+            with quietly():
                 refresh_library_entry(library, path)
-            except Exception:
-                pass
             _emit(on_event, 'written', change, os.path.basename(image))
     return out
 
@@ -684,9 +679,7 @@ def apply_frame_writes(per_path: dict, library: list, *,
             _emit(on_event, 'error', change, str(exc))
             continue
         out.written += 1
-        try:
+        with quietly():
             refresh_library_entry(library, path)
-        except Exception:
-            pass
         _emit(on_event, 'written', change, change.why)
     return out
