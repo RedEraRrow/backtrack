@@ -13,6 +13,7 @@ from src.utils.ui_utils import Colors as C
 from src.lyrics.md_overlay import build_md_overlay, _reading_time
 from src.lyrics import lyrics_text as _lt
 from src import tuning as tune
+from src.lyrics.lyric_pane import handover
 
 def normalize_lyric_newlines(text: str) -> str:
     """Normalize CRLF/CR line endings to \\n."""
@@ -1164,31 +1165,10 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
         _air_if_silent(float(track_duration))        # the run-out after the last line
 
     # Close the gaps between beats, so a moment of silence belongs to the line just
-    # gone rather than resolving to the line that comes NEXT and showing it while
-    # nobody is speaking yet. All but the last `LYRIC_LEAD_IN_S` of it, that is: a
-    # line that arrives exactly on its first word arrives too late to read, so the
-    # next beat takes a short, fixed anticipation out of the silence and the line
-    # before keeps the rest.
+    # gone (by lyric_pane.handover's rule; a dead-air beat keeps its whole beat here).
     for i in range(len(times) - 1):
         a, b = times[i]
-        nxt = times[i + 1][0]
-        target = nxt - tune.LYRIC_LEAD_IN_S
-        # There is rarely enough silence to take the lead-in from: this dialogue
-        # runs at 170 words a minute, the pauses between lines are a quarter of a
-        # second, and a stage direction now legitimately occupies many of them. So
-        # between two spoken lines the anticipation comes out of the previous line's
-        # own tail — the highlight moves on a moment before its last word finishes,
-        # which is how a lyric highlight has always behaved, and the line stays on
-        # screen (dimmed) while it does. No line gives up more than half of itself.
-        #
-        # A direction keeps all of its beat: it is short and it is the thing being
-        # read, and the line after it needs no run-up because the eye is already in
-        # the text column looking at it.
-        if chunks[i]['is_stage'] or chunks[i]['is_air']:
-            lo = b
-        else:
-            lo = max(a, b - min(tune.LYRIC_LEAD_IN_S, (b - a) / 2))
-        times[i] = (a, min(nxt, max(lo, target)))
+        times[i] = (a, handover(a, b, times[i + 1][0], chunks[i]['is_stage'] or chunks[i]['is_air']))
 
     return chunks, times
 

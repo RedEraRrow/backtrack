@@ -67,6 +67,23 @@ class Geometry:
         return max(0, self.bottom - self.row + 1)
 
 
+def handover(start: float, end: float, next_start: float, keep_whole: bool,
+             floor: float = 0.0) -> float:
+    """The instant the next beat takes over from one running start-end.
+
+    It sits a short run-up (LYRIC_LEAD_IN_S) before `next_start`, because a line
+    arriving exactly on its first word arrives too late to read. The run-up comes
+    out of any silence first, then out of this beat's own tail, which stays on
+    screen dimmed and never gives up more than half of itself. A direction
+    (`keep_whole`) gives up nothing: it is short, it is what's being read, and the
+    line after it needs no run-up. Never earlier than `floor`.
+    """
+    lead = tune.LYRIC_LEAD_IN_S
+    earliest = end if keep_whole else end - min(lead, (end - start) / 2)
+    earliest = max(earliest, start, floor)
+    return max(floor, min(next_start, max(earliest, next_start - lead)))
+
+
 def _tile(beats: list[Beat], duration: float) -> list[Beat]:
     """Turn a sorted run of beats into a tiling of the track.
 
@@ -75,28 +92,15 @@ def _tile(beats: list[Beat], duration: float) -> list[Beat]:
     end and again as a start, is how a beat ends up owning a moment its neighbour
     also claims, or neither of them does.
 
-    Each boundary sits a short run-up BEFORE the beat that follows it, because a
-    line arriving exactly on its first word arrives too late to read. Where there
-    is silence the run-up comes out of the silence; where there is none it comes
-    out of the tail of the line before, which stays on screen (dimmed) while its
-    last word finishes. A direction gives up nothing: it is short, it is the thing
-    being read, and the line after it needs no run-up because the eye is already
-    on the text column.
+    Each boundary is `handover`'s.
     """
     if not beats:
         return []
     beats = sorted(beats, key=lambda b: (b.start, b.end))
-    lead = tune.LYRIC_LEAD_IN_S
 
     bounds = [0.0]                                  # the track starts somewhere
     for i, b in enumerate(beats[:-1]):
-        nxt = beats[i + 1].start
-        if b.kind == DIRECTION:
-            earliest = b.end                        # keeps its whole beat
-        else:
-            earliest = b.end - min(lead, (b.end - b.start) / 2)
-        earliest = max(earliest, b.start, bounds[-1])
-        bounds.append(max(bounds[-1], min(nxt, max(earliest, nxt - lead))))
+        bounds.append(handover(b.start, b.end, beats[i + 1].start, b.kind == DIRECTION, bounds[-1]))
     bounds.append(max(duration, beats[-1].end, bounds[-1]))
 
     return [Beat(**{**b.__dict__, 'start': bounds[i], 'end': bounds[i + 1]})
