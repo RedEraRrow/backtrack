@@ -273,8 +273,7 @@ def handle_search(library: list) -> str | None:
             if kind == "__expand__":
                 expanded['kind'] = selected[1]
             elif kind == "__entity__":
-                if _play_entity(selected[1], library) == "QUIT_ALL":
-                    return "QUIT_ALL"
+                _play_entity(selected[1], library)
             continue
         expanded['kind'] = None
 
@@ -295,10 +294,8 @@ def handle_search(library: list) -> str | None:
             )
         if action == "Play":
             ui_utils.clear_screen()
-            res = music_player(selected)
+            music_player(selected)
             ui_utils.clear_screen()
-            if res and res.get("status") == "QUIT_ALL":
-                return "QUIT_ALL"
         elif action:
             _handle_queue_action(action, selected, track_title, library)
 
@@ -339,8 +336,6 @@ def _play_entity(ent, library: list) -> str | None:
         bulk_id3_manager(library, paths=[s['path'] for s in tracks])
         return None
     ui_utils.clear_screen()
-    res = music_player(pick)
+    music_player(pick)
     ui_utils.clear_screen()
-    if res and res.get("status") == "QUIT_ALL":
-        return "QUIT_ALL"
     return None

@@ -45,9 +45,7 @@ def _take_player_if_free(link, info: dict) -> None:
     snap = snap or info.get("now_playing")
     if not snap or snap.get("view_holder"):
         return                                   # nothing playing, or already taken
-    res = open_client_player_view()
-    if isinstance(res, dict) and res.get("status") == "QUIT_ALL":
-        raise QuitToTerminal()
+    open_client_player_view()
 
 
 def _maybe_join_session() -> None:
@@ -174,9 +172,10 @@ def _wire_playback() -> None:
         if holder and holder != sess.my_token():
             ui_utils.show_status("The player is open in another window.")
             return
-        res = open_client_player_view() if sess.is_client() else open_player_view()
-        if isinstance(res, dict) and res.get('status') == 'QUIT_ALL':
-            raise QuitToTerminal()
+        if sess.is_client():
+            open_client_player_view()
+        else:
+            open_player_view()
 
     prompt.set_player_opener(_open_player)
 

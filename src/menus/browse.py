@@ -173,11 +173,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                 continue
 
             if selection in _PLAY_ACTIONS:
-                res = _play_list(selection, _sorted_paths([grouped[n] for n in names], _cfg), library)
-                if res == "QUIT_ALL":
-                    NAV_STACK.clear()
-                    NAV_STACK.append("Home")
-                    return "QUIT_ALL"
+                _play_list(selection, _sorted_paths([grouped[n] for n in names], _cfg), library)
                 continue
 
             if selection == "__bulk_edit__":
@@ -255,9 +251,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         continue
 
                     if alb in _PLAY_ACTIONS:
-                        res = _play_list(alb, _sorted_paths([selected_songs], _cfg), library)
-                        if res == "QUIT_ALL":
-                            return "QUIT_ALL"
+                        _play_list(alb, _sorted_paths([selected_songs], _cfg), library)
                         continue
 
                     if alb == "__bulk_edit__":
@@ -396,9 +390,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         continue
 
                     if path_choice_obj in _PLAY_ACTIONS:
-                        res = _play_list(path_choice_obj, [t['path'] for t in final_tracks], library)
-                        if res == "QUIT_ALL":
-                            return "QUIT_ALL"
+                        _play_list(path_choice_obj, [t['path'] for t in final_tracks], library)
                         continue
 
                     if path_choice_obj == "__bulk_edit__":
@@ -411,9 +403,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     if isinstance(path_choice_obj, str) and path_choice_obj.startswith("__disc_"):
                         disc_val   = path_choice_obj[len("__disc_"):]
                         disc_paths = disc_track_map.get(disc_val, [])
-                        res = play_queue(disc_paths, library=library)
-                        if res == "QUIT_ALL":
-                            return "QUIT_ALL"
+                        play_queue(disc_paths, library=library)
                         continue
 
                     # Work header selected — offer play or bulk edit for that work
@@ -435,9 +425,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                                 header=_menu_header(work_name, _track_context),
                             )
                         if work_action == "__play_all__":
-                            res = play_queue(work_paths, library=library)
-                            if res == "QUIT_ALL":
-                                return "QUIT_ALL"
+                            play_queue(work_paths, library=library)
                         elif work_action == "__bulk_edit__":
                             bulk_id3_manager(library, paths=work_paths)
                         continue
@@ -445,10 +433,8 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     # A track plays directly — metadata editing is `e`/`E` on
                     # the "Tracks:" list above, not a separate action page.
                     ui_utils.clear_screen()
-                    res = music_player(path_choice_obj)
+                    music_player(path_choice_obj)
                     ui_utils.clear_screen()
-                    if res and res.get("status") == "QUIT_ALL":
-                        return "QUIT_ALL"
 
                 if _albums_level:
                     NAV_STACK.pop()
@@ -487,11 +473,9 @@ def handle_browse(library_ref: list, scope: str | None = None) -> str | None:
             break
         _cursor = _idx_of(_opts, choice)
         if choice == "libraries":
-            res = _browse_libraries(library_ref)
+            _browse_libraries(library_ref)
         else:
-            res = browse_menu(library_ref, choice, scope=scope)
-        if res == "QUIT_ALL":
-            return "QUIT_ALL"
+            browse_menu(library_ref, choice, scope=scope)
     return None
 
 
@@ -509,9 +493,7 @@ def _browse_libraries(library_ref: list) -> str | None:
         _name = library_name(cfg, choice)
         NAV_STACK.append(_name)
         try:
-            res = handle_browse(library_ref, scope=choice)
+            handle_browse(library_ref, scope=choice)
         finally:
             if NAV_STACK and NAV_STACK[-1] == _name:
                 NAV_STACK.pop()
-        if res == "QUIT_ALL":
-            return "QUIT_ALL"

@@ -27,16 +27,10 @@ def main_menu(library_ref: list) -> None:
         _cursor = _idx_of(_opts, choice)
 
         if choice == "Browse":
-            res = handle_browse(library_ref)
-            if res == "QUIT_ALL":
-                break
+            handle_browse(library_ref)
         elif choice == "Search":
-            res = handle_search(library_ref[0])
-            if res == "QUIT_ALL":
-                break
+            handle_search(library_ref[0])
         elif choice == "Listening History":
-            res = handle_history(library_ref[0])
-            if res == "QUIT_ALL":
-                break
+            handle_history(library_ref[0])
         elif choice == "Settings":
             handle_settings(library_ref)

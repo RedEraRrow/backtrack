@@ -77,12 +77,12 @@ def handle_history(library: list) -> str | None:
         # Rebuilt each time round: playing a track adds to the history.
         res = _history_screen(library, cursor)
         if not isinstance(res, tuple):
-            return res                      # backed out, or QUIT_ALL
+            return res                      # backed out
         cursor = res[1]
 
 
 def _history_screen(library: list, cursor: int):
-    """One pass of the history list: None (back), "QUIT_ALL", or
+    """One pass of the history list: None (back), or
     ("again", cursor) to show it again after playing or editing."""
     history_entries = get_history(limit=30)
 
@@ -139,8 +139,6 @@ def _history_screen(library: list, cursor: int):
 
     picked = _idx_of(choices, selected, cursor)
     ui_utils.clear_screen()
-    res = music_player(selected)
+    music_player(selected)
     ui_utils.clear_screen()
-    if res and res.get("status") == "QUIT_ALL":
-        return "QUIT_ALL"
     return ("again", picked)

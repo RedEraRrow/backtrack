@@ -29,10 +29,8 @@ def play_queue(paths: list, mode: str = "linear", library: list | None = None) -
     # (feature #14), so this just starts it and opens the player. Minimising the
     # player ('b'/Esc) returns here with audio still playing; Stop ('s') ends it.
     session_mode = REPEAT_OFF
-    result = music_player(playlist[0], queue_titles=titles, queue_index=0,
-                          queue_paths=playlist, mode=session_mode)
-    if isinstance(result, dict) and result.get("status") == "QUIT_ALL":
-        return "QUIT_ALL"
+    music_player(playlist[0], queue_titles=titles, queue_index=0,
+                 queue_paths=playlist, mode=session_mode)
     return None
 
 

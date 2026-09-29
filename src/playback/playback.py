@@ -9,6 +9,8 @@ tick advances the queue and logs history whether or not this view is attached.
 from __future__ import annotations
 import os
 import sys
+
+from src.state import QuitToTerminal
 import time
 
 from src.utils import ui_utils
@@ -86,8 +88,8 @@ def music_player(file_path: str, is_grouping: bool = False,
     """Start the shared session on ``file_path`` (with its queue) and open the
     player view. Kept name/signature for existing callers; audio now persists in
     the background after the view is left (only Stop ends it). Returns a status
-    dict: ``DETACH`` (minimised, still playing), ``STOP``, ``QUIT_ALL``, ``OK``
-    (queue finished), or ``ERROR``."""
+    dict: ``DETACH`` (minimised, still playing), ``STOP``, ``OK`` (queue
+    finished), or ``ERROR``; q raises QuitToTerminal."""
     paths = queue_paths if queue_paths else [file_path]
     # In a joined (client) window the audio lives in the host process: send the
     # play there and stay in this window's menus (the host's now-playing box
@@ -286,7 +288,7 @@ def open_client_player_view() -> dict:
                         remote.stop()
                         return {"status": "STOP"}
                     elif key.lower() == 'q':
-                        return {"status": "QUIT_ALL"}
+                        raise QuitToTerminal()
                     elif key.lower() in ('i', 'm'):
                         ui_utils.clear_screen()
                         (toggle_help if key.lower() == 'i' else toggle_metadata)()
@@ -606,7 +608,7 @@ def _player_view_loop() -> dict:
                     SESSION.stop()
                     return {"status": "STOP"}
                 elif key.lower() == 'q':          # QUIT the app
-                    return {"status": "QUIT_ALL"}
+                    raise QuitToTerminal()
                 elif key in ('=', '+'):
                     v = SESSION.set_volume(SESSION.get_volume() + 5)
                     toast_text = f'Volume: {v}%'; toast_expiry = time.time() + tune.TOAST_SHORT_S
