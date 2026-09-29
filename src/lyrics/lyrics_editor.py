@@ -340,7 +340,7 @@ class _Session(_KeyHandlers):
             return True
         _restore_term_attrs(self.fd, self.old)
         sys.stdout.write("\033[?1000l\033[?1006l")
-        _ans = _prompt_text("You have unsaved changes (s saves). Quit without saving? (y/N)")
+        _ans = _prompt_text("You have unsaved changes (s saves). Leave without saving? (y/N)")
         _set_raw(self.fd)
         sys.stdout.write("\033[?1000h\033[?1006h")
         self.w.anchor_reset()

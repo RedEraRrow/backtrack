@@ -83,26 +83,33 @@ def run_editor(keys, answers=(), sylt=False):
 
 class LyricsEditorKeysTest(unittest.TestCase):
     def test_nudge_moves_the_line_and_s_saves(self):
-        saved, _, _ = run_editor(['DOWN', 'LEFT', 's', 'q'])
+        saved, _, _ = run_editor(['DOWN', 'LEFT', 's', 'ESC'])
         self.assertEqual(saved[1]['start'], 2.75)          # ← is −0.25 s
         self.assertEqual(saved[0]['start'], 1.0)
 
     def test_j_k_reorder_and_undo(self):
-        saved, _, _ = run_editor(['DOWN', 'J', 's', 'q'])
+        saved, _, _ = run_editor(['DOWN', 'J', 's', 'ESC'])
         self.assertEqual([s['text'] for s in saved], ['How are you', 'Hello there', 'Goodbye'])
-        saved, _, _ = run_editor(['K', 'u', 's', 'q'])
+        saved, _, _ = run_editor(['K', 'u', 's', 'ESC'])
         self.assertEqual([s['text'] for s in saved], ['Hello there', 'How are you', 'Goodbye'])
 
     def test_unsaved_changes_are_asked_about(self):
-        saved, _, _ = run_editor(['LEFT', 'q', 'q'], answers=['n', 'y'])   # first q refused
+        saved, _, _ = run_editor(['LEFT', 'ESC', 'ESC'], answers=['n', 'y'])   # first Esc refused
         self.assertIsNone(saved)                            # quit without saving
 
+    def test_q_quits_the_app_and_esc_goes_back(self):
+        from src.state import QuitToTerminal
+        with self.assertRaises(QuitToTerminal):
+            run_editor(['DOWN', 'q'])
+        saved, _, _ = run_editor(['DOWN', 'LEFT', 'ESC', 'ESC'], answers=['y'])  # leave without saving
+        self.assertIsNone(saved)
+
     def test_timestamp_editor(self):
-        saved, _, _ = run_editor(['e', 'TAB', '0', '9', 'ENTER', 's', 'q'])   # tab to seconds
+        saved, _, _ = run_editor(['e', 'TAB', '0', '9', 'ENTER', 's', 'ESC'])   # tab to seconds
         self.assertAlmostEqual(saved[0]['start'], 9.0)
 
     def test_sylt_track_saves_back_to_its_tag(self):
-        _, sylt, status = run_editor(['DOWN', 'RIGHT', 's', 'q'], sylt=True)
+        _, sylt, status = run_editor(['DOWN', 'RIGHT', 's', 'ESC'], sylt=True)
         self.assertEqual(sylt[1], ('How are you', 3250))
         self.assertTrue(any(s.startswith('Saved') for s in status), status)
 

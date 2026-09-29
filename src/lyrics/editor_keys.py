@@ -16,6 +16,7 @@ from src.lyrics.time_fields import _EDIT_END, _EDIT_START, _ts_parts
 from src.lyrics.sync_doc import SOURCE_TRANSCRIPT, _make_stage_dir
 from src.lyrics.verify import _AIR_GAP_THRESHOLD, _make_dead_air
 from src.lyrics.editor_view import AUDITION, EDIT, SEG, TAP, WORD, _AUD_COARSE, _AUD_STEP, _HAS_VLC
+from src.state import QuitToTerminal
 
 def _np_transport(action: str) -> None:
     """Drive the shared session behind the mini-player box (play/pause · next ·
@@ -28,7 +29,7 @@ def _np_transport(action: str) -> None:
     ui_utils.pulse_now_playing()
 
 
-_QUIT = object()     # a key handler's "leave the editor"
+_QUIT = object()     # a key handler's "leave the editor" (Esc; q quits the app)
 
 
 class _KeyHandlers:
@@ -176,7 +177,7 @@ class _KeyHandlers:
         n = len(self.segs)
         if key in ('q', 'CTRL_C'):
             if not self._may_quit(): return
-            self.do_stop(); return _QUIT
+            self.do_stop(); raise QuitToTerminal()
         elif key == 's':
             self.do_save()
         elif key == 'u':
@@ -218,7 +219,7 @@ class _KeyHandlers:
             # inline timestamp editor at the bottom of the audition view
             if key in ('q', 'CTRL_C'):
                 if not self._may_quit(): return
-                self.aud_editing = False; self.do_stop(); return _QUIT
+                self.aud_editing = False; self.do_stop(); raise QuitToTerminal()
             elif key == 'ESC':
                 self.aud_editing = False                 # cancel, keep listening
             elif key == 'ENTER':
@@ -229,7 +230,7 @@ class _KeyHandlers:
             return
         if key in ('q', 'CTRL_C'):
             if not self._may_quit(): return
-            self.do_stop(); return _QUIT
+            self.do_stop(); raise QuitToTerminal()
         elif key == 'ESC':
             self.mode = SEG; self.do_stop(); self.aud_now = None
         elif key == 'UP':
@@ -271,6 +272,10 @@ class _KeyHandlers:
         n_i   = len(items)
 
         if key in ('q', 'CTRL_C'):
+            if not self._may_quit(): return
+            if self.playing: self.do_stop()
+            raise QuitToTerminal()
+        elif key == 'ESC' and self.mode == SEG:      # back to the tag editor
             if not self._may_quit(): return
             if self.playing: self.do_stop()
             return _QUIT

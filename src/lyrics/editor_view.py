@@ -241,7 +241,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             pairs += [('/', 'split line'),
                       ('R', 'review issues'), ('D', 'review directions'), ('L', 'long lines')]
             if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
-            pairs += [('?', 'hide hints'), ('q', 'quit')]
+            pairs += [('?', 'hide hints'), ('esc', 'back'), ('q', 'quit')]
         else:
             pairs = [('↑↓', 'navigate'), ('←→', '±0.25s')]
             if is_air or is_sdir:
@@ -257,7 +257,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             if _has_sdir: pairs.append(('M', 'commit stage dirs'))
             pairs += [('/', 'split'), ('R', 'review'), ('D', 'dirs'), ('L', 'long'), ('s', 'save'), ('?', 'more')]
             if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
-            pairs.append(('q', 'quit'))
+            pairs += [('esc', 'back'), ('q', 'quit')]
             # (W = write to transcript.json — shown in full hints via ?)
         if selected: pairs.append(('', f'{len(selected)} marked'))
         footer.extend(_promptmod.chrome_hint_lines(pairs))
