@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 
+from src.lyrics import time_fields as tf
+
 from src.trim import trim_editor as te
 
 FRAME = 1152 / 44100   # a 44.1kHz MPEG-1 frame, ~26.12ms
@@ -158,15 +160,20 @@ class EditFieldsTest(unittest.TestCase):
 
 
 class EditFieldKeyTest(unittest.TestCase):
-    def test_digit_fills_left_and_tab_advances(self):
-        edit = {'fields': {k: [] for k in te._EDIT_ORDER}, 'fi': 0, 'pos': 0}
-        te._edit_field_key(edit, '5')
-        self.assertEqual(edit['fields']['sm'], ['5'])
-        te._edit_field_key(edit, 'TAB')
-        self.assertEqual(edit['fi'], 1)
+    """The segmented editor both the trim and lyrics editors use (time_fields)."""
+    def test_a_fresh_field_is_replaced_by_the_first_digit(self):
+        edit, orig = tf.new_edit(65.5, 90.0)            # 01:05.500 → 01:30.000
+        te._edit_field_key(edit, 'TAB')                  # onto seconds, fresh
+        te._edit_field_key(edit, '9')
+        self.assertEqual(edit['fields']['ss'], ['9'])    # replaced, not "905"
+        te._edit_field_key(edit, '0')
+        self.assertEqual(edit['fields']['ss'], ['9', '0'])
+        self.assertTrue(tf.edit_changed(edit, orig, tf._EDIT_START))
+        self.assertFalse(tf.edit_changed(edit, orig, tf._EDIT_END))
+        self.assertEqual(tf.edit_seconds(edit, tf._EDIT_START), 150.5)   # 01:90.500
 
     def test_up_down_spins_value(self):
-        edit = {'fields': {k: [] for k in te._EDIT_ORDER}, 'fi': 1, 'pos': 0}
+        edit = {'fields': {k: [] for k in tf._EDIT_ORDER}, 'fi': 1, 'pos': 0}
         edit['fields']['ss'] = list("30")
         te._edit_field_key(edit, 'UP')
         self.assertEqual("".join(edit['fields']['ss']), "31")

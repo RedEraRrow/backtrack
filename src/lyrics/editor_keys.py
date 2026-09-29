@@ -164,10 +164,10 @@ class _KeyHandlers:
         elif key in ('p', 'P'):
             # Grab the live audio playhead into the focused start/end bound.
             _pm, _ps, _pms = _ts_parts(round(self.play_pos, 3))
-            _bound = _EDIT_START if self.edit_fi < 3 else _EDIT_END
+            _bound = _EDIT_START if self.edit['fi'] < 3 else _EDIT_END
             for _fk, _v in zip(_bound, (_pm, _ps, _pms)):
-                self.edit_fields[_fk] = list(_v)
-            self.edit_fresh = False
+                self.edit['fields'][_fk] = list(_v)
+            self.edit['fresh'] = False
         else:
             self._edit_field_key(key)
         return

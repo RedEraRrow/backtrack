@@ -86,3 +86,60 @@ def _render_edit_fields(edit: dict) -> tuple[str, str]:
 
     return (f"{_fld('sm')}{_sep(':')}{_fld('ss')}{_sep('.')}{_fld('sms')}",
             f"{_fld('em')}{_sep(':')}{_fld('es')}{_sep('.')}{_fld('ems')}")
+
+
+def new_edit(start: float | None, end: float | None) -> tuple[dict, dict]:
+    """A fresh segmented-editor state for a start/end pair, and the snapshot
+    edit_changed compares against. The first digit typed replaces the field."""
+    sm, ss, sms = _ts_parts(start)
+    em, es, ems = _ts_parts(end)
+    fields = {'sm': list(sm), 'ss': list(ss), 'sms': list(sms),
+              'em': list(em), 'es': list(es), 'ems': list(ems)}
+    return {'fields': fields, 'fi': 0, 'pos': 0, 'fresh': True}, {k: "".join(v) for k, v in fields.items()}
+
+
+def edit_key(edit: dict, key: str) -> None:
+    """One key in the segmented editor, the same in every editor that has one:
+    digits fill from the left (a fresh field is replaced on the first digit),
+    ↑↓ spin the value, Tab/Backtab move between fields, ms treats its digits as
+    a right-padded fraction (5 → 500)."""
+    fk = _EDIT_ORDER[edit['fi']]
+    buf = edit['fields'][fk]
+    if key in ('TAB', 'BACKTAB'):
+        edit['fi'] = (edit['fi'] + (1 if key == 'TAB' else -1)) % len(_EDIT_ORDER)
+        edit['pos'] = 0; edit['fresh'] = True
+        return
+    edit['fresh'], fresh = False, edit.get('fresh', False)
+    if key == 'LEFT':
+        edit['pos'] = max(0, edit['pos'] - 1)
+    elif key == 'RIGHT':
+        edit['pos'] = min(len(buf), edit['pos'] + 1)
+    elif key in ('UP', 'DOWN'):
+        v = _field_value(fk, "".join(buf)) + (1 if key == 'UP' else -1)
+        buf[:] = list(_field_str(fk, max(0, min(_EDIT_LIM[fk], v)))); edit['pos'] = len(buf)
+    elif key == 'BACKSPACE':
+        if edit['pos'] > 0: buf.pop(edit['pos'] - 1); edit['pos'] -= 1
+    elif key == 'DELETE':
+        if edit['pos'] < len(buf): buf.pop(edit['pos'])
+    elif key == 'HOME':
+        edit['pos'] = 0
+    elif key == 'END':
+        edit['pos'] = len(buf)
+    elif len(key) == 1 and key.isdigit():
+        if fresh:
+            buf[:] = [key]; edit['pos'] = 1
+        elif len(buf) < _EDIT_MAXLEN[fk]:
+            buf.insert(edit['pos'], key); edit['pos'] += 1
+    else:
+        edit['fresh'] = fresh           # not an editing key: leave the field as it was
+
+
+def edit_seconds(edit: dict, keys: tuple) -> float:
+    """The (minutes, seconds, ms) fields named by `keys`, as seconds."""
+    m, s, ms = (_field_value(k, "".join(edit['fields'][k])) for k in keys)
+    return round(m * 60 + s + ms / 1000.0, 3)
+
+
+def edit_changed(edit: dict, orig: dict, keys: tuple) -> bool:
+    """Whether any of the fields named by `keys` differs from the snapshot."""
+    return any("".join(edit['fields'][k]) != orig[k] for k in keys)

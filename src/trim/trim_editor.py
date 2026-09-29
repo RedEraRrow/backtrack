@@ -43,10 +43,7 @@ from src.utils.ui_utils import Colors as C
 from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
 from src.utils.prompt import confirm as _confirm
 from src.utils import prompt as _promptmod
-from src.lyrics.time_fields import (
-    _EDIT_ORDER, _EDIT_MAXLEN, _EDIT_LIM, _EDIT_START, _EDIT_END,
-    _ts_parts, _field_value, _field_str, _render_edit_fields,
-)
+from src.lyrics.time_fields import edit_changed, _EDIT_END, edit_key, edit_seconds, _EDIT_START, new_edit, _render_edit_fields, _ts_parts
 from src.utils import timefmt
 from src.config import setting
 from src.utils.log import quietly
@@ -186,14 +183,8 @@ def sibling_durations(library: list, path: str) -> list[float]:
 
 
 def _edit_seed(marks: Marks) -> tuple[dict, dict]:
-    """A fresh `edit` state (for `_render_edit_fields`) seeded from the current
-    marks, plus a snapshot to diff against on apply."""
-    im, is_, ims = _ts_parts(marks.in_requested)
-    om, os_, oms = _ts_parts(marks.out_requested)
-    fields = {'sm': list(im), 'ss': list(is_), 'sms': list(ims),
-              'em': list(om), 'es': list(os_), 'ems': list(oms)}
-    orig = {k: "".join(v) for k, v in fields.items()}
-    return {'fields': fields, 'fi': 0, 'pos': 0}, orig
+    """The segmented editor seeded from the current marks, and its snapshot."""
+    return new_edit(marks.in_requested, marks.out_requested)
 
 
 def _edit_apply(marks: Marks, edit: dict, edit_orig: dict, frame_dur: float,
@@ -201,50 +192,15 @@ def _edit_apply(marks: Marks, edit: dict, edit_orig: dict, frame_dur: float,
     """Commit whichever bound(s) changed in the segmented editor. Returns the
     undo record(s) so a single Enter is a single undo step (or two, if both
     bounds changed together)."""
-    def _val(keys) -> float:
-        m = _field_value(keys[0], "".join(edit['fields'][keys[0]]))
-        s = _field_value(keys[1], "".join(edit['fields'][keys[1]]))
-        ms = _field_value(keys[2], "".join(edit['fields'][keys[2]]))
-        return round(m * 60 + s + ms / 1000.0, 3)
-
     undos = []
-    if any("".join(edit['fields'][k]) != edit_orig[k] for k in _EDIT_START):
-        undos.append(set_in(marks, _val(_EDIT_START), frame_dur))
-    if any("".join(edit['fields'][k]) != edit_orig[k] for k in _EDIT_END):
-        undos.append(set_out(marks, _val(_EDIT_END), frame_dur, track_length_s))
+    if edit_changed(edit, edit_orig, _EDIT_START):
+        undos.append(set_in(marks, edit_seconds(edit, _EDIT_START), frame_dur))
+    if edit_changed(edit, edit_orig, _EDIT_END):
+        undos.append(set_out(marks, edit_seconds(edit, _EDIT_END), frame_dur, track_length_s))
     return undos
 
 
-def _edit_field_key(edit: dict, key: str) -> None:
-    """One field-manipulation key for the segmented editor — same shape as
-    lyrics_editor's `_edit_field_key` (digits fill from the left, ↑↓ spin,
-    Tab/Backtab move fields), operating on this widget's own `edit` dict."""
-    fk = _EDIT_ORDER[edit['fi']]
-    buf = edit['fields'][fk]
-    maxl = _EDIT_MAXLEN[fk]
-    if key == 'TAB':
-        edit['fi'] = (edit['fi'] + 1) % len(_EDIT_ORDER); edit['pos'] = 0
-    elif key == 'BACKTAB':
-        edit['fi'] = (edit['fi'] - 1) % len(_EDIT_ORDER); edit['pos'] = 0
-    elif key == 'LEFT':
-        edit['pos'] = max(0, edit['pos'] - 1)
-    elif key == 'RIGHT':
-        edit['pos'] = min(len(buf), edit['pos'] + 1)
-    elif key in ('UP', 'DOWN'):
-        v = _field_value(fk, "".join(buf)) + (1 if key == 'UP' else -1)
-        v = max(0, min(_EDIT_LIM[fk], v))
-        buf[:] = list(_field_str(fk, v)); edit['pos'] = len(buf)
-    elif key == 'BACKSPACE':
-        if edit['pos'] > 0: buf.pop(edit['pos'] - 1); edit['pos'] -= 1
-    elif key == 'DELETE':
-        if edit['pos'] < len(buf): buf.pop(edit['pos'])
-    elif key == 'HOME':
-        edit['pos'] = 0
-    elif key == 'END':
-        edit['pos'] = len(buf)
-    elif len(key) == 1 and key.isdigit():
-        if len(buf) < maxl:
-            buf.insert(edit['pos'], key); edit['pos'] += 1
+_edit_field_key = edit_key     # the one segmented-editor key handler (time_fields)
 
 
 def _progress_bar(width: int, track_length: float, marks: Marks, play_pos: float) -> str:

@@ -44,10 +44,7 @@ from src.utils.log import log, quietly
 # The MD↔JSON alignment is shared with the playback lyric display so the two
 # always agree on speakers, stage directions and line text (see md_overlay).
 from src.lyrics.md_overlay import _sd_scope, _reading_time, build_md_overlay as _build_md_overlay
-from src.lyrics.time_fields import (
-    _EDIT_END, _EDIT_LIM, _EDIT_MAXLEN, _EDIT_ORDER, _EDIT_START, _field_str, _field_value,
-    _ts_parts,
-)
+from src.lyrics.time_fields import edit_changed, _EDIT_END, edit_key, edit_seconds, _EDIT_START, new_edit
 from src.lyrics.sync_doc import (
     SOURCE_SYLT, SOURCE_TRANSCRIPT, SOURCE_USLT, _REVIEW_PHASE_NAME, _REVIEW_PROGRAMS,
     _best_split_index, _clean_seg, _ensure_ids, _file_fp, _load, _rebuild_srt,
@@ -94,11 +91,9 @@ class _Session(_KeyHandlers):
         self.md_path:    str  | None = None
         self.undo_stack: list = []
 
-        self.edit_fields: dict[str, list[str]] = {}   # fk → digit chars (MM:SS.mmm per bound)
-        self.edit_orig:   dict[str, str]       = {}   # snapshot at open → detect what changed
-        self.edit_fi    = 0                            # active field index into _EDIT_ORDER
-        self.edit_pos   = 0                            # caret position within the active field
-        self.edit_fresh = False                        # active field untouched → next digit clears it
+        # The timestamp editor (time_fields.new_edit): fields, active field, caret,
+        # and whether the field is untouched; plus the snapshot it opened with.
+        self.edit, self.edit_orig = new_edit(None, None)
 
         self.playing    = False
         self.play_until = 0.0
@@ -687,70 +682,24 @@ class _Session(_KeyHandlers):
                     end_v = round(start_v + _reading_time(item.get('text', '')), 3)
                 else:
                     end_v = next_t if next_t is not None else round(start_v + 1.0, 3)
-        sm, ss, sms = _ts_parts(start_v)
-        em, es, ems = _ts_parts(end_v)
-        self.edit_fields = {'sm': list(sm), 'ss': list(ss), 'sms': list(sms),
-                       'em': list(em), 'es': list(es), 'ems': list(ems)}
-        self.edit_orig   = {k: "".join(v) for k, v in self.edit_fields.items()}
+        self.edit, self.edit_orig = new_edit(start_v, end_v)
         if seed:
             # These bounds were unset; force Enter to commit the seeded values even
             # when they read as 0, so one Enter actually times the direction.
             for k in (*_EDIT_START, *_EDIT_END):
                 self.edit_orig[k] = "\x00"
-        self.edit_fi     = 0
-        self.edit_pos    = 0
-        self.edit_fresh  = True   # first digit fills the field from the left
 
     def _edit_field_key(self, key: str) -> None:
-        """Handle one field-manipulation key for the segmented editor.  Digits fill
-        from the left (a fresh field is replaced on the first digit); ↑↓ spin the
-        value; ms treats its digits as a right-padded fraction (5 → 500)."""
-        fk   = _EDIT_ORDER[self.edit_fi]
-        buf  = self.edit_fields[fk]
-        maxl = _EDIT_MAXLEN[fk]
-        if key == 'TAB':
-            self.edit_fi = (self.edit_fi + 1) % len(_EDIT_ORDER)
-            self.edit_pos = 0; self.edit_fresh = True
-        elif key == 'BACKTAB':
-            self.edit_fi = (self.edit_fi - 1) % len(_EDIT_ORDER)
-            self.edit_pos = 0; self.edit_fresh = True
-        elif key == 'LEFT':
-            self.edit_pos = max(0, self.edit_pos - 1); self.edit_fresh = False
-        elif key == 'RIGHT':
-            self.edit_pos = min(len(buf), self.edit_pos + 1); self.edit_fresh = False
-        elif key in ('UP', 'DOWN'):
-            v = _field_value(fk, "".join(buf)) + (1 if key == 'UP' else -1)
-            v = max(0, min(_EDIT_LIM[fk], v))
-            buf[:] = list(_field_str(fk, v)); self.edit_pos = len(buf); self.edit_fresh = False
-        elif key == 'BACKSPACE':
-            self.edit_fresh = False
-            if self.edit_pos > 0: buf.pop(self.edit_pos - 1); self.edit_pos -= 1
-        elif key == 'DELETE':
-            self.edit_fresh = False
-            if self.edit_pos < len(buf): buf.pop(self.edit_pos)
-        elif key == 'HOME':
-            self.edit_pos = 0; self.edit_fresh = False
-        elif key == 'END':
-            self.edit_pos = len(buf); self.edit_fresh = False
-        elif len(key) == 1 and key.isdigit():
-            if self.edit_fresh:
-                buf[:] = [key]; self.edit_pos = 1; self.edit_fresh = False
-            elif len(buf) < maxl:
-                buf.insert(self.edit_pos, key); self.edit_pos += 1
+        """One key in the timestamp editor (time_fields.edit_key)."""
+        edit_key(self.edit, key)
 
     def _edit_apply(self) -> None:
         """Commit only the bound(s) whose digits changed, reusing commit_field so
         start keeps its shift semantics and end is set absolutely."""
-        def _val(keys) -> float:
-            """Combine a (minutes, seconds, ms) field triple into seconds."""
-            m  = _field_value(keys[0], "".join(self.edit_fields[keys[0]]))
-            s  = _field_value(keys[1], "".join(self.edit_fields[keys[1]]))
-            ms = _field_value(keys[2], "".join(self.edit_fields[keys[2]]))
-            return round(m * 60 + s + ms / 1000.0, 3)
-        if any("".join(self.edit_fields[k]) != self.edit_orig[k] for k in _EDIT_START):
-            self.commit_field('start', _val(_EDIT_START))
-        if any("".join(self.edit_fields[k]) != self.edit_orig[k] for k in _EDIT_END):
-            self.commit_field('end', _val(_EDIT_END))
+        if edit_changed(self.edit, self.edit_orig, _EDIT_START):
+            self.commit_field('start', edit_seconds(self.edit, _EDIT_START))
+        if edit_changed(self.edit, self.edit_orig, _EDIT_END):
+            self.commit_field('end', edit_seconds(self.edit, _EDIT_END))
 
     def _tick(self) -> None:
         """Once per loop: the track length, and the playback clock — ending a clip,
@@ -800,7 +749,7 @@ class _Session(_KeyHandlers):
             self.segs, self.cursor, self.seg_cursor, self.mode, self.prev_mode, self.selected,
             self.viewport, self.dirty, len(self.undo_stack), self.track_name,
             self.playing, self.play_pos,
-            {'fields': self.edit_fields, 'fi': self.edit_fi, 'pos': self.edit_pos},
+            self.edit,
             self.source, self.total_s,
             self.show_hints, self.md_overlay, self.md_quality, self.aud_now, self.aud_editing,
             review=review_info, sources=self._sources_label(),
