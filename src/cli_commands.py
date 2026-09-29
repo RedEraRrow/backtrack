@@ -587,7 +587,7 @@ def _tag_copy(ctx: Ctx) -> int:
 
     from mutagen.id3 import ID3
 
-    from src.id3.id3_tag_handler import save_id3
+    from src.id3.id3_tag_handler import load_id3, save_id3
     from src.music_library import refresh_library_entry
 
     if not ctx.args.source:
@@ -623,10 +623,7 @@ def _tag_copy(ctx: Ctx) -> int:
     written = errors = 0
     for path in targets:
         try:
-            try:
-                audio = ID3(path)
-            except ID3NoHeaderError:
-                audio = ID3()
+            audio = load_id3(path)
             # Replace frame by frame (by its full key, e.g. TXXX:MOOD), as the
             # tag editor does. setall(FrameID) replaced every frame of the type
             # each time, so only the last TXXX/COMM/APIC copied survived.

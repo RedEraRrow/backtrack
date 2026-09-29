@@ -263,6 +263,15 @@ def _has_multivalue(audio: ID3) -> bool:
     return False
 
 
+def load_id3(path: str) -> ID3:
+    """A file's ID3 tag, or a new empty one when the MP3 has none yet — ready to
+    add frames to and hand to save_id3(audio, path)."""
+    try:
+        return ID3(path)
+    except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
+        return ID3()
+
+
 def save_id3(audio: ID3, path: str | None = None) -> None:
     """Save an ID3 tag, choosing the version by content.
 

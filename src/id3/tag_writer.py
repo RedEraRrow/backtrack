@@ -243,10 +243,8 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
 
     try:
         if kind == 'mp3':
-            try:
-                audio = ID3(path)
-            except ID3NoHeaderError:
-                audio = ID3()               # fresh header for a blank MP3
+            from src.id3.id3_tag_handler import load_id3
+            audio = load_id3(path)
             present = _id3_present(audio)
         else:
             audio = MP4(path)
@@ -521,11 +519,8 @@ def write_cover(path: str, data: bytes, mime: str, *, pic_type: int = 3,
             return res
 
         if kind == 'mp3':
-            from src.id3.id3_tag_handler import create_apic_frame, save_id3
-            try:
-                audio = ID3(path)
-            except ID3NoHeaderError:
-                audio = ID3()                     # fresh header for a blank MP3
+            from src.id3.id3_tag_handler import create_apic_frame, load_id3, save_id3
+            audio = load_id3(path)
             frame = create_apic_frame(data, mime, pic_type, desc)
             if frame is None:
                 return WriteResult(error='could not build APIC frame')

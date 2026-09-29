@@ -634,9 +634,9 @@ def import_lrc(audio_path: str, lrc_path: str) -> tuple[str, int]:
     The editor's *Import LRC* asks for the path and then does exactly this, so
     the two cannot disagree about what an .lrc turns into.
     """
-    from mutagen.id3 import ID3, USLT  # type: ignore[reportPrivateImportUsage]
+    from mutagen.id3 import USLT  # type: ignore[reportPrivateImportUsage]
 
-    from src.id3.id3_tag_handler import save_id3
+    from src.id3.id3_tag_handler import load_id3, save_id3
 
     entries = parse_lrc_file(lrc_path)
     if not entries:
@@ -650,11 +650,7 @@ def import_lrc(audio_path: str, lrc_path: str) -> tuple[str, int]:
     text = "\n".join(t for t, _ in entries if t)
     if not text.strip():
         return '', 0
-    from mutagen.id3._util import ID3NoHeaderError
-    try:
-        audio = ID3(audio_path)
-    except ID3NoHeaderError:
-        audio = ID3()                       # an untagged MP3: start its tag
+    audio = load_id3(audio_path)
     frame = USLT(encoding=3, lang='eng', desc='', text=text)
     audio.delall(frame.HashKey)             # just this frame: other lyrics frames stay
     audio.add(frame)
@@ -667,19 +663,14 @@ def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]],
     """Write timestamped lyrics to the file's SYLT frame for `desc`/`lang`,
     replacing that one frame only — other SYLT frames (other languages or
     descriptions) are kept."""
-    from mutagen.id3 import ID3
     from mutagen.id3._frames import SYLT
-    from mutagen.id3._util import ID3NoHeaderError
+    from src.id3.id3_tag_handler import load_id3, save_id3
 
     try:
-        try:
-            audio = ID3(file_path)
-        except ID3NoHeaderError:
-            audio = ID3()
+        audio = load_id3(file_path)
         frame = SYLT(encoding=3, lang=lang, desc=desc, format=2, type=1, text=sylt_entries)
         audio.delall(frame.HashKey)
         audio.add(frame)
-        from src.id3.id3_tag_handler import save_id3
         save_id3(audio, file_path)   # v2.4 iff a multi-value frame is present
     except Exception as exc:
         ui_utils.show_status(f"Failed to save SYLT: {exc}", duration=4.0)

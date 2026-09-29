@@ -33,7 +33,7 @@ from src.id3.id3_tag_handler import (
     prompt_for_value,
     create_frame,
     rename_frame, rename_would_replace, people_to_text, people_from_text,
-    save_id3,
+    save_id3, load_id3,
     create_apic_frame,
     pick_nearby_cover,
     _EXT_TO_MIME,
@@ -963,9 +963,7 @@ def inspect_tag_loop(
 
     while True:
         try:
-            audio = ID3(file_path)
-        except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-            audio = ID3()  # untagged MP3 (guaranteed .mp3 above) — start fresh so tags can be added
+            audio = load_id3(file_path)   # untagged MP3 (guaranteed .mp3 above): a fresh tag
         except OSError as e:
             ui_utils.show_status(f"Could not open file: {e}", duration=4.0)
             break

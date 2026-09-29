@@ -5,7 +5,7 @@ import os
 import mutagen.id3
 from mutagen.id3 import ID3
 from src.utils import prompt
-from src.id3.id3_tag_handler import get_tag_info, create_frame, save_id3
+from src.id3.id3_tag_handler import get_tag_info, create_frame, load_id3, save_id3
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import tag_writer as tw
 from src.id3 import bulk_ops as bo
@@ -162,10 +162,7 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
             failed += 1                    # keep the file's credits as they are
             continue
         try:
-            try:
-                audio = ID3(p)
-            except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-                audio = ID3()
+            audio = load_id3(p)
             audio.delall(tag_id)
             if frame is not None:
                 audio.add(frame)
@@ -280,10 +277,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
         if p not in apply_set:
             continue
         try:
-            try:
-                audio = ID3(p)
-            except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-                audio = ID3()
+            audio = load_id3(p)
             frame = create_frame(tag_id, plan[p])
             if frame is None:
                 continue

@@ -28,7 +28,7 @@ from mutagen.id3 import ID3
 
 from src import bulk_pattern as bp
 from src.id3 import tag_writer as tw
-from src.id3.id3_tag_handler import apply_bulk_edit, save_id3
+from src.id3.id3_tag_handler import apply_bulk_edit, load_id3, save_id3
 from src.music_library import refresh_library_entry
 
 
@@ -660,10 +660,7 @@ def apply_frame_writes(per_path: dict, library: list, *,
                         why=' · '.join(f"{fid}={val}" for fid, val in writes),
                         fields={fid: val for fid, val in writes})
         try:
-            try:
-                audio = ID3(path)
-            except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-                audio = ID3()
+            audio = load_id3(path)
             changed = False
             for frame_id, value in writes:
                 if not overwrite:
