@@ -3,7 +3,7 @@
 The inverse of the "Derive from filename" op: instead of parsing names into
 tags, this expands a ``%token%`` pattern using the file's existing tags to make
 a clean, uniform file name. Pure and unit-testable; the bulk op in
-``bulk_id3_manager`` handles the UI, preview, and the actual (two-phase) rename.
+``bulk_names`` handles the UI, preview, and the actual (two-phase) rename.
 
 MP3 exposes the full token set; MP4/m4a exposes the common atoms.
 """

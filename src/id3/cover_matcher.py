@@ -5,7 +5,7 @@ into tags, this finds the image file that belongs to each track and pairs them
 up, so a folder of ``01 - Song.mp3`` + ``01 - Song.jpg`` (or ``covers/1.png`` …)
 can have each track's own artwork embedded in one pass.
 
-Pure and unit-testable — no UI, no writes. The bulk op in ``bulk_id3_manager``
+Pure and unit-testable — no UI, no writes. The bulk op in ``bulk_art``
 owns the preview/apply; ``tag_writer.write_cover`` owns the actual embedding.
 
 Four pairing strategies are exposed (all return ``{track_path: image_path|None}``):

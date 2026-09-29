@@ -1,4 +1,4 @@
-"""Ranged / periodic bulk tag assignment — pure logic (UI in bulk_id3_manager).
+"""Ranged / periodic bulk tag assignment — pure logic (UI in id3/bulk_assign).
 
 Given a set of tracks ordered by (disc, track, filename), assign a tag value to
 each by position: explicit ranges, an every-N grouping, or a date schedule that
