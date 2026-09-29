@@ -229,8 +229,8 @@ class _Session(_KeyHandlers):
             self.md_overlay = self.md_quality = None
 
     def _review_enter(self, program: str) -> None:
-        """Start a walkthrough (program 'issues' or 'dirs'): jump to the first
-        outstanding item, earliest phase first."""
+        """Start a walkthrough (program 'issues' R, 'dirs' D or 'long' L): jump to
+        the first outstanding item, earliest phase first."""
         for ph in _REVIEW_PROGRAMS[program]:
             issues = _review_phase_issues(self.segs, ph, self.md_quality)
             if issues:
@@ -242,8 +242,8 @@ class _Session(_KeyHandlers):
                     f"Review · {_REVIEW_PHASE_NAME[ph]}: {len(issues)} to fix — "
                     f"Tab/⇧Tab next/prev, fix in place, Esc to leave.")
                 return
-        _none = ("stage directions need categorising or timing" if program == 'dirs'
-                 else "MD mismatches, word or overlap errors")
+        _none = {'dirs': "stage directions need categorising or timing",
+                 'long': "lines are too long"}.get(program, "MD mismatches, word or overlap errors")
         ui_utils.show_status(f"Nothing to review — no {_none}.")
 
     def _review_advance(self, direction: int) -> None:
@@ -562,7 +562,7 @@ class _Session(_KeyHandlers):
         _what  = " and ".join(p for p in (
             f"{_lines} spanning multiple MD lines" if _lines else "",
             f"{_dirs} containing a stage direction" if _dirs else "") if p)
-        _skip = (f"  {len(_suggested)} mid-sentence cut(s) left alone."
+        _skip = (f"  {ui_utils.plural(len(_suggested), 'mid-sentence cut')} left alone."
                  if _suggested else "")
         _ans = _prompt_text(
             f"Split {len(cands)} segment(s) — {_what}?{_skip} (y/N)")

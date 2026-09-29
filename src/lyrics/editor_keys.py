@@ -17,6 +17,7 @@ from src.lyrics.sync_doc import SOURCE_TRANSCRIPT, _make_stage_dir
 from src.lyrics.verify import _AIR_GAP_THRESHOLD, _make_dead_air
 from src.lyrics.editor_view import AUDITION, EDIT, SEG, TAP, WORD, _AUD_COARSE, _AUD_STEP, _HAS_VLC
 from src.state import QuitToTerminal
+from src import tuning as tune
 
 def _np_transport(action: str) -> None:
     """Drive the shared session behind the mini-player box (play/pause · next ·
@@ -108,7 +109,7 @@ class _KeyHandlers:
                         # stop just shy of the end, like SESSION.seek does, so
                         # clicking the far right doesn't run the track out
                         self.do_preview(min(max(0.0, min(1.0, _frac)) * self.total_s,
-                                       max(0.0, self.total_s - 0.5)))
+                                       max(0.0, self.total_s - tune.SEEK_END_MARGIN_S)))
                         return
                 if _hk is None and self.mode in (SEG, WORD):
                     target = self.hit_map.get(line_idx)

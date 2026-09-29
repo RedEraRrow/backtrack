@@ -4,6 +4,7 @@ import os
 import datetime
 from src.config import CONFIG_DIR
 from src.config import setting
+from src.utils.log import log
 
 HISTORY_FILE = CONFIG_DIR / 'history.log'
 
@@ -20,8 +21,8 @@ def log_listening_history(file_path: str, start_time: float, end_time: float) ->
     try:
         with open(HISTORY_FILE, "a", encoding="utf-8") as f:
             f.write(f"{timestamp} | {duration_listened}s | {file_path}\n")
-    except OSError:
-        pass  # Silently fail if history can't be logged
+    except OSError as exc:
+        log.warning("couldn't add to the listening history: %s", exc)
 
 
 def get_recent_paths() -> set:

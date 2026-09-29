@@ -137,7 +137,7 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
 
     mode_sel = prompt.select(
         "Disc numbering:",
-        choices=[f"Reflow — renumber the {len(runs)} disc(s) to 1…{len(runs)} and set totals",
+        choices=[f"Reflow — renumber the {ui_utils.plural(len(runs), 'disc')} to 1…{len(runs)} and set totals",
                  "Totals only — set the disc total, keep the numbers as they are"],
         header=header(sub))
     if not mode_sel:

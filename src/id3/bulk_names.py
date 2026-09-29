@@ -424,7 +424,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
                 unk = fnm.unknown_tokens(raw)
                 if unk:
                     ui_utils.show_status(
-                        f"Unknown token(s) will render blank: {', '.join(unk)}")
+                        f"Unknown {'token' if len(unk) == 1 else 'tokens'} will render blank: {', '.join(unk)}")
                 state['pattern'] = raw
             else:
                 state['pattern'] = sel

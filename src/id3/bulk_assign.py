@@ -470,7 +470,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
                                         if len(row_errors) > 3 else ""), duration=tune.STATUS_WARNING_S)
                 if not specs:
                     return False
-                if not prompt.confirm(f"{len(row_errors)} row(s) unusable — "
+                if not prompt.confirm(f"{ui_utils.plural(len(row_errors), 'row')} unusable — "
                                       f"apply the other {len(specs)}?"):
                     return False
             if not specs:

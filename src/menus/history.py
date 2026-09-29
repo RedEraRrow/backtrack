@@ -1,6 +1,5 @@
 """The listening history screen."""
 from __future__ import annotations
-import os
 import datetime
 from src.utils import prompt
 from src.utils import ui_utils
@@ -10,7 +9,7 @@ from src.playback.playback import music_player
 from src.config import load_config
 from src.id3.id3_browser import inspect_tag_loop
 from src.id3.bulk_id3_manager import bulk_id3_manager
-from src.menus.common import _idx_of, _menu_header
+from src.menus.common import _menu_header
 from src.menus.play import _queue_shortcut_kwargs
 from src.config import setting
 
@@ -72,19 +71,17 @@ def _nice_dur(raw: str) -> str:
 
 
 def handle_history(library: list) -> str | None:
-    """Show the recent listening history list; on selecting an entry, offer play/edit actions."""
-    cursor = 0
+    """Recent listening history: ↵ plays, e edits the entry, E bulk-edits them all."""
+    place = prompt.ListPlace()
     while True:
         # Rebuilt each time round: playing a track adds to the history.
-        res = _history_screen(library, cursor)
-        if not isinstance(res, tuple):
-            return res                      # backed out
-        cursor = res[1]
+        if _history_screen(library, place) is None:
+            return None                     # backed out
 
 
-def _history_screen(library: list, cursor: int):
-    """One pass of the history list: None (back), or
-    ("again", cursor) to show it again after playing or editing."""
+def _history_screen(library: list, place):
+    """One pass of the history list: None (back), or "again" to show it again
+    after playing or editing, with `place` kept on the same track."""
     history_entries = get_history(limit=30)
 
     if not history_entries:
@@ -125,7 +122,7 @@ def _history_screen(library: list, cursor: int):
         header=_menu_header("Listening History", f"{len(history_entries)} recent"),
         on_inspect=_inspect_history if _show_editor else None,
         inspect_key='e',
-        index=min(cursor, len(choices) - 1),
+        place=place,
         shortcuts={'E': '__bulk_edit__'} if _show_editor else None,
         extra_hints={'e': 'edit', 'E': 'edit all'} if _show_editor else None,
         **_queue_shortcut_kwargs(library),
@@ -136,10 +133,9 @@ def _history_screen(library: list, cursor: int):
     if selected == "__bulk_edit__":
         # Once each: a track played several times is in the history several times.
         bulk_id3_manager(library, paths=list(dict.fromkeys(p for _, _, p in history_entries)))
-        return ("again", cursor)
+        return "again"
 
-    picked = _idx_of(choices, selected, cursor)
     ui_utils.clear_screen()
     music_player(selected)
     ui_utils.clear_screen()
-    return ("again", picked)
+    return "again"

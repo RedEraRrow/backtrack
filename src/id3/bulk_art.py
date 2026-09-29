@@ -100,7 +100,7 @@ def _cover_pattern_prompt(header) -> str | None:
                 continue
             unk = fnm.unknown_tokens(raw)
             if unk:
-                ui_utils.show_status(f"Unknown token(s) render blank: {', '.join(unk)}")
+                ui_utils.show_status(f"Unknown {'token renders' if len(unk) == 1 else 'tokens render'} blank: {', '.join(unk)}")
             return raw
         return sel
 
@@ -153,7 +153,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         """How images pair with tracks."""
         picked = prompt.select("Match cover images to tracks by:", choices=_MODES,
                                index=_MODES.index(state['mode']),
-                               header=header(f"{n_images} image(s) found"))
+                               header=header(f"{ui_utils.plural(n_images, 'image')} found"))
         if not picked:
             return False
         state['mode'] = picked

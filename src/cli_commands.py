@@ -896,7 +896,7 @@ def _bulk_rename(ctx: Ctx) -> int:
     pattern = ctx.args.pattern
     unknown = fnm.unknown_tokens(pattern)
     if unknown:
-        return out.fail(out.USAGE, "Unknown token(s) in the pattern.",
+        return out.fail(out.USAGE, f"Unknown {'token' if len(unknown) == 1 else 'tokens'} in the pattern.",
                         tokens=', '.join(unknown), pattern=pattern)
 
     writable = [p for p in paths if tw.is_writable(p)]

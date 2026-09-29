@@ -1,6 +1,5 @@
 """Search from the menus: the query screen, the grouped results, and playing an entity from them."""
 from __future__ import annotations
-import os
 from src.utils import prompt
 from src.utils import ui_utils
 from src.music_library import format_tag_values
@@ -13,6 +12,7 @@ from src.id3.bulk_id3_manager import bulk_id3_manager
 from src.menus.common import _autoplay, _disc_track_cell, _menu_header
 from src.menus.play import _PLAY_ACTIONS, _handle_queue_action, _list_actions, _play_list, _queue_action_choices, _sorted_paths
 from src.config import setting
+from src.music_library import track_title
 
 
 # Search scope cycled with Tab in the live search screen (default: all fields).
@@ -283,7 +283,7 @@ def handle_search(library: list) -> str | None:
         # Editing is ^e / ^a from the results: `live_select` types every other
         # key into the query.
         song_meta = next((s for s in library if s['path'] == selected), None)
-        track_title = song_meta['title'] if song_meta else os.path.basename(selected)
+        title = track_title(selected, song_meta)
         _action_choices = ["Play"] + _queue_action_choices()
         if len(_action_choices) == 1 or _autoplay():
             action = "Play"
@@ -291,14 +291,14 @@ def handle_search(library: list) -> str | None:
             action = prompt.select(
                 "Action:",
                 choices=_action_choices,
-                header=_menu_header(track_title),
+                header=_menu_header(title),
             )
         if action == "Play":
             ui_utils.clear_screen()
             music_player(selected)
             ui_utils.clear_screen()
         elif action:
-            _handle_queue_action(action, selected, track_title, library)
+            _handle_queue_action(action, selected, title, library)
 
 
 def _play_entity(ent, library: list) -> str | None:
