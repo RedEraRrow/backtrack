@@ -37,7 +37,7 @@ from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[reportPrivateImpor
 
 from src.config import load_config
 from src.trim import trim
-from src.music_library import drop_moved
+from src.music_library import drop_moved, track_title
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
 from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
@@ -306,7 +306,7 @@ def _track_title_artist(path: str) -> tuple[str, str]:
         pass
     except Exception:
         pass
-    return title or os.path.splitext(os.path.basename(path))[0], artist
+    return title or track_title(path), artist
 
 
 def _silence_markers(path: str, track_length: float) -> list[float]:

@@ -675,6 +675,25 @@ def load_library_cache() -> list:
         return []
 
 
+def track_title(path: str, song: dict | None = None, *, read_tags: bool = False) -> str:
+    """What a track is called on screen: its library title, else (`read_tags`)
+    the title tagged in the file itself, else its file name without the
+    extension. The one fallback every list, queue, header and editor uses."""
+    title = str((song or {}).get('title') or '').strip()
+    if not title and read_tags:
+        try:
+            if path.lower().endswith('.mp3'):
+                fr = ID3(path).get('TIT2')
+                title = str(fr.text[0]).strip() if fr is not None and fr.text else ''
+            else:
+                tags = MP4(path).tags
+                name = tags.get('\xa9nam') if tags else None
+                title = str(name[0]).strip() if name else ''
+        except Exception:
+            title = ''
+    return title or os.path.splitext(os.path.basename(path))[0]
+
+
 def refresh_library_entry(library: list | None, file_path: str) -> dict:
     """
     Re-read and update metadata for a single file.

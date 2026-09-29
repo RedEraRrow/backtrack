@@ -31,7 +31,7 @@ Stage directions (on a stage-direction row in SEG) — press x to cycle the kind
 from __future__ import annotations
 import sys, os, json, time
 
-from src.music_library import drop_moved, format_value_list
+from src.music_library import drop_moved, format_value_list, track_title
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
 from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs, _cols
@@ -49,7 +49,6 @@ try:
 except ImportError:
     _HAS_VLC = False
 
-from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[reportPrivateImportUsage]
 from src.lyrics.lyrics import _apply_markdown_formatting
 # The MD↔JSON alignment is shared with the playback lyric display so the two
 # always agree on speakers, stage directions and line text (see md_overlay).
@@ -757,19 +756,7 @@ def lyrics_editor(mp3_path: str) -> None:
         return
 
     segs, source, aux = result
-    # Prefer ID3 `TIT2` title when available, otherwise fall back to filename stem
-    try:
-        try:
-            id3 = ID3(mp3_path)
-            tit = id3.get('TIT2')
-            if tit and getattr(tit, 'text', None):
-                track_name = str(tit.text[0])
-            else:
-                track_name = os.path.splitext(os.path.basename(mp3_path))[0]
-        except ID3NoHeaderError:
-            track_name = os.path.splitext(os.path.basename(mp3_path))[0]
-    except Exception:
-        track_name = os.path.splitext(os.path.basename(mp3_path))[0]
+    track_name = track_title(mp3_path, read_tags=True)
     if aux.get('drift'):
         ui_utils.show_status(
             "⚠ transcript.json changed since this working copy — W will overwrite it.", 6.0)

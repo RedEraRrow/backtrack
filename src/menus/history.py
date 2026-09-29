@@ -13,6 +13,7 @@ from src.id3.bulk_id3_manager import bulk_id3_manager
 from src.menus.common import _idx_of, _menu_header
 from src.menus.play import _queue_shortcut_kwargs
 from src.config import setting
+from src.music_library import track_title
 
 
 # Listening-history columns: title · artist · album · when (relative) · listened.
@@ -96,13 +97,13 @@ def _history_screen(library: list, cursor: int):
     for ts, dur, path in history_entries:
         song = next((s for s in library if s['path'] == path), None)
         if song:
-            title = song.get('title') or os.path.splitext(os.path.basename(path))[0]
+            title = track_title(path, song)
             artist = format_tag_values(song.get('artist'))
             album = (song.get('album') or '').strip()
             artist = '' if artist == 'Unknown Artist' else artist
             album = '' if album == 'Unknown Album' else album
         else:
-            title = os.path.splitext(os.path.basename(path))[0]
+            title = track_title(path)
             artist = album = ''
         choices.append(prompt.Choice(
             title=title, value=path,

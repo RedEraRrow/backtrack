@@ -21,6 +21,7 @@ from src.playback.player_art import (  # noqa: F401 — re-exported
     ART_MAX_WIDTH, _art_width_for_height, _draw_inline_art, _inline_art, art_image_incomplete, inline_art_enabled, redraw_art_image, set_resizing,
 )
 from src.config import setting
+from src.music_library import track_title
 
 
 # Absolute cursor positioning (\033[<row>;<col>H) — must require the trailing
@@ -579,7 +580,7 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
         parts = [p.strip() for p in re.split(r'[/|∕⁄]|\bof\b', clean, flags=re.IGNORECASE) if p.strip()]
         return (parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
 
-    title = _txt('TIT2') or os.path.splitext(os.path.basename(file_path))[0]
+    title = _txt('TIT2') or track_title(file_path)
     artist = _txts('TPE1') or _txts('TPE2')
     album = _txt('TALB')
 

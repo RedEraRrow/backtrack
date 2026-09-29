@@ -29,7 +29,7 @@ from mutagen.id3 import ID3
 import mutagen.id3
 
 from src.history import log_listening_history
-from src.music_library import drop_moved, get_song_duration
+from src.music_library import drop_moved, get_song_duration, track_title
 
 # vlc.State attributes are dynamic; expose safe aliases (mirrors playback.py).
 _VLC_STATE_PAUSED = getattr(vlc.State, 'Paused', None)
@@ -357,17 +357,8 @@ class PlaybackSession:
             self.release_view(args.get('token', ''))
 
     def _title_for(self, path: str) -> str:
-        """A display title for a queued file — its ID3 title, else the file name
-        (no extension). Used when the caller didn't supply queue titles."""
-        try:
-            fr = ID3(path).get('TIT2')
-            if fr is not None and getattr(fr, 'text', None):
-                s = str(fr.text[0]).strip()
-                if s:
-                    return s
-        except Exception:
-            pass
-        return os.path.splitext(os.path.basename(path))[0]
+        """A display title for a queued file when the caller supplied none."""
+        return track_title(path, read_tags=True)
 
     def _log_history(self) -> None:
         """Log the currently-loaded track to listening history, at most once."""
@@ -656,7 +647,7 @@ class PlaybackSession:
                 artist = _all(self.audio.get('TPE1'))
                 album = _one(self.audio.get('TALB'))
             if not title:
-                title = os.path.splitext(os.path.basename(self.file_path or ''))[0]
+                title = track_title(self.file_path or '')
             return {
                 'title': title,
                 'artist': artist,

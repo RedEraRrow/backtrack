@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import random
 from src.utils import ui_utils
-from src.music_library import drop_moved, sort_tracks
+from src.music_library import drop_moved, sort_tracks, track_title
 from src.playback.playback import music_player
 from src.playback.session import REPEAT_OFF, active_session, is_client
 from src.id3.bulk_id3_manager import bulk_id3_manager
@@ -19,11 +19,7 @@ def play_queue(paths: list, mode: str = "linear", library: list | None = None) -
     if mode == "shuffle":
         random.shuffle(playlist)
 
-    # Build display titles for the in-player queue view (falls back to filename).
-    title_map = {}
-    if library:
-        title_map = {s['path']: (s.get('title') or os.path.basename(s['path'])) for s in library}
-    titles = [title_map.get(p) or os.path.splitext(os.path.basename(p))[0] for p in playlist]
+    titles = _queue_titles_for_paths(playlist, library or [])
 
     # The shared session owns the queue and auto-advances in the background
     # (feature #14), so this just starts it and opens the player. Minimising the
@@ -109,8 +105,9 @@ def _queue_action_choices() -> list:
 
 
 def _queue_titles_for_paths(paths: list[str], library: list) -> list[str]:
-    title_map = {s['path']: (s.get('title') or os.path.splitext(os.path.basename(s['path']))[0]) for s in library}
-    return [title_map.get(p) or os.path.splitext(os.path.basename(p))[0] for p in paths]
+    """The in-player queue's titles for `paths`, from their library entries."""
+    by_path = {s['path']: s for s in library}
+    return [track_title(p, by_path.get(p)) for p in paths]
 
 
 def _queue_shortcut_kwargs(library: list,
