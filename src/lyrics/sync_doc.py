@@ -4,7 +4,7 @@ from __future__ import annotations
 import os, json
 from src import tuning as tune
 from mutagen.id3 import ID3, ID3NoHeaderError
-from src.lyrics.lyrics import load_transcript
+from src.lyrics.lyrics import _find_timing_files_for_audio
 from src.lyrics.md_overlay import _SD_SCOPES
 from src.utils import timefmt
 
@@ -19,22 +19,9 @@ SOURCE_USLT       = 'uslt'
 
 
 def _find_transcript(mp3_path: str) -> str | None:
-    """Locate a transcript JSON file near mp3_path by common naming conventions.
-
-    Each candidate is opened and checked rather than taken on its name, using the
-    same test the player uses — otherwise the two can disagree about which file is
-    authoritative for a track, and the editor would be timing one document while
-    playback read another. A transcription's own export (a bare list of segments,
-    as MacWhisper writes) is named like a transcript and is not one.
-    """
-    d    = os.path.dirname(mp3_path)
-    base = os.path.splitext(os.path.basename(mp3_path))[0]
-    for name in [f"{base}.json", f"{base}_timings.json", "transcript.json",
-                 os.path.join("Transcript", f"{base}.json")]:
-        p = os.path.join(d, name)
-        if os.path.isfile(p) and load_transcript(p):
-            return p
-    return None
+    """The track's timed transcript: the same file the player reads
+    (lyrics._find_timing_files_for_audio), so the two never disagree."""
+    return _find_timing_files_for_audio(mp3_path)[1]
 
 
 def _sidecar_path(jpath: str) -> str:
