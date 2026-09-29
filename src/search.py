@@ -96,10 +96,6 @@ def use_layout(rows: tuple[str, ...]) -> None:
     _NEAR_KEYS = _neighbours(rows)
 
 
-def _near_key(a: str, b: str) -> bool:
-    """Whether two characters sit next to each other on the current keyboard."""
-    return a + b in _NEAR_KEYS
-
 
 # How implausible each kind of edit is as a typing slip, 0 (a finger landing one
 # key over) to 1 (an unrelated letter). A dropped or doubled keystroke sits in

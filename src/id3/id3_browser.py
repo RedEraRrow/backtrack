@@ -10,18 +10,17 @@ import numpy as np
 import cv2
 
 from src.utils import prompt
-from src.lyrics.lyrics import save_sylt_entries
 from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
 from src.lyrics import lyrics as _lyrics
 from src.trim import trim as _trim
 from src.trim.trim_editor import trim_editor
 from mutagen.id3 import ID3
 import mutagen.id3
-from mutagen.id3._frames import APIC, USLT
+from mutagen.id3._frames import APIC
 
 from src.utils import ui_utils
 from src.utils.prompt_core import _visible_rows
-from src.utils.ui_utils import Colors as C, get_terminal_height, get_terminal_width
+from src.utils.ui_utils import Colors as C, get_terminal_width
 from src.art.album_art import render_album_art
 from src.music_library import refresh_library_entry
 
@@ -405,7 +404,6 @@ def _sort_single_name(name: str) -> list[str]:
 
     def _add(firstname: str, surname: str) -> None:
         """Append a "Surname, Firstname" candidate (with honorific/suffix folded in) if new."""
-        nonlocal honorific, suffix
         fn = ' '.join(filter(None, [honorific, firstname]))
         sn = ' '.join(filter(None, [surname, suffix]))
         c  = f"{sn}, {fn}" if fn else sn
@@ -593,7 +591,7 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
 
 
 
-def _import_from_lrc(file_path: str, audio: ID3, tag_id: str) -> None:
+def _import_from_lrc(file_path: str, tag_id: str) -> None:
     """Ask for an LRC file and import it — the writing itself is `lyrics.import_lrc`."""
     default_lrc = os.path.splitext(file_path)[0] + ".lrc"
     # prompt.path, not prompt.text: this is a filesystem location, so it gets
@@ -926,7 +924,6 @@ def inspect_tag_loop(
 
     def _main_header() -> list[str]:
         """Build the boxed title/artist/format/duration/size header for the tag list screen."""
-        cols = ui_utils.get_terminal_width()
         ext = os.path.splitext(file_path)[1].upper().lstrip('.')
 
         try:
@@ -1147,7 +1144,7 @@ def inspect_tag_loop(
                 break
 
             elif action == "Import LRC":
-                _import_from_lrc(file_path, audio, choice)
+                _import_from_lrc(file_path, choice)
                 break
 
             elif action == "Copy":

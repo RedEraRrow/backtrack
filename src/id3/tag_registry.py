@@ -410,6 +410,5 @@ SORT_TAGS: tuple[SortTag, ...] = (
     SortTag('album',        'TALB', 'TSOA', 'soal', 'album',        False, True),
 )
 
-SORT_BY_FRAME: Dict[str, SortTag] = {t.frame: t for t in SORT_TAGS}
 SORT_SOURCE_OF: Dict[str, str] = {t.frame: t.source for t in SORT_TAGS}
 NAME_SORT_FRAMES = frozenset(t.frame for t in SORT_TAGS if t.is_name)

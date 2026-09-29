@@ -358,7 +358,6 @@ def _config_get(ctx: Ctx) -> int:
 
 def _config_set(ctx: Ctx) -> int:
     """Change one config value, parsed to the type the existing value has."""
-    import json
 
     from src.config import DEFAULT_CONFIG, update_config
 

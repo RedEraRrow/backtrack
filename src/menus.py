@@ -5,21 +5,21 @@ import random
 import string
 import datetime
 
-from src.utils.ui_utils import roman, Colors as C
+from src.utils.ui_utils import Colors as C
+from src.utils.numbering import roman
 
 from src.utils import prompt
 from src.utils import ui_utils
 from src.music_library import (
-    build_library, save_library_cache,
-    start_background_sync,
-    get_grouped_data, get_group_sort_key, derive_album_credit, format_tag_values, album_year,
-    to_num, sort_tracks, sort_albums, resolve_levels, sort_options, valid_levels, library_of,
-    SORT_FIELDS, DEFAULT_SORT_LEVELS,
+    build_library, save_library_cache, start_background_sync, get_grouped_data,
+    get_group_sort_key, derive_album_credit, format_tag_values, to_num, sort_tracks,
+    sort_albums, resolve_levels, sort_options, valid_levels, library_of, SORT_FIELDS,
+    DEFAULT_SORT_LEVELS,
 )
 from src.history import get_history, clear_history, get_recent_paths
 from src import search as _search
 from src.playback.playback import music_player
-from src.playback.session import REPEAT_OFF, REPEAT_ONE, REPEAT_ALL, active_session, is_client
+from src.playback.session import REPEAT_OFF, active_session, is_client
 from src.config import load_config, music_dirs, set_music_dirs, library_name, update_config, changed_keys
 from src.state import NAV_STACK
 from src.id3.id3_browser import inspect_tag_loop
@@ -913,13 +913,9 @@ _SETTINGS_COLUMNS = [
     prompt.Column(style='dynamic-dim', flex=True),  # state, left-aligned just after
 ]
 
-# The app's one tick and one cross: U+2714 HEAVY CHECK MARK and U+2718 HEAVY
-# BALLOT X — a matched heavy pair, the same tick the sort picker, multi-select
-# rows and "Save changes" already use. (U+2717, the old cross, is drawn
-# brush-style in most fonts and read as a different kind of mark.)
-# A filled/hollow pair, not a tick and a cross: ✘ reads as *invalid* rather
-# than *off*, and the two glyphs it paired with differed in meaning as well as
-# in shape. ● and ○ differ only in fill, which is exactly the difference.
+# The on/off pair: filled and hollow, not a tick and a cross — ✘ reads as
+# *invalid* rather than *off*. ● and ○ differ only in fill, which is exactly
+# the difference.
 ON_GLYPH, OFF_GLYPH = "●", "○"
 
 
@@ -1110,7 +1106,7 @@ def handle_settings(library_ref: list) -> None:
 
 
 def play_queue(paths: list, mode: str = "linear", library: list | None = None) -> str | None:
-    """Play a queue of file paths in the given mode (linear, shuffle, repeat_one, repeat_all)."""
+    """Play a queue of file paths, in order ("linear") or shuffled ("shuffle")."""
     playlist = list(paths)
     if not playlist:                       # e.g. a letter filter that leaves nothing
         ui_utils.show_status("Nothing to play.")
@@ -1127,7 +1123,7 @@ def play_queue(paths: list, mode: str = "linear", library: list | None = None) -
     # The shared session owns the queue and auto-advances in the background
     # (feature #14), so this just starts it and opens the player. Minimising the
     # player ('b'/Esc) returns here with audio still playing; Stop ('s') ends it.
-    session_mode = {"repeat_one": REPEAT_ONE, "repeat_all": REPEAT_ALL}.get(mode, REPEAT_OFF)
+    session_mode = REPEAT_OFF
     result = music_player(playlist[0], queue_titles=titles, queue_index=0,
                           queue_paths=playlist, mode=session_mode)
     if isinstance(result, dict) and result.get("status") == "QUIT_ALL":

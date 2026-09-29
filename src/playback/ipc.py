@@ -167,13 +167,13 @@ class SessionServer:
     """
 
     def __init__(self, session_id: str, *, snapshot_provider, command_handler,
-                 label_provider=None, started_at: float = 0.0) -> None:
+                 label_provider=None) -> None:
         self.session_id = session_id
         self.socket_path = _socket_path(session_id)
         self._snapshot = snapshot_provider
         self._on_command = command_handler
         self._label = label_provider or (lambda: "Session")
-        self._started_at = started_at or time.time()
+        self._started_at = time.time()
         self._srv: socket.socket | None = None
         self._clients: set[socket.socket] = set()
         self._clients_lock = threading.Lock()

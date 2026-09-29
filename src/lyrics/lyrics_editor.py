@@ -29,16 +29,15 @@ Stage directions (on a stage-direction row in SEG) — press x to cycle the kind
             when are left to be read from the text and context.
 """
 from __future__ import annotations
-import sys, os, json, time, re
+import sys, os, json, time
 from src import tuning as tune
 
 from src.music_library import format_value_list
 from src.utils import ui_utils
-from src.utils.ui_utils import Colors as C, MARGIN_V
+from src.utils.ui_utils import Colors as C
 from src.utils.prompt import (
-    _Widget, _read_key, _wait_for_keypress,
-    _set_raw, _restore_term_attrs, _get_term_attrs,
-    _hint_lines, _cols, text as _prompt_text,
+    _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs,
+    _cols, text as _prompt_text,
 )
 from src.utils.prompt_core import add_hint_click_cells_auto, _visible_rows, now_playing_click_action
 from src.utils import prompt as _promptmod
@@ -61,10 +60,8 @@ from src.lyrics.lyrics_text import (align_tokens as _align_tokens,
                                     pair_tokens as _pair_tokens,
                                     ends_a_thought as _ends_a_thought)
 from src.lyrics.md_overlay import (
-    _norm, _norm_words, _LINK_RE, _STAGE_RE, _spoken_text, _inline_stage_dirs,
-    line_speaker as _line_speaker,
-    _SD_SCOPES, _sd_scope, _is_framed, _reading_time,
-    build_md_overlay as _build_md_overlay,
+    _norm_words, _spoken_text, _inline_stage_dirs, line_speaker as _line_speaker, _SD_SCOPES,
+    _sd_scope, _is_framed, _reading_time, build_md_overlay as _build_md_overlay,
 )
 
 SOURCE_TRANSCRIPT = 'transcript'
@@ -1761,7 +1758,7 @@ def lyrics_editor(mp3_path: str) -> None:
         """Split the current spoken line at its strongest semantic break nearest the
         middle (or the middle itself when there's no punctuation), redistributing
         words and timing like the per-word split. Repeat to split further."""
-        nonlocal dirty, cursor
+        nonlocal dirty
         if not (segs and 0 <= cursor < len(segs)):
             return
         seg = segs[cursor]
@@ -2576,7 +2573,6 @@ def lyrics_editor(mp3_path: str) -> None:
             elif key == 'c' and mode == SEG:
                 try:
                     from mutagen.id3 import ID3
-                    from mutagen.id3._util import ID3NoHeaderError
                     _aud = ID3(mp3_path)
                     _credits: list[str] = []
                     _tcom = _aud.getall('TCOM')

@@ -9,7 +9,6 @@ so a word could match during alignment and fail during verification.
 """
 from __future__ import annotations
 
-import bisect
 import re
 import unicodedata
 
@@ -59,12 +58,6 @@ def matchable(word: str) -> str:
                    if unicodedata.category(c)[0] in ('L', 'N')
                    and c not in _APOSTROPHE_LIKE)
 
-
-def norm_line(s: str) -> str:
-    """A whole line flattened for line-to-line comparison: whitespace collapsed
-    and lowercased, punctuation left alone (two renderings of the same line
-    differ in spacing and case, not in words)."""
-    return re.sub(r'\s+', ' ', (s or "").strip().lower())
 
 
 # --- what counts as spoken -------------------------------------------------
@@ -222,17 +215,6 @@ def strip_markdown(text: str) -> str:
 
 # --- which line is on screen ----------------------------------------------
 
-def find_current_line(line_times: list[tuple[float, float]], elapsed: float) -> int:
-    """Binary-search `line_times` for the line covering `elapsed`, clamped to range.
-
-    Serves SYLT lines, USLT lines and dialogue chunks alike — they are all a
-    sorted run of (start, end) windows, and the answer must not depend on which
-    view is asking.
-    """
-    ends = [t[1] for t in line_times]
-    idx = bisect.bisect_right(ends, elapsed)
-    return min(idx, max(0, len(line_times) - 1))
-
 
 # --- matching across the two conventions -----------------------------------
 
@@ -256,7 +238,6 @@ _NUM_TEEN = {'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 
              'nineteen': 19}
 _NUM_TENS = {'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60,
              'seventy': 70, 'eighty': 80, 'ninety': 90}
-_NUM_WORD = {**_NUM_UNIT, **_NUM_TEEN, **_NUM_TENS}
 _NUM_SCALE = {'thousand': 1000, 'million': 1000000, 'billion': 1000000000}
 # 'oh' is a number only as a spoken digit ("flight level two-five-oh"), and in these
 # scripts it is overwhelmingly the interjection — 734 of them.  Reading it as 0

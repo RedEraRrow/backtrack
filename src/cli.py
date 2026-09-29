@@ -147,8 +147,7 @@ class Ctx:
         # meant each track added went into a throwaway list, saved on its own.
         return self._library
 
-    def targets(self, positional: str = 'target', *,
-                allow_stdin: bool = True) -> list[str]:
+    def targets(self, *, allow_stdin: bool = True) -> list[str]:
         """The files this run acts on: the positional arguments, else stdin.
 
         Lets `backtrack track list --artist Darude | backtrack tag read` work
@@ -156,7 +155,7 @@ class Ctx:
         for a caller with another source to try first — reading stdin is a
         blocking call, so it must be the last thing asked, not the second.
         """
-        given = getattr(self.args, positional, None) or []
+        given = getattr(self.args, 'target', None) or []
         if isinstance(given, str):
             given = [given]
         paths = [os.path.abspath(os.path.expanduser(p)) for p in given]
@@ -376,28 +375,8 @@ def schema_tree(tree: list) -> dict:
     }
 
 
-def _paths(tree: list) -> list[tuple[str, list]]:
-    """Every reachable command path with the flags valid there.
-
-    `[('library scan', [...]), ('library list', [...]), …]` — flat, which is the
-    shape all three shells want.
-    """
-    out_paths: list[tuple[str, list]] = []
-
-    def walk(cmds: list, prefix: str) -> None:
-        """Collect one level, then recurse."""
-        for c in cmds:
-            path = f"{prefix} {c.name}".strip()
-            out_paths.append((path, list(c.flags) + GLOBAL_FLAGS))
-            walk(c.children, path)
-
-    walk(tree, '')
-    return out_paths
-
-
 def completion(shell: str, tree: list) -> str:
     """A completion script for bash, zsh or fish, generated from the tree."""
-    paths = _paths(tree)
     tops = [c.name for c in tree]
 
     if shell == 'fish':

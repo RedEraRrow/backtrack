@@ -427,7 +427,6 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
     duration_str = ui_utils.format_time(int(duration))
     timer_text = f" {elapsed_str.rjust(5)} / {duration_str.ljust(5)} "
 
-    global _last_art_width, _last_art_left
     global _last_prog_row, _last_prog_col, _last_prog_w
 
     if _last_art_width and _last_art_width > 0:
@@ -642,7 +641,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     # terminal draws them from a fallback whose advance width this process
     # cannot know, and over-estimating is the direction that fails safely.
     pp_icon = '⏵' if np['paused'] else '⏸'
-    icon = f"{pp_icon}  ⏭  "                  # NP_TITLE_OFFSET columns wide               # 2+2+1+2+2+2 = NP_TITLE_OFFSET cols
+    icon = f"{pp_icon}  ⏭  "                  # the glyphs at ui_utils.NP_GLYPH_COLS
     # Just the elapsed/total time; volume + queue position live elsewhere (the
     # player view, and the queue pane inside it).
     right = f"{_np_fmt_time(np['elapsed'])} / {_np_fmt_time(np['duration'])}"
@@ -937,7 +936,6 @@ def _queue_should_show_artist(meta: list[dict]) -> bool:
         ) or _queue_is_compilation_without_album_artist(meta)
 
     artists = [item['artist'] for item in meta if item.get('artist')]
-    album_artists = [item['album_artist'] for item in meta if item.get('album_artist')]
     if len(set(artists)) > 1:
         return True
     for item in meta:
@@ -1081,7 +1079,6 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
     pp_icon = "⏵" if is_paused else "⏸"
     transport_icons = ["⏮ ", pp_icon, "⏭"]
     controls = "  ".join(transport_icons)
-    global _last_art_width, _last_art_left
 
     if width:
         art_left = _last_art_left or 0

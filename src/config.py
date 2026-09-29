@@ -4,11 +4,6 @@ import os
 from pathlib import Path
 
 DEFAULT_CONFIG = {
-    "theme": {
-        "primary": "\033[1;37m",
-        "accent": "\033[1;31m",
-        "success": "\033[1;32m",
-    },
     # Diagnostics for working on the library itself, not for listening: the
     # player names the files a track's lyrics came from, and anything added later
     # that answers "why is it doing that" rather than "what is playing".
@@ -157,11 +152,8 @@ def set_music_dirs(config: dict, dirs: list[str]) -> list[str]:
 
     Mirrors the first entry into the legacy `music_directory` key.
     """
-    config["music_directories"] = []
-    config["music_directory"] = ""
     config["music_directories"] = music_dirs({"music_directories": dirs})
-    if config["music_directories"]:
-        config["music_directory"] = config["music_directories"][0]
+    config["music_directory"] = config["music_directories"][0] if config["music_directories"] else ""
     return config["music_directories"]
 
 def update_config(changes: dict) -> dict:

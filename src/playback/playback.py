@@ -15,18 +15,7 @@ from src.utils import ui_utils
 from src.art.album_art import get_art_from_mp3
 from src.lyrics import lyric_pane
 from src.lyrics.lyrics import (
-    _parse_sylt,
-    _parse_uslt,
-    build_uslt_line_times,
-    draw_lyric_initial,
-    draw_lyric_window,
-    draw_uslt_window,
-    draw_dialogue_window,
-    estimate_sylt_last_line_end,
-    expand_uslt_lines,
-    find_current_uslt_line,
-    find_uslt_handoff_index,
-    DialoguePlaybackState,
+    _parse_sylt, _parse_uslt, build_uslt_line_times, DialoguePlaybackState,
 )
 from src.playback.playback_ui import (
     _controls_line,
@@ -90,7 +79,7 @@ def _show_load_error(file_path: str) -> None:
             time.sleep(_KEY_POLL_INTERVAL_S)
 
 
-def music_player(file_path: str, is_grouping: bool = False, preloaded_data: dict | None = None,
+def music_player(file_path: str, is_grouping: bool = False,
                  queue_titles: list[str] | None = None, queue_index: int = 0,
                  queue_paths: list[str] | None = None, mode: str | None = None) -> dict:
     """Start the shared session on ``file_path`` (with its queue) and open the
@@ -323,43 +312,26 @@ def _player_view_loop() -> dict:
     uslt_lines: list[str] = []
     line_times: list = []
     is_uslt = False
-    has_uslt = False
     has_credits = False
     has_lyrics = False
     dialogue_state = None
-    sylt_handoff_end_s: float | None = None
-    uslt_handoff_idx = 0
 
     # --- view / loop state ---
-    manual_line_index = None
-    arrow_key_time = None
-    uslt_time_offset = 0.0
     toast_text = ""
     toast_expiry = 0.0
     last_size = ui_utils.get_terminal_size()
-    last_lyric_idx = -1
     resize_pending = False
     resize_timer = 0.0
-    in_uslt_tail = False
     prog_row = ctrl_row = lyric_row = art_bottom_row = 0
     pane = None
     current_width = last_size[0]
-    # The USLT timeline currently on screen: the whole track normally, or just
-    # the post-SYLT tail once we hand off.  `_redraw_full` re-wraps from these,
-    # so a resize during the tail can't drop us back onto the full-track lines.
-    view_lines: list = []
-    view_times: list = []
-    exp_lines: list = []
-    exp_times: list = []
     last_q_sig: tuple | None = None
 
     def _prepare() -> None:
         """(Re)load per-track render state from the session for the current track."""
         nonlocal audio, duration, pre_art, sylt_data, uslt_lines, line_times
-        nonlocal is_uslt, has_uslt, has_credits, has_lyrics, dialogue_state
-        nonlocal sylt_handoff_end_s, uslt_handoff_idx, in_uslt_tail, uslt_time_offset
-        nonlocal toast_text, toast_expiry, view_lines, view_times
-        nonlocal pane
+        nonlocal is_uslt, has_credits, has_lyrics, dialogue_state
+        nonlocal toast_text, toast_expiry, pane
         fp = SESSION.file_path or ""
         audio = SESSION.audio
         duration = SESSION.duration
@@ -373,21 +345,12 @@ def _player_view_loop() -> dict:
         uslt_lines_raw = _parse_uslt(audio) if audio else []
         uslt_lines = [line for line, _ in uslt_lines_raw]
         is_uslt = False
-        has_uslt = bool(uslt_lines)
-        sylt_handoff_end_s = None
-        uslt_handoff_idx = 0
         line_times = []
         if not sylt_data and uslt_lines_raw:
             is_uslt = True
             sylt_data = uslt_lines_raw
             line_times = build_uslt_line_times(uslt_lines, duration)
-        has_lyrics = bool(sylt_data) or has_uslt or dialogue_state.is_active()
-        in_uslt_tail = False
-        view_lines, view_times = uslt_lines, line_times
-        uslt_time_offset = 0.0
-        if sylt_data and not is_uslt and has_uslt:
-            sylt_handoff_end_s = estimate_sylt_last_line_end(sylt_data, duration * 1000)
-            uslt_handoff_idx = find_uslt_handoff_index(uslt_lines, sylt_data[-1][0])
+        has_lyrics = bool(sylt_data) or bool(uslt_lines) or dialogue_state.is_active()
 
         # One timeline, whichever source this track has. Richest first: a dialogue
         # transcript knows speakers and directions, SYLT knows real timings, USLT
@@ -427,19 +390,12 @@ def _player_view_loop() -> dict:
     def _redraw_full() -> None:
         """Full-screen redraw for the current track + view state; sets row positions."""
         nonlocal prog_row, ctrl_row, lyric_row, current_width, art_bottom_row
-        nonlocal last_lyric_idx, exp_lines, exp_times
         vol = SESSION.get_volume()
         prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
             SESSION.file_path or "", audio, pre_art, last_size,
             is_paused=SESSION.is_paused(), volume=vol,
             toast=toast_text if time.time() < toast_expiry else "",
         )
-        last_lyric_idx = -1
-        if is_uslt or in_uslt_tail:
-            _wrap_w = max(20, current_width - 8)
-            exp_lines, exp_times = expand_uslt_lines(view_lines, view_times, _wrap_w)
-        else:
-            exp_lines, exp_times = [], []
 
         if pane and _ui_state['show_lyrics'] and not _ui_state.get('show_queue'):
             # A full redraw has just wiped the screen, so what the pane last
@@ -462,7 +418,7 @@ def _player_view_loop() -> dict:
         """Redraw just the transport/status line in place (see #86)."""
         active_toast = toast_text if time.time() < toast_expiry else ""
         status_ln, _ = _controls_line(
-            is_uslt or in_uslt_tail, SESSION.is_paused(), SESSION.get_volume(), active_toast,
+            is_uslt, SESSION.is_paused(), SESSION.get_volume(), active_toast,
             has_lyrics=has_lyrics, has_credits=has_credits)
         sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}")
         sys.stdout.flush()
@@ -601,7 +557,6 @@ def _player_view_loop() -> dict:
                     SESSION.pause_toggle()
                     time.sleep(_KEY_POLL_INTERVAL_S)
                     update_ctrl_ui()
-                    last_lyric_idx = -1
                 elif arrow == 'C':
                     SESSION.seek(5)
                     toast_text = 'Seek Forward +5s'; toast_expiry = time.time() + tune.TOAST_SHORT_S

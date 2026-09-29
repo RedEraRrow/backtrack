@@ -36,7 +36,6 @@ _AUDIO_EXTS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac', '.flac', '.ogg', '.opus',
 # Grandparent folder names that mark a Various-Artists compilation.
 _VARIOUS = {'various artists', 'various', 'va', 'v.a.', 'v/a',
             'compilation', 'compilations'}
-VARIOUS_ARTISTS = 'Various Artists'
 
 # Folder names denoting a disc/series level, optionally followed by a subtitle
 # ("Disc 2 - The Remixes", "Series 1 - Origins"). Group 1 = keyword, 2 = number,

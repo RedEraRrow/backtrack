@@ -71,10 +71,6 @@ class ParsedDateTime(NamedTuple):
         """True if the input parsed."""
         return not self.error
 
-    def iso(self) -> str:
-        """Render back at the precision that was given ('2008', '2008-07-02 18:30:00')."""
-        return format_datetime(self)
-
 
 def parse_time(raw) -> Optional[str]:
     """Normalise ``HH``/``HH:MM``/``HH:MM:SS`` to ``'HH:MM:SS'``; None if unreadable.

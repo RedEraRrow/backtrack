@@ -45,7 +45,6 @@ from src.utils.prompt import (
     confirm as _confirm,
 )
 from src.utils import prompt as _promptmod
-from src.utils.prompt_core import add_hint_click_cells_auto
 from src.lyrics.lyrics_editor import (
     _EDIT_ORDER, _EDIT_MAXLEN, _EDIT_LIM, _EDIT_START, _EDIT_END,
     _ts_parts, _field_value, _field_str, _render_edit_fields, _fmt,

@@ -8,7 +8,6 @@ import time as _time
 from typing import Any
 import re
 import unicodedata
-from collections import OrderedDict
 
 from src.state import NAV_STACK
 
@@ -83,7 +82,6 @@ MARGIN_V = 1   # rows reserved on each vertical side (top and bottom)
 # and stepping backwards from it is a rarer thing to want than the space a third
 # control costs. ^B still works, and is still advertised in the hint bar.
 NP_GLYPH_COLS = ((0, 2), (4, 2))
-NP_TITLE_OFFSET = 8            # where the title starts, just past the glyphs
 
 class Colors:
     PRIMARY = "\033[1;37m" # Bold white
@@ -364,7 +362,7 @@ def show_loading(message: str) -> None:
 
 def get_status_line() -> str:
     """Return the current status bar content (breadcrumb + tasks + toast)."""
-    global _toast_message, _toast_expiry
+    global _toast_message
     cols = get_terminal_width()
 
     if cols <= 0:
@@ -402,8 +400,7 @@ def get_status_line() -> str:
 def get_terminal_size(default: tuple = (80, 24)) -> tuple:
     """Terminal (columns, rows), falling back to `default` if the query fails.
 
-    Memoised — see `_size_cache`. Call `invalidate_terminal_size()` if something
-    other than a resize could have changed it.
+    Memoised — see `_size_cache`; a resize (SIGWINCH) clears it.
     """
     global _size_cache, _size_cache_at
     if _size_cache is not None:
@@ -418,10 +415,6 @@ def get_terminal_size(default: tuple = (80, 24)) -> tuple:
     return _size_cache
 
 
-def invalidate_terminal_size() -> None:
-    """Drop the memoised terminal size (next query re-reads it)."""
-    global _size_cache
-    _size_cache = None
 
 def get_terminal_width(default: int = 80) -> int:
     """Terminal width in columns."""
@@ -706,11 +699,6 @@ def _get_breadcrumb_str(width: int) -> str:
     # of one. truncate_text handles a width too small for the ellipsis itself.
     return truncate_text(NAV_STACK[-1], max_length)
 
-def roman(num):
-    """Convert an integer to a Roman numeral (see `utils.numbering`, which
-    owns the conversion shared with the pattern tools)."""
-    from src.utils.numbering import roman as _roman
-    return _roman(num)
 
 
 def get_progress_bar(progress: float, width: int = 40) -> str:

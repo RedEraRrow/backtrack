@@ -7,7 +7,6 @@ other in every way a title can. No test here touches the network.
 """
 import os
 import unittest
-from datetime import datetime, timezone
 
 from src import feed as fd
 

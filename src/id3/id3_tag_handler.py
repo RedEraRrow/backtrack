@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 from mutagen.id3 import ID3
-from mutagen.id3._frames import SYLT, USLT, TMCL, TIPL, TXXX, WXXX, COMM  # type: ignore[reportPrivateImportUsage]
+from mutagen.id3._frames import USLT, TXXX, WXXX, COMM  # type: ignore[reportPrivateImportUsage]
 from mutagen.id3._frames import APIC, EQU2, RVA2, POPM, PCNT, RBUF
 from mutagen.id3._frames import Frame  # type: ignore[reportPrivateImportUsage]
 
@@ -1095,42 +1095,6 @@ def summarize_tag_value(tag_id: str, raw_frame, display: bool = False) -> str:
 
     return str(raw_frame)[:100]
 
-
-def collect_tag_data(paths: list[str]) -> tuple[dict, dict, dict]:
-    """Scan files and tally tag presence counts, unique value summaries, and people-tag names."""
-    tag_counts = {}
-    tag_values = {}
-    people_tags = {}
-
-    for path in paths:
-        try:
-            audio = ID3(path)
-            for tag_id in audio.keys():
-                tag_counts[tag_id] = tag_counts.get(tag_id, 0) + 1
-
-                frame = audio[tag_id]
-                info = get_tag_info(tag_id)
-
-                if info and info.ui_category == 'people':
-                    people = getattr(frame, 'people', [])
-                    if people:
-                        if tag_id not in people_tags:
-                            people_tags[tag_id] = set()
-                        people_tags[tag_id].update(people)
-                else:
-                    if tag_id not in tag_values:
-                        tag_values[tag_id] = []
-
-                    val = summarize_tag_value(tag_id, frame)
-                    if val not in tag_values[tag_id]:
-                        tag_values[tag_id].append(val)
-        except (mutagen.id3.ID3NoHeaderError, OSError, IOError):  # type: ignore[reportPrivateImportUsage]
-            # skip unreadable files
-            pass
-
-    people_tags_list = {k: list(v) for k, v in people_tags.items()}
-
-    return tag_counts, tag_values, people_tags_list
 
 
 def apply_bulk_edit(

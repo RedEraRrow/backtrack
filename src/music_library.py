@@ -11,10 +11,8 @@ from typing import Any
 
 import mutagen
 from mutagen.id3 import ID3
-from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
 
-from src.history import get_recent_paths
 
 
 VALID_AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac')
@@ -979,10 +977,6 @@ def valid_levels(levels) -> list:
             out.append([lv[0], lv[1]])
     return out
 
-
-def describe_levels(levels: list) -> str:
-    """One-line summary of a chain, e.g. "Album ↑, Album year ↑, Disc ↑"."""
-    return ", ".join(f"{SORT_FIELDS[f][0]} {'↑' if d == 'asc' else '↓'}" for f, d in levels)
 
 
 def sort_text(value, opts: dict | None = None) -> str:

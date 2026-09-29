@@ -4,10 +4,8 @@ import bisect
 import json
 import re
 import textwrap
-import sys
 from pathlib import Path
 
-from src.utils import prompt_core as _pc
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
 # The MD script is overlaid onto the timed transcript by the same alignment the
@@ -117,54 +115,6 @@ _expand_cache: dict = {}
 _EXPAND_CACHE_MAX = 10
 
 
-def expand_uslt_lines(
-    lines: list[str],
-    line_times: list[tuple],
-    wrap_w: int,
-    max_lines_per_chunk: int = 6,
-) -> tuple[list[str], list[tuple]]:
-    """Split any USLT line that wraps past max_lines_per_chunk into shorter chunks,
-    dividing its time window across the chunks proportionally by word count.
-
-    Cached by the *content* of `lines` and `line_times`, never by `id(lines)`:
-    the caller builds a fresh list per track (and another for the SYLT hand-off
-    tail), and CPython readily hands a new list the id of a freed one — which
-    served up the previous track's lyrics on the previous track's timings.  The
-    times are part of the key because the tail reuses the same line text on
-    shifted windows."""
-    cache_key = (wrap_w, max_lines_per_chunk, len(lines),
-                 hash(tuple(lines)), hash(tuple(line_times)))
-    if cache_key in _expand_cache:
-        return _expand_cache[cache_key]
-
-    exp_lines: list[str] = []
-    exp_times: list[tuple] = []
-
-    for text, (t_start, t_end) in zip(lines, line_times):
-        if len(textwrap.wrap(text, width=wrap_w)) <= max_lines_per_chunk:
-            exp_lines.append(text)
-            exp_times.append((t_start, t_end))
-            continue
-
-        chunks = _sentence_split(text, wrap_w, max_lines_per_chunk)
-        word_counts = [max(1, len(c.split())) for c in chunks]
-        total_words = sum(word_counts)
-        duration = t_end - t_start
-        t = t_start
-
-        for chunk, wc in zip(chunks, word_counts):
-            chunk_dur = duration * (wc / total_words)
-            exp_lines.append(chunk)
-            exp_times.append((t, t + chunk_dur))
-            t += chunk_dur
-
-    if len(_expand_cache) >= _EXPAND_CACHE_MAX:
-        oldest_key = next(iter(_expand_cache))
-        del _expand_cache[oldest_key]
-
-    _expand_cache[cache_key] = (exp_lines, exp_times)
-    return exp_lines, exp_times
-
 
 # A clear leading "Speaker: " label (capitalised single token) — NOT a mid-line
 # colon like "9:00" or "waiting: for you", which must not be stripped.
@@ -259,12 +209,6 @@ def build_uslt_line_times(lines: list, track_duration: float) -> list[tuple[floa
         t += duration
 
     return times
-
-
-# USLT lines and dialogue chunks are both sorted runs of (start, end) windows, so
-# they ask `lyrics_text.find_current_line` the same question. The two names are
-# kept because the call sites read better for saying which stream they mean.
-find_current_uslt_line = _lt.find_current_line
 
 
 def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
@@ -596,7 +540,7 @@ def expand_dialogue_into_sentences(
     # Pre-pass: evenly divide consecutive is_stage chunks within their gap.
     # All stage directions in a group are given the same (gap_start, next_word_start)
     # window because total_elapsed isn't advanced for them. Fix that here so
-    # find_current_dialogue_line can step through each one in sequence.
+    # the lyric pane can step through each one in sequence.
     i = 0
     while i < len(expanded_chunks):
         if not expanded_chunks[i].get('is_stage'):
@@ -636,319 +580,11 @@ def expand_dialogue_into_sentences(
     return final_chunks, final_times
 
 
-def draw_dialogue_window(
-    row: int,
-    dialogue_lines: list[dict],
-    current_idx: int,
-    width: int,
-    max_row: int,
-    col: int = 1,
-    bottom_row: int | None = None,
-    line_times: list[tuple[float, float]] | None = None,
-) -> None:
-    """Renders the three-line context window (prev, current, next) with non-current lines dimmed."""
-    # These rows are painted outside any frame — drop the painter's record of
-    # them so the next full redraw repaints rather than trusting stale content.
-    _pc.screen_forget_rows(row, max_row or row)
 
-    if not dialogue_lines or not (0 <= current_idx < len(dialogue_lines)):
-        return
-
-    padded_width = width - 2
-    speaker_width = max(12, min(padded_width // 3, 26))
-    text_width = max(20, padded_width - speaker_width - 5)
-    clear_limit = bottom_row if bottom_row is not None else max_row
-
-    # Clear the entire dialogue area
-    for i in range(row, clear_limit + 1):
-        sys.stdout.write(f"\033[{i};{col}H\033[K")
-
-    out_row = row
-    rule_w = ui_utils.get_terminal_width() - col + 1
-    sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{'─' * rule_w}{C.RESET}")
-    out_row += 2
-
-    # Build window with global indices: (dl_idx, chunk, is_active)
-    window_items: list[tuple[int, dict, bool]] = []
-    if current_idx - 1 >= 0:
-        window_items.append((current_idx - 1, dialogue_lines[current_idx - 1], False))
-    window_items.append((current_idx, dialogue_lines[current_idx], True))
-    if current_idx + 1 < len(dialogue_lines):
-        window_items.append((current_idx + 1, dialogue_lines[current_idx + 1], False))
-
-    current_speaker = dialogue_lines[current_idx].get('speaker', '').strip()
-
-    for win_pos, (dl_idx, chunk, is_active) in enumerate(window_items):
-        speaker   = chunk.get('speaker', '').strip()
-        stage_dir = chunk.get('stage_dir', '').strip()
-        text      = chunk.get('text', '').strip()
-        is_stage  = chunk.get('is_stage', False)
-        is_air    = chunk.get('is_air', False)
-        cues      = [c for c in chunk.get('cues', []) if c and c.strip()]
-        pre_cues  = [c for c in chunk.get('pre', []) if c and c.strip()]
-
-        # Only fired for gaps that weren't covered by an is_air chunk (edge
-        # cases). Suppressed when either neighbour is already an air/stage chunk.
-        show_air = False
-        if win_pos > 0 and line_times and not is_air and not is_stage:
-            prev_chunk = window_items[win_pos - 1][1]
-            if not prev_chunk.get('is_air') and not prev_chunk.get('is_stage'):
-                prev_dl_idx = window_items[win_pos - 1][0]
-                if prev_dl_idx < len(line_times) and dl_idx < len(line_times):
-                    air = line_times[dl_idx][0] - line_times[prev_dl_idx][1]
-                    show_air = air > _AIR_THRESHOLD
-
-        left_lines: list[str] = []
-        right_lines: list[str] = []
-
-        # The row's own colour.  Every markdown span inside the row restores it, so
-        # an emphasised word never strips the rest of the line of its styling —
-        # the same contract the editor's `_compose` uses.
-        base = "" if is_active else C.DIM
-
-        if is_air:
-            right_lines = [""]
-        elif is_stage:
-            # All stage directions read the same way wherever they came from:
-            # bracketed and italic, in the text column, never labelled with a
-            # speaker.  The brackets are what mark it as a direction rather than
-            # something anybody says out loud.
-            right_lines = _dir_rows(stage_dir or text, text_width, base, is_active) or [""]
-        else:
-            if is_active:
-                show_speaker = bool(speaker)
-            else:
-                show_speaker = bool(speaker) and (speaker != current_speaker)
-
-            if show_speaker:
-                raw_spk = _strip_markdown(speaker)
-                wrapped_spk = textwrap.wrap(raw_spk, width=speaker_width)
-                spk_c = C.BOLD if is_active else C.DIM
-                left_lines.extend(f"{spk_c}{s}{C.RESET}" for s in wrapped_spk)
-                if stage_dir:
-                    # The line's own aside (from the MD banner, or a direction with
-                    # no silence to occupy) sits under the name, as on the editor's
-                    # speaker banner.
-                    left_lines.extend(
-                        f"{C.DIM}{C.ITALIC}{s}{C.RESET}"
-                        for s in textwrap.wrap(f"({stage_dir})", width=speaker_width))
-
-            if text:
-                right_lines = _md_rows(text, text_width, base=base, active=is_active) or [""]
-
-        # A direction that INTRODUCES the line goes above it: the bing bong sounds
-        # before the announcement, the door opens before the person speaks. Reading
-        # it underneath puts the effect after its cause.
-        if pre_cues:
-            lead = []
-            for cue in pre_cues:
-                lead.extend(_dir_rows(cue, text_width, base, is_active))
-            right_lines = lead + right_lines
-
-        # Directions about the words — a mid-line beat with no silence of its own,
-        # or a standalone event happening over the line — sit under the line in the
-        # TEXT column, bracketed and italic, the way the editor floats a cue.  They
-        # are deliberately NOT put in the speaker column: that is reserved for the
-        # MD banner's aside, which is the only direction that really does describe
-        # the whole line.
-        for cue in cues:
-            right_lines.extend(_dir_rows(cue, text_width, base, is_active))
-
-        max_rows = max(len(left_lines), len(right_lines)) if (left_lines or right_lines) else 1
-        air_rows = 2 if show_air else 0  # blank row + indicator row
-
-        if out_row + air_rows + max_rows + 2 > clear_limit:
-            if show_air and out_row + max_rows + 2 <= clear_limit:
-                show_air = False
-                air_rows = 0
-            else:
-                break
-
-        if show_air:
-            out_row += 1
-            sys.stdout.write(f"\033[{out_row};{col + speaker_width + 3}H{C.DIM}⋯{C.RESET}")
-            out_row += 1
-
-        for i in range(max_rows):
-            if i < len(left_lines):
-                clean_len = ui_utils.visual_len(left_lines[i])
-                left_cell = f"{left_lines[i]}{' ' * (speaker_width - clean_len)}"
-            else:
-                left_cell = " " * speaker_width
-
-            right_cell = right_lines[i] if i < len(right_lines) else ""
-
-            if is_air:
-                pass
-            elif right_cell:
-                sys.stdout.write(f"\033[{out_row};{col + 1}H{left_cell} {C.DIM}│{C.RESET} {right_cell}")
-            else:
-                sys.stdout.write(f"\033[{out_row};{col + 1}H{left_cell} {C.DIM}│{C.RESET}")
-            out_row += 1
-
-        out_row += 2
-
-    sys.stdout.flush()
-
-
-find_current_dialogue_line = _lt.find_current_line
 
 
 _strip_markdown = _lt.strip_markdown
 
-
-def draw_lyric_window(row: int, sylt_data: list, current_idx: int,
-                      width: int | None = None, max_row: int | None = None,
-                      col: int = 1, bottom_row: int | None = None) -> None:
-    """Render the SYLT lyric window (dimmed prev/next line, bold wrapped current line), clearing the area first."""
-    # These rows are painted outside any frame — drop the painter's record of
-    # them so the next full redraw repaints rather than trusting stale content.
-    _pc.screen_forget_rows(row, max_row or row)
-
-    width = width or ui_utils.get_terminal_width()
-    _, term_rows = ui_utils.get_terminal_size()
-    max_row = max_row or term_rows
-    budget = max(4, max_row - row - 1)
-    wrap_w = max(20, width - 10)
-
-    p_raw = sylt_data[current_idx - 1][0] if current_idx > 0 else ""
-    c_raw = sylt_data[current_idx][0] if 0 <= current_idx < len(sylt_data) else ""
-    n_raw = sylt_data[current_idx + 1][0] if 0 <= current_idx < len(sylt_data) - 1 else ""
-
-    # Wrapping measures PRINTED width, so the emphasis escapes can't eat the
-    # budget and wrap the line early (see `_md_rows`).
-    p_wrapped = _md_rows(p_raw, wrap_w - 1, base=C.DIM)
-    p_line = p_wrapped[-1] if p_wrapped else ""
-
-    n_wrapped = _md_rows(n_raw, wrap_w - 1, base=C.DIM)
-    n_line = n_wrapped[0] if n_wrapped else ""
-
-    c_wrapped = _md_rows(c_raw, wrap_w - 4, base=C.BOLD,
-                         active=True)[:max(1, budget - 4)]
-
-    clear_end = bottom_row if bottom_row is not None else (row + budget)
-    for i in range(row, clear_end + 1):
-        sys.stdout.write(f"\033[{i};{col}H\033[K")
-
-    out_row = row
-    rule = "─" * (ui_utils.get_terminal_width() - col + 1)
-    sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
-    out_row += 2
-
-    if p_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {C.RESET}{p_line}")
-    out_row += 2
-
-    for i, seg in enumerate(c_wrapped or [""]):
-        pfx = "▶ " if i == 0 else "  "
-        if seg: sys.stdout.write(f"\033[{out_row};{col + 1}H  {C.BOLD}{pfx}{C.RESET}{seg}")
-        out_row += 1
-
-    out_row += 1
-    if n_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {C.RESET}{n_line}")
-    sys.stdout.flush()
-
-
-def draw_uslt_window(row: int, all_lines: list, line_times: list,
-                     elapsed: float, width: int | None = None,
-                     manual_idx: int | None = None,
-                     max_row: int | None = None,
-                     col: int = 1, bottom_row: int | None = None) -> None:
-    """Render the USLT lyric window (dimmed prev/next line, wrapped current line),
-    honoring a manual scroll override via manual_idx over the elapsed-time index."""
-    # These rows are painted outside any frame — drop the painter's record of
-    # them so the next full redraw repaints rather than trusting stale content.
-    _pc.screen_forget_rows(row, max_row or row)
-
-    width = width or ui_utils.get_terminal_width()
-    wrap_w = max(20, width - 10)
-    _, term_rows = ui_utils.get_terminal_size()
-    max_row = max_row or term_rows
-
-    auto_idx = find_current_uslt_line(line_times, elapsed)
-    display_idx = manual_idx if manual_idx is not None else auto_idx
-
-    prev_text = all_lines[display_idx - 1] if display_idx > 0 else ""
-    curr_text = all_lines[display_idx] if 0 <= display_idx < len(all_lines) else ""
-    next_text = all_lines[display_idx + 1] if display_idx < len(all_lines) - 1 else ""
-
-    budget = max(3, max_row - row - 1)
-
-    scroll_hint = f" {C.DIM}↕ scroll{C.RESET}"
-    hl = C.GREEN if manual_idx is not None else C.ACCENT
-    pfx = "● " if manual_idx is not None else "▶ "
-
-    # Wrapping measures PRINTED width, so the emphasis escapes can't eat the
-    # budget and wrap the line early (see `_md_rows`).
-    # The first row shares its line with the scroll hint, so it gets that much
-    # less room — otherwise a full-width line would push the hint off the edge.
-    hint_w = len('↕ scroll') + 1
-    curr_wrapped = (_md_rows(curr_text, wrap_w - 4, base=hl, active=True,
-                             first_width=wrap_w - 4 - hint_w) or [''])[:max(1, budget - 4)]
-
-    prev_wrapped = _md_rows(prev_text, wrap_w - 1, base=C.DIM)
-    prev_line = prev_wrapped[-1] if prev_wrapped else ""
-
-    next_wrapped = _md_rows(next_text, wrap_w - 1, base=C.DIM)
-    next_line = next_wrapped[0] if next_wrapped else ""
-
-    clear_end = bottom_row if bottom_row is not None else (row + budget)
-    for i in range(row, clear_end + 1):
-        sys.stdout.write(f"\033[{i};{col}H\033[K")
-
-    out_row = row
-    rule = "─" * (ui_utils.get_terminal_width() - col + 1)
-    sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
-    out_row += 2
-
-    if prev_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {C.RESET}{prev_line}")
-    out_row += 2
-
-    for i, seg in enumerate(curr_wrapped):
-        if i == 0:
-            sys.stdout.write(f"\033[{out_row};{col + 1}H  {hl}{pfx}{C.RESET}{seg}{scroll_hint}")
-        else:
-            sys.stdout.write(f"\033[{out_row};{col + 1}H    {seg}")
-        out_row += 1
-
-    out_row += 1
-    if next_line: sys.stdout.write(f"\033[{out_row};{col + 1}H{C.DIM}  {C.RESET}{next_line}")
-    sys.stdout.flush()
-
-
-def draw_lyric_initial(row: int, first_line: object, width: int | None = None,
-                       max_row: int | None = None, col: int = 1,
-                       bottom_row: int | None = None) -> None:
-    """Render a one-line preview of the first lyric before playback timing/highlighting begins."""
-    # These rows are painted outside any frame — drop the painter's record of
-    # them so the next full redraw repaints rather than trusting stale content.
-    _pc.screen_forget_rows(row, max_row or row)
-
-    width = width or ui_utils.get_terminal_width()
-    _, term_rows = ui_utils.get_terminal_size()
-    max_row = max_row or term_rows
-    wrap_w = max(20, width - 8)
-
-    clear_end = bottom_row if bottom_row is not None else (row + max_row)
-    for i in range(row, clear_end + 1):
-        sys.stdout.write(f"\033[{i};{col}H\033[K")
-
-    out_row = row
-    rule = "─" * (ui_utils.get_terminal_width() - col + 1)
-    sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}{rule}{C.RESET}")
-    out_row += 3
-
-    if first_line:
-        if isinstance(first_line, dict):
-            raw_str = first_line.get('text', '')
-        elif hasattr(first_line, 'text'):
-            raw_str = getattr(first_line, 'text')
-        else:
-            raw_str = str(first_line)
-
-        preview = _md_rows(raw_str, wrap_w - 4, base=C.DIM)
-        if preview:
-            sys.stdout.write(f"\033[{out_row};{col}H{C.DIM}  {C.RESET}{preview[0]}")
-    sys.stdout.flush()
 
 
 def _parse_sylt(audio) -> list[tuple[str, int]]:
@@ -1062,30 +698,6 @@ def _parse_uslt(audio) -> list[tuple[str, int]]:
     return [(line.strip(), 0) for line in text.split('\n') if line.strip()]
 
 
-def estimate_sylt_last_line_end(sylt_data: list[tuple[str, int]], duration_ms: float,
-                                words_per_second: float = tune.LYRIC_FALLBACK_WPS) -> float:
-    """Estimate when the last SYLT line finishes, from its word count and words_per_second, capped at the track duration."""
-    if not sylt_data: return 0.0
-    last_text, last_ts_ms = sylt_data[-1]
-    last_ts = last_ts_ms / 1000.0
-    word_count = max(1, len(last_text.split()))
-    estimated_end = last_ts + word_count / words_per_second
-    return min(estimated_end, duration_ms / 1000.0)
-
-
-def find_uslt_handoff_index(uslt_lines: list[str], last_sylt_text: str) -> int:
-    """Find the USLT index to resume display at after the last SYLT line, matching
-    exactly first then falling back to substring containment."""
-    _norm = _lt.norm_line
-    target = _norm(last_sylt_text)
-    for i, line in enumerate(uslt_lines):
-        if _norm(line) == target: return i + 1
-    for i, line in enumerate(uslt_lines):
-        n = _norm(line)
-        if target in n or n in target: return i + 1
-    # No match: resume past the end (show nothing) rather than replaying USLT from
-    # the top after SYLT has already covered the song.
-    return len(uslt_lines)
 
 def _find_markdown_for_audio(audio_path: str) -> str | None:
     """Tries (in order):
@@ -1484,7 +1096,7 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
     def _air_if_silent(next_start: float) -> None:
         """Blank the display through silence that nothing else claimed.
 
-        `find_current_dialogue_line` resolves a moment in a gap to the line that
+        The lyric pane resolves a moment in a gap to the line that
         comes NEXT, so without this the upcoming line sits on screen for the whole
         pause — up to several seconds before anyone says it.  A dead-air beat holds
         that space instead, drawn as nothing (the previous and next lines stay
@@ -1609,7 +1221,6 @@ class DialoguePlaybackState:
         word_timings = None
         self.expanded_chunks: list[dict] = []
         self.line_times: list[tuple[float, float]] = []
-        self.current_idx = 0
         self.load_error = None
         # Where the timing came from, so playback can say so rather than look
         # confident. 'transcript' is measured; 'estimated' is the script paced
@@ -1623,7 +1234,7 @@ class DialoguePlaybackState:
             self.load_error = f"No markdown dialogue file found near {audio_path}"
         if not json_path:
             if self.load_error:
-                self.load_error += f"; no timing file found"
+                self.load_error += "; no timing file found"
             else:
                 self.load_error = f"No timing file found near {audio_path}"
 
@@ -1713,7 +1324,3 @@ class DialoguePlaybackState:
         """True if any dialogue chunks were loaded."""
         return bool(self.expanded_chunks)
 
-    def update(self, elapsed: float) -> None:
-        """Advance current_idx to the chunk covering elapsed."""
-        if self.line_times:
-            self.current_idx = find_current_dialogue_line(self.line_times, elapsed)

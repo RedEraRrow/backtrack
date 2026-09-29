@@ -27,7 +27,7 @@ every bug traced back to one of the breaks.
 from __future__ import annotations
 
 import bisect
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from src import tuning as tune
 from src.utils import prompt_core as _pc

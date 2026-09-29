@@ -21,8 +21,6 @@ from src import tuning as tune
 # names this module has always published.
 _norm = _lt.norm
 _norm_words = _lt.norm_words
-_LINK_RE = _lt._LINK_RE
-_STAGE_RE = _lt._STAGE_RE
 _spoken_text = _lt.spoken_text
 _inline_stage_dirs = _lt.inline_stage_dirs
 

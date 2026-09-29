@@ -255,14 +255,6 @@ def rank_candidates(track_path: str, tokens: dict[str, str] | None,
     return scored
 
 
-def best_match(track_path: str, tokens: dict[str, str] | None,
-               images: list[str]) -> str | None:
-    """The single most likely cover for a track (≥ floor), or None."""
-    ranked = rank_candidates(track_path, tokens, images)
-    if ranked and ranked[0][0] >= MATCH_FLOOR:
-        return ranked[0][1]
-    return None
-
 
 # Front-cover-ish / non-front name hints, used to pick the album cover when
 # nothing pairs per-track (a lone shared cover to embed on every track).
@@ -528,10 +520,6 @@ def mime_for(image_path: str) -> str:
     """The MIME type for an image file's extension, defaulting to JPEG."""
     return _EXT_TO_MIME.get(os.path.splitext(image_path)[1].lower(), 'image/jpeg')
 
-
-def mp4_storable(mime: str) -> bool:
-    """MP4 ``covr`` atoms can only hold JPEG or PNG."""
-    return mime in ('image/jpeg', 'image/png')
 
 
 def read_image(image_path: str) -> tuple[bytes, str] | None:

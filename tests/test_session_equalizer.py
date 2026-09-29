@@ -41,7 +41,6 @@ class ApplyEqualizerRVA2Test(unittest.TestCase):
         self.assertTrue(session._apply_equalizer(mp, audio))
         self.assertAlmostEqual(mp.eq.get_preamp(), 2.0, places=1)
         # At least one band should have picked up the +6dB adjustment.
-        count = 0
         import vlc
         band_count = vlc.libvlc_audio_equalizer_get_band_count()
         self.assertTrue(any(mp.eq.get_amp_at_index(i) != 0.0 for i in range(band_count)))

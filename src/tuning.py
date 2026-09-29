@@ -64,9 +64,6 @@ KEY_POLL_INTERVAL_S = 0.05
 # still before the player sends the full-quality art image. Brief pauses mid-drag
 # stay on the preview: a full send in progress holds up the next redraw.
 ART_FULL_IMAGE_SETTLE_S = 0.5
-# After arrowing through lyrics by hand, how long before the display returns to
-# following the audio.
-MANUAL_LYRIC_REVERT_S = 4.0
 # Toast lifetimes: short for a value the user is scrubbing (volume, seek), longer
 # for something they need to read.
 TOAST_SHORT_S = 1.0

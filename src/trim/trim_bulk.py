@@ -42,7 +42,6 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-import numpy as np
 
 _vlc = None
 try:
@@ -265,9 +264,6 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
     if not sel:
         return
     apply_set = set(sel)
-    if not apply_set:
-        ui_utils.show_status("No tracks selected.")
-        return
 
     from src.utils.terminal_input import raw_mode, get_key_non_blocking, clear_escape_buffer
 
@@ -681,9 +677,6 @@ def apply_replaygain_op(paths: list, library: list, header) -> None:
     if not sel:
         return
     apply_set = set(sel)
-    if not apply_set:
-        ui_utils.show_status("No tracks selected.")
-        return
 
     count = errors = 0
     for path in mp3_paths:

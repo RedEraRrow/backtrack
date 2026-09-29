@@ -6,23 +6,9 @@ import mutagen.id3
 from mutagen.id3 import ID3
 from src.utils import prompt
 from src.id3.id3_tag_handler import (
-    collect_tag_data,
-    prompt_for_value,
-    apply_bulk_edit,
-    get_tag_info,
-    get_tag_category,
-    display_tag_id,
-    summarize_tag_value,
-    create_apic_frame,
-    create_frame,
-    rename_frame,
-    save_id3,
-    apply_bulk_operation_to_files,
-    _prompt_for_image_metadata,
-    _prompt_for_picture_type,
-    _PICTURE_TYPES,
-    pick_nearby_cover,
-    CLEAR_COVER,
+    prompt_for_value, get_tag_info, get_tag_category, display_tag_id, create_frame,
+    rename_frame, save_id3, _prompt_for_image_metadata, _prompt_for_picture_type,
+    _PICTURE_TYPES, pick_nearby_cover, CLEAR_COVER,
 )
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import filename_parser as fp
@@ -36,13 +22,12 @@ from src.music_library import format_value_list
 from src.utils import numbering
 from src.utils import ui_utils
 from src.utils.log import log
-from src.utils.ui_utils import get_terminal_width, Colors as C
+from src.utils.ui_utils import get_terminal_width
 from src.music_library import refresh_library_entry
 from src.trim import trim as _trim
 from src.trim.trim_bulk import trim_conveyor, apply_replaygain_op
 
 from collections import Counter
-import textwrap
 
 from mutagen.id3._frames import APIC
 
@@ -162,7 +147,6 @@ def _walk(steps: list) -> bool:
 _SORT_BASE = bo.sort_base()
 _num_pair = bo._num_pair
 _sort_value = bo._sort_value
-_augment_sort = bo.augment_sort
 _plan_write = bo.plan_write
 
 
@@ -1532,11 +1516,6 @@ _SORT_VALUE_COLUMNS = [
     prompt.Column(style='dynamic-dim', flex=True),                                # sort order
     prompt.Column(style='dynamic-dim', max_width=22, priority=2),                 # where it came from
     prompt.Column(style='dynamic-dim', align='right', max_width=9, priority=1),   # how many files
-]
-
-_SORT_PERSON_COLUMNS = [
-    prompt.Column(style='primary', flex=True, max_frac=0.45),
-    prompt.Column(style='dynamic-dim', flex=True),
 ]
 
 _SPLIT_COLUMNS = [

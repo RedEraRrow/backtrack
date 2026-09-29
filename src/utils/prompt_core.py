@@ -7,7 +7,7 @@ import math
 import textwrap
 import time
 import select as _sel
-from typing import Any, Callable, Literal, overload
+from typing import Any
 
 from src.utils import ui_utils
 from src.utils.log import log, enabled as _logging
@@ -357,16 +357,6 @@ def _wait_for_keypress(timeout: float = 0.05) -> bool:
             pass
     return sys.stdin in ready             # a wake alone is not a keypress
 
-
-def _clrline():
-    """Clear the current line and return the cursor to column 1."""
-    return "\033[2K\r"
-def _goto(row, col=1):
-    """Move the cursor to `row`, `col` (1-based)."""
-    return f"\033[{row};{col}H"
-def _col(n):
-    """Move the cursor to column `n` on the current row."""
-    return f"\033[{n}G"
 
 
 def _cols() -> int:
@@ -1112,107 +1102,12 @@ def separator(title: str = "") -> Choice:
     return Choice(title, value=None, disabled=True)
 
 
-def _split_columns(title: str, parse_fraction: bool = False) -> tuple[str, str, str, str]:
-    """Split a plain title into (label, type, value, fraction) columns, matching
-    the checkbox grammar:  LABEL [type] | value   n/total.
-    Type is only taken from an explicit [bracket], or a trailing word when a
-    `|` value divider is present — so plain titles keep their whole label.
-
-    parse_fraction is off by default: a trailing N/M (e.g. a track/disc/movement
-    value like 3/12) must stay in the value column, not be mistaken for a count."""
-    title = ui_utils.strip_ansi(title)
-    frac = ""
-    value = ""
-    if parse_fraction:
-        m = re.search(r"(\d+/\d+)\s*$", title)
-        if m:
-            frac = m.group(1)
-            title = title[:m.start()].rstrip()
-
-    had_pipe = bool(re.search(r"\s*\|\s*", title))
-    if had_pipe:
-        left, right = re.split(r"\s*\|\s*", title, maxsplit=1)
-        value = right.strip()
-        title = left.rstrip()
-
-    type_tag = ""
-    mb = re.search(r"\[([^\]]+)\]\s*$", title)
-    if mb:
-        type_tag = mb.group(1).strip()
-        title = title[:mb.start()].rstrip()
-    elif had_pipe:
-        mw = re.search(r"([A-Za-z\s\d]+)\s*$", title)
-        if mw:
-            type_tag = mw.group(1).strip()
-            title = title[:mw.start()].rstrip()
-
-    return title.rstrip(), type_tag, value, frac
-
 
 def _clip_ansi(s: str, width: int) -> str:
     """Truncate a string to `width` visible columns, preserving ANSI escape
     sequences (they don't count toward width). Guarantees the line never wraps."""
     return ui_utils.clip_ansi(s, width)
 
-
-def _render_select_columns(parsed: tuple[str, str, str, str], is_current: bool,
-                           label_w: int, type_w: int, cols: int) -> str:
-    """Render one select() row in column layout: pointer + LABEL (friendly name
-    greyed) + type (greyed) + single divider + value. Every column is truncated
-    to its budget so the row always fits `cols` (no wrapping). Mirrors bulk."""
-    label, type_tag, value, frac = parsed
-
-    head, tail = (lambda m: (m.group(1), m.group(2)) if m else (label, ""))(
-        re.match(r'^(\S+)\s+(\(.*\))$', label))
-
-    # Fit "TAG (friendly name)" into label_w, keeping the closing bracket.
-    if len(label) > label_w:
-        if tail and len(head) + 4 <= label_w:
-            inner = tail[1:-1]
-            budget = label_w - len(head) - 4          # " (" + "…" + ")"
-            tail = f"({inner[:max(0, budget)].rstrip()}…)"
-        else:
-            head = head[:max(1, label_w - 1)] + "…"
-            tail = ""
-    vis_label = f"{head} {tail}" if tail else head
-
-    head_s = f"{C.PRIMARY}{C.BOLD}{head}{C.RESET}" if is_current else head
-    label_s = f"{head_s} {C.DIM}{tail}{C.RESET}" if tail else head_s
-    label_pad = " " * max(0, label_w - len(vis_label))
-
-    if len(type_tag) > type_w:
-        type_tag = type_tag[:max(1, type_w - 1)] + "…"
-    type_s = f"{C.DIM}{type_tag}{C.RESET}" if type_tag else ""
-    type_pad = " " * max(0, type_w - len(type_tag)) if type_w else ""
-
-    pointer = f"{C.ACCENT}›{C.RESET}" if is_current else " "
-    avail = max(4, cols - (label_w + type_w + 10) - (len(frac) + 2 if frac else 0))
-    if value and len(value) > avail:
-        value = value[:max(1, avail - 1)] + "…"
-    if value:
-        sep = f"{C.DIM}|{C.RESET} "
-        value_s = f"{C.PRIMARY}{C.BOLD}{value}{C.RESET}" if is_current else value
-    else:
-        sep = ""
-        value_s = ""
-
-    row = f"  {pointer} {label_s}{label_pad}  {type_s}{type_pad}  {sep}{value_s}"
-    if frac:
-        row += f"  {C.DIM}{frac}{C.RESET}"
-    return row
-
-
-def _style_checkbox_label(label_text: str, is_current: bool, is_dimmed: bool) -> str:
-    """Style a checkbox label, greying a trailing parenthetical (e.g. a friendly
-    name) so it stays subordinate to the leading token: `TAG (friendly name)`.
-    Visible length is unchanged, so column alignment is preserved."""
-    m = re.match(r'^(\S+)\s+(\(.*\))$', label_text)
-    head, tail = (m.group(1), m.group(2)) if m else (label_text, "")
-
-    if is_dimmed:
-        return f"{C.DIM}{label_text}{C.RESET}"
-    head_str = f"{C.PRIMARY}{C.BOLD}{head}{C.RESET}" if is_current else head
-    return f"{head_str} {C.DIM}{tail}{C.RESET}" if tail else head_str
 
 
 def _norm(choices: list) -> list:
@@ -1444,14 +1339,6 @@ class _Widget:
         redraws from scratch next render."""
         self.row   = None
         self._full = True
-
-    def refresh(self) -> None:
-        """Repaint every row next render *without* clearing first.
-
-        For a stale-but-correctly-sized screen — regaining focus, a background
-        track change — where a clear would only add a visible blank flash.
-        """
-        screen_invalidate()
 
     def render(self, lines: list) -> None:
         """Paint `lines` from row 1, diffed against what is already on screen.
