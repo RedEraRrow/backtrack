@@ -3,7 +3,7 @@ left out rather than filed under "Unknown", and the saved menu order."""
 import unittest
 
 from src import music_library as ml
-from src import menus
+from src.menus import common as menus
 
 
 def t(path, **kw):

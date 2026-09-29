@@ -28,7 +28,7 @@ DEFAULT_CONFIG = {
     "library_sort_levels": {},
     # Friendly names for music directories (directory → name), shown in Browse.
     "library_names": {},
-    # Browse menu categories in order (menus.BROWSE_CATEGORIES keys); empty = default.
+    # Browse menu categories in order (menus.common.BROWSE_CATEGORIES keys); empty = default.
     "browse_menu": [],
     # Each non-album browse list's order (category → a _GROUP_SORTS mode), as last chosen with s.
     "group_sorts": {},
