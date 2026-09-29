@@ -22,7 +22,7 @@ from src.utils.prompt.chrome import (  # noqa: F401
     set_notification_opener, set_player_opener, set_transport_handler,
 )
 from src.utils.prompt.text import path, system_editor_edit, text  # noqa: F401
-from src.utils.prompt.lists import confirm, live_select, select  # noqa: F401
+from src.utils.prompt.lists import ListPlace, confirm, live_select, select  # noqa: F401
 from src.utils.prompt.list_edit import list_edit  # noqa: F401
 from src.utils.prompt.dates import calendar_select, datetime_edit  # noqa: F401
 from src.utils.prompt.values import fraction_edit, number_edit, rating_edit, time_edit  # noqa: F401

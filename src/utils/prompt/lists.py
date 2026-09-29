@@ -17,6 +17,19 @@ from src.utils.prompt.chrome import CHROME_HANDLED, CHROME_REDRAW, MOVE_DOWN_KEY
 from src.utils.prompt_core import C
 
 
+class ListPlace:
+    """Where a list that is rebuilt each time round was left: the highlighted
+    row's value, so a re-sort or an edit comes back to the same item, and its
+    position for when that item has gone. Pass the same one to every select()
+    of that list; reset() lands the next one on the first row."""
+    def __init__(self) -> None:
+        self.value: Any = None
+        self.pos = 0
+
+    def reset(self) -> None:
+        self.value, self.pos = None, 0
+
+
 @overload
 def select(message: str, choices: list, *,
            header: list | None | Callable[[], list[str]] = ...,
@@ -31,6 +44,7 @@ def select(message: str, choices: list, *,
            row_actions: dict[str, Callable[[Any], None]] | None = ...,
            row_action_hints: dict[str, str] | None = ...,
            allow_back: bool = ...,
+           place: ListPlace | None = ...,
            actions: list[tuple[str, str, str]] | None = ...,
            on_move: Callable[[Any, int], bool] | None = ...,
            ) -> Any: ...
@@ -50,6 +64,7 @@ def select(message: str, choices: list, *,
            row_actions: dict[str, Callable[[Any], None]] | None = ...,
            row_action_hints: dict[str, str] | None = ...,
            allow_back: bool = ...,
+           place: ListPlace | None = ...,
            ) -> list[Any] | None: ...
 
 
@@ -72,6 +87,7 @@ def select(message: str, choices: list, *,
            allow_back: bool = True,
            actions: list[tuple[str, str, str]] | None = None,
            on_move: Callable[[Any, int], bool] | None = None,
+           place: ListPlace | None = None,
            ) -> Any:
     """Arrow keys to navigate; Enter / → to confirm; ← / b / Esc → None; q quits the app.
 
@@ -85,6 +101,8 @@ def select(message: str, choices: list, *,
         header:     Optional lines rendered above the prompt.
         extra_hints: Extra key→action bindings merged into the hint bar.
         index:      Initial cursor position.
+        place:      A ListPlace to start from and record where the list was left
+                    (instead of index), for a list rebuilt each time round.
         shortcuts:  Optional key→return-value map (single-select only).
         columns:    Column layout descriptors (see Column dataclass).
         multi:      Enable multi-select mode (Space to toggle, Enter returns list).
@@ -148,6 +166,10 @@ def select(message: str, choices: list, *,
         """Closest selectable row to idx (used after page jumps / clamps)."""
         return min(selectable, key=lambda s: abs(s - idx))
 
+    if place is not None:
+        index = next((i for i, it in enumerate(items)
+                      if place.value is not None and not it.disabled and it.value == place.value),
+                     place.pos)
     cursor   = max(0, min(index, len(items) - 1))
     if items[cursor].disabled:
         cursor = _step(cursor, 1)
@@ -601,6 +623,8 @@ def select(message: str, choices: list, *,
             sys.stdout.write("\033[?1000l\033[?1006l")
         _restore_term_attrs(fd, old)
         w.clear()
+        if place is not None and items:
+            place.value, place.pos = items[cursor].value, cursor
 
     return result
 

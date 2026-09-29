@@ -7,7 +7,7 @@ from src.utils import prompt
 from src.utils.prompt import lists
 
 
-def _run(keys, choices, on_move, index=0):
+def _run(keys, choices, on_move=None, index=0, **kw):
     """Drive select() with a scripted key sequence, returning its result."""
     feed = iter(keys)
     with patch.object(lists, '_read_key', lambda fd: next(feed)), \
@@ -15,7 +15,7 @@ def _run(keys, choices, on_move, index=0):
          patch.object(lists, '_set_raw'), patch.object(lists, '_restore_term_attrs'), \
          patch.object(lists, '_get_term_attrs'), patch.object(lists, '_Widget'), \
          patch.object(lists.sys.stdin, 'fileno', lambda: 0):
-        return prompt.select("", choices=choices, on_move=on_move, index=index)
+        return prompt.select("", choices=choices, on_move=on_move, index=index, **kw)
 
 
 class SelectMoveTest(unittest.TestCase):
@@ -40,6 +40,16 @@ class SelectMoveTest(unittest.TestCase):
         res = _run([prompt.MOVE_UP_KEY, 'ENTER'], [prompt.Choice(title=x, value=x) for x in order],
                    lambda v, d: False, index=2)
         self.assertEqual(res, 'a')                      # refused: nothing moved
+
+    def test_a_place_comes_back_to_the_same_item_after_a_resort(self):
+        place = prompt.ListPlace()
+        _run(['DOWN', 's'], ['a', 'b', 'c'], shortcuts={'s': '__sort__'}, place=place)
+        self.assertEqual(place.value, 'b')
+        self.assertEqual(_run(['ENTER'], ['c', 'b', 'a'], place=place), 'b')
+        # The item has gone: the same position instead.
+        self.assertEqual(_run(['ENTER'], ['a', 'c'], place=place), 'c')
+        place.reset()
+        self.assertEqual(_run(['ENTER'], ['x', 'y'], place=place), 'x')
 
 
 if __name__ == "__main__":

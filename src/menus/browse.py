@@ -26,7 +26,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
     cat_choice, _field, _albums_level, _letters = BROWSE_CATEGORIES[cat]
 
     NAV_STACK.append(cat_choice)
-    _group_cursor  = None            # None → land on the first real row
+    _group_place = prompt.ListPlace()
     _letter_mode   = None            # None → decide dynamically on first render
     _letter_filter = None            # active letter, or None = show everything
 
@@ -119,9 +119,6 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                 _header = _menu_header(cat_choice,
                                        _sub(f"letter: {_letter_filter}" if _letter_filter else None))
 
-            if _group_cursor is None:
-                _group_cursor = 0
-
             def _edit_group(value) -> tuple:
                 """`e`: bulk-edit the highlighted artist/album/genre, or every
                 group under the highlighted letter."""
@@ -139,7 +136,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                 actions=_list_actions(_show_editor),
                 on_inspect=_edit_group if _show_editor else None,
                 inspect_key='e',
-                index=_group_cursor,
+                place=_group_place,
                 **_queue_shortcut_kwargs(library, group_paths=group_paths),
             )
 
@@ -151,19 +148,18 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     _restore_letter = _letter_filter
                     _letter_mode    = True
                     _letter_filter  = None
-                    _group_cursor   = (letters_found.index(_restore_letter)
-                                       if _restore_letter in letters_found else None)
+                    _group_place.reset()
+                    _group_place.value = _restore_letter
                     continue
                 break
 
             if isinstance(selection, tuple) and selection[0] == "__edited__":
-                _group_cursor = _idx_of(_choices, selection[1])
                 continue
 
             if selection == "__toggle__":
                 _letter_mode   = not _letter_mode
                 _letter_filter = None
-                _group_cursor  = None
+                _group_place.reset()
                 continue
 
             if selection == "__sort__":
@@ -195,13 +191,12 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
             if _letter_mode and selection in letters_found:
                 _letter_filter = selection    # drill into that letter's full list
                 _letter_mode   = False
-                _group_cursor  = None
+                _group_place.reset()
                 continue
 
-            _group_cursor = _idx_of(_choices, selection)
             NAV_STACK.append(selection)
             selected_songs = grouped[selection]
-            _album_cursor = None                 # None → land on the first real row
+            _album_place = prompt.ListPlace()
 
             while True:  # LEVEL 3: Album Selection
                 if _albums_level:
@@ -231,9 +226,6 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         _alb_choices.append(prompt.Choice(
                             title=_a, value=_a, cells=[_a, _aa]))
 
-                    if _album_cursor is None:
-                        _album_cursor = 0
-
                     album_paths = {name: [t['path'] for t in sort_tracks(albums[name], _cfg)]
                                    for name in album_list}
                     alb = prompt.select(
@@ -247,7 +239,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         on_inspect=((lambda a: _edit_paths(library, album_paths[a], a))
                                     if _show_editor else None),
                         inspect_key='e',
-                        index=_album_cursor,
+                        place=_album_place,
                         **_queue_shortcut_kwargs(library, group_paths=album_paths),
                     )
 
@@ -255,7 +247,6 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         break
 
                     if isinstance(alb, tuple) and alb[0] == "__edited__":
-                        _album_cursor = _idx_of(_alb_choices, alb[1])
                         continue
 
                     if alb == "__sort__":
@@ -273,13 +264,12 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         bulk_id3_manager(library, paths=[s['path'] for s in selected_songs])
                         continue
 
-                    _album_cursor = _idx_of(_alb_choices, alb)
                     NAV_STACK.append(alb)
                     track_paths = [s['path'] for s in albums[alb]]
                 else:
                     track_paths = [s['path'] for s in selected_songs]
 
-                _track_cursor = None   # None → land on the first real row
+                _track_place = prompt.ListPlace()
                 while True:  # LEVEL 4: Track Selection
                     # Re-derive from library each iteration so tag edits show immediately
                     path_set     = set(track_paths)
@@ -364,9 +354,6 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     _subtitle = _album_artist or (selection if _track_context != selection else cat_choice)
 
                     _all_track_choices = track_choices
-                    if _track_cursor is None:
-                        _track_cursor = 0
-
                     def _inspect_track(path: str) -> tuple:
                         """`e`: open the metadata editor (lyrics sync and trim
                         live inside it too) for the highlighted track, or
@@ -389,7 +376,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         shortcuts=_tsc,
                         extra_hints=_teh,
                         actions=_track_actions,
-                        index=_track_cursor,
+                        place=_track_place,
                         on_inspect=_inspect_track if _show_editor else None,
                         inspect_key='e',
                         **_queue_shortcut_kwargs(library,
@@ -401,7 +388,6 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         break
 
                     if isinstance(path_choice_obj, tuple) and path_choice_obj[0] == "__edited__":
-                        _track_cursor = _idx_of(_all_track_choices, path_choice_obj[1])
                         continue
 
                     if path_choice_obj == "__sort__":
@@ -418,8 +404,6 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     if path_choice_obj == "__bulk_edit__":
                         bulk_id3_manager(library, paths=[t['path'] for t in final_tracks])
                         continue
-
-                    _track_cursor = _idx_of(_all_track_choices, path_choice_obj)
 
                     # Disc header selected — play that disc directly.
                     # Bulk-editing the disc's tags is `e` on this row, same as
