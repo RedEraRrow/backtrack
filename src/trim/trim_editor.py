@@ -33,11 +33,11 @@ try:
 except ImportError:
     _HAS_VLC = False
 
-from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[reportPrivateImportUsage]
+from mutagen.id3 import ID3
 
 from src.config import load_config
 from src.trim import trim
-from src.music_library import drop_moved, track_title
+from src.music_library import drop_moved, track_title, first_text
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
 from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
@@ -295,20 +295,11 @@ def _progress_bar(width: int, track_length: float, marks: Marks, play_pos: float
 
 def _track_title_artist(path: str) -> tuple[str, str]:
     """(title, artist), falling back to the filename stem when untagged."""
-    title = artist = ""
     try:
         tags = ID3(path)
-        tit = tags.get('TIT2')
-        if tit is not None and getattr(tit, 'text', None):
-            title = str(tit.text[0])
-        art = tags.get('TPE1')
-        if art is not None and getattr(art, 'text', None):
-            artist = str(art.text[0])
-    except ID3NoHeaderError:
-        pass
-    except Exception:
-        pass
-    return title or track_title(path), artist
+    except Exception:                    # untagged, or unreadable: the file name
+        return track_title(path), ""
+    return first_text(tags.get('TIT2')) or track_title(path), first_text(tags.get('TPE1'))
 
 
 def _silence_markers(path: str, track_length: float) -> list[float]:

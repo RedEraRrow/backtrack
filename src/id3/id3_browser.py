@@ -23,7 +23,7 @@ from src.utils import ui_utils
 from src.utils.prompt_core import _visible_rows
 from src.utils.ui_utils import Colors as C, get_terminal_width
 from src.art.album_art import render_album_art
-from src.music_library import drop_moved, refresh_library_entry, track_title
+from src.music_library import drop_moved, refresh_library_entry, track_title, first_text
 
 from src.id3.id3_tag_handler import (
     get_tag_info,
@@ -949,10 +949,9 @@ def inspect_tag_loop(
             """Read a live tag value, falling back to cached library metadata (placeholders excluded)."""
             with quietly():
                 fr = audio.get(frame)
-                if fr is not None and getattr(fr, "text", None):
-                    val = str(fr.text[0]).strip()
-                    if val:
-                        return val
+                val = first_text(fr)
+                if val:
+                    return val
             val = str(meta.get(meta_key, "")).strip()
             return "" if val in _PLACEHOLDERS else val
 

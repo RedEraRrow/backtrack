@@ -1,4 +1,4 @@
-"""track_title: the one fallback chain for what a track is called on screen."""
+"""track_title and first_text: how a track and a tag value are read for showing."""
 import os
 import tempfile
 import unittest
@@ -6,7 +6,7 @@ import unittest
 from mutagen.id3 import ID3, TIT2
 
 from src.menus.play import _queue_titles_for_paths
-from src.music_library import track_title
+from src.music_library import first_text, track_title
 
 
 class TrackTitleTest(unittest.TestCase):
@@ -27,6 +27,12 @@ class TrackTitleTest(unittest.TestCase):
         lib = [{'path': '/m/a.mp3', 'title': ''}, {'path': '/m/b.mp3', 'title': 'Bee'}]
         self.assertEqual(_queue_titles_for_paths(['/m/a.mp3', '/m/b.mp3', '/m/c.m4a'], lib),
                          ['a', 'Bee', 'c'])
+
+
+    def test_first_text(self):
+        self.assertEqual(first_text(TIT2(encoding=3, text=['  One ', 'Two'])), 'One')
+        self.assertEqual(first_text(TIT2(encoding=3, text=[])), '')
+        self.assertEqual(first_text(None), '')
 
 
 if __name__ == "__main__":

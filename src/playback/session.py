@@ -29,7 +29,7 @@ from mutagen.id3 import ID3
 import mutagen.id3
 
 from src.history import log_listening_history
-from src.music_library import drop_moved, get_song_duration, track_title
+from src.music_library import drop_moved, get_song_duration, track_title, first_text
 from src.utils.log import quietly
 
 # vlc.State attributes are dynamic; expose safe aliases (mirrors playback.py).
@@ -617,7 +617,7 @@ class PlaybackSession:
             if self.audio is not None:
                 def _one(fr) -> str:
                     """A single-identity frame's value (title, album)."""
-                    return str(fr.text[0]).strip() if (fr and getattr(fr, 'text', None)) else ''
+                    return first_text(fr)
 
                 def _all(fr) -> str:
                     """Every value of a list-like frame, in storage form ('; '-joined).

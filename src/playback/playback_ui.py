@@ -4,7 +4,7 @@ import os
 import re
 import sys
 
-from src.music_library import format_value_list
+from src.music_library import format_value_list, track_title, first_text
 from src.utils import prompt_core as pc
 from src.utils import ui_utils
 from src.playback.player_geom import geom
@@ -21,7 +21,6 @@ from src.playback.player_art import (  # noqa: F401 — re-exported
     ART_MAX_WIDTH, _art_width_for_height, _draw_inline_art, _inline_art, art_image_incomplete, inline_art_enabled, redraw_art_image, set_resizing,
 )
 from src.config import setting
-from src.music_library import track_title
 
 
 # Absolute cursor positioning (\033[<row>;<col>H) — must require the trailing
@@ -560,8 +559,7 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
 
     def _txt(frame_id: str) -> str:
         """Return a text frame's stripped value, or empty string if absent."""
-        fr = audio.get(frame_id)
-        return str(fr.text[0]).strip() if (fr is not None and getattr(fr, 'text', None)) else ""
+        return first_text(audio.get(frame_id))
 
     def _txts(frame_id: str) -> str:
         """A list-like frame's values for display, comma-separated.

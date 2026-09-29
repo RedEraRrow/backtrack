@@ -425,13 +425,13 @@ def _extract_id3_metadata(tags: ID3) -> dict:
         result['movement_number'] = str(parts[0]) if parts else '0'
         result['total_movements'] = str(parts[1]) if len(parts) > 1 else '0'
     if 'MVNM' in tags:
-        result['movement_name'] = str(tags['MVNM'].text[0]) if tags['MVNM'].text else ""
+        result['movement_name'] = first_text(tags['MVNM'])
     if 'TSST' in tags:
-        result['disc_subtitle'] = str(tags['TSST'].text[0]) if tags['TSST'].text else ""
+        result['disc_subtitle'] = first_text(tags['TSST'])
 
     # Grouping (TIT1 = Content Group / Grouping per ID3 spec)
     if 'TIT1' in tags:
-        result['grouping'] = str(tags['TIT1'].text[0]) if tags['TIT1'].text else ""
+        result['grouping'] = first_text(tags['TIT1'])
 
     # Work name — try sources in priority order:
     #   1. TXXX:WORK (MusicBrainz Picard / standard classical convention)
@@ -673,6 +673,15 @@ def load_library_cache() -> list:
         return []
 
 
+def first_text(frame) -> str:
+    """A text frame's first value, trimmed — '' when the frame is missing or
+    empty. For reading a single value to show or test; an editor wanting the
+    exact stored text, or every value of a list frame, reads the frame itself."""
+    if frame is None or not getattr(frame, 'text', None):
+        return ''
+    return str(frame.text[0]).strip()
+
+
 def track_title(path: str, song: dict | None = None, *, read_tags: bool = False) -> str:
     """What a track is called on screen: its library title, else (`read_tags`)
     the title tagged in the file itself, else its file name without the
@@ -681,8 +690,7 @@ def track_title(path: str, song: dict | None = None, *, read_tags: bool = False)
     if not title and read_tags:
         try:
             if path.lower().endswith('.mp3'):
-                fr = ID3(path).get('TIT2')
-                title = str(fr.text[0]).strip() if fr is not None and fr.text else ''
+                title = first_text(ID3(path).get('TIT2'))
             else:
                 tags = MP4(path).tags
                 name = tags.get('\xa9nam') if tags else None

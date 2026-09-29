@@ -13,7 +13,7 @@ from src import bulk_pattern as bp
 from src.utils import ui_utils
 from src.utils.log import log, quietly
 from src import tuning as tune
-from src.music_library import refresh_library_entry
+from src.music_library import refresh_library_entry, first_text
 from src.id3.bulk_common import _RENUMBER_COLUMNS, _walk
 
 
@@ -202,7 +202,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
         except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
             continue
         fr = audio.get(tag_id)
-        raw = str(fr.text[0]) if (fr is not None and getattr(fr, 'text', None)) else ''
+        raw = first_text(fr)
         cur, _, tot = raw.partition('/')
         existing[p] = (cur.strip(), tot.strip())
     if not existing:

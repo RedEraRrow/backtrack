@@ -23,6 +23,7 @@ from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPO
 from mutagen.mp4 import MP4, MP4Cover  # type: ignore[reportPrivateImportUsage]
 from src.id3 import tag_registry as _reg
 from src.utils.log import quietly
+from src.music_library import first_text
 
 # The fields this writer understands (track/disc carry their totals). The
 # compilation flag is not a user field — it rides along when a compilation is
@@ -117,8 +118,7 @@ def _id3_present(audio: ID3) -> dict[str, bool]:
     """Which fields already have a non-empty value in this ID3 object, keyed by field name."""
     def _txt(fid: str) -> bool:
         """True if the text frame exists and its first value is non-blank."""
-        fr = audio.get(fid)
-        return bool(fr and fr.text and str(fr.text[0]).strip())
+        return bool(first_text(audio.get(fid)))
 
     def _num(fid: str) -> bool:
         """True if the numeric-pair frame's leading number is present and non-zero."""

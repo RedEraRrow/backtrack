@@ -4,7 +4,7 @@ import os
 import datetime
 from src.utils import prompt
 from src.utils import ui_utils
-from src.music_library import format_tag_values
+from src.music_library import format_tag_values, track_title
 from src.history import get_history
 from src.playback.playback import music_player
 from src.config import load_config
@@ -13,7 +13,6 @@ from src.id3.bulk_id3_manager import bulk_id3_manager
 from src.menus.common import _idx_of, _menu_header
 from src.menus.play import _queue_shortcut_kwargs
 from src.config import setting
-from src.music_library import track_title
 
 
 # Listening-history columns: title · artist · album · when (relative) · listened.

@@ -29,7 +29,7 @@ from mutagen.id3 import ID3
 from src import bulk_pattern as bp
 from src.id3 import tag_writer as tw
 from src.id3.id3_tag_handler import apply_bulk_edit, load_id3, save_id3
-from src.music_library import refresh_library_entry
+from src.music_library import refresh_library_entry, first_text
 from src.utils.log import quietly
 
 
@@ -660,8 +660,7 @@ def apply_frame_writes(per_path: dict, library: list, *,
             for frame_id, value in writes:
                 if not overwrite:
                     existing = audio.get(frame_id)
-                    if existing is not None and getattr(existing, 'text', None) \
-                            and str(existing.text[0]).strip():
+                    if first_text(existing):
                         continue
                 frame = create_frame(frame_id, value)
                 if frame is None:

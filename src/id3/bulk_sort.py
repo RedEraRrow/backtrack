@@ -9,6 +9,7 @@ from src.id3 import tag_registry as _reg
 from src.utils import ui_utils
 from src.id3.bulk_common import _SKIP, _SORT_SRC, _sort_value, _walk
 from src.config import setting
+from src.music_library import first_text
 
 
 _SORT_VALUE_COLUMNS = [
@@ -300,8 +301,7 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
                         sort_tag in nb._NAME_SORT_TAGS and len(nb.split_options(raw)) > 1):
                     continue
                 ex = audio.get(sort_tag)
-                if not overwrite and ex is not None and getattr(ex, 'text', None) \
-                        and str(ex.text[0]).strip():
+                if not overwrite and first_text(ex):
                     continue
                 entries.setdefault((sort_tag, raw), []).append(p)
         return entries

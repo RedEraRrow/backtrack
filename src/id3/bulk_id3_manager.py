@@ -16,10 +16,9 @@ from src.id3 import tag_writer as tw
 from src.id3 import bulk_ops as bo
 from src.id3 import cover_matcher as cm
 from src import bulk_pattern as bp
-from src.music_library import format_value_list
+from src.music_library import format_value_list, drop_moved, refresh_library_entry
 from src.utils import ui_utils
 from src.utils.ui_utils import get_terminal_width
-from src.music_library import drop_moved, refresh_library_entry
 from src.trim import trim as _trim
 from src.trim.trim_bulk import trim_conveyor, apply_replaygain_op
 

@@ -22,7 +22,7 @@ from mutagen import MutagenError
 from src.config import load_config, CONFIG_DIR
 from src.id3 import tag_writer as tw
 from src.id3.id3_tag_handler import save_id3
-from src.music_library import refresh_library_entry
+from src.music_library import refresh_library_entry, first_text
 from src.utils.log import quietly
 
 _EPS = 1e-9
@@ -465,10 +465,7 @@ def read_chapters(path: str) -> tuple[list[tuple], list[str] | None, int | None]
 
     chapters = []
     for frame in audio.getall('CHAP'):
-        title = ''
-        tit2 = frame.sub_frames.get('TIT2')
-        if tit2 is not None and getattr(tit2, 'text', None):
-            title = str(tit2.text[0])
+        title = first_text(frame.sub_frames.get('TIT2'))
         chapters.append((frame.element_id, int(frame.start_time), int(frame.end_time), title))
 
     ctoc_list = audio.getall('CTOC')
