@@ -10,7 +10,8 @@ import numpy as np
 import cv2
 
 from src.utils import prompt
-from src.lyrics.lyrics_editor import lyrics_editor, find_lyrics
+from src.lyrics.lyrics_editor import lyrics_editor
+from src.lyrics.sync_doc import find_lyrics
 from src.lyrics import lyrics as _lyrics
 from src.trim import trim as _trim
 from src.trim.trim_editor import trim_editor

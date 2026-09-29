@@ -42,12 +42,12 @@ from src.utils.ui_utils import Colors as C
 from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
 from src.utils.prompt import confirm as _confirm
 from src.utils import prompt as _promptmod
-from src.lyrics.lyrics_editor import (
+from src.lyrics.time_fields import (
     _EDIT_ORDER, _EDIT_MAXLEN, _EDIT_LIM, _EDIT_START, _EDIT_END,
     _ts_parts, _field_value, _field_str, _render_edit_fields, _fmt,
 )
 
-# Same shape as AUDITION's nudge scheme (lyrics_editor.py:68-70): a coarse step
+# Same shape as AUDITION's nudge scheme (lyrics_editor's _AUD_* steps): a coarse step
 # on ',' and '.', and a fine step that here is one frame rather than a fixed
 # 0.05s — probed per file, since frame length varies with sample rate (2.3).
 _COARSE_STEP = 0.25

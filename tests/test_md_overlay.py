@@ -13,7 +13,7 @@ import unittest
 
 from src.lyrics import lyrics_text as lt
 from src.lyrics.lyrics import _parse_markdown_dialogue, _chunks_from_segments
-from src.lyrics.lyrics_editor import _split_candidates, _split_seg_at
+from src.lyrics.verify import _split_candidates, _split_seg_at
 from src.lyrics.md_overlay import build_md_overlay
 
 
