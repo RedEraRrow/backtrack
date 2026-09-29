@@ -1240,10 +1240,12 @@ def _norm(choices: list) -> list:
 
 
 def _read_key(fd: int) -> str:
-    """Read one key, transparently discarding focus in/out events."""
+    """Read one key, discarding focus-out events. Focus-in is passed on: the
+    terminal may not have painted us while unfocused, so every widget repaints
+    on it (consume_chrome answers it with a full redraw)."""
     while True:
         key = _read_key_raw(fd)
-        if key not in ('FOCUS_IN', 'FOCUS_OUT'):
+        if key != 'FOCUS_OUT':
             return key
 
 

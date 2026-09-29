@@ -852,15 +852,26 @@ def _become_host_from(session_id: str, snap: dict | None) -> None:
     SESSION.start_background_tick()
 
 
+def client_link(socket_path: str, session_id: str):
+    """A (not yet connected) link to the session host, set up the one way every
+    join uses: each mirrored snapshot repaints this window's now-playing box, and
+    losing the host starts the hand-off election."""
+    from src.playback import ipc
+    from src.utils import ui_utils
+    return ipc.SessionClient(
+        socket_path,
+        on_snapshot=lambda _snap: ui_utils.pulse_now_playing(),
+        on_disconnect=lambda: attempt_handoff(session_id, socket_path),
+    )
+
+
 def _rejoin_after_handoff(session_id: str, socket_path: str) -> None:
     """Lose the election → wait for the winner to re-host, then reconnect to it."""
     from src.playback import ipc
     for _ in range(tune.HANDOFF_POLL_TRIES):     # grace period for the winner to rebind
         time.sleep(tune.HANDOFF_POLL_INTERVAL_S)
         if ipc._connectable(socket_path):
-            link = ipc.SessionClient(
-                socket_path,
-                on_disconnect=lambda: attempt_handoff(session_id, socket_path))
+            link = client_link(socket_path, session_id)
             if link.connect():
                 set_client_link(link)
                 return

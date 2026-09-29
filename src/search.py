@@ -483,7 +483,6 @@ ENTITY_FIELDS = ('artist', 'album', 'composer', 'lyricist', 'genre', 'people')
 _ENTITY_QUALITY = tune.SEARCH_ENTITY_QUALITY
 _ENTITY_SIZE = 50.0
 
-_MULTI_SPLIT_RE = re.compile(r'\s*[;/,]\s*')
 
 
 @dataclass
@@ -503,15 +502,12 @@ def _entity_values(song: dict, kind: str) -> list:
     towards both artists rather than towards a single fused name that matches
     neither well.
     """
+    from src.music_library import group_values, people_names
     if kind == 'people':                   # exact pairs: a role may contain commas
-        from src.music_library import people_names
         return people_names(song)
-    raw = str(song.get(kind, '') or '').strip()
-    if not raw:
-        return []
-    if kind == 'album':                    # album titles legitimately contain / and ,
-        return [raw]
-    return [v for v in (x.strip() for x in _MULTI_SPLIT_RE.split(raw)) if v]
+    # The same split Browse uses, so "AC/DC" is one artist in both — splitting
+    # on / and , here turned it into "AC" and "DC".
+    return group_values(kind, song.get(kind))
 
 
 def collect_entities(results: list, tokens: list, kinds: tuple = ENTITY_FIELDS,
@@ -539,7 +535,7 @@ def collect_entities(results: list, tokens: list, kinds: tuple = ENTITY_FIELDS,
                         continue
                     ent = Entity(kind=kind, name=name, score=quality)
                     if kind == 'album':
-                        ent.subtitle = str(r.song.get('albumartist')
+                        ent.subtitle = str(r.song.get('album_artist')
                                            or r.song.get('artist') or '').strip()
                     buckets[kind][key] = ent
                 elif ent is False:

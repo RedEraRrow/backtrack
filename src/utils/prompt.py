@@ -162,6 +162,11 @@ def consume_chrome(key: str, cells: dict):
     key string when a hint was clicked (replay it through the widget's own
     switch), or None when the key is not ours.
     """
+    if key == 'FOCUS_IN':
+        # Back in focus: the terminal may not have painted us meanwhile (or a
+        # background track change went by), so repaint everything.
+        screen_invalidate()
+        return CHROME_REDRAW
     if key == HINTS_CLICK or (key == 'i' and cells.get('__i_key__')):
         toggle_hints()
         return CHROME_REDRAW            # the bar appeared or went: re-lay the screen
@@ -686,13 +691,6 @@ def select(message: str, choices: list, *,
                 _edit_on = True
                 _sel_last_click = None
                 w.render(_lines())
-            elif key == 'FOCUS_IN':
-                # Regained focus: repaint fully in case a background track change
-                # (or the terminal not painting us while unfocused) left the list
-                # or now-playing box stale — no click needed (#14). A refresh, not
-                # a clear: the layout is still valid, so blanking the screen first
-                # would just flash.
-                _sel_last_click = None; w.refresh(); w.render(_lines())
             elif key == 'UP':           cursor = _step(cursor, -1);          _sel_last_click = None; w.render(_lines())
             elif key == 'DOWN':           cursor = _step(cursor, 1);           _sel_last_click = None; w.render(_lines())
             elif key == 'HOME':                  cursor = selectable[0];              _sel_last_click = None; w.render(_lines())
@@ -2684,7 +2682,7 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
             if key == 'ENTER':
                 result = f"{y:04d}-{m:02d}-{cursor_day:02d}"
                 break
-            elif key == 'ESC':
+            elif key in ('ESC', 'CTRL_C'):      # Ctrl-C cancels, as in every widget
                 break
             elif key in ('q', 'Q'):
                 raise QuitToTerminal()   # q quits the app; it never just leaves a widget
@@ -2761,6 +2759,8 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                         y, m, d = parsed
                         cursor_day = d
                 ui_utils.clear_screen()
+                enable_mouse()           # text() turns it off on its way out
+                w.anchor_reset()
 
             elif key.isdigit():
                 # Accumulate a leading 1/2/3 into a two-digit day (10-31),
@@ -3200,7 +3200,7 @@ def fraction_edit(message: str = "Edit metadata pair:",
             if key == 'ENTER':
                 result = _frac_result(edit_buffers, varies)
                 break
-            elif key == 'ESC':
+            elif key in ('ESC', 'CTRL_C'):      # Ctrl-C cancels, as in every widget
                 break
             elif key in ('TAB', 'BACKTAB'):
                 # Shift+Tab is Tab in reverse, on every screen that has fields.
@@ -3372,7 +3372,7 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
                     break
                 else:
                     ui_utils.show_status("Invalid time (need hours < 24, minutes/seconds < 60)")
-            elif key == 'ESC':
+            elif key in ('ESC', 'CTRL_C'):      # Ctrl-C cancels, as in every widget
                 break
             elif key in ('q', 'Q'):
                 raise QuitToTerminal()   # q quits the app; it never just leaves a widget
@@ -3472,7 +3472,7 @@ def _eq_render_lines(bands: list, cursor: int, message: str, status: str,
     baseline = half_h
     total_rows = 2 * half_h + 1
 
-    band_x = [min(plot_w - 1, int((i + 0.5) * plot_w / n)) for i in range(n)] if n else []
+    band_x = _eq_band_x(n, plot_w)
     x_to_band = {x: i for i, x in enumerate(band_x)}
 
     # Interpolated response curve (linear in dB between adjacent band centres).
@@ -3672,7 +3672,7 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
 
             if key == 'ENTER':
                 result = gain; break
-            elif key == 'ESC':
+            elif key in ('ESC', 'CTRL_C'):      # Ctrl-C cancels, as in every widget
                 result = None; break
             elif key in ('q', 'Q'):
                 raise QuitToTerminal()   # q quits the app; it never just leaves a widget
@@ -3939,6 +3939,11 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
     return result
 
 
+def _eq_band_x(n: int, plot_w: int) -> list[int]:
+    """Plot column of each of `n` bands — for drawing them and for clicks."""
+    return [min(plot_w - 1, int((i + 0.5) * plot_w / n)) for i in range(n)] if n else []
+
+
 def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = None) -> list | None:
     """Interactive graphic equaliser for an EQU2 frame.
 
@@ -4019,7 +4024,7 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
 
             if key == 'ENTER':
                 result = _save(); break
-            elif key == 'ESC':
+            elif key in ('ESC', 'CTRL_C'):      # Ctrl-C cancels, as in every widget
                 result = None; break
             elif key in ('q', 'Q'):
                 raise QuitToTerminal()   # q quits the app; it never just leaves a widget
@@ -4079,9 +4084,10 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
                 parts = key.split(':')
                 col = int(parts[3]) if len(parts) > 3 else 1
                 plot_w = max(10, _cols() - 5)
-                x = col - 6  # 4-col dB label + space, lines start at terminal col 1
+                x = col - 5  # the 3-col dB label + a space; the plot starts at col 5
                 if 0 <= x < plot_w:
-                    cursor = min(range(n), key=lambda i: abs(int((i + 0.5) * plot_w / n) - x))
+                    bx = _eq_band_x(n, plot_w)
+                    cursor = min(range(n), key=lambda i: abs(bx[i] - x))
                     note = ""; _render()
 
     finally:

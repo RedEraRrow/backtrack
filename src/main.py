@@ -77,11 +77,7 @@ def _maybe_join_session() -> None:
     # If the host goes away, elect a new host / reconnect (#14 Phase 2d). Each
     # mirrored snapshot repaints this window's now-playing box immediately, so a
     # joined window stays live without needing a keystroke (#14).
-    link = ipc.SessionClient(
-        sock,
-        on_snapshot=lambda _snap: ui_utils.pulse_now_playing(),
-        on_disconnect=lambda: sess.attempt_handoff(sid, sock),
-    )
+    link = sess.client_link(sock, sid)
     if link.connect():
         sess.set_client_link(link)
         ui_utils.show_status(f"Joined session: {info.get('label', '')}")

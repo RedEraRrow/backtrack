@@ -261,6 +261,8 @@ def _edit_chain(levels: list, header) -> list | None:
             f = _pick_field([x for x in SORT_FIELDS if x not in {c[0] for c in chain}], header)
             if f:
                 chain.append([f, 'asc'])
+                cursor = len(chain) - 1        # onto the new level, not whatever
+                                               # row slid into "Add a level…"'s place
             continue
         i = next(k for k, lv in enumerate(chain) if lv[0] == sel)
         nf = _pick_field([x for x in SORT_FIELDS if x == sel or x not in {c[0] for c in chain}], header)
@@ -544,37 +546,30 @@ def handle_search(library: list) -> str | None:
                     return "QUIT_ALL"
             continue
         expanded['kind'] = None
-        break
 
-    song_meta = next((s for s in library if s['path'] == selected), None)
-    track_title = song_meta['title'] if song_meta else os.path.basename(selected)
-
-    # Selecting a track plays it directly. Metadata editing (which now also
-    # holds lyrics sync and trim, see id3_browser.inspect_tag_loop) is reached
-    # via the "edit tags" row above, not a per-track action page — `live_select`
-    # types every key into the query, so it can't take a row/shortcut hotkey
-    # the way Browse/History can.
-    _action_choices = ["Play"] + _queue_action_choices()
-
-    if len(_action_choices) == 1 or _autoplay():
-        action = "Play"
-    else:
-        action = prompt.select(
-            "Action:",
-            choices=_action_choices,
-            header=_menu_header(track_title),
-        )
-
-    if action == "Play":
-        ui_utils.clear_screen()
-        res = music_player(selected)
-        ui_utils.clear_screen()
-        if res and res.get("status") == "QUIT_ALL":
-            return "QUIT_ALL"
-    elif _handle_queue_action(action, selected, track_title):
-        pass
-
-    return None
+        # A track: play it (or queue it), then back to these results — the
+        # query is kept (initial_query) — as entities and every browse level do.
+        # Editing is ^e / ^a from the results: `live_select` types every other
+        # key into the query.
+        song_meta = next((s for s in library if s['path'] == selected), None)
+        track_title = song_meta['title'] if song_meta else os.path.basename(selected)
+        _action_choices = ["Play"] + _queue_action_choices()
+        if len(_action_choices) == 1 or _autoplay():
+            action = "Play"
+        else:
+            action = prompt.select(
+                "Action:",
+                choices=_action_choices,
+                header=_menu_header(track_title),
+            )
+        if action == "Play":
+            ui_utils.clear_screen()
+            res = music_player(selected)
+            ui_utils.clear_screen()
+            if res and res.get("status") == "QUIT_ALL":
+                return "QUIT_ALL"
+        elif action:
+            _handle_queue_action(action, selected, track_title, library)
 
 
 def _play_entity(ent, library: list) -> str | None:
@@ -683,6 +678,18 @@ def _nice_dur(raw: str) -> str:
 
 def handle_history(library: list) -> str | None:
     """Show the recent listening history list; on selecting an entry, offer play/edit actions."""
+    cursor = 0
+    while True:
+        # Rebuilt each time round: playing a track adds to the history.
+        res = _history_screen(library, cursor)
+        if not isinstance(res, tuple):
+            return res                      # backed out, or QUIT_ALL
+        cursor = res[1]
+
+
+def _history_screen(library: list, cursor: int):
+    """One pass of the history list: None (back), "QUIT_ALL", or
+    ("again", cursor) to show it again after playing or editing."""
     history_entries = get_history(limit=30)
 
     if not history_entries:
@@ -723,6 +730,7 @@ def handle_history(library: list) -> str | None:
         header=_menu_header("Listening History", f"{len(history_entries)} recent"),
         on_inspect=_inspect_history if _show_editor else None,
         inspect_key='e',
+        index=min(cursor, len(choices) - 1),
         shortcuts={'E': '__bulk_edit__'} if _show_editor else None,
         extra_hints={'e': 'edit', 'E': 'edit all'} if _show_editor else None,
         **_queue_shortcut_kwargs(library),
@@ -731,16 +739,17 @@ def handle_history(library: list) -> str | None:
         return None
 
     if selected == "__bulk_edit__":
-        bulk_id3_manager(library, paths=[p for _, _, p in history_entries])
-        return None
+        # Once each: a track played several times is in the history several times.
+        bulk_id3_manager(library, paths=list(dict.fromkeys(p for _, _, p in history_entries)))
+        return ("again", cursor)
 
+    picked = _idx_of(choices, selected, cursor)
     ui_utils.clear_screen()
     res = music_player(selected)
     ui_utils.clear_screen()
     if res and res.get("status") == "QUIT_ALL":
         return "QUIT_ALL"
-
-    return None
+    return ("again", picked)
 
 
 def _handle_tag_name_preferences() -> None:
@@ -884,7 +893,14 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
             if len(dirs) > 1 and not prompt.confirm(f"Remove {os.path.basename(choice) or choice}?"):
                 continue
             set_music_dirs(config, [d for d in dirs if d != choice])
-            _commit(config, "music_directories", "music_directory")
+            # Its name and own sort order go with it, not left behind in config.
+            config["library_names"] = {k: v for k, v in (config.get("library_names") or {}).items()
+                                       if k != choice}
+            config["library_sort_levels"] = {k: v for k, v in
+                                             (config.get("library_sort_levels") or {}).items()
+                                             if k != choice}
+            _commit(config, "music_directories", "music_directory",
+                    "library_names", "library_sort_levels")
             n = _rescan_library(config, library_ref)
             ui_utils.show_status(f"Removed — {n} tracks.")
 
@@ -947,7 +963,7 @@ def handle_settings(library_ref: list) -> None:
         # (value, label, current state) — separators are plain strings.
         _rows: list = [
             prompt.separator("Playback"),
-            ("lead_in",      "Lyric lead-in…",       f"{float(config.get('lyric_lead_in', 2.0)):g}s"),
+            ("lead_in",      "Lyric lead-in…",       f"{float(config['lyric_lead_in']):g}s"),
             ("autoplay",     "Auto-play on select",  _bool("autoplay_on_select", False)),
             ("key_hints",    "Key hints",            _state_glyph(prompt.hints_visible())),
             ("inline_art",   "Image album art (iTerm2)", _bool("art_inline_images", False)),
@@ -1033,7 +1049,7 @@ def handle_settings(library_ref: list) -> None:
             _toggled("autoplay_on_select", False)
 
         elif choice == "lead_in":
-            val = prompt.text("Lead-in seconds:", default=str(config.get("lyric_lead_in", 2.0)))
+            val = prompt.text("Lead-in seconds:", default=str(config["lyric_lead_in"]))
             if val is not None:
                 try:
                     seconds = round(max(0.0, float(val)), 2)
@@ -1096,6 +1112,9 @@ def handle_settings(library_ref: list) -> None:
 def play_queue(paths: list, mode: str = "linear", library: list | None = None) -> str | None:
     """Play a queue of file paths in the given mode (linear, shuffle, repeat_one, repeat_all)."""
     playlist = list(paths)
+    if not playlist:                       # e.g. a letter filter that leaves nothing
+        ui_utils.show_status("Nothing to play.")
+        return None
     if mode == "shuffle":
         random.shuffle(playlist)
 
@@ -1191,12 +1210,10 @@ def _queue_shortcut_kwargs(library: list,
         return {}
 
     def _resolve_paths(value) -> tuple[list[str] | None, str | None]:
-        if not isinstance(value, str) or value.startswith("__"):
+        if not isinstance(value, str):
             return None, None
-
-        if group_paths and value in group_paths:
-            return group_paths[value], value
-
+        # Disc/work header rows first: they're "__"-prefixed too, and the guard
+        # below used to turn them away before these checks ever ran.
         if disc_track_map and value.startswith("__disc_"):
             disc_val = value[len("__disc_"):]
             return disc_track_map.get(disc_val), f"Disc {disc_val}"
@@ -1204,6 +1221,12 @@ def _queue_shortcut_kwargs(library: list,
         if work_track_map and value.startswith("__work__"):
             work_name = value[len("__work__"):]
             return work_track_map.get(work_name), work_name
+
+        if value.startswith("__"):
+            return None, None
+
+        if group_paths and value in group_paths:
+            return group_paths[value], value
 
         song = next((s for s in library if s.get('path') == value), None)
         if song:
@@ -1472,9 +1495,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
 
             while True:  # LEVEL 3: Album Selection
                 if _albums_level:
-                    albums = {}
-                    for s in selected_songs:
-                        albums.setdefault(s['album'], []).append(s)
+                    albums = get_grouped_data(selected_songs, 'album')
 
                     album_list = sort_albums(list(albums.keys()), albums, _cfg)
 
@@ -1590,7 +1611,9 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         mv_pad   = "  " if work else ""
                         indent   = base_pad + mv_pad
 
-                        mv_num  = roman(int(str(t.get('movement_number', '')).strip())) if t.get('movement_number') and t.get('movement_number') != "0" else ""
+                        # to_num: a hand-typed movement like "II" or "2a" can't crash the list.
+                        _mv = int(to_num(t.get('movement_number')))
+                        mv_num  = roman(_mv) if _mv > 0 else ""
                         mv_name = t.get('movement_name', '').strip()
 
                         if mv_name and mv_num != "":

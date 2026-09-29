@@ -341,9 +341,10 @@ def reflow_discs(ordered: list, renumber: bool = True, disc_totals: bool = True,
         fields: dict = {'disc': dense[d] if renumber else _fmt_disc(d)}
         if disc_totals:
             fields['total_discs'] = len(discs)
-        if track_totals:
+        if track_totals and _num(s.get('track')):
             # Keep the track's own number; only its total is being corrected.
-            fields['track'] = _num(s.get('track')) or 1
+            # An unnumbered track is left alone: "or 1" made every one track 1.
+            fields['track'] = _num(s.get('track'))
             fields['total_tracks'] = counts[d]
         out[s['path']] = fields
     return out

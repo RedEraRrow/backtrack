@@ -32,7 +32,7 @@ from src.id3.id3_tag_handler import (
     summarize_tag_value,
     prompt_for_value,
     create_frame,
-    rename_frame, rename_would_replace,
+    rename_frame, rename_would_replace, people_to_text, people_from_text,
     save_id3,
     create_apic_frame,
     pick_nearby_cover,
@@ -1152,7 +1152,7 @@ def inspect_tag_loop(
 
             elif action == "Copy":
                 if category == 'people':
-                    text = "\n".join(f"{r}: {n}" for r, n in getattr(raw_val, 'people', []))
+                    text = people_to_text(getattr(raw_val, 'people', []))
                 else:
                     text = summarize_tag_value(choice, raw_val)
                 pyperclip.copy(text)
@@ -1161,9 +1161,11 @@ def inspect_tag_loop(
             elif action == "Paste":
                 clipboard = pyperclip.paste()
                 if clipboard and prompt.confirm(f"Replace {choice}?"):
-                    audio.delall(choice)
-                    new_frame = create_frame(choice, clipboard)
-                    if new_frame:
+                    # Credits were copied as "role: name" lines: read them back.
+                    value = people_from_text(clipboard) if category == 'people' else clipboard
+                    new_frame = create_frame(choice, value)
+                    if new_frame:                 # only then drop the old one
+                        audio.delall(choice)
                         audio.add(new_frame)
                         _save(audio)
                         ui_utils.show_status("Updated.")

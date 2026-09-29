@@ -100,8 +100,12 @@ def writable_fields(path: str) -> set:
 
 
 def _fmt_pair(num, total) -> str:
-    """ID3 numeric-pair text: 'n/total' when a total is present, else 'n'."""
-    return f"{int(num)}/{int(total)}" if total else f"{int(num)}"
+    """ID3 numeric-pair text: 'n/total' when a total is present, else 'n'.
+    A fractional disc ('1.5', kept by reflow on purpose) stays as it is."""
+    def _n(v) -> str:
+        f = float(v)
+        return str(int(f)) if f.is_integer() else str(f)
+    return f"{_n(num)}/{_n(total)}" if total else _n(num)
 
 
 # ---------------------------------------------------------------------------

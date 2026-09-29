@@ -504,6 +504,10 @@ def _tag_read(ctx: Ctx) -> int:
         if not os.path.exists(path):
             code = out.fail(out.NOT_FOUND, "No such track.", path=path)
             continue
+        if not path.lower().endswith('.mp3'):
+            # An empty table would read as "this file has no tags".
+            code = out.fail(out.FAIL, "tag read lists ID3 tags, so MP3 files only.", path=path)
+            continue
         try:
             rows = _tag_rows(path)
         except ID3NoHeaderError:
@@ -1044,7 +1048,10 @@ def _bulk_assign(ctx: Ctx) -> int:
         if why or not start:
             return out.fail(out.USAGE, why or "Bad --start date.",
                             given=ctx.args.start)
-        assignments = bp.assign_dates(ordered, start, ctx.args.interval or 7)
+        # The time of day given with --start rides along (it was dropped), and
+        # an explicit --interval 0 means the same date for all, not "7".
+        interval = 7 if ctx.args.interval is None else ctx.args.interval
+        assignments = bp.assign_dates(ordered, start, interval, times=_time or None)
 
     per_path = {p: [(tag_id, v)] for p, v in assignments.items() if v}
     changes = [bo.Change(path=p, why=f"{tag_id}={writes[0][1]}",
@@ -1374,12 +1381,16 @@ def _one_target(ctx: Ctx, what: str = "track"):
 
 
 def _lyric_lines(path: str) -> tuple[list, str]:
-    """A track's lyrics as `(rows, source)` — timed SYLT first, else USLT."""
-    from mutagen.id3 import ID3
+    """A track's lyrics as `(rows, source)` — timed SYLT first, else USLT; no
+    rows for a file without an ID3 tag (untagged, or not an MP3)."""
+    from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[reportPrivateImportUsage]
 
     from src.lyrics import lyrics as ly
 
-    audio = ID3(path)
+    try:
+        audio = ID3(path)
+    except ID3NoHeaderError:
+        return [], ''
     timed = ly._parse_sylt(audio)
     if timed:
         return ([{'path': path, 'time_ms': ms, 'text': text}
@@ -1399,15 +1410,10 @@ def _ms(value) -> str:
 
 def _lyrics_show(ctx: Ctx) -> int:
     """Print a track's lyrics."""
-    from mutagen.id3 import ID3NoHeaderError  # type: ignore[reportPrivateImportUsage]
-
     path, code = _one_target(ctx)
     if path is None:
         return code
-    try:
-        rows, source = _lyric_lines(path)
-    except ID3NoHeaderError:
-        rows, source = [], ''
+    rows, source = _lyric_lines(path)
     if not rows:
         return out.fail(out.NOT_FOUND, "That track has no lyrics.", path=path)
     if out.json_mode():
@@ -1516,7 +1522,10 @@ def _lyrics_verify(ctx: Ctx) -> int:
     path, code = _one_target(ctx)
     if path is None:
         return code
-    md_path, json_path = ly._find_timing_files_for_audio(path)
+    # The script is the .md; _find_timing_files_for_audio returns (srt, json),
+    # and its SRT used to be checked as if it were the script.
+    md_path = ly._find_markdown_for_audio(path)
+    json_path = ly._find_timing_files_for_audio(path)[1]
     body = {'path': path, 'script': md_path or '', 'transcript': json_path or ''}
     if not md_path and not json_path:
         out.record('lyrics', {**body, 'status': 'none'},

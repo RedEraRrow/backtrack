@@ -118,18 +118,25 @@ def get_art_from_mp3(file_path: str, width: int,
 
 
 def get_art_bytes(file_path: str) -> bytes | None:
-    """The raw cover image for a file (an MP3's embedded picture, or an image
-    file itself), for terminals that can show real images; None if there's none."""
+    """The raw cover image for a file (an MP3's embedded picture, an MP4's
+    `covr` atom, or an image file itself); None if there's none."""
     try:
         if file_path.lower().endswith(".mp3"):
             frame = _select_apic_frame(ID3(file_path))
             return bytes(frame.data) if frame is not None and frame.data else None
+        if os.path.splitext(file_path)[1].lower() in _MP4_EXTS:
+            from mutagen.mp4 import MP4
+            covr = (MP4(file_path).tags or {}).get("covr")
+            return bytes(covr[0]) if covr else None
         if os.path.splitext(file_path)[1].lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
             with open(file_path, "rb") as f:
                 return f.read()
-    except (OSError, mutagen.id3.ID3NoHeaderError):  # type: ignore[reportPrivateImportUsage]
+    except (OSError, mutagen.MutagenError):
         pass
     return None
+
+
+_MP4_EXTS = (".m4a", ".mp4", ".m4p", ".m4b")
 
 
 def get_art(file_path: str, width: int = 100) -> str:
@@ -141,4 +148,7 @@ def get_art(file_path: str, width: int = 100) -> str:
     ext = file_path.rsplit(".", 1)[-1].lower()
     if ext == "mp3":
         return get_art_from_mp3(file_path, width)
+    if "." + ext in _MP4_EXTS:
+        raw = get_art_bytes(file_path)
+        return render_album_art(raw, width=width, is_bytes=True) if raw else "No album art found."
     return get_art_from_image_file(file_path, width)

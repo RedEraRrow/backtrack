@@ -1095,6 +1095,11 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
 
     status = " " * left_pad + controls
     _record_transport_cols(status)
+    if toast:
+        # The feedback line for the last action (seek, volume, warnings): after
+        # the controls, which keep their place, and cut at the window edge.
+        status = ui_utils.clip_ansi(f"{status}   {C.DIM}{toast}{C.RESET}",
+                                    ui_utils.get_terminal_size()[0] - ui_utils.MARGIN_H)
 
     if not pc.hints_visible():
         # Hints are off app-wide, but the player keeps its way back to them.
@@ -1364,9 +1369,16 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     # and the inline image: only a frame that lays out art has one.
     _queue_click_rows.clear()
     _inline_art['path'] = None
+    # All of it, not just some: a layout that doesn't set one (minimal has no
+    # side pane) must not inherit the last frame's (the lyric pane drew at the
+    # old wide layout's column).
     _last_art_top = None
     _last_art_height = None
     _last_vol_bar_col = None
+    _last_art_width = None
+    _last_art_left = None
+    _last_right_left = None
+    _last_right_width = None
 
     # 1. Clear terminal — home first (no scroll), erase saved lines, erase to end.
     frame_buffer = ["\033[H\033[3J\033[J"]
@@ -1460,7 +1472,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
         # Reserve the controls/hints height before sizing the art (see above).
-        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
+        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
         avail_h = max(3, rows - len(left_col) - len(shortcut_lines) - 4 - 2 * ui_utils.MARGIN_V)
         # Art is inset from the panel edges so it floats with breathing room.
@@ -1478,7 +1490,10 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         _last_vol_bar_col = left_margin + art_vis_w + 2
 
         if art_lines:
-            top_pad = max(ui_utils.MARGIN_V, (rows - len(art_lines) - 1 - len(left_col) - 6) // 2)
+            # Counting the hint rows too, as the no-pane layout does: otherwise
+            # showing help drew over the controls.
+            top_pad = max(ui_utils.MARGIN_V,
+                          (rows - len(art_lines) - 1 - len(left_col) - len(shortcut_lines) - 5) // 2)
             for _ in range(top_pad):
                 log("")
             row_cursor += top_pad
@@ -1504,7 +1519,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         ctrl_row = prog_row + 1
 
         # Recompute now that the art geometry is set (see the no-pane branch).
-        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
+        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
         ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
 
@@ -1610,7 +1625,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         prog_row = row_cursor
         ctrl_row = prog_row + 1
 
-        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
+        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
         ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
 
@@ -1696,7 +1711,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         row_cursor += 1
         prog_row = row_cursor
         ctrl_row = prog_row + 1
-        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast)
+        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
         ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
         log(f"\033[{ctrl_row};1H\033[K{status_ln}")

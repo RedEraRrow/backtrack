@@ -41,6 +41,7 @@ from src.playback.playback_ui import (
 )
 from src.playback import playback_ui
 from src.utils.log import log
+from src.utils import prompt_core as pc
 from src.playback.session import (
     SESSION, is_client, has_other_windows,
 )
@@ -134,6 +135,18 @@ def open_player_view() -> dict:
         ui_utils.clear_screen()
 
 
+def _step_volume(remote, target, delta: int):
+    """A +/- press in a joined window. The host's volume only reaches this
+    window with its next snapshot (a quarter-second later), so quick presses
+    step from the level just asked for, not the stale one — five fast presses
+    are +25, not +5. Returns the new (level, time)."""
+    now = time.time()
+    base = target[0] if target and now - target[1] < 1.0 else remote.get_volume()
+    level = max(0, min(100, base + delta))
+    remote.set_volume(level)
+    return (level, now)
+
+
 def open_client_player_view() -> dict:
     """Full player view for a *joined* window (#14 Phase 2c): renders the host's
     current track from its snapshots + the track file on the shared disk, with
@@ -158,6 +171,7 @@ def open_client_player_view() -> dict:
     last_sig = None
     audio = None
     duration = 0.0
+    vol_target = None                      # (level, time) of the last +/- press
     prog_row = 0
     ctrl_row = 0
     toast = ""
@@ -169,6 +183,11 @@ def open_client_player_view() -> dict:
             sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
             sys.stdout.flush()
             while True:
+                # A hand-off replaces the session link (or makes this window the
+                # host): this view's `remote` is then a closed link still showing
+                # its last snapshot. Step out; reopening picks up the new one.
+                if sess.active_session() is not remote:
+                    return {"status": "DETACH"}
                 np = remote.now_playing()
                 if np is None or not np.get('file_path'):
                     return {"status": "OK"}          # host stopped / no track
@@ -196,7 +215,9 @@ def open_client_player_view() -> dict:
                         try:
                             audio = ID3(fp)
                         except Exception:
-                            audio = None
+                            # No ID3 tag (an M4A, an untagged MP3): an empty one,
+                            # as the host player uses — the layout reads from it.
+                            audio = ID3()
                     duration = float(np.get('duration') or 0.0)
                     prog_row, ctrl_row, _lr, width, _br = draw_full_ui(
                         fp, audio, None, size, is_paused=bool(np.get('paused')),
@@ -259,9 +280,9 @@ def open_client_player_view() -> dict:
                     elif key == '[':
                         remote.prev()
                     elif key in ('=', '+'):
-                        remote.set_volume(min(100, remote.get_volume() + 5))
+                        vol_target = _step_volume(remote, vol_target, +5)
                     elif key in ('-', '_'):
-                        remote.set_volume(max(0, remote.get_volume() - 5))
+                        vol_target = _step_volume(remote, vol_target, -5)
                     elif key in ('b', 'B') or key == '\x1b':
                         # Pinned open while another window browses this session
                         # (#14) — the two windows stay specialised until one closes.
@@ -445,6 +466,9 @@ def _player_view_loop() -> dict:
             has_lyrics=has_lyrics, has_credits=has_credits)
         sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}")
         sys.stdout.flush()
+        # Written outside the painter: have it forget the row, or the next full
+        # frame skips it as unchanged (a paused ⏵ stayed after skipping track).
+        pc.screen_forget_rows(ctrl_row, ctrl_row)
 
     playback_ui.set_resizing(False)      # in case the last visit ended mid-resize
     with raw_mode(sys.stdin):

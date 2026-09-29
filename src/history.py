@@ -8,7 +8,11 @@ HISTORY_FILE = CONFIG_DIR / 'history.log'
 
 
 def log_listening_history(file_path: str, start_time: float, end_time: float) -> None:
-    """Append one play entry (timestamp, duration, path) to the history log."""
+    """Append one play entry (timestamp, duration, path) to the history log —
+    unless listening history is switched off in Settings."""
+    from src.config import load_config
+    if not load_config().get("history_enabled", True):
+        return
     duration_listened = int(end_time - start_time)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 

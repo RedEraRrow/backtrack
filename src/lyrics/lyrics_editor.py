@@ -1542,7 +1542,7 @@ def lyrics_editor(mp3_path: str) -> None:
     try:
         from src.config import load_config
         cfg = load_config()
-        tap_offset_s = -cfg.get("lyric_lead_in", 0.0)  # seconds
+        tap_offset_s = -cfg["lyric_lead_in"]  # seconds; load_config fills in the default
     except Exception:
         tap_offset_s = 0.0
 
@@ -1970,9 +1970,11 @@ def lyrics_editor(mp3_path: str) -> None:
             ui_utils.now_playing_lines(ui_utils.get_terminal_width())
             cols = _cols()
             avail = _visible_rows()
-            vis = max(3, avail - len(foot) - 1)
+            vis = max(3, avail - len(foot) - 2)
             vp  = max(0, min(vp, max(0, len(body) - vis)))
-            out = [""]
+            # The title (the summary / report path) heads the page, with the
+            # help toggle beside it; it was passed in but never drawn.
+            out = [_clip(f"  {C.BOLD}{title}{C.RESET}", cols), ""]
             for ln in body[vp:vp + vis]:
                 out.append(_clip("  " + ln, cols + ui_utils.MARGIN_H))
             pad = max(0, (avail) - len(out) - len(foot))

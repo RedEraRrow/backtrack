@@ -281,6 +281,27 @@ def save_id3(audio: ID3, path: str | None = None) -> None:
         audio.save(path, v2_version=ver)
 
 
+def people_to_text(pairs) -> str:
+    """Credits as editable text, one "role: name" per line — the form the plain
+    editor and the clipboard use, and people_from_text reads back."""
+    return "\n".join(f"{r}: {n}" for r, n in pairs)
+
+
+def people_from_text(text: str) -> list:
+    """[[role, name], …] from people_to_text's "role: name" lines (a line with
+    no ": " is a name with no role). Split at the first ": " only — a role can
+    hold commas ("Sundry Ruffians, Publishers"), which the generic row parser
+    this used to go through split on."""
+    pairs = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        role, sep, name = line.partition(": ")
+        pairs.append([role.strip(), name.strip()] if sep else ["", line])
+    return pairs
+
+
 def create_frame(tag_id: str, value: Any) -> Frame | None:
     """Create the correct mutagen frame for tag_id from value, or None on failure."""
     if value is None:
@@ -912,12 +933,12 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         """Run a single edit pass: plain text/list field, or the format-specific widget."""
         if ui_cat == 'people':
             if as_plain:
-                lines = "\n".join(f"{r}: {n}" for r, n in (initial_people or []))
+                lines = people_to_text(initial_people or [])
                 template = "# One 'role: name' per line\n" + (f"{lines}\n" if lines else "")
                 txt = prompt.system_editor_edit(initial_text=template)
                 if txt is None:
                     return None
-                return prompt._parse_import_rows(txt, ("ROLE", "NAME"))
+                return people_from_text(txt)
             return prompt.list_edit(f"{label}:", initial_people or [], ("ROLE", "NAME"))
 
         # Multi-value text frames (#60): a simple single-line field by default,

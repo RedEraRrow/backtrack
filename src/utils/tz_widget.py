@@ -1429,9 +1429,8 @@ def timezone_select(initial_offset: str = "") -> str | None:
     result = None
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[?1000h\033[?1006h")
-        sys.stdout.write("\033[H\033[3J\033[J")
-        sys.stdout.flush()
+        _prompt.enable_mouse()
+        ui_utils.clear_screen()     # through ui_utils, so the painter forgets the old rows
         _render()
 
         while True:
@@ -1521,7 +1520,7 @@ def timezone_select(initial_offset: str = "") -> str | None:
                 _render()
 
     finally:
-        sys.stdout.write("\033[?1000l\033[?1006l")
+        _prompt.disable_mouse()
         _restore_term_attrs(fd, old)
         w.clear()
 

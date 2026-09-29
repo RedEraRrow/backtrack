@@ -24,7 +24,7 @@ SYNC_INTERVAL_SECONDS = 30
 # tag: cached entries carrying an older version are re-read on the next sync even
 # though their mtime hasn't moved. (Before this, each new field needed its own
 # `'field' not in track` special case.)
-METADATA_VERSION = 5
+METADATA_VERSION = 6
 
 
 def _default_cache_dir() -> Path:
@@ -490,25 +490,19 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
         except (KeyError, IndexError, TypeError, UnicodeDecodeError):
             continue
 
-    # Track number with total (preserve X/Total format)
-    try:
-        if 'trkn' in tags and tags['trkn']:
-            track_tuple = tags['trkn'][0]
-            track_num = track_tuple[0]
-            total = track_tuple[1] if len(track_tuple) > 1 else None
-            result['track'] = f"{track_num}/{total}" if total else str(track_num)
-    except (KeyError, IndexError, TypeError):
-        pass
-
-    # Disc number with total (preserve X/Total format)
-    try:
-        if 'disk' in tags and tags['disk']:
-            disc_tuple = tags['disk'][0]
-            disc_num = disc_tuple[0]
-            total = disc_tuple[1] if len(disc_tuple) > 1 else None
-            result['disc'] = f"{disc_num}/{total}" if total else str(disc_num)
-    except (KeyError, IndexError, TypeError):
-        pass
+    # Track and disc number with their totals, split the same way as ID3's
+    # (track / total_tracks, disc / total_discs): stored as "5/12" they showed
+    # as "5/12" in lists and multi-disc albums never got disc labels.
+    for atom, num_key, total_key in (('trkn', 'track', 'total_tracks'),
+                                     ('disk', 'disc', 'total_discs')):
+        try:
+            if atom in tags and tags[atom]:
+                pair = tags[atom][0]
+                result[num_key] = str(pair[0])
+                if len(pair) > 1 and pair[1]:
+                    result[total_key] = str(pair[1])
+        except (KeyError, IndexError, TypeError):
+            pass
 
     # Classical music extensions (©mvi = movement number, ©mvn = movement name)
     try:
@@ -820,6 +814,9 @@ def get_grouped_data(library: list, category: str) -> dict:
                 grouped.setdefault(name, []).append(song)
         return grouped
 
+    if category == "album":
+        return _group_albums(library)
+
     for song in library:
         vals = group_values(category, song.get(category)) or ["Unknown"]
 
@@ -831,6 +828,28 @@ def get_grouped_data(library: list, category: str) -> dict:
 
             grouped.setdefault(val, []).append(song)
 
+    return grouped
+
+
+def _group_albums(library: list) -> dict:
+    """Albums by name *and* album artist, so two "Greatest Hits" by different
+    artists are two rows. A name only one album uses stays as it is; a shared
+    one gets its album artist added — "Greatest Hits (ABBA)"."""
+    by_id: dict[tuple[str, str], list] = {}
+    names: dict[tuple[str, str], str] = {}
+    for song in library:
+        album = (song.get("album") or "Unknown").strip() or "Unknown"
+        artist = (song.get("album_artist") or "").strip()
+        key = (album.casefold(), artist.casefold())
+        by_id.setdefault(key, []).append(song)
+        names.setdefault(key, album)
+    counts = Counter(k[0] for k in by_id)
+    grouped: dict = {}
+    for key, songs in by_id.items():
+        name = names[key]
+        if counts[key[0]] > 1:
+            name = f"{name} ({songs[0].get('album_artist') or derive_album_credit(songs) or 'Unknown'})"
+        grouped[name] = songs
     return grouped
 
 

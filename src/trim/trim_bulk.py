@@ -701,9 +701,12 @@ def apply_replaygain_op(paths: list, library: list, header) -> None:
             audio.delall('TXXX:REPLAYGAIN_TRACK_PEAK')
             audio.add(TXXX(encoding=3, desc='REPLAYGAIN_TRACK_GAIN', text=[f"{m['gain_db']:+.2f} dB"]))
             audio.add(TXXX(encoding=3, desc='REPLAYGAIN_TRACK_PEAK', text=[f"{m['peak_linear']:.6f}"]))
-            rva2 = create_frame('RVA2', {'gain': m['gain_db']})
+            # The builder only takes a payload marked as an RVA2 edit; without
+            # the marker it returned None, so RVA2 was never written and a
+            # stale one from an earlier run stayed (the delall sat inside).
+            rva2 = create_frame('RVA2', {'__rva2__': True, 'gain': m['gain_db']})
+            audio.delall('RVA2')
             if rva2 is not None:
-                audio.delall('RVA2')
                 audio.add(rva2)
             save_id3(audio, path)
         except Exception:

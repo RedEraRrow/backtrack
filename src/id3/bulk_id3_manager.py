@@ -35,6 +35,7 @@ from src import bulk_pattern as bp
 from src.music_library import format_value_list
 from src.utils import numbering
 from src.utils import ui_utils
+from src.utils.log import log
 from src.utils.ui_utils import get_terminal_width, Colors as C
 from src.music_library import refresh_library_entry
 from src.trim import trim as _trim
@@ -301,29 +302,33 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
         ui_utils.show_status("No changes.")
         return
 
-    changed = 0
+    changed = failed = 0
     for p, current in per_file.items():
         deduped = _people_apply(current, edits, deletes, adds)
         if deduped == current:
             continue
-        try:
-            audio = ID3(p)
-        except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-            audio = ID3()
-        except (OSError, IOError):
-            continue
-        audio.delall(tag_id)
         frame = create_frame(tag_id, deduped) if deduped else None
-        if frame is not None:
-            audio.add(frame)
+        if deduped and frame is None:
+            failed += 1                    # keep the file's credits as they are
+            continue
         try:
+            try:
+                audio = ID3(p)
+            except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
+                audio = ID3()
+            audio.delall(tag_id)
+            if frame is not None:
+                audio.add(frame)
             save_id3(audio, p)
-            changed += 1
-            refresh_library_entry(library, p)
-        except Exception:
-            pass
+        except Exception as exc:
+            failed += 1
+            log.warning("people edit of %s failed: %s", p, exc)
+            continue
+        changed += 1
+        refresh_library_entry(library, p)
 
-    ui_utils.show_status(f"Updated {label} in {changed} file(s).")
+    ui_utils.show_status(f"Updated {label} in {changed} file(s)."
+                         + (f" {failed} couldn't be written." if failed else ""))
 
 
 def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> None:
