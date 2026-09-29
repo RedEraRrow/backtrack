@@ -21,6 +21,7 @@ import os
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 
 import vlc
 from src import tuning as tune
@@ -287,10 +288,11 @@ class PlaybackSession:
             mp.audio_set_volume(self._volume)   # carry the level across tracks
             self.track_start = time.time()
 
-        # Outside the lock: only settle + probe VLC for a length when mutagen
-        # couldn't give us a duration (rare now get_song_duration covers MP4 too).
-        # Keeps the 0.3s VLC settle from freezing every lock-guarded op
-        # (now_playing / seek / volume / tick / IPC dispatch) on each track change.
+        # Only settle + probe VLC for a length when mutagen couldn't give one
+        # (rare now get_song_duration covers MP4 too). Released here, but every
+        # caller (start/next/jump/prev) holds the reentrant lock around _load, so
+        # in that rare case the 0.3 s settle does hold up other lock users.
+        # ponytail: move the probe off the caller's lock if it ever matters.
         if need_vlc_len:
             time.sleep(_VLC_PLAY_SETTLE_S)
             vlc_len = mp.get_length()
@@ -415,6 +417,16 @@ class PlaybackSession:
         with self._lock:
             if self.mp is not None:
                 self.mp.pause()
+
+    def track(self) -> SimpleNamespace:
+        """The current track and queue, read together under the lock: another
+        thread switching tracks between separate reads could pair one track's
+        path with another's tag and duration."""
+        with self._lock:
+            return SimpleNamespace(
+                generation=self.generation, file_path=self.file_path or "",
+                audio=self.audio, duration=self.duration, is_grouping=self.is_grouping,
+                titles=list(self.titles), index=self.index, queue=list(self.queue))
 
     def is_paused(self) -> bool:
         return self.mp is not None and self.mp.get_state() == _VLC_STATE_PAUSED
@@ -772,8 +784,9 @@ def has_other_windows() -> bool:
     client is connected. Used to pin the player view open while a separate browse
     window exists: you can't leave the player back to browse until the other
     window closes, keeping the two windows specialised (browse vs player) (#14)."""
-    if _client_link is not None:
-        return _client_link.connected
+    link = _client_link                  # the receiver thread can clear it mid-check
+    if link is not None:
+        return link.connected
     srv = SESSION._server
     return srv is not None and srv.peer_count() > 0
 
@@ -781,14 +794,16 @@ def has_other_windows() -> bool:
 def active_session():
     """The session interface the UI should drive: the local :data:`SESSION` when
     hosting, or the :class:`RemoteSession` proxy when joined to another window."""
-    return _remote if _remote is not None else SESSION
+    remote = _remote                     # the receiver thread can clear it mid-check
+    return remote if remote is not None else SESSION
 
 
 def current_now_playing() -> dict | None:
     """The now-playing snapshot to display here: the remote host's when joined,
     otherwise this process's own session."""
-    if _client_link is not None:
-        return _client_link.latest()
+    link = _client_link                  # the receiver thread can clear it mid-check
+    if link is not None:
+        return link.latest()
     return SESSION.now_playing()
 
 
@@ -803,7 +818,8 @@ def attempt_handoff(session_id: str, socket_path: str) -> None:
     re-hosts on the *same* socket; losers reconnect to the new host. Runs on the
     dead client link's receiver thread."""
     from src.playback import ipc
-    snap = _client_link.latest() if _client_link is not None else None
+    link = _client_link
+    snap = link.latest() if link is not None else None
     lock_path = ipc._host_lock_path(session_id)   # single source; swept by ipc._cleanup
     won = False
     try:

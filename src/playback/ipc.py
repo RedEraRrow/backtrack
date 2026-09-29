@@ -267,15 +267,18 @@ class SessionServer:
             except Exception:
                 snap = None
             msg = {"t": "snapshot", "data": snap}
+            # Send outside the lock: a slow client can take up to _SEND_TIMEOUT_S,
+            # and peer_count() (a keypress in the player) must not wait behind it.
             with self._clients_lock:
-                dead = []
-                for c in self._clients:
-                    try:
-                        _send(c, msg)
-                    except OSError:
-                        dead.append(c)
-                for c in dead:
-                    self._clients.discard(c)
+                clients = list(self._clients)
+            dead = []
+            for c in clients:
+                try:
+                    _send(c, msg)
+                except OSError:
+                    dead.append(c)
+            with self._clients_lock:
+                self._clients.difference_update(dead)
             self._write_registry()             # keep the chooser label fresh
             self._stop.wait(_BROADCAST_INTERVAL_S)
 
@@ -385,3 +388,5 @@ class SessionClient:
                 pass
             self._sock = None
         self.connected = False
+        with self._lock:
+            self._latest = None          # a closed link has nothing live to report

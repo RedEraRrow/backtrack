@@ -320,6 +320,7 @@ def _player_view_loop() -> dict:
     assert mp is not None
 
     # --- per-track render state (rebuilt by _prepare() on every track) ---
+    track_path = ""
     audio = None
     duration = 0.0
     pre_art = None
@@ -344,15 +345,16 @@ def _player_view_loop() -> dict:
 
     def _prepare() -> None:
         """(Re)load per-track render state from the session for the current track."""
-        nonlocal audio, duration, pre_art, sylt_data, uslt_lines, line_times
+        nonlocal track_path, audio, duration, pre_art, sylt_data, uslt_lines, line_times
         nonlocal is_uslt, has_credits, has_lyrics, dialogue_state
         nonlocal toast_text, toast_expiry, pane
-        fp = SESSION.file_path or ""
-        audio = SESSION.audio
-        duration = SESSION.duration
+        t = SESSION.track()
+        fp = track_path = t.file_path
+        audio = t.audio
+        duration = t.duration
         # Keep the in-player queue pane ('w' cycle) in sync with the session queue.
-        playback_ui.set_queue_context(SESSION.titles, SESSION.index, SESSION.queue)
-        pre_art = _render_grouping_cover(fp, last_size[0]) if SESSION.is_grouping else None
+        playback_ui.set_queue_context(t.titles, t.index, t.queue)
+        pre_art = _render_grouping_cover(fp, last_size[0]) if t.is_grouping else None
         dialogue_state = DialoguePlaybackState(fp, track_duration=duration)
         has_credits = bool(audio and (audio.getall('TMCL') or audio.getall('TIPL')))
 
@@ -407,7 +409,7 @@ def _player_view_loop() -> dict:
         nonlocal prog_row, ctrl_row, lyric_row, current_width, art_bottom_row
         vol = SESSION.get_volume()
         prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
-            SESSION.file_path or "", audio, pre_art, last_size,
+            track_path, audio, pre_art, last_size,
             is_paused=SESSION.is_paused(), volume=vol,
             toast=toast_text if time.time() < toast_expiry else "",
         )
@@ -447,7 +449,7 @@ def _player_view_loop() -> dict:
         sys.stdout.flush()
         _prepare()
         _redraw_full()
-        last_track_sig = (SESSION.generation, SESSION.file_path)
+        last_track_sig = SESSION.generation
 
         try:
           while True:
@@ -467,7 +469,7 @@ def _player_view_loop() -> dict:
                 playback_ui.set_resizing(True)
                 # A group cover is drawn to the width, so render it again.
                 if SESSION.is_grouping:
-                    pre_art = _render_grouping_cover(SESSION.file_path or "", last_size[0])
+                    pre_art = _render_grouping_cover(track_path, last_size[0])
                 # The terminal reflowed the old frame. No separate clear: the
                 # painter sees the new size and wipes in the same write as the
                 # new rows, so a drag doesn't flash blank at every step.
@@ -490,7 +492,7 @@ def _player_view_loop() -> dict:
                 toast_text = ""
                 update_ctrl_ui()
 
-            current_track_sig = (SESSION.generation, SESSION.file_path)
+            current_track_sig = SESSION.generation
             if current_track_sig != last_track_sig:
                 last_track_sig = current_track_sig
                 _prepare()
@@ -502,17 +504,18 @@ def _player_view_loop() -> dict:
             if adv == 'stopped':
                 return {"status": "OK"}
             if adv == 'changed':
-                last_track_sig = (SESSION.generation, SESSION.file_path)
+                last_track_sig = SESSION.generation
                 _prepare()
                 _redraw_full()
                 continue
 
             # Live-refresh the queue pane when the queue changes mid-track (e.g.
             # another window queued a song) — not only on track change.
-            q_sig = (tuple(SESSION.titles), SESSION.index)
+            t = SESSION.track()
+            q_sig = (tuple(t.titles), t.index)
             if q_sig != last_q_sig:
                 last_q_sig = q_sig
-                playback_ui.set_queue_context(SESSION.titles, SESSION.index, SESSION.queue)
+                playback_ui.set_queue_context(t.titles, t.index, t.queue)
                 if _ui_state.get('show_queue'):
                     _redraw_full()
 
