@@ -924,7 +924,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         for line in left_col: log(line)
         row_cursor += len(left_col)
 
-        log("")
+        # The progress row stays out of the frame: update_progress_ui owns it,
+        # and a frame that painted it blank made the bar flicker on each redraw.
         row_cursor += 1
         prog_row = row_cursor
         ctrl_row = prog_row + 1
@@ -1005,7 +1006,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             for line in left_col: log(line)
             row_cursor += len(left_col)
 
-        log("")
+        # The progress row stays out of the frame: update_progress_ui owns it,
+        # and a frame that painted it blank made the bar flicker on each redraw.
         row_cursor += 1
         prog_row = row_cursor
         ctrl_row = prog_row + 1
