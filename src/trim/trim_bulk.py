@@ -260,7 +260,7 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
         return
     apply_set = set(sel)
 
-    from src.utils.terminal_input import raw_mode, get_key_non_blocking, clear_escape_buffer
+    from src.utils.terminal_input import raw_mode, get_key_non_blocking
 
     task_id = "trim_bulk"
     count = errors = 0
@@ -283,7 +283,6 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
 
             key = get_key_non_blocking()
             if key:
-                clear_escape_buffer()
                 if key in ('\x1b', 'ESC', 'q', 'Q'):
                     interrupted = True
                     break

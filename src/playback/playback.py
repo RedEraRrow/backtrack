@@ -39,24 +39,13 @@ from src.playback.session import (
     SESSION, is_client, has_other_windows,
 )
 from src.utils.terminal_input import (
-    clear_escape_buffer,
     get_key_non_blocking,
-    is_arrow_key,
     raw_mode,
 )
 from src import tuning as tune
 
 _KEY_POLL_INTERVAL_S = tune.KEY_POLL_INTERVAL_S
 _LOOP_TICK_S = tune.LOOP_TICK_S
-
-# Translate a clicked hint's synthesised key (from add_hint_click_cells, which
-# speaks the menu vocabulary) into what the player's key switch expects: arrows as
-# raw escape sequences, space/enter as their characters. Anything else passes
-# through unchanged (plain letters/symbols already match).
-_PLAYER_SYNTH = {
-    'UP': '\x1b[A', 'DOWN': '\x1b[B', 'LEFT': '\x1b[D', 'RIGHT': '\x1b[C',
-    'SPACE': ' ', 'ENTER': '\n',
-}
 
 
 def _render_grouping_cover(file_path: str, cols: int) -> str:
@@ -141,15 +130,13 @@ def open_player_view() -> dict:
 
 
 # Seek keys shared by the host player and a joined window's: seconds to move.
-_SEEK_KEYS = {',': -30, '.': 30, 'j': -1, 'J': -1, 'l': 1, 'L': 1}
+_SEEK_KEYS = {'RIGHT': 5, 'LEFT': -5, ',': -30, '.': 30, 'j': -1, 'J': -1, 'l': 1, 'L': 1}
 
 
-def _seek_step(key: str, arrow, duration: float, elapsed: float) -> tuple[float, str] | None:
+def _seek_step(key: str, duration: float, elapsed: float) -> tuple[float, str] | None:
     """The seek a player key asks for, as (seconds to move, toast), or None when
     the key isn't a seek. `e`, with Diagnostics on, jumps to near the end."""
-    if arrow in ('C', 'D'):
-        secs = 5 if arrow == 'C' else -5
-    elif key in ('e', 'E') and playback_ui._ui_state['debug']:
+    if key in ('e', 'E') and playback_ui._ui_state['debug']:
         return (duration - tune.NEAR_END_JUMP_S) - elapsed, f'Skip to last {tune.NEAR_END_JUMP_S}s'
     elif key in _SEEK_KEYS:
         secs = _SEEK_KEYS[key]
@@ -257,8 +244,6 @@ def open_client_player_view() -> dict:
 
                 key = get_key_non_blocking()
                 if key:
-                    clear_escape_buffer()
-                    arrow = is_arrow_key(key)
                     if key.startswith('MOUSE_CLICK:'):
                         _mp = key.split(':'); _mr = int(_mp[2]); _mc = int(_mp[3])
                         _act = playback_ui.transport_click_action(_mr, _mc, ctrl_row)
@@ -267,7 +252,7 @@ def open_client_player_view() -> dict:
                         elif _act == 'next':
                             key = ']'
                         elif _act == 'playpause':
-                            key = ' '
+                            key = 'SPACE'
                         else:
                             _vol = playback_ui.volume_from_click(_mr, _mc)
                             _frac = playback_ui.progress_from_click(_mr, _mc)
@@ -279,13 +264,12 @@ def open_client_player_view() -> dict:
                                 remote.seek(_frac * duration - elapsed); key = ''
                             else:
                                 _hk = playback_ui.hint_click_key(_mr, _mc)
-                                key = _PLAYER_SYNTH.get(_hk, _hk) if _hk else ''
-                        arrow = is_arrow_key(key)
+                                key = _hk or ''
                     if key == 'FOCUS_IN':
                         last_sig = None                # force a full redraw
-                    elif key in (' ', 'p', 'P'):
+                    elif key in ('SPACE', 'p', 'P'):
                         remote.pause_toggle()
-                    elif (step := _seek_step(key, arrow, duration, elapsed)) is not None:
+                    elif (step := _seek_step(key, duration, elapsed)) is not None:
                         remote.seek(step[0])
                     elif key == ']':
                         remote.next()
@@ -295,7 +279,7 @@ def open_client_player_view() -> dict:
                         vol_target = _step_volume(remote, vol_target, +5)
                     elif key in ('-', '_'):
                         vol_target = _step_volume(remote, vol_target, -5)
-                    elif key in ('b', 'B') or key == '\x1b':
+                    elif key in ('b', 'B') or key == 'ESC':
                         # Pinned open while another window browses this session
                         # (#14) — the two windows stay specialised until one closes.
                         if has_other_windows():
@@ -537,8 +521,6 @@ def _player_view_loop() -> dict:
 
             key = get_key_non_blocking()
             if key:
-                clear_escape_buffer()
-                arrow = is_arrow_key(key)
 
                 if key.startswith('MOUSE_CLICK:'):
                     # Map clicks on the transport icons, volume bar, or hint
@@ -551,7 +533,7 @@ def _player_view_loop() -> dict:
                     elif _act == 'next':
                         key = ']'
                     elif _act == 'playpause':
-                        key = ' '
+                        key = 'SPACE'
                     elif _qi is not None:
                         # A track row in the queue pane: play it. The track
                         # change is picked up (and redrawn) at the top of the loop.
@@ -577,18 +559,17 @@ def _player_view_loop() -> dict:
                             key = ''
                         else:
                             _hk = playback_ui.hint_click_key(_mr, _mc)
-                            key = _PLAYER_SYNTH.get(_hk, _hk) if _hk else ''
-                    arrow = is_arrow_key(key)
+                            key = _hk or ''
 
                 if key == 'FOCUS_OUT':
                     pass
                 elif key == 'FOCUS_IN':
                     _redraw_full()
-                elif key in (' ', 'p', 'P'):
+                elif key in ('SPACE', 'p', 'P'):
                     SESSION.pause_toggle()
                     time.sleep(_KEY_POLL_INTERVAL_S)
                     update_ctrl_ui()
-                elif (step := _seek_step(key, arrow, duration, elapsed)) is not None:
+                elif (step := _seek_step(key, duration, elapsed)) is not None:
                     SESSION.seek(step[0])
                     toast_text = step[1]; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
@@ -600,7 +581,7 @@ def _player_view_loop() -> dict:
                     if SESSION.prev() is not None:
                         _prepare(); _redraw_full()
                     continue
-                elif key in ('b', 'B') or key == '\x1b':   # MINIMISE — keep playing (#14)
+                elif key in ('b', 'B') or key == 'ESC':   # MINIMISE — keep playing (#14)
                     # Pinned open while another window is browsing this session:
                     # the two windows stay specialised until one closes (#14).
                     if has_other_windows():

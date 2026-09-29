@@ -13,7 +13,7 @@ def activity_centre() -> None:
     shows a placeholder when nothing is running."""
     import sys
     import time
-    from src.utils.terminal_input import raw_mode, get_key_non_blocking, clear_escape_buffer
+    from src.utils.terminal_input import raw_mode, get_key_non_blocking
 
     _hint_pairs = [("esc/b", "back")]
     hint_cells: dict = {}
@@ -59,7 +59,6 @@ def activity_centre() -> None:
                     last = sig
                 key = get_key_non_blocking()
                 if key:
-                    clear_escape_buffer()
                     # Transport keys and clicks (on the hints or the miniplayer)
                     # act here, like every other screen; a clicked `esc/b`
                     # comes back as its key.
