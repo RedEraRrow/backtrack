@@ -6,9 +6,9 @@ import mutagen.id3
 from mutagen.id3 import ID3
 from src.utils import prompt
 from src.id3.id3_tag_handler import (
-    prompt_for_value, get_tag_info, get_tag_category, display_tag_id, create_frame,
-    rename_frame, save_id3, _prompt_for_image_metadata, _prompt_for_picture_type,
-    pick_nearby_cover,
+    prompt_for_value, get_tag_info, get_tag_category, display_tag_id, create_frame, save_id3,
+    _prompt_for_image_metadata, _prompt_for_picture_type, pick_nearby_cover, picture_type_name,
+    apply_bulk_edit,
 )
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import filename_parser as fp
@@ -38,7 +38,6 @@ from src.id3.bulk_assign import (
 )
 from src.id3.bulk_common import preview_and_apply
 from src.utils.log import quietly
-from src.id3.id3_tag_handler import picture_type_name
 
 # Structured columns for the bulk tag picker. Column 1 holds the tag id AND the
 # friendly name as two styled segments (TAG bright + friendly dim) in one column.
@@ -814,17 +813,13 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                         changed = True
                     continue
                 if tag in audio:
+                    # One frame at a time through apply_bulk_edit, the same
+                    # set/rename/delete the CLI uses.
                     if operation == "Delete Tags":
-                        audio.pop(tag)
-                        changed = True
+                        changed |= apply_bulk_edit(audio, tag, 'delete')
                     elif operation == "Rename Tags":
-                        old_frame = audio.pop(tag)
-                        if target_val is None:
-                            continue
-                        if rename_frame(audio, old_frame, target_val):
-                            changed = True
-                        else:
-                            audio.add(old_frame)
+                        if target_val is not None:
+                            changed |= apply_bulk_edit(audio, tag, 'rename', new_tag_id=target_val)
                     elif operation == "Set Common Value":
                         # Literal value, or a per-file value from the regex spec.
                         if set_spec is None:
@@ -835,13 +830,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                                 continue   # no match / not applicable — leave frame as-is
                         if new_val is None:
                             continue
-                        # Build the new frame first: if the value can't make
-                        # one, the old frame must survive (it was deleted
-                        # first, and saved away with another tag's change).
-                        new_frame = create_frame(tag, new_val)
-                        if new_frame:
-                            audio.delall(tag)
-                            audio.add(new_frame)
+                        # An invalid value keeps the old frame (apply_bulk_edit
+                        # builds the new one before removing anything).
+                        if apply_bulk_edit(audio, tag, 'set', new_val):
                             changed = True
                         else:
                             ui_utils.show_status(
