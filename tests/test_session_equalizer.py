@@ -1,4 +1,4 @@
-"""Tests for _apply_equalizer's RVA2 preamp support (src/playback/session.py).
+"""Tests for _apply_equalizer's RVA2 preamp support (backtrack/playback/session.py).
 Without it, an RVA2 gain tag (what the trimmer's
 ReplayGain operation writes) has no audible effect in backtrack's own
 playback. A fake player stands in for vlc.MediaPlayer; vlc.AudioEqualizer
@@ -7,7 +7,7 @@ import unittest
 
 from mutagen.id3 import ID3, EQU2, RVA2  # type: ignore[reportPrivateImportUsage]
 
-from src.playback import session
+from backtrack.playback import session
 
 
 class FakePlayer:
@@ -52,7 +52,7 @@ class ApplyEqualizerRVA2Test(unittest.TestCase):
         self.assertIsNone(mp.eq)
 
     def test_preamp_clamped_to_limit(self):
-        from src import tuning as tune
+        from backtrack import tuning as tune
         audio = ID3()
         audio.add(RVA2(desc='', channel=1, gain=60.0, peak=0.0))  # RVA2's own valid range, still over the eq limit
         mp = FakePlayer()

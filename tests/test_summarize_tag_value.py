@@ -1,9 +1,9 @@
-"""Headless tests for src/id3/id3_tag_handler.summarize_tag_value."""
+"""Headless tests for backtrack/id3/tag_handler.summarize_tag_value."""
 import unittest
 
 from mutagen.id3 import USLT, TIT2  # type: ignore[reportPrivateImportUsage]
 
-from src.id3.id3_tag_handler import summarize_tag_value
+from backtrack.id3.tag_handler import summarize_tag_value
 
 
 class SummarizeTagValueTest(unittest.TestCase):

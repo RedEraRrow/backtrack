@@ -1,9 +1,9 @@
-"""Tests for src/search.py's cross-field matching: different tokens of one
+"""Tests for backtrack/search.py's cross-field matching: different tokens of one
 query can each match a different field of the same track, and a connector
 word ("by", "feat"...) doesn't sink an otherwise-good result."""
 import unittest
 
-from src import search
+from backtrack import search
 
 
 def _track(path, title, artist, album=''):

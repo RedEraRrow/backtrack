@@ -1,4 +1,4 @@
-"""Tests for chapter handling (src/trim/trim.py): the pure
+"""Tests for chapter handling (backtrack/trim/engine.py): the pure
 classify/rebase/clamp transforms, and the CHAP/CTOC read/write round-trip.
 Fixture: one chapter survives, one is
 destroyed, one straddles the in-point.
@@ -11,7 +11,7 @@ import unittest
 
 from mutagen.id3 import ID3, CHAP, CTOC, CTOCFlags, TIT2  # type: ignore[reportPrivateImportUsage]
 
-from src.trim import trim
+from backtrack.trim import engine as trim
 
 # A 60s track, cut to keep [20_000ms, 50_000ms):
 #   intro   0     - 15_000   -> destroyed (entirely before the cut)

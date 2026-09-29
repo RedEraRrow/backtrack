@@ -7,8 +7,8 @@ import unittest
 
 from mutagen.id3 import ID3, TIT2
 
-from src.playback import playback_ui as ui
-from backbone import ui as ui_utils
+from backtrack.playback import player_ui
+from backbone import ui
 
 
 def _quiet(fn, *a, **k):
@@ -24,10 +24,10 @@ class ProgressRowTest(unittest.TestCase):
     def test_redraw_skips_the_progress_row(self):
         audio = ID3(); audio.add(TIT2(encoding=3, text='Title'))
         for size in [(40, 20), (60, 30), (140, 40)]:        # minimal, standard, wide
-            _quiet(ui_utils.clear_screen)
-            (prog_row, *_), _ = _quiet(ui.draw_full_ui, '/none.mp3', audio, None, size)
-            _quiet(ui.update_progress_ui, prog_row, 10, 100, size[0])
-            _, again = _quiet(ui.draw_full_ui, '/none.mp3', audio, None, size)
+            _quiet(ui.clear_screen)
+            (prog_row, *_), _ = _quiet(player_ui.draw_full_ui, '/none.mp3', audio, None, size)
+            _quiet(player_ui.update_progress_ui, prog_row, 10, 100, size[0])
+            _, again = _quiet(player_ui.draw_full_ui, '/none.mp3', audio, None, size)
             self.assertNotIn(f"\033[{prog_row};1H", again, size)
 
 

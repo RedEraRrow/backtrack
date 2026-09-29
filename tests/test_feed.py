@@ -1,4 +1,4 @@
-"""Headless tests for src/feed.py.
+"""Headless tests for backtrack/feed.py.
 
 The title cases come from a real feed: `tests/fixtures/friday_night_comedy.rss`
 is a trimmed copy of BBC Radio 4's *Friday Night Comedy*, kept because its
@@ -8,7 +8,7 @@ other in every way a title can. No test here touches the network.
 import os
 import unittest
 
-from src import feed as fd
+from backtrack import feed as fd
 
 FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures',
                        'friday_night_comedy.rss')
@@ -319,7 +319,7 @@ class StateTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from src import config as cfg
+        from backtrack import config as cfg
         self.tmp = tempfile.mkdtemp()
         self._saved = cfg.CONFIG_DIR
         cfg.CONFIG_DIR = Path(self.tmp)

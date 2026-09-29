@@ -1,4 +1,4 @@
-"""Tests for bulk candidate detection (src/trim/trim_bulk.py)
+"""Tests for bulk candidate detection (backtrack/trim/bulk.py)
 and sting seeding. Candidate detection is pure (no
 file access, no ffmpeg); sting seeding needs real fixtures and is skipped
 when ffmpeg is absent."""
@@ -8,8 +8,8 @@ import subprocess
 import tempfile
 import unittest
 
-from src.trim import trim
-from src.trim import trim_bulk as tb
+from backtrack.trim import engine as trim
+from backtrack.trim import bulk as tb
 
 
 def _track(path, artist, album, duration):

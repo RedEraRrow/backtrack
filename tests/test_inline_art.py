@@ -7,8 +7,8 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from src.playback import player_art as art
-from src.playback.player_geom import geom
+from backtrack.playback import player_art as art
+from backtrack.playback.player_geom import geom
 
 ART = "\n".join("\033[38;2;1;2;3m\033[48;2;4;5;6m▀" * 8 + "\033[0m" for _ in range(4))
 
@@ -34,7 +34,7 @@ class InlineArtTest(unittest.TestCase):
         if tmux:
             env["TMUX"] = tmux
         return (patch.dict(os.environ, env, clear=True),
-                patch("src.config.load_config", lambda: {"art_inline_images": on}))
+                patch("backtrack.config.load_config", lambda: {"art_inline_images": on}))
 
     def test_off_unless_setting_on_and_iterm_outside_tmux(self):
         for kw, expect in (({}, True), ({"on": False}, False),
@@ -87,7 +87,7 @@ class InlineArtTest(unittest.TestCase):
         calls = iter([0.0, 1e12])                     # no resize yet, then one mid-send
         buf = io.StringIO()
         with patch.object(art, "_inline_art_data", lambda *a: (big, 1)), \
-             patch.object(art.ui_utils, "last_resize_signal_at", lambda: next(calls, 1e12)), \
+             patch.object(art.ui, "last_resize_signal_at", lambda: next(calls, 1e12)), \
              redirect_stdout(buf):
             art.redraw_art_image()
         out = buf.getvalue()
@@ -100,12 +100,12 @@ class InlineArtTest(unittest.TestCase):
         art._inline_art['path'] = None
 
     def test_full_screen_mode_turns_auto_wrap_off_and_back_on(self):
-        from backbone import ui as ui_utils
+        from backbone import ui
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ui_utils.enter_alt_screen()
+            ui.enter_alt_screen()
             on = buf.getvalue()
-            ui_utils.exit_alt_screen()
+            ui.exit_alt_screen()
         self.assertIn("\033[?7l", on)
         self.assertIn("\033[?7h", buf.getvalue()[len(on):])
 

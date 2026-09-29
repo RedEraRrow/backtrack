@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from src.lyrics.lyrics import _find_markdown_for_audio          # noqa: E402
-from src.lyrics.verify import _verify_matchup, _split_candidates        # noqa: E402
+from backtrack.lyrics.formats import _find_markdown_for_audio          # noqa: E402
+from backtrack.lyrics.verify import _verify_matchup, _split_candidates        # noqa: E402
 
 
 def check(mp3: str) -> int:

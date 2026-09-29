@@ -5,7 +5,7 @@ import random
 import unittest
 from unittest.mock import patch
 
-from src import music_library as ml
+from backtrack import music_library as ml
 
 CFG = {'music_directories': ['/m/Radio', '/m/Music']}
 
@@ -74,7 +74,7 @@ class SortTracksTest(unittest.TestCase):
 
 class AlbumShuffleTest(unittest.TestCase):
     def test_albums_move_as_whole_runs_in_track_order(self):
-        from src.menus import play as menus
+        from backtrack.menus import play as menus
         lib = [t(f'/m/Music/{a}{n}', a, 1, n) for a in 'ABCD' for n in (1, 2, 3)]
         paths = [x['path'] for x in lib]
         with patch.object(menus, 'play_queue', return_value=None) as pq:

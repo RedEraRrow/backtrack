@@ -1,4 +1,4 @@
-"""Tests for sting matching (src/trim/trim.py). Synthetic
+"""Tests for sting matching (backtrack/trim/engine.py). Synthetic
 fixtures generated at test time; skipped when ffmpeg is absent.
 
 The matched offset is a *seed*, not a final placement: the editor already
@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import unittest
 
-from src.trim import trim
+from backtrack.trim import engine as trim
 
 # A few MPEG frames' worth of slack: the envelope hop (10ms) plus the
 # inherent fuzziness of locating a transient from a smoothed RMS envelope.

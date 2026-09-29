@@ -63,7 +63,7 @@ and has an ID3/MP4 tag editor with bulk operations for whole albums.
 - **VLC / libvlc** installed on your system (provides audio playback).
 - **ffmpeg** on your `PATH` (or set `trim_ffmpeg_path` in config): only needed for trimming and
   ReplayGain. Without it those options are hidden and everything else works as normal.
-- Python packages from `requirements.txt`: `mutagen`, `python-vlc`, `opencv-python`, `numpy`,
+- Python packages, which pip installs with it: `mutagen`, `python-vlc`, `opencv-python`, `numpy`,
   `pyperclip`, `colorama`, and `backbone` (the back* tools' shared terminal library, fetched from
   GitHub). Album art is rendered in-project with OpenCV and NumPy, so no external
   image viewer is needed.
@@ -94,25 +94,20 @@ Ubuntu / Debian:
 sudo apt install ffmpeg
 ```
 
-**2. Install Python dependencies**
+**2. Install Backtrack**
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m pip install -e .
 ```
 
-**3. (Optional) install as a package**
-```bash
-python3 -m pip install .        # or: pip install -e .  for an editable dev install
-```
+That puts `backtrack` on your PATH. It's a live link back to this checkout, so edits take effect
+with no reinstall.
 
 ## Running
 
 ```bash
-python3 main.py
-```
-or, if installed as a package:
-```bash
 backtrack
 ```
+or, without the command on your PATH, `python3 -m backtrack` from the checkout.
 
 On first run, Backtrack asks for a music directory and builds a cached library for faster
 startups after that.

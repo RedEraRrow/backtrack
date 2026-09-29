@@ -6,7 +6,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from src import config
+from backtrack import config
 from backbone import ui as u
 
 
@@ -43,7 +43,7 @@ class AccentTest(unittest.TestCase):
 def _pick(keys, typed=None):
     """Drive Settings → Accent colour with scripted keys; returns the config."""
     from backbone.prompt import lists
-    from src.menus import settings
+    from backtrack.menus import settings
 
     class W:
         def __init__(self, fd): pass
@@ -82,17 +82,17 @@ class PickerTest(unittest.TestCase):
 
 class PlayerDetailsTest(unittest.TestCase):
     def test_m_is_remembered(self):
-        from src.playback import playback_ui as ui
+        from backtrack.playback import player_ui
         before = config.load_config().get('player_show_metadata', True)
         try:
             config.update_config({'player_show_metadata': True})
-            ui.refresh_player_settings()
-            self.assertTrue(ui._ui_state['show_metadata'])      # on by default
-            ui.toggle_metadata()
+            player_ui.refresh_player_settings()
+            self.assertTrue(player_ui._ui_state['show_metadata'])      # on by default
+            player_ui.toggle_metadata()
             self.assertFalse(config.load_config()['player_show_metadata'])
-            ui._ui_state['show_metadata'] = True                # a later play reloads it
-            ui.refresh_player_settings()
-            self.assertFalse(ui._ui_state['show_metadata'])
+            player_ui._ui_state['show_metadata'] = True                # a later play reloads it
+            player_ui.refresh_player_settings()
+            self.assertFalse(player_ui._ui_state['show_metadata'])
         finally:
             config.update_config({'player_show_metadata': before})
 

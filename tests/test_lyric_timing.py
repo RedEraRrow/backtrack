@@ -1,8 +1,8 @@
 """The player's lyric timeline: when each beat hands over to the next."""
 import unittest
 
-from src import tuning as tune
-from src.lyrics.lyric_pane import DIRECTION, LINE, Beat, Timeline, handover
+from backtrack import tuning as tune
+from backtrack.lyrics.lyric_pane import DIRECTION, LINE, Beat, Timeline, handover
 
 LEAD = tune.LYRIC_LEAD_IN_S
 

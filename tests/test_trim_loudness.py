@@ -1,4 +1,4 @@
-"""Tests for loudness measurement (src/trim/trim.py). Synthetic
+"""Tests for loudness measurement (backtrack/trim/engine.py). Synthetic
 fixtures generated at test time; skipped when ffmpeg is absent."""
 import os
 import shutil
@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from src.trim import trim
+from backtrack.trim import engine as trim
 
 
 @unittest.skipUnless(trim.HAS_FFMPEG, "ffmpeg not installed")

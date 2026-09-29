@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import unittest
 
-from src.trim import trim
+from backtrack.trim import engine as trim
 
 
 def _make_fixture(path: str, sample_rate: int = 44100) -> None:

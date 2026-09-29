@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 from mutagen.id3 import ID3, SYLT
 
-import src.lyrics.editor_keys as keys_mod
-import src.lyrics.lyrics_editor as le
-from backbone import ui as ui_utils
+import backtrack.lyrics.editor_keys as keys_mod
+import backtrack.lyrics.editor as le
+from backbone import ui
 
 
 def _word(w, s, e):
@@ -65,8 +65,8 @@ def run_editor(keys, answers=(), sylt=False):
                     stack.enter_context(patch.object(mod, name, fake))
         stack.enter_context(patch.object(le, '_vlc', None))
         stack.enter_context(patch.object(sys.stdin, 'fileno', lambda: 0))
-        stack.enter_context(patch.object(ui_utils, 'consume_resize', lambda: False))
-        stack.enter_context(patch.object(ui_utils, 'show_status', lambda m, **k: status.append(m)))
+        stack.enter_context(patch.object(ui, 'consume_resize', lambda: False))
+        stack.enter_context(patch.object(ui, 'show_status', lambda m, **k: status.append(m)))
         sys.stdout = io.StringIO()
         try:
             le.lyrics_editor(mp3)

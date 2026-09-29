@@ -1,4 +1,4 @@
-"""Headless tests for the pure half of src/trim/trim_editor.py: marks, undo,
+"""Headless tests for the pure half of backtrack/trim/editor.py: marks, undo,
 join-audition windows, sibling context, segmented-editor apply. No terminal
 or VLC: those need a live pass per docs/DEVELOPER.md's own testing note."""
 import os
@@ -7,9 +7,9 @@ import subprocess
 import tempfile
 import unittest
 
-from src.lyrics import time_fields as tf
+from backtrack.lyrics import time_fields as tf
 
-from src.trim import trim_editor as te
+from backtrack.trim import editor as te
 
 FRAME = 1152 / 44100   # a 44.1kHz MPEG-1 frame, ~26.12ms
 

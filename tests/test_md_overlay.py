@@ -1,5 +1,5 @@
-"""Tests for the MD script → timed-transcript overlay (src/lyrics/md_overlay.py,
-src/lyrics/lyrics_text.py, `_parse_markdown_dialogue`).
+"""Tests for the MD script → timed-transcript overlay (backtrack/lyrics/md_overlay.py,
+backtrack/lyrics/text.py, `_parse_markdown_dialogue`).
 
 The fixtures are the shapes the Cabin Pressure transcripts actually use and that
 the parser used to get wrong: a sarcasm marker "(!)", a lettered list "(a)", a
@@ -11,10 +11,10 @@ import os
 import tempfile
 import unittest
 
-from src.lyrics import lyrics_text as lt
-from src.lyrics.lyrics import _parse_markdown_dialogue, _chunks_from_segments
-from src.lyrics.verify import _split_candidates, _split_seg_at
-from src.lyrics.md_overlay import build_md_overlay
+from backtrack.lyrics import text as lt
+from backtrack.lyrics.formats import _parse_markdown_dialogue, _chunks_from_segments
+from backtrack.lyrics.verify import _split_candidates, _split_seg_at
+from backtrack.lyrics.md_overlay import build_md_overlay
 
 
 def _segs(*lines):

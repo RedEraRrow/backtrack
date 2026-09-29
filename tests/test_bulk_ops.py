@@ -1,4 +1,4 @@
-"""Headless tests for src/id3/bulk_ops.py: the plan/apply core the bulk menu
+"""Headless tests for backtrack/id3/bulk_ops.py: the plan/apply core the bulk menu
 and the CLI both drive. Fixtures are tag-only MP3s: these operations read and
 write frames, never audio."""
 import os
@@ -8,7 +8,7 @@ import unittest
 
 from mutagen.id3 import ID3, APIC, TRCK, TPOS, TLEN, TDLY  # type: ignore[reportPrivateImportUsage]
 
-from src.id3 import bulk_ops as bo
+from backtrack.id3 import bulk_ops as bo
 
 
 def _mp3(path: str, *, track: str | None = None, disc: str | None = None,
@@ -37,7 +37,7 @@ class _Fixtures(unittest.TestCase):
         # rename_files refreshes library entries, which saves the cache: point
         # it into the temp dir, or every run overwrites the real library cache.
         from pathlib import Path
-        from src import music_library as ml
+        from backtrack import music_library as ml
         self.tmp = tempfile.mkdtemp()
         self._saved_cache = (ml.CACHE_DIR, ml.CACHE_PATH)
         ml.CACHE_DIR = Path(self.tmp) / "cache"
@@ -45,7 +45,7 @@ class _Fixtures(unittest.TestCase):
         ml.CACHE_DIR.mkdir()
 
     def tearDown(self):
-        from src import music_library as ml
+        from backtrack import music_library as ml
         ml.CACHE_DIR, ml.CACHE_PATH = self._saved_cache
         shutil.rmtree(self.tmp, ignore_errors=True)
 

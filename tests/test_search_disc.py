@@ -1,9 +1,9 @@
 """Tests for disc-level search: the computed 'disc_label' field and
-collect_disc_entities (src/search.py). Lets a query like "John Finnemore's
+collect_disc_entities (backtrack/search.py). Lets a query like "John Finnemore's
 Souvenir Programme Series 1" isolate just that disc's tracks."""
 import unittest
 
-from src import search
+from backtrack import search
 
 
 def _track(path, title, artist, album, disc='1', total_discs='1', disc_subtitle=''):

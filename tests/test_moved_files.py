@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from src import config, music_library as ml
-from backbone import ui as ui_utils
+from backtrack import config, music_library as ml
+from backbone import ui
 
 
 class DropMovedTest(unittest.TestCase):
@@ -23,7 +23,7 @@ class DropMovedTest(unittest.TestCase):
         config.update_config({'music_directories': [self.root], 'music_directory': self.root})
         ml._sync_state['library'] = self.library
         self.status = []
-        self._p = [patch.object(ui_utils, 'show_status', lambda m, **k: self.status.append(m)),
+        self._p = [patch.object(ui, 'show_status', lambda m, **k: self.status.append(m)),
                    patch.object(ml, 'save_library_cache', lambda *a, **k: None)]
         for p in self._p:
             p.start()
@@ -55,11 +55,11 @@ class DropMovedTest(unittest.TestCase):
 
 class QueueSkipsMovedTest(unittest.TestCase):
     def test_advance_skips_a_track_renamed_after_queueing(self):
-        from src.playback.session import PlaybackSession
+        from backtrack.playback.session import PlaybackSession
         s = PlaybackSession()
         s.queue, s.titles, s.index = ['/q/1.mp3', '/q/gone.mp3', '/q/3.mp3'], ['1', 'gone', '3'], 0
         loaded = []
-        with patch('src.playback.session.drop_moved', lambda ps: [p for p in ps if 'gone' not in p]), \
+        with patch('backtrack.playback.session.drop_moved', lambda ps: [p for p in ps if 'gone' not in p]), \
              patch.object(PlaybackSession, '_load', lambda self, p: loaded.append(p) or True):
             s.next(manual=False)
         self.assertEqual(loaded, ['/q/3.mp3'])

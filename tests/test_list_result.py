@@ -3,7 +3,7 @@ and says it was handled; anything else is left to the list."""
 import unittest
 from unittest.mock import patch
 
-from src.menus import play
+from backtrack.menus import play
 
 
 class ListResultTest(unittest.TestCase):

@@ -6,9 +6,10 @@ repaints everything after a terminal resize."""
 import unittest
 from unittest.mock import patch
 
-from src.playback import playback_ui as ui
-from src.playback import queue_pane as qp
-from backbone import prompt_core as pc, ui as ui_utils
+from backtrack.playback import player_ui
+from backtrack.playback import queue_pane as qp
+from backbone import ui
+from backbone.prompt import core as pc
 
 
 class QueueTest(unittest.TestCase):
@@ -23,11 +24,11 @@ class QueueTest(unittest.TestCase):
     def test_rows_fit_the_pane_including_the_marker(self):
         self._set(30, 5)
         for line in qp._build_queue_lines(40, 12):
-            self.assertLessEqual(ui_utils.visual_len(line), 40, ui_utils.strip_ansi(line))
+            self.assertLessEqual(ui.visual_len(line), 40, ui.strip_ansi(line))
 
     def test_current_track_near_the_top_with_position(self):
         self._set(40, 9)
-        lines = [ui_utils.strip_ansi(l) for l in qp._build_queue_lines(80, 8)]
+        lines = [ui.strip_ansi(l) for l in qp._build_queue_lines(80, 8)]
         self.assertIn("10 of 40", lines[0])
         self.assertTrue(lines[3].startswith("▶"))           # 2 played tracks above it
         self.assertIn("Track 7", lines[1])
@@ -45,7 +46,7 @@ class QueueTest(unittest.TestCase):
         self.assertTrue(qp._place_queue(out.append, 10, 3, 50, 6))
         for line in out:
             body = line.split('H', 1)[1]
-            self.assertLessEqual(ui_utils.visual_len(body), 50 - qp._QUEUE_RIGHT_MARGIN)
+            self.assertLessEqual(ui.visual_len(body), 50 - qp._QUEUE_RIGHT_MARGIN)
         self.assertIsNone(qp.queue_click_index(10, 5))       # the header row
         first = qp._queue_ctx['visible'][0]
         self.assertEqual(qp.queue_click_index(11, 3), first)
@@ -65,15 +66,15 @@ class QueueTest(unittest.TestCase):
 class PlayerHelpHintTest(unittest.TestCase):
     def test_hints_off_still_leave_i_help_in_the_players_bar(self):
         pc._hints_on[0] = False
-        _status, hints = ui._controls_line(False, False, 50, "")
-        self.assertIn("[i] help", ui_utils.strip_ansi(hints))
+        _status, hints = player_ui._controls_line(False, False, 50, "")
+        self.assertIn("[i] help", ui.strip_ansi(hints))
 
     def test_hints_on_show_hide_help_among_the_rest(self):
         pc._hints_on[0] = True
         try:
-            _status, hints = ui._controls_line(False, False, 50, "")
-            self.assertIn("hide help", ui_utils.strip_ansi(hints))
-            self.assertIn("prev/next", ui_utils.strip_ansi(hints))
+            _status, hints = player_ui._controls_line(False, False, 50, "")
+            self.assertIn("hide help", ui.strip_ansi(hints))
+            self.assertIn("prev/next", ui.strip_ansi(hints))
         finally:
             pc._hints_on[0] = False
 
@@ -97,24 +98,24 @@ class UniversalHintsTest(unittest.TestCase):
         pc._hints_on[0] = False
         self.assertEqual(pc._hint(("x", "shuffle"), ("q", "quit app")), "")
         pc._hints_on[0] = True
-        self.assertIn("shuffle", ui_utils.strip_ansi(pc._hint(("x", "shuffle"))))
+        self.assertIn("shuffle", ui.strip_ansi(pc._hint(("x", "shuffle"))))
 
     def test_top_line_carries_a_clickable_corner_and_i_only_where_free(self):
         from backbone import prompt
-        with patch.object(ui_utils, 'get_terminal_width', lambda: 60):
+        with patch.object(ui, 'get_terminal_width', lambda: 60):
             cells: dict = {}
             out = prompt.append_chrome(["  Artists"], [("x", "shuffle")], cells, pin=False, i_key=True)
-            self.assertTrue(ui_utils.strip_ansi(out[0]).rstrip().endswith("[i] help"))
-            row = 1 + ui_utils.MARGIN_V
+            self.assertTrue(ui.strip_ansi(out[0]).rstrip().endswith("[i] help"))
+            row = 1 + ui.MARGIN_V
             toggles = [k for k, v in cells.items() if v == pc.HINTS_CLICK]
-            plain = ui_utils.strip_ansi(out[0])
+            plain = ui.strip_ansi(out[0])
             self.assertEqual(toggles, [(row, plain.index("[i]") + 2)])        # just the `i`
             self.assertIs(prompt.consume_chrome('i', cells), prompt.CHROME_REDRAW)
             self.assertTrue(pc.hints_visible())
             typed: dict = {}
             out = prompt.append_chrome(["  Name"], [], typed, pin=False)      # a text field
             self.assertIsNone(prompt.consume_chrome('i', typed))              # i stays a letter
-            col = ui_utils.strip_ansi(out[0]).index("[i]") + 2
+            col = ui.strip_ansi(out[0]).index("[i]") + 2
             self.assertIs(prompt.consume_chrome(f"MOUSE_CLICK:0:{row}:{col}", typed),
                           prompt.CHROME_REDRAW)                              # but clicking it works
 
@@ -123,27 +124,27 @@ class BoxedHeaderTest(unittest.TestCase):
     def test_toggle_sits_inside_the_box_and_the_corners_survive(self):
         from backbone import prompt
         for width in (60, 100):
-            with patch.object(ui_utils, 'get_terminal_width', lambda w=width: w):
+            with patch.object(ui, 'get_terminal_width', lambda w=width: w):
                 cells: dict = {}
                 lines = prompt.rounded_header("A Very Long Episode Title Indeed", " · Some Artist",
                                               "[MP3]  3:21  4.2 MB")
                 out = prompt.append_chrome(list(lines), [], cells, pin=False, i_key=True)
-            plain = [ui_utils.strip_ansi(l) for l in out]
+            plain = [ui.strip_ansi(l) for l in out]
             self.assertTrue(plain[0].rstrip().endswith("╮"), plain[0])        # untouched top border
             self.assertTrue(plain[1].rstrip().endswith("[i] help │"), plain[1])
             for line in plain[:3]:
-                self.assertLessEqual(ui_utils.visual_len(line), width)
+                self.assertLessEqual(ui.visual_len(line), width)
             col = plain[1].index("[i]") + 2
             self.assertEqual([k for k, v in cells.items() if v == pc.HINTS_CLICK],
-                             [(2 + ui_utils.MARGIN_V, col)])                   # its `i`, on the title row
+                             [(2 + ui.MARGIN_V, col)])                   # its `i`, on the title row
 
 
 class PainterResizeTest(unittest.TestCase):
     def test_a_resize_wipes_and_repaints_unchanged_rows(self):
-        with patch.object(ui_utils, 'get_terminal_size', lambda *a: (80, 24)):
+        with patch.object(ui, 'get_terminal_size', lambda *a: (80, 24)):
             pc.screen_row_paint(1, "same")
             self.assertEqual(pc.screen_row_paint(1, "same"), "")        # unchanged: skipped
-        with patch.object(ui_utils, 'get_terminal_size', lambda *a: (100, 30)):
+        with patch.object(ui, 'get_terminal_size', lambda *a: (100, 30)):
             out = pc.screen_row_paint(1, "same")
         self.assertTrue(out.startswith("\033[H\033[2J"))               # wiped, then repainted
         self.assertIn("same", out)

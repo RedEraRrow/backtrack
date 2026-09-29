@@ -5,8 +5,8 @@ import unittest
 
 from mutagen.id3 import ID3, TIT2
 
-from src.menus.play import _queue_titles_for_paths
-from src.music_library import first_text, track_title
+from backtrack.menus.play import _queue_titles_for_paths
+from backtrack.music_library import first_text, track_title
 
 
 class TrackTitleTest(unittest.TestCase):

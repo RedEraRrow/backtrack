@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 from mutagen.id3 import ID3, SYLT, TIT1, TIT2, TRCK
 
-from src import config as cfg
-from src import music_library as ml
-from src.id3 import id3_tag_handler as th
+from backtrack import config as cfg
+from backtrack import music_library as ml
+from backtrack.id3 import tag_handler as th
 
 
 class _Tmp(unittest.TestCase):
@@ -72,10 +72,10 @@ class TagWriteTest(_Tmp):
         self.assertEqual(str(audio["TIT2"]), "title")
 
     def test_saving_lyrics_keeps_other_sylt_frames(self):
-        from src.lyrics.lyrics import save_sylt_entries
+        from backtrack.lyrics.formats import save_sylt_entries
         path = self.mp3("l.mp3", SYLT(encoding=3, lang="fra", desc="", format=2, type=1,
                                       text=[("bonjour", 0)]))
-        with patch("src.lyrics.lyrics.ui_utils.show_status"):
+        with patch("backtrack.lyrics.formats.ui.show_status"):
             save_sylt_entries(path, [("hello", 0)], desc="", lang="eng")
         langs = sorted(f.lang for f in ID3(path).getall("SYLT"))
         self.assertEqual(langs, ["eng", "fra"])

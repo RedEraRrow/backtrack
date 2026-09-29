@@ -4,7 +4,7 @@ and can't be ticked, and only rows that change are ever written, so a
 import unittest
 from unittest.mock import patch
 
-from src.id3 import bulk_common, bulk_ops as bo
+from backtrack.id3 import bulk_common, bulk_ops as bo
 
 
 class PreviewAndApplyTest(unittest.TestCase):

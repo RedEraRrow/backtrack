@@ -7,7 +7,7 @@ is said. The script owns everything the timing cannot carry: who is speaking, th
 punctuation and capitalisation, emphasis, and the stage directions.
 
 The two are joined by a single word-level alignment
-([`lyrics_text.align_tokens`](../src/lyrics/lyrics_text.py)), so the script only does its job
+([`lyrics.text.align_tokens`](../backtrack/lyrics/text.py)), so the script only does its job
 if its words are recognisably the same words the transcript heard. This guide is how to
 write one that matches.
 

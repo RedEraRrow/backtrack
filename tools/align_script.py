@@ -48,10 +48,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.lyrics import lyrics_text as lt
+from backtrack.lyrics import text as lt
 
 _lt = lt
-from src.lyrics.lyrics import _find_markdown_for_audio, _parse_markdown_dialogue
+from backtrack.lyrics.formats import _find_markdown_for_audio, _parse_markdown_dialogue
 
 # MFA aligns a whole file as ONE utterance, and a 28-minute one does not align at
 # all: the Viterbi search finds no path at the default beam, and widening it hits

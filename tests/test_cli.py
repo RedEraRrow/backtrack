@@ -28,7 +28,7 @@ from pathlib import Path
 
 from mutagen.id3 import ID3, TALB, TCON, TIT2, TPE1, TPOS, TRCK  # type: ignore[reportPrivateImportUsage]
 
-from src import cli
+from backtrack import cli
 from backbone import output as out
 
 
@@ -53,9 +53,9 @@ class CliTest(unittest.TestCase):
     """A CLI test with its own config, cache and music directory."""
 
     def setUp(self):
-        from src import config as cfg
-        from src import history as hist
-        from src import music_library as ml
+        from backtrack import config as cfg
+        from backtrack import history as hist
+        from backtrack import music_library as ml
 
         self.tmp = tempfile.mkdtemp()
         self.music = os.path.join(self.tmp, "music")
@@ -87,9 +87,9 @@ class CliTest(unittest.TestCase):
         directory. Failing loudly here costs one assertion; not failing here cost
         a real listening-history log.
         """
-        from src import config as cfg
-        from src import history as hist
-        from src import music_library as ml
+        from backtrack import config as cfg
+        from backtrack import history as hist
+        from backtrack import music_library as ml
 
         for name, path in (('config.CONFIG_DIR', cfg.CONFIG_DIR),
                            ('config.CONFIG_FILE', cfg.CONFIG_FILE),
@@ -101,9 +101,9 @@ class CliTest(unittest.TestCase):
                 f"{name} is {path}, outside the test directory, refusing to run")
 
     def tearDown(self):
-        from src import config as cfg
-        from src import history as hist
-        from src import music_library as ml
+        from backtrack import config as cfg
+        from backtrack import history as hist
+        from backtrack import music_library as ml
         (cfg.CONFIG_DIR, cfg.CONFIG_FILE, ml.CACHE_DIR, ml.CACHE_PATH,
          hist.HISTORY_FILE) = self._saved
         sys.stdin = self.stdin
@@ -295,7 +295,7 @@ class ConfigTest(CliTest):
                          out.NOT_FOUND)
 
     def test_list_shows_every_key(self):
-        from src.config import DEFAULT_CONFIG
+        from backtrack.config import DEFAULT_CONFIG
         _code, body = self.json_of('config', 'list')
         for key in DEFAULT_CONFIG:
             self.assertIn(key, body)
@@ -312,7 +312,7 @@ class HistoryTest(CliTest):
         self.assertEqual(body['items'], [])
 
     def test_clear_removes_logged_plays(self):
-        from src import history
+        from backtrack import history
         history.log_listening_history(self.tracks[0], 0.0, 30.0)
         _code, body = self.json_of('history', 'list')
         self.assertEqual(len(body['items']), 1)
@@ -321,7 +321,7 @@ class HistoryTest(CliTest):
         self.assertEqual(body['items'], [])
 
     def test_clear_does_not_prompt_when_stdin_is_not_a_terminal(self):
-        from src import history
+        from backtrack import history
         history.log_listening_history(self.tracks[0], 0.0, 30.0)
         # No --yes, nothing on stdin: it must decline rather than block.
         code, stdout, _err = self.run_cli('history', 'clear', stdin="")
@@ -339,13 +339,13 @@ class DryRunTest(CliTest):
         self.assertEqual(body['value'], [])
 
     def test_dry_run_does_not_write_the_cache(self):
-        from src import music_library as ml
+        from backtrack import music_library as ml
         self.run_cli('library', 'dirs', '--add', self.music)
         self.run_cli('library', 'scan', '--dry-run')
         self.assertFalse(ml.CACHE_PATH.exists())
 
     def test_dry_run_does_not_clear_the_history(self):
-        from src import history
+        from backtrack import history
         history.log_listening_history(self.tracks[0], 0.0, 30.0)
         self.run_cli('history', 'clear', '--dry-run')
         self.assertEqual(len(self.json_of('history', 'list')[1]['items']), 1)
@@ -376,18 +376,18 @@ class OutputModeTest(CliTest):
         self.assertNotIn('\033', err)
 
     def test_no_colour_flag_strips_styling_on_a_terminal_too(self):
-        from backbone import ui as ui_utils
+        from backbone import ui
         out.configure(colour=True)
-        self.assertNotEqual(ui_utils.Colors.DIM, '')
+        self.assertNotEqual(ui.Colors.DIM, '')
         self.run_cli('config', 'list', '--no-colour')
-        self.assertEqual(ui_utils.Colors.DIM, '')
+        self.assertEqual(ui.Colors.DIM, '')
 
     def test_no_color_environment_variable_is_honoured(self):
-        from backbone import ui as ui_utils
+        from backbone import ui
         saved = os.environ.get('NO_COLOR')
         os.environ['NO_COLOR'] = '1'
         try:
-            self.assertFalse(ui_utils.colour_enabled())
+            self.assertFalse(ui.colour_enabled())
         finally:
             if saved is None:
                 os.environ.pop('NO_COLOR', None)
@@ -395,11 +395,11 @@ class OutputModeTest(CliTest):
                 os.environ['NO_COLOR'] = saved
 
     def test_cursor_control_survives_colour_being_switched_off(self):
-        from backbone import ui as ui_utils
-        ui_utils.set_colour(False)
-        self.assertEqual(ui_utils.Colors.DIM, '')
-        self.assertNotEqual(ui_utils.Colors.HIDE, '')
-        ui_utils.set_colour(True)
+        from backbone import ui
+        ui.set_colour(False)
+        self.assertEqual(ui.Colors.DIM, '')
+        self.assertNotEqual(ui.Colors.HIDE, '')
+        ui.set_colour(True)
 
     def test_quiet_prints_nothing_but_still_reports(self):
         self.scan()
@@ -449,7 +449,7 @@ class UsageTest(CliTest):
         self.assertIn('library', stdout)
 
     def test_every_leaf_command_has_a_worked_example(self):
-        from src.cli_commands import TREE
+        from backtrack.cli_commands import TREE
 
         def leaves(cmds, prefix=''):
             """Every runnable command and the path that reaches it."""
@@ -472,7 +472,7 @@ class UsageTest(CliTest):
         %-formats help strings, and "A %token% name pattern" made it read `%t`
         as a format specifier.
         """
-        from src.cli_commands import TREE
+        from backtrack.cli_commands import TREE
 
         def walk(cmds, prefix=''):
             """Every command and group with the path that reaches it."""
@@ -508,7 +508,7 @@ class UsageTest(CliTest):
 
 class SchemaAndCompletionTest(CliTest):
     def test_schema_describes_the_real_tree(self):
-        from src.cli_commands import TREE
+        from backtrack.cli_commands import TREE
         _code, stdout, _err = self.run_cli('schema', '--json')
         body = json.loads(stdout)
         self.assertEqual([c['name'] for c in body['commands']],
@@ -534,7 +534,7 @@ class SchemaAndCompletionTest(CliTest):
         json.loads(stdout)                      # still valid either way
 
     def test_completions_mention_every_top_level_command(self):
-        from src.cli_commands import TREE
+        from backtrack.cli_commands import TREE
         for shell in ('bash', 'zsh', 'fish'):
             with self.subTest(shell=shell):
                 code, stdout, _err = self.run_cli('completion', shell)
@@ -640,14 +640,14 @@ class BulkCommandsTest(CliTest):
         self.scan()
 
     def test_stripdisc_removes_one_of_one(self):
-        from src.id3 import tag_writer as tw
+        from backtrack.id3 import tag_writer as tw
         code, _out, _err = self.run_cli('bulk', 'stripdisc', '--album', 'rio',
                                         '--yes')
         self.assertEqual(code, out.OK)
         self.assertEqual(tw.read_number_pairs(self.tracks[0])['disc'], '')
 
     def test_stripdisc_dry_run_changes_nothing(self):
-        from src.id3 import tag_writer as tw
+        from backtrack.id3 import tag_writer as tw
         self.run_cli('bulk', 'stripdisc', '--album', 'rio', '--dry-run')
         self.assertEqual(tw.read_number_pairs(self.tracks[0])['disc'], '1')
 
@@ -673,14 +673,14 @@ class BulkCommandsTest(CliTest):
         self.assertTrue(all(line['schema'] == out.SCHEMA_VERSION for line in lines))
 
     def test_renumber_lays_down_a_continuous_run(self):
-        from src.id3 import tag_writer as tw
+        from backtrack.id3 import tag_writer as tw
         self.run_cli('bulk', 'renumber', '--album', 'rio', '--yes')
         numbers = [tw.read_number_pairs(p)['track'] for p in self.tracks[:2]]
         self.assertEqual(numbers, ['1', '2'])
 
     def test_striplength_removes_a_stale_tlen(self):
         from mutagen.id3 import TLEN  # type: ignore[reportPrivateImportUsage]
-        from src.id3 import tag_writer as tw
+        from backtrack.id3 import tag_writer as tw
         audio = ID3(self.tracks[2])
         audio.add(TLEN(encoding=3, text=["123456"]))
         audio.save(self.tracks[2], v2_version=3)
@@ -751,7 +751,7 @@ class BulkCommandsTest(CliTest):
         self.assertIn('No MP3s with embedded art', stdout)
 
     def test_art_embeds_a_shared_cover(self):
-        from src.id3 import tag_writer as tw
+        from backtrack.id3 import tag_writer as tw
         cover = os.path.join(os.path.dirname(self.tracks[0]), 'cover.jpg')
         with open(cover, 'wb') as f:
             f.write(b"\xff\xd8\xff\xe0" + b"\x00" * 32 + b"\xff\xd9")
@@ -928,7 +928,7 @@ class TrimCommandsTest(CliTest):
             self.assertIn("Could not read", err)
 
     def test_an_out_point_before_the_in_point_is_a_usage_error(self):
-        from src.trim import trim as t
+        from backtrack.trim import engine as t
         if not t.HAS_FFMPEG:
             self.skipTest("ffmpeg is not installed")
         code, _out, _err = self.run_cli('trim', 'cut', self.tracks[0],
@@ -941,7 +941,7 @@ class ChapterPolicyTest(unittest.TestCase):
     per-chapter questions."""
 
     def setUp(self):
-        from src.trim import trim as t
+        from backtrack.trim import engine as t
         self.t = t
 
     def test_clamp_pulls_a_straddling_chapter_to_the_boundary(self):
@@ -975,7 +975,7 @@ class FeedCommandsTest(CliTest):
 
     def setUp(self):
         super().setUp()
-        from src import feed as fd
+        from backtrack import feed as fd
         self._saved_feeds = fd._state_path
         self.enclosures = os.path.join(self.tmp, 'enc')
         os.makedirs(self.enclosures, exist_ok=True)
@@ -1223,7 +1223,7 @@ class DefaultsPrecedenceTest(CliTest):
 
     def test_a_falsy_config_value_means_no_preference(self):
         self.run_cli('config', 'set', 'cli_history_limit', '0')
-        from src import history
+        from backtrack import history
         for _ in range(3):
             history.log_listening_history(self.tracks[0], 0.0, 30.0)
         _code, body = self.json_of('history', 'list')
@@ -1246,7 +1246,7 @@ class DefaultsPrecedenceTest(CliTest):
     def test_a_nonsense_config_value_falls_back_rather_than_failing(self):
         self.run_cli('config', 'set', 'cli_search_limit', '5')
         # Hand-edit it to something the type cannot take.
-        from src.config import load_config, save_config
+        from backtrack.config import load_config, save_config
         config = load_config()
         config['cli_search_limit'] = 'lots'
         save_config(config)

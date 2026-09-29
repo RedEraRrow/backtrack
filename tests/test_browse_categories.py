@@ -2,8 +2,8 @@
 left out rather than filed under "Unknown", and the saved menu order."""
 import unittest
 
-from src import music_library as ml
-from src.menus import common as menus
+from backtrack import music_library as ml
+from backtrack.menus import common as menus
 
 
 def t(path, **kw):
@@ -41,7 +41,7 @@ class GroupingTest(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
         self.assertEqual(song['credits'], [['Mark Evans', 'Sundry Ruffians, Publishers, and Whackwallop']])
         self.assertEqual(list(ml.get_grouped_data([song], 'people')), ['Mark Evans'])
-        from src import search
+        from backtrack import search
         self.assertEqual(search._entity_values(song, 'people'), ['Mark Evans'])
 
     def test_tracks_without_a_composer_are_not_one_unknown_row(self):

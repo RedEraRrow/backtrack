@@ -13,7 +13,7 @@ One rule per axis, so similar screens read the same way.
 | Separator | Interpunct `·`: hint bars, headers, player details, multi-value fields. Never `⋅`. |
 | Truncation | `…`, one column, never `...`. `truncate_text`'s default. |
 | Hierarchy | `>` in the breadcrumb only: it means descent, not separation. |
-| Column gap | `prompt_core.COL_GAP` (3) for every list; never a per-list override. Narrow terminals are handled by column `priority` and the per-render pin gap. |
+| Column gap | `prompt.core.COL_GAP` (3) for every list; never a per-list override. Narrow terminals are handled by column `priority` and the per-render pin gap. |
 | Case | Sentence case for every label, menu item, prompt title and separator heading. |
 | Tick / cross | One pair, heavy: `✔` U+2714 and `✘` U+2718. The tick already marks the current sort, a checked multi-select row and "Save changes", so state uses the same one. Never `✓` U+2713 (lighter, doesn't match) or `✗` U+2717 (drawn brush-style in most fonts). |
 | On/off state | Shown in the row itself, in a left-aligned column right beside the labels. Pinned right, a value is too far from its label to scan. |
@@ -55,9 +55,10 @@ CLI output) lives in [backbone](https://github.com/RedEraRrow/backbone), not her
 
 ```
 backtrack/
-├── main.py                       # Root launcher → src.main:main (console-script: `backtrack`)
-├── src/
-│   ├── main.py                   # Startup: no args → the app (new session or join), any arg → the CLI
+├── pyproject.toml                # Dependencies and the `backtrack` command
+├── backtrack/
+│   ├── __main__.py               # `python3 -m backtrack`
+│   ├── main.py                   # `backtrack` itself. Startup: no args → the app (new session or join), any arg → the CLI
 │   ├── cli.py                    # The CLI: argparse, schema and completion built from the command tree
 │   ├── cli_commands.py           # The command tree (TREE) and its handlers, thin wrappers over the app's own functions
 │   ├── config.py                 # DEFAULT_CONFIG, CONFIG_DIR, load_config, setting, update_config
@@ -67,8 +68,7 @@ backtrack/
 │   ├── search.py                 # PURE fuzzy matcher/ranker (tiered exact→prefix→word→substring→typo)
 │   ├── bulk_pattern.py           # PURE range/every-N/date-schedule assignment + track renumbering
 │   ├── tuning.py                 # Every timing, threshold and weight the app is tuned on
-│   ├── art/
-│   │   └── album_art.py          # Half-block art rendering (OpenCV → ANSI); APIC extraction
+│   ├── album_art.py              # Half-block art rendering (OpenCV → ANSI); APIC extraction
 │   ├── menus/
 │   │   ├── __init__.py           # Main menu
 │   │   ├── common.py             # Headers, list columns, settings-row glyphs, Browse categories
@@ -81,9 +81,9 @@ backtrack/
 │   │   └── settings.py           # Settings screen and the editors it opens
 │   ├── id3/
 │   │   ├── tag_registry.py       # Single source of truth: TagInfo per frame (drives widget dispatch)
-│   │   ├── id3_tag_handler.py    # create_frame, prompt_for_value dispatch, summarize, load_id3/save_id3
-│   │   ├── id3_browser.py        # Single-track editor UI + the sort-order engine (pure heuristics)
-│   │   ├── bulk_id3_manager.py   # Bulk menu (tag ops / Automation…) + renumber, reflow, strip ops
+│   │   ├── tag_handler.py        # create_frame, prompt_for_value dispatch, summarize, load_id3/save_id3
+│   │   ├── browser.py            # Single-track editor UI + the sort-order engine (pure heuristics)
+│   │   ├── bulk_menu.py          # Bulk menu (tag ops / Automation…) + renumber, reflow, strip ops
 │   │   ├── bulk_common.py        # Shared by the bulk ops: the step walker (_walk), preview_and_apply
 │   │   ├── bulk_names.py         # Derive from filename, Rename files from tags
 │   │   ├── bulk_art.py           # Set album art from files, Set picture type
@@ -95,11 +95,11 @@ backtrack/
 │   │   ├── cover_matcher.py      # PURE: pair tracks ↔ cover-image files (Set album art from files)
 │   │   └── tag_writer.py         # Format-agnostic writer: MP3 (ID3) + MP4 atoms; write_fields/write_cover
 │   ├── lyrics/
-│   │   ├── lyrics_text.py        # PURE: normalising, stage-dir stripping, script↔transcript alignment
+│   │   ├── text.py               # PURE: normalising, stage-dir stripping, script↔transcript alignment
 │   │   ├── md_overlay.py         # PURE: the one MD→segment overlay both editor and player render from
-│   │   ├── lyrics.py             # SYLT/USLT/markdown parsing, save_sylt_entries, LRC import
+│   │   ├── formats.py            # SYLT/USLT/markdown parsing, save_sylt_entries, LRC import
 │   │   ├── lyric_pane.py         # The player's lyric pane: what is on screen at a moment of a track
-│   │   ├── lyrics_editor.py      # The lyric editor session (edit, tap-sync, review, save)
+│   │   ├── editor.py             # The lyric editor session (edit, tap-sync, review, save)
 │   │   ├── editor_keys.py        # The editor's keys per mode, mouse, review walkthroughs
 │   │   ├── editor_view.py        # The editor's screen: pure rendering
 │   │   ├── time_fields.py        # Segmented mm:ss.mmm fields, shared with the trim editor
@@ -108,16 +108,17 @@ backtrack/
 │   ├── playback/
 │   │   ├── session.py            # The shared PlaybackSession: one VLC player, queue, background tick
 │   │   ├── ipc.py                # Multi-window sessions: registry under CONFIG_DIR/sessions/, client
-│   │   ├── playback.py           # The player view over the session: key handling, host and joined
-│   │   ├── playback_ui.py        # Player renderer (frame buffer, layout modes, panes, volume bar)
+│   │   ├── player.py             # The player view over the session: key handling, host and joined
+│   │   ├── player_ui.py          # Player renderer (frame buffer, layout modes, panes, volume bar)
 │   │   ├── queue_pane.py         # The player's queue pane
 │   │   ├── now_playing_box.py    # The mini-player above the status bar on every menu screen
 │   │   ├── player_art.py         # The player's art: half-blocks, or the real image on iTerm2
 │   │   └── player_geom.py        # Where the last frame put things (art, bars, panes) for clicks and redraws
 │   └── trim/
-│       ├── trim.py               # Lossless MP3 trim engine: ffmpeg stream copy, tag copy, backups
-│       ├── trim_editor.py        # Single-track trim screen (`t` in the tag editor)
-│       └── trim_bulk.py          # Bulk trim (detection, sting seeding, the conveyor), ReplayGain
+│       ├── engine.py             # Lossless MP3 trim engine: ffmpeg stream copy, tag copy, backups
+│       ├── editor.py             # Single-track trim screen (`t` in the tag editor)
+│       └── bulk.py               # Bulk trim (detection, sting seeding, the conveyor), ReplayGain
+├── tests/                        # test_*.py, each runnable on its own
 ├── tools/
 │   ├── align_script.py           # Time a markdown script against its audio → transcript JSON
 │   └── check_alignment.py        # Sanity-check a transcript align_script.py produced
@@ -149,7 +150,7 @@ app against a throwaway config/cache without touching your own.
 
 - **Pure core, thin UI.** `filename_parser`, `file_namer`, `cover_matcher`, `bulk_pattern`,
   `search` and `tag_writer` are pure and unit-tested, and `bulk_ops` plans and applies without any UI; the `bulk_*` screens,
-  `id3_browser` and `menus/` own the prompts, previews, and apply loops. New logic should be added
+  `id3.browser` and `menus/` own the prompts, previews, and apply loops. New logic should be added
   to (or as) a pure module and driven from the UI, not baked into a prompt.
 - **One source of truth for tags.** `tag_registry.TagInfo` describes every frame (friendly names,
   `frame_type`, `format_spec`, `ui_category`, `single_only`, mutagen class). `ui_category` /
@@ -169,13 +170,13 @@ app against a throwaway config/cache without touching your own.
   | A track's name on screen | `music_library.track_title(path, song)` |
   | A text frame's first value | `music_library.first_text(frame)` |
   | Act on paths that may have moved | `music_library.drop_moved(paths)`: re-syncs and tells the user |
-  | Read / write ID3 | `id3_tag_handler.load_id3(path)` / `save_id3(audio, path)` |
+  | Read / write ID3 | `id3.tag_handler.load_id3(path)` / `save_id3(audio, path)` |
   | Keep a rebuilt list's cursor | `prompt.ListPlace`, passed as `select(place=...)` |
-  | A line-editing key in a text field | `prompt_core.edit_line(buf, pos, key)` |
+  | A line-editing key in a text field | `prompt.core.edit_line(buf, pos, key)` |
   | Preview a bulk plan and apply it | `bulk_common.preview_and_apply` |
   | "3 tracks" / "1 track" | `backbone.ui.plural(n, "track")` |
 
-- **Test headlessly, then live.** Pure logic + writes are checked with `pyright src` (kept at
+- **Test headlessly, then live.** Pure logic + writes are checked with `pyright backtrack` (kept at
   **0/0**) and small headless scripts (create→save→read round-trips). Interactive widgets get a
   final live-terminal pass, since focus/mouse/layout can't be exercised headlessly.
 - **Docstrings.** Every module-level function and class method carries a concise docstring;
@@ -220,7 +221,7 @@ the only thing that can be right over SSH, where the keyboard is on the *other* 
 
 - **`tag_registry.py`**: `TAG_REGISTRY`, the frame catalogue, and `SORT_TAGS` (the sort frames and
   their sources).
-- **`id3_tag_handler.py`**: `create_frame(tag_id, value)` builds the right mutagen frame;
+- **`id3/tag_handler.py`**: `create_frame(tag_id, value)` builds the right mutagen frame;
   `prompt_for_value` dispatches a frame to its editor widget (by `base_id` for structured binary
   frames like EQU2/RVA2/POPM/PCNT/RBUF and for enum/bool text frames TKEY/TMED/TSRC/TCMP, else by
   `ui_category`/`format_spec`); `summarize_tag_value` renders a one-line summary. `load_id3` reads
@@ -228,7 +229,7 @@ the only thing that can be right over SSH, where the keyboard is on the *other* 
   multi-value, else v2.3**, and refuses anything that isn't an MP3. `is_placeholder_name` is what
   keeps "Various Artists" and friends out of name fields. Multi-value (#60) support and the POPM
   0-5★ ↔ 0-255 (WMP-scale) mapping live here.
-- **`id3_browser.py`**: the single-track editor UI (MP3 only; its Lyrics row opens the lyric
+- **`id3/browser.py`**: the single-track editor UI (MP3 only; its Lyrics row opens the lyric
   editor, `t` the trim editor), and the **sort-order engine** (`_sort_single_name` /
   `_sort_candidates`): pure heuristics (initials/Celtic merges, honorific & suffix strip, spacing
   prefixes, article move, positional split, ensembles as-is, commas read from context) that offer
@@ -239,7 +240,7 @@ the only thing that can be right over SSH, where the keyboard is on the *other* 
   reading, the value whole, and the maximal split), then `_review_sort_people` lists the resulting
   individuals flat, one row per person across `TSOP`/`TSO2`/`TSOC`, so each is decided once and the
   decision reaches every value they appear in. `_SortPlan` holds both the values and the decisions.
-- **`bulk_id3_manager.py`**: the bulk editor's menu, the tag operations (add/set/rename/delete),
+- **`id3/bulk_menu.py`**: the bulk editor's menu, the tag operations (add/set/rename/delete),
   **Automation…**, and the renumber, reflow, remove-single-disc and strip-length ops. The other
   automations live in `bulk_names`, `bulk_art`, `bulk_sort`, `bulk_assign` and `trim/trim_bulk`.
   Each builds a plan with `bulk_ops` and applies it via `tag_writer`; the tidy-ups show it through
@@ -279,9 +280,9 @@ to MP3 (ID3, fresh header for a blank file) or MP4 atoms (`.m4a`/`.mp4`/`.m4p`),
 `WriteResult` (`written`/`skipped_existing`/`skipped_format`/`error`/`unsupported`). Raw `.aac` has
 no atoms and is skipped. `has_cover`/`present_fields` back the fill-blanks previews.
 
-### Prompt widgets: `backbone.prompt` (over `backbone.prompt_core`)
+### Prompt widgets: `backbone.prompt` (over `backbone.prompt.core`)
 
-`prompt_core` provides the raw-terminal primitives (mode switching, key decode, the anchored
+`prompt.core` provides the raw-terminal primitives (mode switching, key decode, the anchored
 `_Widget` renderer, the structured column/table layout, the adaptive hint engine, and `edit_line`,
 the one line editor every text field uses). The `prompt` package builds the widgets and re-exports
 them, so callers write `prompt.select(...)`:
@@ -303,11 +304,11 @@ them, so callers write `prompt.select(...)`:
   past the end of one part into the next, with Tab still moving between *columns*. Widths come from
   `col_ratios` with `col_mins` honoured first, so a fixed-shape cell stays readable as the terminal
   narrows and its neighbours give way instead.
-- Value editors: `calendar_select`, `datetime_edit` (+ `tz_widget.timezone_select`) in `dates.py`;
+- Value editors: `calendar_select`, `datetime_edit` (+ `prompt.timezone.timezone_select`) in `dates.py`;
   `time_edit`, `fraction_edit`, `number_edit` (bounded int spinner), `rating_edit` (POPM stars +
   count + email) in `values.py`; `rva2_edit` (dB meter), `equaliser_edit` (graphic EQ) in `audio.py`.
 - **One caret, drawn not borrowed:** every typable field marks its position with
-  `prompt_core.block_cursor()`: reverse video *on* the character (a white block at the end of the
+  `prompt.core.block_cursor()`: reverse video *on* the character (a white block at the end of the
   text, where there is nothing left to move). A bar drawn between two characters costs a column, so
   the line slides sideways on every keystroke; `block_cursor_width()` gives callers the padding
   arithmetic. `text`/`path` draw it too rather than positioning the terminal's own cursor, which is
@@ -338,7 +339,7 @@ them, so callers write `prompt.select(...)`:
 
 ### Command line: `cli.py`, `cli_commands.py`, `backbone.output`
 
-`src/main.py:main` sends any invocation with arguments to `cli.main`; bare `backtrack` opens
+`backtrack/main.py:main` sends any invocation with arguments to `cli.main`; bare `backtrack` opens
 the app.
 
 **The command tree is data.** `TREE` (in `cli_commands.py`) is a list of `Cmd`s, each with
@@ -352,7 +353,7 @@ hands the result to `output`. If a handler starts deciding *what an operation do
 decision belongs in a shared module: `id3/bulk_ops.py` is the worked example.
 
 **One output path.** `backbone.output` has `table` / `record` / `event` / `note` / `fail`, and
-the format decision lives only there. Human tables go through `prompt_core._table_widths` and
+the format decision lives only there. Human tables go through `prompt.core._table_widths` and
 `_render_table_row`, the same engine every list in the app uses. Colour is switched process-wide
 by `backbone.ui.set_colour`, so existing render paths lose colour on a pipe without knowing about
 it. A list command prints its table on a terminal and one path per line when it is not, which
@@ -390,7 +391,7 @@ blocking call: a command with another source of targets (`--album`, say) must co
 track and the queue, and a background tick that advances the queue and logs history, whatever
 screen is showing. `playback.py` is the player *view* over it: it handles keys
 (seek/volume/panes/help) for the host and for a joined window, and leaving the view (`b`) keeps the
-audio playing. `playback_ui.py` renders the screen into a **frame buffer** flushed in one write:
+audio playing. `player_ui.py` renders the screen into a **frame buffer** flushed in one write:
 flow lines are positioned by a row counter while absolute-positioned items (volume bar, controls,
 lyrics) pass through. It has three layout modes (wide / standard / minimal) that size the art to
 leave room for the metadata and the (variable-height) hint block, a full-height volume bar clamped
@@ -400,7 +401,7 @@ lyrics+credits, skipping views with nothing in them). `lyric_pane.py` draws the 
 frame put everything so clicks and partial redraws can find it.
 
 **Several windows.** `ipc.py` registers each running session under `CONFIG_DIR/sessions/`. A second
-`backtrack` lists them at startup (`src/main.py`) and offers a new session or Join; a joined window
+`backtrack` lists them at startup (`backtrack/main.py`) and offers a new session or Join; a joined window
 drives the host through a `SessionClient`. Only one window holds the player view at a time
 (`acquire_view`), and `b` is refused while another window is attached (`has_other_windows`).
 
@@ -408,14 +409,14 @@ drives the host through a `SessionClient`. Only one window holds the player view
 
 A spoken-word track has a timed transcript (word-level JSON) and a markdown **script**
 next to the audio. The transcript owns the timing; the script owns the speakers,
-punctuation, emphasis and stage directions. `lyrics_text.py` is the pure layer: what
+punctuation, emphasis and stage directions. `lyrics/text.py` is the pure layer: what
 counts as the same word, what counts as spoken, and `align_tokens`, which matches the two
 word streams and reconciles the conventions they differ on (`take-off`/`takeoff`,
 `twenty-five`/`25`, `'cause`/`because`). `md_overlay.build_md_overlay` is the **single**
 join of script to segments: the editor and the player both render from it, so they cannot
 disagree about who is speaking or where a direction sits.
 
-The lyric editor is `lyrics_editor.py` (the session and its state), `editor_keys.py` (what each
+The lyric editor is `lyrics/editor.py` (the session and its state), `editor_keys.py` (what each
 key does in each mode), `editor_view.py` (drawing) and `time_fields.py` (the mm:ss.mmm fields,
 also used by the trim editor). `sync_doc.py` loads the lyrics and keeps edits in the working copy
 (`.sync.json`) beside the transcript until they are written back; `verify.py` builds the
@@ -451,9 +452,9 @@ are legacy from the old `viu` dependency; the binary is gone.)
 
 ```bash
 python3 -m unittest discover -s tests -t tests   # the suite
-pyright src                                      # type check
-python3 -m compileall -q src                     # syntax/import sanity
-BACKTRACK_CONFIG_DIR=/tmp/bt BACKTRACK_CACHE_DIR=/tmp/bt python3 main.py   # isolated live run
+pyright backtrack                                # type check
+python3 -m compileall -q backtrack               # syntax/import sanity
+BACKTRACK_CONFIG_DIR=/tmp/bt BACKTRACK_CACHE_DIR=/tmp/bt python3 -m backtrack   # isolated live run
 ```
 
 **Isolating a test that writes.** `config.CONFIG_FILE`, `music_library.CACHE_PATH` and
@@ -474,7 +475,7 @@ round-trip create→save→read). Reserve live runs for the interactive widgets 
   or files. Where an error is swallowed on purpose, use `with quietly():` so it still leaves a line
   in the log. Diagnostics also turns on the player's `e` (jump to the last 35 s) and shows which
   files a track's lyrics came from.
-- **Config:** `python3 -c "from src.config import load_config; print(load_config())"`, or
+- **Config:** `python3 -c "from backtrack.config import load_config; print(load_config())"`, or
   `backtrack config list`.
 - **Library cache:** inspect `library_cache.json` in the cache dir (or `$BACKTRACK_CACHE_DIR`).
 - **Playback:** the frame buffer makes it easy to dump the assembled screen before it's written.
@@ -483,6 +484,6 @@ round-trip create→save→read). Reserve live runs for the interactive widgets 
 
 - Keep the pure-core / thin-UI split; unit-test pure logic.
 - Use the shared helpers (see Design principles) rather than a local copy.
-- Document functions concisely (see Design principles); keep `pyright src` at 0/0.
+- Document functions concisely (see Design principles); keep `pyright backtrack` at 0/0.
 - Preserve terminal UX (no wrapping, symmetric margins, consistent nav keys).
 - Update this file and README.md when behaviour or structure changes.

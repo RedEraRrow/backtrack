@@ -1,7 +1,7 @@
 """setting(): the one place a setting's default comes from."""
 import unittest
 
-from src.config import DEFAULT_CONFIG, setting
+from backtrack.config import DEFAULT_CONFIG, setting
 
 
 class SettingTest(unittest.TestCase):

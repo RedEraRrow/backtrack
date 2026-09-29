@@ -1,4 +1,4 @@
-"""Tests for silence detection (src/trim/trim.py): the
+"""Tests for silence detection (backtrack/trim/engine.py): the
 baseline cut-point suggestion when there's no sting to match against."""
 import os
 import shutil
@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from src.trim import trim
+from backtrack.trim import engine as trim
 
 
 @unittest.skipUnless(trim.HAS_FFMPEG, "ffmpeg not installed")

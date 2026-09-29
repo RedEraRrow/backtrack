@@ -1,4 +1,4 @@
-"""Headless tests for src/id3/tag_writer.py."""
+"""Headless tests for backtrack/id3/tag_writer.py."""
 import os
 import shutil
 import tempfile
@@ -6,7 +6,7 @@ import unittest
 
 from mutagen.id3 import ID3, TLEN, TDLY  # type: ignore[reportPrivateImportUsage]
 
-from src.id3 import tag_writer as tw
+from backtrack.id3 import tag_writer as tw
 
 
 class StaleLengthTagsTest(unittest.TestCase):

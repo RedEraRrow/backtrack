@@ -1,4 +1,4 @@
-"""Tests for the trim engine (src/trim/trim.py). Synthetic fixtures generated
+"""Tests for the trim engine (backtrack/trim/engine.py). Synthetic fixtures generated
 at test time; skipped entirely when ffmpeg is absent."""
 import os
 import shutil
@@ -9,7 +9,7 @@ import unittest
 from mutagen.id3 import ID3, APIC, TPE1, TXXX, TLEN, TDLY  # type: ignore[reportPrivateImportUsage]
 from mutagen.mp3 import MP3
 
-from src.trim import trim
+from backtrack.trim import engine as trim
 
 RATES = (22050, 24000, 44100, 48000)
 
