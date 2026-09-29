@@ -86,7 +86,7 @@ NP_GLYPH_COLS = ((0, 2), (4, 2))
 class Colors:
     PRIMARY = "\033[1;37m" # Bold white
     WHITE = "\033[37m" # Normal white
-    ACCENT = "\033[1;31m" # Red
+    ACCENT = "\033[1;32m"   # green; set_accent applies the accent_colour setting
     CYAN = "\033[1;36m"
     YELLOW = "\033[1;33m"
     MAGENTA = "\033[1;35m"
