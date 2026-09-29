@@ -43,6 +43,9 @@ DEFAULT_CONFIG = {
     # The player's track details line (year, genre, disc/track…), which `m`
     # shows or hides; remembered between plays.
     "player_show_metadata": True,
+    # The player's transport buttons as Material Design icons, which only a
+    # Nerd Font has; off uses the Unicode media symbols every font falls back to.
+    "player_nerd_font_icons": False,
     # Playback volume, 0-100. Owned by the player session: restored at launch and
     # written back whenever it changes.
     "volume": 100,

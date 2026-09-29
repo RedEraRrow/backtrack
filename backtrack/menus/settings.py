@@ -172,7 +172,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
 # Settings rows that are on/off switches: space flips them, like ↵ does.
 _SETTINGS_TOGGLES = {"history", "autoplay", "meta_editor", "lyrics_editor",
                      "plain_text", "sort_tags", "hidden", "key_hints", "inline_art", "debug",
-                     "player_meta"}
+                     "player_meta", "nerd_icons"}
 
 
 def _accent_swatch(value) -> list:
@@ -265,6 +265,7 @@ def handle_settings(library_ref: list) -> None:
             ("key_hints",    "Key hints",            _state_glyph(prompt.hints_visible())),
             ("inline_art",   "Image album art (iTerm2)", _bool("art_inline_images")),
             ("player_meta",  "Track details in player", _bool("player_show_metadata")),
+            ("nerd_icons",   "Nerd Font player icons", _bool("player_nerd_font_icons")),
             prompt.separator("Appearance"),
             ("accent",       "Accent colour…",
              _accent_swatch(_accent) + ["  " + ui.accent_label(_accent)]),
@@ -351,6 +352,9 @@ def handle_settings(library_ref: list) -> None:
 
         elif choice == "player_meta":
             _toggled("player_show_metadata")
+
+        elif choice == "nerd_icons":
+            _toggled("player_nerd_font_icons")
 
         elif choice == "accent":
             _pick_accent(config)

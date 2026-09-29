@@ -17,6 +17,13 @@ class _Geom:
         # Right pane in the wide layout: 1-based start column and width.
         self.right_left: int | None = None
         self.right_width: int | None = None
+        # The row the lyric pane holds its current line on, or None (see
+        # lyric_pane.Geometry.centre): the art's middle, in the wide split.
+        self.lyric_centre: int | None = None
+        # The lyric pane's own column when it isn't the right pane: 1-based
+        # start and width (the standard layout insets it to float).
+        self.lyric_left: int | None = None
+        self.lyric_width: int | None = None
         # Progress bar from the last update_progress_ui: its row, the 1-based
         # column of its first cell (just past the '[' cap) and its width, so a
         # click on it becomes a seek.
@@ -30,6 +37,8 @@ class _Geom:
         frame's. The progress bar keeps its own, set by update_progress_ui."""
         self.art_width = self.art_left = self.art_top = self.art_height = None
         self.vol_bar_col = self.right_left = self.right_width = None
+        self.lyric_centre = None
+        self.lyric_left = self.lyric_width = None
 
 
 geom = _Geom()

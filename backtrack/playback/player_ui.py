@@ -32,6 +32,9 @@ from backtrack.music_library import year_of
 _ABS_ROW_RE = re.compile(r'^\033\[\d+;\d+H')
 
 _WIDE_SPLIT_GUTTER = 3
+# Share of the width left blank before the lyrics in the standard layout, so
+# they float under the controls rather than hug the edge.
+_LYRICS_INSET_FRAC = 0.2
 
 
 _player_prev_rows = [0]          # flow-row count of the previous player frame
@@ -118,6 +121,13 @@ _ui_state = {
     # False in a joined window's player view: lyrics are only painted by the
     # window playing the audio, so there the panel offers credits and the queue.
     'lyrics_pane': True,
+    'nerd_icons': False,        # from player_nerd_font_icons
+}
+# (prev, play, pause, next) transport glyphs, keyed by the Nerd Font setting:
+# Material Design icons when on, else the Unicode media symbols.
+_TRANSPORT_ICONS = {
+    False: ("⏮", "⏵", "⏸", "⏭"),
+    True: ("\U000F04AE", "\U000F040A", "\U000F03E4", "\U000F04AD"),
 }
 # Clickable-control geometry (set by _controls_line / the draw): transport-icon
 # columns on the controls row, the active hint pairs, and the hint-glyph cell map.
@@ -140,8 +150,9 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
     """Update the default progress bar display."""
     elapsed_str = ui.format_time(int(elapsed))
     duration_str = ui.format_time(int(duration))
-    timer_text = f" {elapsed_str.rjust(5)} / {duration_str.ljust(5)} "
-
+    # The elapsed time is padded to the duration's width so the bar holds its
+    # length for the whole track, an hour-long one included.
+    timer_text = f"  {elapsed_str.rjust(len(duration_str))} / {duration_str}"
 
     if geom.art_width and geom.art_width > 0:
         container_w = geom.art_width
@@ -149,6 +160,9 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int) ->
     else:
         container_w = width
         left_pad = 0
+    # Inset by the side margin at both ends, so the row never meets the edge.
+    container_w -= 2 * ui.MARGIN_H
+    left_pad += ui.MARGIN_H
 
     bar_width = max(1, container_w - len(timer_text) - 2)
     percent = max(0.0, min(elapsed / duration, 1.0)) if duration else 0.0
@@ -312,8 +326,8 @@ _lyric_src: dict = {'track': '', 'files': [], 'estimated': False}
 
 
 def refresh_player_settings() -> None:
-    """Re-read the player's settings (`debug`, `player_show_metadata`) into
-    `_ui_state`.
+    """Re-read the player's settings (`debug`, `player_show_metadata`,
+    `player_nerd_font_icons`) into `_ui_state`.
 
     Called when a track loads and when the metadata panel is toggled (both rare,
     both moments where the answer could have changed) rather than on every draw,
@@ -324,6 +338,7 @@ def refresh_player_settings() -> None:
         cfg = load_config()
         _ui_state['debug'] = bool(setting(cfg, 'debug'))
         _ui_state['show_metadata'] = bool(setting(cfg, 'player_show_metadata'))
+        _ui_state['nerd_icons'] = bool(setting(cfg, 'player_nerd_font_icons'))
     except Exception:
         _ui_state['debug'] = False
 
@@ -403,9 +418,12 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
                    width: int | None = None,
                    has_lyrics: bool = True, has_credits: bool = True) -> tuple[str, str]:
     """Build the centred transport-controls line and the shortcuts/help hint line below it."""
-    pp_icon = "⏵" if is_paused else "⏸"
-    transport_icons = ["⏮ ", pp_icon, "⏭"]
-    controls = "  ".join(transport_icons)
+    prev, play, pause, nxt = _TRANSPORT_ICONS[_ui_state['nerd_icons']]
+    pp_icon = play if is_paused else pause
+    icons = (prev, pp_icon, nxt)
+    # Nerd Font icons sit centred in their cells, so even gaps. The emoji-font
+    # glyphs draw left of their cells; the wider gap before play keeps them even.
+    controls = f"{prev}   {pp_icon}   {nxt}" if _ui_state['nerd_icons'] else f"{prev}   {pp_icon}  {nxt}"
 
     if width:
         art_left = geom.art_left or 0
@@ -418,7 +436,7 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
         left_pad = max(0, (cols - ui.visual_len(controls)) // 2)
 
     status = " " * left_pad + controls
-    _record_transport_cols(status)
+    _record_transport_cols(status, icons)
     if toast:
         # The feedback line for the last action (seek, volume, warnings): after
         # the controls, which keep their place, and cut at the window edge.
@@ -448,20 +466,14 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
     return status, _hint(*hint_args)
 
 
-def _record_transport_cols(status: str) -> None:
-    """Store the 1-based columns of the ⏮ / ⏸⏵ / ⏭ glyphs on the controls row so
-    clicks on them can be mapped back to prev / play-pause / next."""
+def _record_transport_cols(status: str, icons: tuple[str, str, str]) -> None:
+    """Store the 1-based columns of the prev / play-pause / next glyphs on the
+    controls row so clicks on them can be mapped back to those actions. Columns,
+    not string positions: the emoji-font glyphs are two cells wide."""
     global _last_transport_cols
-    pv = status.find('⏮')
-    pp = status.find('⏸')
-    if pp < 0:
-        pp = status.find('⏵')
-    nx = status.find('⏭')
-    cols: dict[str, int] = {}
-    if pv >= 0: cols['prev'] = pv + 1
-    if pp >= 0: cols['playpause'] = pp + 1
-    if nx >= 0: cols['next'] = nx + 1
-    _last_transport_cols = cols
+    _last_transport_cols = {action: ui.visual_len(status[:i]) + 1
+                            for action, icon in zip(('prev', 'playpause', 'next'), icons)
+                            if (i := status.find(icon)) >= 0}
 
 
 def _set_controls_hint_pairs(pairs: list) -> None:
@@ -551,6 +563,11 @@ def _movement_roman(s: str) -> str:
     movements. Non-numeric (or unnumbered) values pass through unchanged.
     """
     return numbering.roman(s) or s
+
+
+def _credits_rule(width: int) -> str:
+    """The divider between the credits and the lyrics under them."""
+    return f"{C.DIM}{'─' * max(0, width)}{C.RESET}"
 
 
 def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
@@ -876,7 +893,13 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         for idx, line in enumerate(credits_lines):
             emit(f"\033[{_pane_top + idx};{geom.right_left}H{line}")
 
-        lyric_row = _pane_top + len(credits_lines) + (1 if credits_lines else 0)
+        lyric_row = _pane_top
+        if credits_lines:
+            rule_row = _pane_top + len(credits_lines) + 1
+            emit(f"\033[{rule_row};{geom.right_left}H{_credits_rule(right_w)}")
+            lyric_row = rule_row + 2
+        if art_lines:
+            geom.lyric_centre = geom.art_top + (len(art_lines) - 1) // 2
         # Cap the right pane at the row above the transport controls so the
         # lyric-window clearing loop never touches the controls/hints rows.
         art_bottom_row = max(lyric_row + 2, ctrl_row - 1)
@@ -971,7 +994,14 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
                 pad = ' ' * max(0, col_w - ui.visual_len(lft))
                 emit(f"\033[{ctrl_row_end + 2 + i};1H\033[K{lft}{pad}{gap}{rgt}")
 
-        lyric_row = ctrl_row_end + 2 + max(len(c_lines), len(cr_lines)) + 1
+        lyric_row = ctrl_row_end + 3
+        if c_lines or cr_lines:
+            rule_row = ctrl_row_end + 3 + max(len(c_lines), len(cr_lines))
+            emit(f"\033[{rule_row};1H\033[K{_credits_rule(cols)}")
+            lyric_row = rule_row + 2
+        inset = max(ui.MARGIN_H, int(cols * _LYRICS_INSET_FRAC))
+        geom.lyric_left = inset + 1
+        geom.lyric_width = cols - inset - ui.MARGIN_H
         art_bottom_row = rows - ui.MARGIN_V
         _render_frame_buffer(frame_buffer, rows - ui.MARGIN_V)
         sys.stdout.flush()

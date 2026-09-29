@@ -32,6 +32,7 @@ from backtrack.playback.player_ui import (
 )
 from backtrack.playback import player_ui
 from backtrack.playback.player_geom import geom
+from backtrack.playback.player_art import IDLE_ART
 from backbone.log import log
 from backtrack.music_library import drop_moved
 from backbone.prompt import core as pc
@@ -122,7 +123,14 @@ def open_player_view() -> dict:
         return {"status": "DETACH"}          # a client window has the player open
     SESSION.view_attached = True
     try:
-        return _player_view_loop()
+        while True:
+            result = _player_view_loop()
+            # Pinned open while another window browses (#14): when playback ends,
+            # show the empty player until something plays or that window closes.
+            if result["status"] == "DETACH" or not has_other_windows():
+                return result
+            if not _idle_view(SESSION.is_active, SESSION.get_volume()):
+                return {"status": "OK"}
     finally:
         SESSION.view_attached = False
         SESSION.release_view(my_token())
@@ -143,6 +151,47 @@ def _seek_step(key: str, duration: float, elapsed: float) -> tuple[float, str] |
     else:
         return None
     return secs, f"Seek {'Forward +' if secs > 0 else 'Backward -'}{abs(secs)}s"
+
+
+def _idle_view(woken, volume: int) -> bool:
+    """The empty player a pinned window shows while nothing plays and another
+    window browses the session (#14). Returns True once ``woken()`` says there's
+    something to show, False when the other window has gone (back to browse)."""
+    from mutagen.id3 import ID3, TIT2, TPE1
+    placeholder = ID3()
+    placeholder.add(TIT2(text=["Not playing"]))
+    # A blank braille cell survives the tag strip, so the artist row keeps its place.
+    placeholder.add(TPE1(text=["\u2800"]))
+    player_ui.set_queue_context([], 0, [])
+    toast, toast_expiry = "", 0.0
+    last_sig = None
+    with raw_mode(sys.stdin):
+        while True:
+            if woken():
+                return True
+            if not has_other_windows():
+                return False
+            if toast and time.time() >= toast_expiry:
+                toast = ""
+            size = ui.get_terminal_size()
+            if (size, toast) != last_sig:
+                prog_row, _c, _l, width, _b = draw_full_ui(
+                    "", placeholder, IDLE_ART, size, is_paused=True, volume=volume, toast=toast)
+                update_progress_ui(prog_row, 0, 0, width)
+                last_sig = (size, toast)
+            key = get_key_non_blocking() or ''
+            if key in ('b', 'B', 'ESC'):
+                toast = 'Close the other window to leave the player'
+                toast_expiry = time.time() + tune.TOAST_MEDIUM_S
+            elif key == 'FOCUS_IN':
+                last_sig = None
+            elif key.lower() == 'q':
+                raise QuitToTerminal()
+            elif key.lower() == 'i':
+                ui.clear_screen()
+                toggle_help()
+                last_sig = None
+            time.sleep(_LOOP_TICK_S)
 
 
 def _step_volume(remote, target, delta: int):
@@ -182,6 +231,7 @@ def open_client_player_view() -> dict:
     audio = None
     duration = 0.0
     vol_target = None                      # (level, time) of the last +/- press
+    volume = sess.clamp_volume(np0.get('volume'))
     prog_row = 0
     ctrl_row = 0
     toast = ""
@@ -201,7 +251,15 @@ def open_client_player_view() -> dict:
                     return {"status": "DETACH"}
                 np = remote.now_playing()
                 if np is None or not np.get('file_path'):
-                    return {"status": "OK"}          # host stopped / no track
+                    # Host stopped / no track. Pinned open while the other window
+                    # browses (#14): wait on the empty player, keeping the view lock.
+                    if has_other_windows() and _idle_view(
+                            lambda: sess.active_session() is not remote or remote.now_playing() is not None,
+                            volume):
+                        last_sig = None
+                        continue
+                    return {"status": "OK"}
+                volume = sess.clamp_volume(np.get('volume'))
                 # Another window won a simultaneous grab or took the view: never
                 # show a second player; step back to the mirror (#14).
                 if np.get('view_holder') not in (None, token):
@@ -232,7 +290,7 @@ def open_client_player_view() -> dict:
                     duration = float(np.get('duration') or 0.0)
                     prog_row, ctrl_row, _lr, width, _br = draw_full_ui(
                         fp, audio, None, size, is_paused=bool(np.get('paused')),
-                        volume=sess.clamp_volume(np.get('volume')), toast=toast)
+                        volume=volume, toast=toast)
                     last_sig = sig
 
                 elapsed = float(np.get('elapsed') or 0.0)
@@ -290,7 +348,8 @@ def open_client_player_view() -> dict:
                             return {"status": "DETACH"}
                     elif key.lower() == 's':
                         remote.stop()
-                        return {"status": "STOP"}
+                        if not has_other_windows():
+                            return {"status": "STOP"}  # else the next snapshot goes idle
                     elif key.lower() == 'q':
                         raise QuitToTerminal()
                     elif key.lower() in ('i', 'm'):
@@ -419,14 +478,18 @@ def _player_view_loop() -> dict:
             _mp = getattr(SESSION, 'mp', None)
             _ms = _mp.get_time() if _mp is not None else 0
             pane.paint(sys.stdout, (_ms / 1000.0) if _ms and _ms > 0 else 0.0,
-                       lyric_pane.Geometry(
-                           row=lyric_row,
-                           col=geom.right_left or 1,
-                           width=geom.right_width or current_width,
-                           bottom=art_bottom_row or last_size[1]),
-                       force=True)
+                       _pane_geometry(), force=True)
             sys.stdout.flush()
 
+
+    def _pane_geometry() -> lyric_pane.Geometry:
+        """Where the last full redraw left room for the lyric pane."""
+        return lyric_pane.Geometry(
+            row=lyric_row,
+            col=geom.lyric_left or geom.right_left or 1,
+            width=geom.lyric_width or geom.right_width or current_width,
+            bottom=art_bottom_row or last_size[1],
+            centre=geom.lyric_centre)
 
     def update_ctrl_ui() -> None:
         """Redraw just the transport/status line in place (see #86)."""
@@ -626,11 +689,7 @@ def _player_view_loop() -> dict:
                 # neither is an event anyone has to notice, and neither can leave
                 # the words disagreeing with the audio. Only rows that differ get
                 # written, so an unchanged frame costs nothing.
-                pane.paint(sys.stdout, elapsed, lyric_pane.Geometry(
-                    row=lyric_row,
-                    col=geom.right_left or 1,
-                    width=geom.right_width or current_width,
-                    bottom=art_bottom_row or last_size[1]))
+                pane.paint(sys.stdout, elapsed, _pane_geometry())
                 sys.stdout.flush()
 
             time.sleep(_LOOP_TICK_S)

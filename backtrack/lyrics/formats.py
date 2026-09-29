@@ -531,7 +531,7 @@ def expand_dialogue_into_sentences(
                     chunk_start, chunk_end = total_elapsed, total_elapsed + chunk_dur
 
                 expanded_chunks.append({
-                    'parent_idx': idx, 'speaker': line.speaker,
+                    'parent_idx': idx, 'line': idx, 'speaker': line.speaker,
                     'stage_dir': line.stage_dir, 'text': sub_s,
                     'cues': [], 'is_stage': False, 'is_air': False,
                 })
@@ -1009,7 +1009,8 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
     # per segment through `links` (the alignment's seg → MD line pin) rather than
     # carried forward from the last banner: a segment the MD does not explain gets
     # no speaker, instead of inheriting whoever spoke last for the rest of the
-    # track.  `line_seen` makes the aside show once, on its line's opening row.
+    # track.  Every segment of a line carries its speaker and aside, and its
+    # `line`; the pane names them once however many segments are on screen.
     speaker_of_line: dict[int, tuple[str, str]] = {}
     for ov in overlay:
         if ov['kind'] == 'speaker' and ov.get('line') is not None:
@@ -1017,7 +1018,6 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
 
     chunks: list[dict] = []
     times: list[tuple[float, float]] = []
-    line_seen: set[int] = set()
     pending: list[tuple[str, str]] = []   # (text, lean) awaiting a silence to show in
 
     def _emit(chunk: dict, window: tuple[float, float]) -> None:
@@ -1141,17 +1141,14 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
             text = (mq.get('md_text') or seg.get('text', '')).strip()
             line = links.get(si)
             speaker, stage = speaker_of_line.get(line, ('', '')) if line is not None else ('', '')
-            if line in line_seen:
-                stage = ''          # the line's aside belongs to its opening row
-            elif line is not None:
-                line_seen.add(line)
             # `stage_dir` is the MD banner's aside and belongs to the speaker;
             # `cues` are directions about the words, shown in the text column.
             # `carried` introduces this line: the bing bong before the
             # announcement, the door before whoever walks through it. It reads
             # above the words, not under them. A direction that leaned 'prev' was
             # attached to the line just gone by `_flush` and stays under that one.
-            _emit({'parent_idx': si, 'speaker': speaker, 'stage_dir': stage,
+            _emit({'parent_idx': si, 'line': -1 if line is None else line,
+                   'speaker': speaker, 'stage_dir': stage,
                    'text': text, 'cues': [], 'pre': carried,
                    'is_stage': False, 'is_air': False}, window)
 

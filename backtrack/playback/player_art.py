@@ -2,6 +2,8 @@
 image-capable terminal (iTerm2, opt-in) the real image drawn over those cells:
 average colour, then a quick preview, then full quality."""
 from __future__ import annotations
+import functools
+import math
 import os
 import sys
 from backbone import ui
@@ -250,6 +252,53 @@ def _send_image(path: str, px: int, chunked: bool = False) -> bool:
     return True
 
 
+# The empty player's art (#14): a beamed note drawn in braille at the size of
+# the box a square cover takes, so it scales with the window. The layout swaps
+# this marker for the drawing (see _art_fit).
+IDLE_ART = "♫"
+_NOTE_W, _NOTE_H = 56, 64                # the note's design grid, in braille dots
+_NOTE_FILL = 0.6                         # share of the cover box the note spans
+_BRAILLE_DOTS = ((0, 0, 0x01), (0, 1, 0x02), (0, 2, 0x04), (1, 0, 0x08),
+                 (1, 1, 0x10), (1, 2, 0x20), (0, 3, 0x40), (1, 3, 0x80))
+
+
+def _in_note(x: float, y: float) -> bool:
+    """Whether design-grid point (x, y) is inked: two tilted heads, their stems
+    and two slanted beams."""
+    cos, sin = math.cos(math.radians(-25)), math.sin(math.radians(-25))
+    for cx, cy in ((13, 52), (43, 46)):
+        dx, dy = x - cx, y - cy
+        u, v = dx * cos - dy * sin, dx * sin + dy * cos
+        if (u / 10) ** 2 + (v / 6.5) ** 2 <= 1:
+            return True
+    if 20 <= x <= 23 and 10 <= y <= 50 or 50 <= x <= 53 and 4 <= y <= 44:
+        return True
+    return 20 <= x <= 53 and any(0 <= y - (10 - (x - 20) * 6 / 33 + off) <= 6 for off in (0, 10))
+
+
+@functools.lru_cache(maxsize=8)
+def _idle_art_lines(max_w: int, avail_h: int) -> list[str]:
+    """The note centred in the box a square cover gets at this size (see
+    _art_fit for the cover's sizing), scaled to it, so the empty player lays
+    out like a playing one."""
+    h = max(1, min(max_w // 2, avail_h))
+    w = max_w if max_w - 2 * h <= _ART_SNAP_TO_FULL else max(10, 2 * h)
+    # Braille cells are 2x4 dots, about square on a 1:2 cell.
+    scale = _NOTE_FILL * min(2 * w / _NOTE_W, 4 * h / _NOTE_H)
+    x0, y0 = (2 * w - _NOTE_W * scale) / 2, (4 * h - _NOTE_H * scale) / 2
+    rows = [" " * w] * h
+    # Only the cells over the note's grid can be inked.
+    c0, c1 = int(x0 // 2), min(w, int((x0 + _NOTE_W * scale) // 2) + 1)
+    for r in range(int(y0 // 4), min(h, int((y0 + _NOTE_H * scale) // 4) + 1)):
+        cells = []
+        for c in range(c0, c1):
+            mask = sum(bit for dx, dy, bit in _BRAILLE_DOTS
+                       if _in_note((2 * c + dx + 0.5 - x0) / scale, (4 * r + dy + 0.5 - y0) / scale))
+            cells.append(chr(0x2800 + mask) if mask else " ")
+        rows[r] = " " * c0 + "".join(cells) + " " * (w - c1)
+    return rows
+
+
 def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
                           pre_art: str | None) -> tuple[str, list[str]]:
     """The art for the layout (see _art_fit). In image mode its cells become the
@@ -270,10 +319,15 @@ def _art_fit(file_path: str, max_w: int, avail_h: int,
              pre_art: str | None) -> tuple[str, list[str]]:
     """Fetch art at max_w; if the rendered output exceeds avail_h rows,
     compute a narrower width from the actual aspect ratio and re-fetch."""
+    if pre_art is IDLE_ART:
+        lines = _idle_art_lines(max_w, avail_h)
+        return "\n".join(lines), lines
     art_str = pre_art if pre_art else _get_art_cached(file_path, width=max_w)
     lines = art_str.splitlines()
     if not lines or len(lines) <= avail_h:
         return art_str, lines
+    if pre_art:                          # nothing to re-fetch it from: clip
+        return art_str, lines[:avail_h]
 
     actual_h = len(lines)
     actual_w = max((ui.visual_len(l) for l in lines), default=max_w)

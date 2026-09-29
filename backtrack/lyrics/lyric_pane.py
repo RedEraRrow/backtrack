@@ -41,6 +41,7 @@ class Beat:
     end: float
     kind: str = LINE
     speaker: str = ''          # who is talking
+    line: int = -1             # the script line it is part of (-1: none), shared by its segments
     aside: str = ''            # the script's manner note for the whole line
     text: str = ''             # what they say, markdown intact
     before: tuple = ()         # directions that introduce it
@@ -58,6 +59,9 @@ class Geometry:
     col: int
     width: int
     bottom: int
+    # The row to hold the current line on (the art's middle, beside it), or
+    # None to run from the top. Only ever moves the words down, never up.
+    centre: int | None = None
 
     @property
     def height(self) -> int:
@@ -110,6 +114,8 @@ class Timeline:
     def __init__(self, beats: list[Beat], duration: float = 0.0):
         self.beats = _tile(beats, duration)
         self._ends = [b.end for b in self.beats]
+        # Song lyrics name no one: their words then take the speaker column too.
+        self.has_speakers = any(b.speaker for b in self.beats)
         # The invariant the rest of the module relies on, checked once, here.
         assert all(a.end == b.start for a, b in zip(self.beats, self.beats[1:])), \
             "timeline is not contiguous"
@@ -134,6 +140,7 @@ def from_chunks(chunks: list[dict], times: list[tuple], duration: float) -> Time
         kind = SILENCE if c.get('is_air') else (DIRECTION if c.get('is_stage') else LINE)
         beats.append(Beat(start=float(a), end=float(b), kind=kind,
                           speaker=(c.get('speaker') or '').strip(),
+                          line=int(c.get('line', -1)),
                           aside=(c.get('stage_dir') or '').strip() if kind != DIRECTION else '',
                           text=(c.get('stage_dir') if kind == DIRECTION
                                 else c.get('text') or '').strip(),
@@ -174,6 +181,17 @@ def _speaker_rows(beat: Beat, width: int, active: bool) -> list[str]:
     return rows
 
 
+def _labels_line(timeline: Timeline, shown: list[int], cur: int, idx: int) -> bool:
+    """Whether beat `idx` carries its line's speaker and aside. A line split into
+    several beats names them once: beside the current beat when it is one of
+    them, so the name moves with the line being spoken, else the first shown."""
+    line = timeline.beats[idx].line
+    if line < 0:
+        return True
+    run = [i for i in shown if timeline.beats[i].line == line]
+    return idx == (cur if cur in run else run[0])
+
+
 def _text_rows(beat: Beat, width: int, active: bool) -> list[str]:
     """The text column: what is introduced, what is said, what interrupts.
 
@@ -210,29 +228,35 @@ def frame(timeline: Timeline, elapsed: float, geom: Geometry) -> list[str]:
         return blank
 
     pad = geom.width - 2
-    spk_w = max(12, min(pad // 3, 26))
-    txt_w = max(20, pad - spk_w - 5)
+    spk_w = max(12, min(pad // 3, 26)) if timeline.has_speakers else 0
+    txt_w = max(20, pad - spk_w - 5) if spk_w else max(20, pad - 3)
 
-    out: list[str] = [f"{C.DIM}{'─' * max(0, geom.width)}{C.RESET}", '']
-    for idx in (cur - 1, cur, cur + 1):
-        if not 0 <= idx < len(timeline.beats):
-            continue
+    shown = [i for i in (cur - 1, cur, cur + 1) if 0 <= i < len(timeline.beats)]
+    body: list[str] = []
+    cur_mid = 0                            # body row at the current beat's middle
+    for idx in shown:
         beat = timeline.beats[idx]
         if beat.kind == SILENCE or beat.blank:
             if idx == cur:
-                out.append('')
+                cur_mid = len(body)
+                body.append('')
             continue
         active = idx == cur
-        left = _speaker_rows(beat, spk_w, active)
+        left = _speaker_rows(beat, spk_w, active) if spk_w and _labels_line(timeline, shown, cur, idx) else []
         right = _text_rows(beat, txt_w, active)
-        for r in range(max(len(left), len(right))):
+        rows = max(len(left), len(right))
+        if active:
+            cur_mid = len(body) + (rows - 1) // 2
+        for r in range(rows):
             lhs = left[r] if r < len(left) else ''
             rhs = right[r] if r < len(right) else ''
             bar = f"{C.DIM}│{C.RESET}" if rhs else ' '
-            out.append(f"{lhs}{' ' * max(1, spk_w + 2 - ui.visual_len(lhs))}"
-                       f"{bar} {rhs}")
-        out.append('')
-    return (out + blank)[:geom.height]
+            gutter = ' ' * max(1, spk_w + 2 - ui.visual_len(lhs)) if spk_w else ''
+            body.append(f"{lhs}{gutter}{bar} {rhs}")
+        body.append('')
+    if geom.centre is not None:
+        body = [''] * max(0, geom.centre - geom.row - cur_mid) + body
+    return (body + blank)[:geom.height]
 
 
 class Pane:
