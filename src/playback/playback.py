@@ -127,6 +127,24 @@ def open_player_view() -> dict:
         ui_utils.clear_screen()
 
 
+# Seek keys shared by the host player and a joined window's: seconds to move.
+_SEEK_KEYS = {',': -30, '.': 30, 'j': -1, 'J': -1, 'l': 1, 'L': 1}
+
+
+def _seek_step(key: str, arrow, duration: float, elapsed: float) -> tuple[float, str] | None:
+    """The seek a player key asks for, as (seconds to move, toast), or None when
+    the key isn't a seek. `e` (temporary) jumps to near the end."""
+    if arrow in ('C', 'D'):
+        secs = 5 if arrow == 'C' else -5
+    elif key in ('e', 'E'):
+        return (duration - tune.NEAR_END_JUMP_S) - elapsed, f'Skip to last {tune.NEAR_END_JUMP_S}s'
+    elif key in _SEEK_KEYS:
+        secs = _SEEK_KEYS[key]
+    else:
+        return None
+    return secs, f"Seek {'Forward +' if secs > 0 else 'Backward -'}{abs(secs)}s"
+
+
 def _step_volume(remote, target, delta: int):
     """A +/- press in a joined window. The host's volume only reaches this
     window with its next snapshot (a quarter-second later), so quick presses
@@ -253,20 +271,8 @@ def open_client_player_view() -> dict:
                         last_sig = None                # force a full redraw
                     elif key in (' ', 'p', 'P'):
                         remote.pause_toggle()
-                    elif arrow == 'C':
-                        remote.seek(5)
-                    elif arrow == 'D':
-                        remote.seek(-5)
-                    elif key == ',':
-                        remote.seek(-30)
-                    elif key == '.':
-                        remote.seek(30)
-                    elif key.lower() == 'e':
-                        remote.seek((duration - tune.NEAR_END_JUMP_S) - elapsed)
-                    elif key.lower() == 'j':
-                        remote.seek(-1)
-                    elif key.lower() == 'l':
-                        remote.seek(1)
+                    elif (step := _seek_step(key, arrow, duration, elapsed)) is not None:
+                        remote.seek(step[0])
                     elif key == ']':
                         remote.next()
                     elif key == '[':
@@ -560,33 +566,9 @@ def _player_view_loop() -> dict:
                     SESSION.pause_toggle()
                     time.sleep(_KEY_POLL_INTERVAL_S)
                     update_ctrl_ui()
-                elif arrow == 'C':
-                    SESSION.seek(5)
-                    toast_text = 'Seek Forward +5s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
-                    update_ctrl_ui()
-                elif arrow == 'D':
-                    SESSION.seek(-5)
-                    toast_text = 'Seek Backward -5s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
-                    update_ctrl_ui()
-                elif key == ',':
-                    SESSION.seek(-30)
-                    toast_text = 'Seek Backward -30s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
-                    update_ctrl_ui()
-                elif key == '.':
-                    SESSION.seek(30)
-                    toast_text = 'Seek Forward +30s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
-                    update_ctrl_ui()
-                elif key.lower() == 'e':          # TEMP: jump to near the end
-                    SESSION.seek((duration - tune.NEAR_END_JUMP_S) - elapsed)
-                    toast_text = f'Skip to last {tune.NEAR_END_JUMP_S}s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
-                    update_ctrl_ui()
-                elif key.lower() == 'j':
-                    SESSION.seek(-1)
-                    toast_text = 'Seek Backward -1s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
-                    update_ctrl_ui()
-                elif key.lower() == 'l':
-                    SESSION.seek(1)
-                    toast_text = 'Seek Forward +1s'; toast_expiry = time.time() + tune.TOAST_SHORT_S
+                elif (step := _seek_step(key, arrow, duration, elapsed)) is not None:
+                    SESSION.seek(step[0])
+                    toast_text = step[1]; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
                 elif key == ']':                  # NEXT track (skip), stay in the view
                     if SESSION.next(manual=True) is None:
