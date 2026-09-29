@@ -452,6 +452,22 @@ def _set_controls_hint_pairs(pairs: list) -> None:
     _last_controls_hint_pairs = list(pairs)
 
 
+def _place_controls(log, ctrl_row: int, rows: int, is_uslt: bool, is_paused: bool,
+                    volume: int, toast: str, has_lyrics: bool, has_credits: bool) -> tuple[int, list[str]]:
+    """Draw the transport line at `ctrl_row` (pulled up so its hints still fit on
+    screen) with the hint lines under it, and record their click cells. Returns
+    the row it used and the hint lines."""
+    status_ln, shortcuts_ln = _controls_line(is_uslt, is_paused, volume, toast,
+                                             has_lyrics=has_lyrics, has_credits=has_credits)
+    shortcut_lines = shortcuts_ln.splitlines() or [""]
+    ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
+    log(f"\033[{ctrl_row};1H\033[K{status_ln}")
+    for offset, line in enumerate(shortcut_lines, start=1):
+        log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
+    compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
+    return ctrl_row, shortcut_lines
+
+
 def compute_controls_hint_cells(shortcut_lines: list[str], first_row: int) -> None:
     """Populate ``_last_hint_cells`` for hint lines drawn at ``first_row`` onward
     (each rendered with a MARGIN_H left inset, like the draw does)."""
@@ -744,14 +760,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             # Recompute now that the art geometry is set, so the transport line
             # centers over the art. The hint-line count is unchanged from the
             # early call that sized the art above.
-            status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
-            shortcut_lines = shortcuts_ln.splitlines() or [""]
-            ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
-
-            log(f"\033[{ctrl_row};1H\033[K{status_ln}")
-            for offset, line in enumerate(shortcut_lines, start=1):
-                log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
-            compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
+            ctrl_row, shortcut_lines = _place_controls(
+                log, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
 
             lyric_row = ctrl_row + len(shortcut_lines) + 2
             art_bottom_row = max(row_cursor + 6, rows - ui_utils.MARGIN_V)
@@ -814,14 +824,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         ctrl_row = prog_row + 1
 
         # Recompute now that the art geometry is set (see the no-pane branch).
-        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
-        shortcut_lines = shortcuts_ln.splitlines() or [""]
-        ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
-
-        log(f"\033[{ctrl_row};1H\033[K{status_ln}")
-        for offset, line in enumerate(shortcut_lines, start=1):
-            log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
-        compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
+        ctrl_row, shortcut_lines = _place_controls(
+            log, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
 
         _pane_top = geom.art_top  # right pane aligns with art top after any vertical centering
 
@@ -920,14 +924,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         prog_row = row_cursor
         ctrl_row = prog_row + 1
 
-        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
-        shortcut_lines = shortcuts_ln.splitlines() or [""]
-        ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
-
-        log(f"\033[{ctrl_row};1H\033[K{status_ln}")
-        for offset, line in enumerate(shortcut_lines, start=1):
-            log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
-        compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
+        ctrl_row, shortcut_lines = _place_controls(
+            log, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
 
         ctrl_row_end = ctrl_row + len(shortcut_lines)
 
@@ -1006,13 +1004,8 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         row_cursor += 1
         prog_row = row_cursor
         ctrl_row = prog_row + 1
-        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
-        shortcut_lines = shortcuts_ln.splitlines() or [""]
-        ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
-        log(f"\033[{ctrl_row};1H\033[K{status_ln}")
-        for offset, line in enumerate(shortcut_lines, start=1):
-            log(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui_utils.MARGIN_H}{line}")
-        compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
+        ctrl_row, shortcut_lines = _place_controls(
+            log, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
         lyric_row = ctrl_row + len(shortcut_lines) + 2
         art_bottom_row = rows - ui_utils.MARGIN_V
         _render_frame_buffer(frame_buffer, rows - ui_utils.MARGIN_V)
