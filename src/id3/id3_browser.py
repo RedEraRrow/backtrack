@@ -26,25 +26,16 @@ from src.art.album_art import render_album_art
 from src.music_library import drop_moved, refresh_library_entry, track_title, first_text
 
 from src.id3.id3_tag_handler import (
-    get_tag_info,
-    get_tag_category,
-    display_tag_id,
-    summarize_tag_value,
-    prompt_for_value,
-    create_frame,
-    rename_frame, rename_would_replace, people_to_text, people_from_text,
-    save_id3, load_id3,
-    create_apic_frame,
-    pick_nearby_cover,
-    _EXT_TO_MIME,
-    _PICTURE_TYPES,
-    _prompt_for_image_metadata,
-    parse_composite_tag_id,
+    get_tag_info, get_tag_category, display_tag_id, summarize_tag_value, prompt_for_value,
+    create_frame, rename_frame, rename_would_replace, people_to_text, people_from_text,
+    save_id3, load_id3, create_apic_frame, pick_nearby_cover, _EXT_TO_MIME,
+    _prompt_for_image_metadata, parse_composite_tag_id,
 )
 from src.id3 import tag_registry as _reg
 from src.config import setting
 from src.utils.log import quietly
 from src import tuning as tune
+from src.id3.id3_tag_handler import picture_type_name
 
 # Structured columns for the tag list. Column 1 holds the tag id AND the friendly
 # name as two styled segments (TAG bright + friendly dim) in a single column.
@@ -709,11 +700,6 @@ def _apic_art(apic_frame: APIC, width: int) -> str:
     return art
 
 
-def _picture_type_label(pic_type) -> str:
-    """Human label for an APIC picture-type byte."""
-    return dict(_PICTURE_TYPES).get(pic_type, f"type {pic_type}")
-
-
 def _apic_facts(apic_frame: APIC, budget: int = 999) -> str:
     """What the image *is*, on one line: size, format, weight, colour mode.
 
@@ -762,7 +748,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
 
     def _apic_header() -> list[str]:
         """One boxed line of everything the image is, then the centred art."""
-        pic_type = _picture_type_label(getattr(apic_frame, 'type', 3))
+        pic_type = picture_type_name(getattr(apic_frame, 'type', 3))
         desc = (getattr(apic_frame, 'desc', '') or "").strip()
 
         # The base frame id only: mutagen keys APIC frames by description, so
@@ -796,7 +782,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
 
     while True:
         kb = len(getattr(apic_frame, 'data', b"") or b"") / 1024
-        notes = {'meta': _picture_type_label(getattr(apic_frame, 'type', 3)),
+        notes = {'meta': picture_type_name(getattr(apic_frame, 'type', 3)),
                  'export': f"{kb:.0f} KB"}
         choices = [prompt.Choice(title=label, value=value,
                                  cells=[label, note or notes.get(value, "")])
@@ -851,7 +837,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
                               getattr(apic_frame, 'mime', 'image/jpeg'),
                               pic_type, desc):
                 changed = True
-                ui_utils.show_status(f"{_picture_type_label(pic_type)} · "
+                ui_utils.show_status(f"{picture_type_name(pic_type)} · "
                                      f"{desc if desc else 'no description'}")
 
         elif action == 'export':

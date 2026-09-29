@@ -20,6 +20,7 @@ from src.playback.player_art import (  # noqa: F401 — re-exported
     ART_MAX_WIDTH, _art_width_for_height, _draw_inline_art, _inline_art, art_image_incomplete, inline_art_enabled, redraw_art_image, set_resizing,
 )
 from src.config import setting
+from src.music_library import year_of
 
 
 # Absolute cursor positioning (\033[<row>;<col>H) — must require the trailing
@@ -596,12 +597,10 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
     if _ui_state['show_metadata']:
         details: list[str] = []
 
-        # Year: v2.4 uses TDRC; v2.3 (which we save) uses TYER; fall back to
-        # original-release frames so the year never silently disappears.
-        year_src = _txt('TDRC') or _txt('TYER') or _txt('TDOR') or _txt('TORY')
-        year_match = re.search(r'\b\d{4}\b', year_src)
-        if year_match:
-            details.append(year_match.group(0))
+        # Year from TDRC (v2.4) or TYER (v2.3), else the original-release frames.
+        year = year_of(_txt('TDRC') or _txt('TYER') or _txt('TDOR') or _txt('TORY'))
+        if year:
+            details.append(str(year))
         genre = _txts('TCON')
         if genre:
             details.append(genre)

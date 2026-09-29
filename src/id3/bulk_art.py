@@ -11,9 +11,9 @@ from src.utils import ui_utils
 from collections import Counter
 from src.id3.bulk_common import _RENAME_PICK_COLUMNS, _SKIP, _show_tokens, _walk
 from src.id3.bulk_common import preview_and_apply
+from src.id3.id3_tag_handler import cover_label, picture_type_name
 
 
-_picture_type_name = bo.picture_type_name
 
 
 def set_picture_type_op(paths: list, library: list, header) -> None:
@@ -29,7 +29,7 @@ def set_picture_type_op(paths: list, library: list, header) -> None:
         return
 
     counts = Counter(t for a in art for t in a['types'])
-    seen = ' · '.join(f"{_picture_type_name(t)} ×{n}" for t, n in counts.most_common())
+    seen = ' · '.join(f"{picture_type_name(t)} ×{n}" for t, n in counts.most_common())
 
     pic_type = _prompt_for_picture_type(
         initial=3, header=lambda: header(f"{ui_utils.plural(len(art), 'file')} with art · {seen}")())
@@ -42,7 +42,7 @@ def set_picture_type_op(paths: list, library: list, header) -> None:
         return
 
     preview_and_apply(plan, library, header, lambda c: tw.retype_cover(c.path, pic_type),
-                      f"Set {_picture_type_name(pic_type)} on",
+                      f"Set {picture_type_name(pic_type)} on",
                       count=f"{ui_utils.plural(len(art), 'file')} with art", changing="to retype",
                       unchanged=lambda c: "already correct", skipped=skipped,
                       skipped_note="without art or not MP3")
@@ -65,14 +65,6 @@ _COVER_PATTERN_PRESETS = [
     ('%tracknopad%', '1'),
     ('%album% %track%', 'Album 01'),
 ]
-
-
-def _img_label(image_path: str, track_dir: str) -> str:
-    """Image name, prefixed with its subfolder when it isn't beside the track."""
-    d = os.path.dirname(os.path.abspath(image_path))
-    if os.path.abspath(track_dir) != d:
-        return f"{os.path.basename(d)}/{os.path.basename(image_path)}"
-    return os.path.basename(image_path)
 
 
 def _cover_pattern_prompt(header) -> str | None:
@@ -245,7 +237,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             img = plan.get(p)
             if not img:
                 return "— none (d to choose) —"
-            label = _img_label(img, os.path.dirname(os.path.abspath(p)))
+            label = cover_label(img, os.path.dirname(os.path.abspath(p)))
             if existing_art[p]:
                 return [(label, 'normal'), ('  · has art', 'static-dim')]
             return label

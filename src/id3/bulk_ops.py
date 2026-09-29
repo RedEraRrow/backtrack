@@ -28,7 +28,7 @@ from mutagen.id3 import ID3
 
 from src import bulk_pattern as bp
 from src.id3 import tag_writer as tw
-from src.id3.id3_tag_handler import apply_bulk_edit, load_id3, save_id3
+from src.id3.id3_tag_handler import apply_bulk_edit, load_id3, picture_type_name, save_id3
 from src.music_library import refresh_library_entry, first_text
 from src.utils.log import quietly
 
@@ -352,12 +352,6 @@ def strip_length_writer(change: Change) -> None:
     for frame in change.fields.get('delete', ()):
         apply_bulk_edit(audio, frame, 'delete')
     save_id3(audio, change.path)
-
-
-def picture_type_name(pic_type) -> str:
-    """Human label for an APIC picture-type byte ("Cover (front)", "Other"…)."""
-    from src.id3.id3_tag_handler import _PICTURE_TYPES
-    return dict(_PICTURE_TYPES).get(int(pic_type), f"type {pic_type}")
 
 
 def read_picture_types(paths: list) -> tuple[list, int]:

@@ -116,6 +116,11 @@ def _split_date_time(s: str) -> tuple:
     return s.strip(), ''
 
 
+def split_stamp(raw) -> tuple:
+    """The date and time halves of a typed stamp, any trailing timezone dropped."""
+    return _split_date_time(_TZ_RE.sub('', str(raw or '').strip()).strip())
+
+
 def _read_date(part: str, dayfirst: Optional[bool]) -> tuple:
     """Parse the date half → ``(date, precision, error)``."""
     m = _COMPACT_RE.match(part)
@@ -177,11 +182,10 @@ def parse_datetime(raw, *, dayfirst: Optional[bool] = None) -> ParsedDateTime:
     """
     if raw is None:
         return ParsedDateTime(None, None, '', 'no date given')
-    s = _TZ_RE.sub('', str(raw).strip()).strip()
-    if not s:
+    date_part, time_part = split_stamp(raw)
+    if not date_part:
         return ParsedDateTime(None, None, '', 'no date given')
 
-    date_part, time_part = _split_date_time(s)
     date, precision, err = _read_date(date_part, dayfirst)
     if err:
         return ParsedDateTime(None, None, '', err)

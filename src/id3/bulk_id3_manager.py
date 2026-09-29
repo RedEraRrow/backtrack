@@ -8,7 +8,7 @@ from src.utils import prompt
 from src.id3.id3_tag_handler import (
     prompt_for_value, get_tag_info, get_tag_category, display_tag_id, create_frame,
     rename_frame, save_id3, _prompt_for_image_metadata, _prompt_for_picture_type,
-    _PICTURE_TYPES, pick_nearby_cover,
+    pick_nearby_cover,
 )
 from src.id3.tag_registry import parse_composite_tag_id
 from src.id3 import filename_parser as fp
@@ -38,6 +38,7 @@ from src.id3.bulk_assign import (
 )
 from src.id3.bulk_common import preview_and_apply
 from src.utils.log import quietly
+from src.id3.id3_tag_handler import picture_type_name
 
 # Structured columns for the bulk tag picker. Column 1 holds the tag id AND the
 # friendly name as two styled segments (TAG bright + friendly dim) in one column.
@@ -693,7 +694,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 return (f"description → {new_apic_desc or '(blank)'}",
                         '' if had_art[p] else 'no art')
             if new_apic_type is not None:
-                label = dict(_PICTURE_TYPES).get(new_apic_type, str(new_apic_type))
+                label = picture_type_name(new_apic_type)
                 return (f"picture type → {label}", '' if had_art[p] else 'no art')
             return ("no change", '')
 

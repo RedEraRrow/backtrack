@@ -64,9 +64,8 @@ def year_of(value: Any) -> int:
     """The year in any date form — '1970', '1970-04-01', '2005-09-15 18:30:00' —
     or 0 when there is none ('Unknown Year', '').
 
-    ID3's TDRC is a *timestamp*, so `int(str(value))` raised for every dated file
-    and silently treated it as year-less. Matching the first four-digit run is what
-    the now-playing panel already did.
+    ID3's TDRC is a timestamp, so the year is the first four-digit run rather
+    than the whole value.
     """
     m = _YEAR_RE.search(str(value or ''))
     return int(m.group(1)) if m else 0

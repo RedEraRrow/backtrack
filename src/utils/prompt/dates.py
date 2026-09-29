@@ -275,10 +275,7 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
     TAB from date-day-mode → time section; TAB from last time field → date.
     ENTER saves from any position. Returns ISO 8601 string or None if cancelled.
     """
-    # Strip any trailing timezone (Z or ±HH:MM / ±HHMM) before parsing.
-    _clean = re.sub(r'(Z|[+-]\d{2}:?\d{2})$', '', initial.strip())
-    _sep = 'T' if 'T' in _clean else (' ' if ' ' in _clean else None)
-    date_str, time_str = _clean.split(_sep, 1) if _sep else (_clean, "")
+    date_str, time_str = dtp.split_stamp(initial)
 
     parsed = _parse_date(date_str) if date_str else None
     if parsed:

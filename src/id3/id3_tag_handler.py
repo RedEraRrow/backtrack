@@ -75,7 +75,7 @@ def _cover_size(path: str) -> str:
     return f"{kb/1024:.1f} MB" if kb >= 1024 else f"{kb:.0f} KB"
 
 
-def _cover_label(image_path: str, track_dir: str) -> str:
+def cover_label(image_path: str, track_dir: str) -> str:
     """Image name, prefixed with its subfolder when it isn't beside the track."""
     d = os.path.dirname(os.path.abspath(image_path))
     if os.path.abspath(track_dir) != d:
@@ -127,7 +127,7 @@ def pick_nearby_cover(file_path: str, *, tokens: dict | None = None,
             cur_idx = i
         choices.append(prompt.Choice(
             title=os.path.basename(img), value=img,
-            cells=[_cover_label(img, track_dir), _cover_size(img), hint]))
+            cells=[cover_label(img, track_dir), _cover_size(img), hint]))
     choices.append(prompt.separator())
     choices.append(prompt.Choice(title="Type a path…", value='__manual__',
                                  cells=["Type a path…", '', '']))
@@ -156,6 +156,11 @@ _IMAGE_META_COLUMNS = [
     prompt.Column(style='primary'),                                   # type + [n]
     prompt.Column(style='dynamic-dim', flex=True, priority=1),        # description
 ]
+
+
+def picture_type_name(pic_type) -> str:
+    """Human label for an APIC picture-type byte ("Cover (front)", "Other"…)."""
+    return dict(_PICTURE_TYPES).get(int(pic_type), f"type {pic_type}")
 
 
 def _prompt_for_picture_type(*, initial: int = 3, header=None) -> int | None:
