@@ -48,6 +48,7 @@ from src.lyrics.time_fields import (
     _ts_parts, _field_value, _field_str, _render_edit_fields,
 )
 from src.utils import timefmt
+from src.config import setting
 
 # Same shape as AUDITION's nudge scheme (lyrics_editor's _AUD_* steps): a coarse step
 # on ',' and '.', and a fine step that here is one frame rather than a fixed
@@ -313,9 +314,9 @@ def _silence_markers(path: str, track_length: float) -> list[float]:
     for '[' / ']', not automatic marks. Empty when nothing is found; some
     material opens cold with no gap to detect at all, which is not a failure."""
     cfg = load_config()
-    window_s = float(cfg.get("trim_scan_window_s", 30.0))
-    noise_db = float(cfg.get("trim_silence_noise_db", -32.0))
-    min_s = float(cfg.get("trim_silence_min_s", 0.4))
+    window_s = float(setting(cfg, "trim_scan_window_s"))
+    noise_db = float(setting(cfg, "trim_silence_noise_db"))
+    min_s = float(setting(cfg, "trim_silence_min_s"))
     markers: set[float] = set()
     try:
         for s, e in trim.detect_silence(path, 0.0, min(window_s, track_length), noise_db, min_s):
@@ -828,8 +829,8 @@ def trim_editor(path: str, library: list | None = None) -> None:
     undo_stack: list[tuple] = []
 
     cfg = load_config()
-    window_s = float(cfg.get("trim_sting_window_s", 90.0))
-    min_score = float(cfg.get("trim_sting_min_score", 0.3))
+    window_s = float(setting(cfg, "trim_sting_window_s"))
+    min_score = float(setting(cfg, "trim_sting_min_score"))
     head = _sting_suggestion(path, 'head', window_s, min_score)
     if head is not None and _confirm(
             f"Found a matching opening sting from an earlier trim in this folder (in-point {timefmt.clock(head[0])}) — use it?",

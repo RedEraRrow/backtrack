@@ -13,12 +13,13 @@ from src.id3.tag_registry import TAG_REGISTRY
 from src.menus.activity import notification_centre
 from src.menus.common import BROWSE_CATEGORIES, DEFAULT_BROWSE_MENU, OFF_GLYPH, ON_GLYPH, _SETTINGS_COLUMNS, _commit, _idx_of, _menu_header, _space_toggles, _state_glyph, browse_menu_keys
 from src.menus.sorting import _chain_summary, _pick_chain
+from src.config import setting
 
 
 def _handle_tag_name_preferences() -> None:
     """Settings sub-screen: edit preferred friendly names for tags via list_edit."""
     config = load_config()
-    prefs: dict = dict(config.get('tag_name_preferences', {}))
+    prefs: dict = dict(setting(config, 'tag_name_preferences'))
     initial: list = [(tag_id, prefs.get(tag_id, "")) for tag_id in TAG_REGISTRY]
 
     def _tag_pref_hints(col: int, row: list) -> list:
@@ -62,7 +63,7 @@ def _rescan_library(config: dict, library_ref: list) -> int:
     ui_utils.show_status("Re-scanning library…")
     new_lib = build_library(
         music_dirs(config),
-        ignore_hidden=config.get("ignore_hidden_files", False),
+        ignore_hidden=setting(config, "ignore_hidden_files"),
     )
     save_library_cache(new_lib, _async=False)
     existing = library_ref[0]
@@ -246,9 +247,9 @@ def handle_settings(library_ref: list) -> None:
         config = load_config()
         _before = copy.deepcopy(config)
 
-        def _bool(key: str, default: bool) -> str:
+        def _bool(key: str) -> str:
             """Right-column glyph for an on/off setting."""
-            return _state_glyph(config.get(key, default))
+            return _state_glyph(setting(config, key))
 
         _tasks = len(ui_utils.BACKGROUND_TASKS)
         _prefs = len(config.get("tag_name_preferences") or {})
@@ -260,33 +261,33 @@ def handle_settings(library_ref: list) -> None:
         _rows: list = [
             prompt.separator("Playback"),
             ("lead_in",      "Lyric lead-in…",       f"{float(config['lyric_lead_in']):g}s"),
-            ("autoplay",     "Auto-play on select",  _bool("autoplay_on_select", False)),
+            ("autoplay",     "Auto-play on select",  _bool("autoplay_on_select")),
             ("key_hints",    "Key hints",            _state_glyph(prompt.hints_visible())),
-            ("inline_art",   "Image album art (iTerm2)", _bool("art_inline_images", False)),
-            ("player_meta",  "Track details in player", _bool("player_show_metadata", True)),
+            ("inline_art",   "Image album art (iTerm2)", _bool("art_inline_images")),
+            ("player_meta",  "Track details in player", _bool("player_show_metadata")),
             prompt.separator("Appearance"),
             ("accent",       "Accent colour…",
              _accent_swatch(_accent) + ["  " + ui_utils.accent_label(_accent)]),
             prompt.separator("Library"),
             ("music_dirs",   "Music directories…",   ui_utils.plural(len(music_dirs(config)), "folder")),
             ("activity",     "Activity centre…",     f"{_tasks} running" if _tasks else "idle"),
-            ("hidden",       "Hidden file filter",   _bool("ignore_hidden_files", False)),
+            ("hidden",       "Hidden file filter",   _bool("ignore_hidden_files")),
             ("browse_menu",  "Browse menu…",         f"{len(browse_menu_keys(config))} of {len(BROWSE_CATEGORIES)} shown"),
             prompt.separator("Sorting"),
             ("sort_order",   "Sort order…",          _chain_summary(sort_options(config)['levels'])),
-            ("sort_tags",    "Use sort-order tags",  _bool("sort_use_tags", True)),
+            ("sort_tags",    "Use sort-order tags",  _bool("sort_use_tags")),
             ("sort_words",   "Ignored leading words…",
              ", ".join(config.get("sort_ignore_words") or []) or "none"),
             prompt.separator("Editors"),
-            ("meta_editor",  "Metadata editor",      _bool("show_metadata_editor", True)),
-            ("lyrics_editor", "Lyrics editor",       _bool("show_lyrics_editor", True)),
-            ("plain_text",   "Plain-text editing",   _bool("plain_text_editing", False)),
+            ("meta_editor",  "Metadata editor",      _bool("show_metadata_editor")),
+            ("lyrics_editor", "Lyrics editor",       _bool("show_lyrics_editor")),
+            ("plain_text",   "Plain-text editing",   _bool("plain_text_editing")),
             ("tag_names",    "Tag name preferences…", ui_utils.plural(_prefs, "override") if _prefs else "none"),
-            ("delimiter",    "Sort list delimiter…", config.get("sort_list_delimiter", "/")),
+            ("delimiter",    "Sort list delimiter…", setting(config, "sort_list_delimiter")),
             prompt.separator("Diagnostics"),
-            ("debug",        "Diagnostics log",      _bool("debug", False)),
+            ("debug",        "Diagnostics log",      _bool("debug")),
             prompt.separator("History"),
-            ("history",      "Listening history",    _bool("history_enabled", True)),
+            ("history",      "Listening history",    _bool("history_enabled")),
             ("clear_history", "Clear history log…",  ui_utils.plural(_hist, "entry", "entries")),
         ]
         _labels = {r[0]: r[1] for r in _rows if isinstance(r, tuple)}
@@ -312,9 +313,9 @@ def handle_settings(library_ref: list) -> None:
         # Stay on the row that was just acted on, rather than jumping to the top.
         _cursor = _idx_of(_choices, choice, _cursor)
 
-        def _toggled(key: str, default: bool, note: str = "") -> None:
+        def _toggled(key: str, note: str = "") -> None:
             """Flip an on/off setting and report its new state the same way everywhere."""
-            config[key] = not config.get(key, default)
+            config[key] = not setting(config, key)
             glyph = _state_glyph(config[key])
             ui_utils.show_status(f"{_labels[choice]} {glyph}{note}")
 
@@ -322,7 +323,7 @@ def handle_settings(library_ref: list) -> None:
             notification_centre()
 
         elif choice == "history":
-            _toggled("history_enabled", True)
+            _toggled("history_enabled")
 
         elif choice == "clear_history":
             if _hist == 0:
@@ -333,11 +334,11 @@ def handle_settings(library_ref: list) -> None:
 
         elif choice == "debug":
             from src.utils.log import configure, log_path
-            _toggled("debug", False, f" — writing to {log_path()}" if not config.get("debug") else "")
+            _toggled("debug", f" — writing to {log_path()}" if not config.get("debug") else "")
             configure(bool(config.get("debug")))
 
         elif choice == "inline_art":
-            _toggled("art_inline_images", False)
+            _toggled("art_inline_images")
             if (config.get("art_inline_images") and os.environ.get("TERM_PROGRAM") != "iTerm.app"
                     and os.environ.get("LC_TERMINAL") != "iTerm2"):
                 ui_utils.show_status("On, but this isn't iTerm2, so the player keeps the text art.")
@@ -346,10 +347,10 @@ def handle_settings(library_ref: list) -> None:
             prompt.toggle_hints()          # the same switch as `i` / the corner
 
         elif choice == "autoplay":
-            _toggled("autoplay_on_select", False)
+            _toggled("autoplay_on_select")
 
         elif choice == "player_meta":
-            _toggled("player_show_metadata", True)
+            _toggled("player_show_metadata")
 
         elif choice == "accent":
             _pick_accent(config)
@@ -365,13 +366,13 @@ def handle_settings(library_ref: list) -> None:
                     ui_utils.show_status("Enter a number (e.g. 2 or 1.5).")
 
         elif choice == "meta_editor":
-            _toggled("show_metadata_editor", True)
+            _toggled("show_metadata_editor")
 
         elif choice == "lyrics_editor":
-            _toggled("show_lyrics_editor", True)
+            _toggled("show_lyrics_editor")
 
         elif choice == "plain_text":
-            _toggled("plain_text_editing", False)
+            _toggled("plain_text_editing")
 
         elif choice == "tag_names":
             _handle_tag_name_preferences()
@@ -379,7 +380,7 @@ def handle_settings(library_ref: list) -> None:
             continue
 
         elif choice == "delimiter":
-            current = config.get("sort_list_delimiter", "/")
+            current = setting(config, "sort_list_delimiter")
             picked = prompt.select(
                 f"Delimiter for multi-artist sort values (current: {current!r}):",
                 choices=["/ (slash)", "| (pipe)", "; (semicolon)", ", (comma)"],
@@ -396,7 +397,7 @@ def handle_settings(library_ref: list) -> None:
             _pick_chain(config, None, _menu_header("Sort order"))
 
         elif choice == "sort_tags":
-            _toggled("sort_use_tags", True)
+            _toggled("sort_use_tags")
 
         elif choice == "sort_words":
             cur = ", ".join(config.get("sort_ignore_words") or [])
@@ -409,7 +410,7 @@ def handle_settings(library_ref: list) -> None:
 
         elif choice == "hidden":
             # Both states need a re-scan before the library reflects the change.
-            _toggled("ignore_hidden_files", False, " — re-scan to apply.")
+            _toggled("ignore_hidden_files", " — re-scan to apply.")
 
         if changed_keys(_before, config):
             update_config(changed_keys(_before, config))

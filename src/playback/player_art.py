@@ -8,6 +8,7 @@ from src.utils import ui_utils
 from src.playback.player_geom import geom
 from src.utils.log import log
 from src.art.album_art import get_art, get_art_bytes
+from src.config import setting
 
 
 ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
@@ -108,7 +109,7 @@ def inline_art_enabled() -> bool:
     except OSError:
         mtime = None
     if _inline_cfg.get('mtime', object()) != mtime:
-        _inline_cfg.update(mtime=mtime, on=bool(load_config().get('art_inline_images', False)))
+        _inline_cfg.update(mtime=mtime, on=bool(setting(load_config(), 'art_inline_images')))
     return _inline_cfg['on']
 
 

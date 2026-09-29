@@ -15,6 +15,7 @@ from src.cli import Arg, Cmd, Ctx, Flag
 from src.utils import output as out
 from src.utils import prompt_core as pc
 from src.utils import timefmt
+from src.config import setting
 
 
 # --- shared column specs ----------------------------------------------------
@@ -112,7 +113,7 @@ def _library_scan(ctx: Ctx) -> int:
         return out.OK
 
     library = build_library(
-        roots, ignore_hidden=ctx.config.get('ignore_hidden_files', False))
+        roots, ignore_hidden=setting(ctx.config, 'ignore_hidden_files'))
     if ctx.args.library:
         # --library is for this run: scanning it must not replace the shared
         # library cache (the app's whole library) with just these directories.
@@ -1573,8 +1574,8 @@ def _trim_detect(ctx: Ctx) -> int:
     for region, (start, dur) in bounds:
         for begin, end in t.detect_silence(
                 path, start, dur,
-                noise_db=ctx.config.get('trim_silence_noise_db', -32.0),
-                min_s=ctx.config.get('trim_silence_min_s', 0.4)):
+                noise_db=setting(ctx.config, 'trim_silence_noise_db'),
+                min_s=setting(ctx.config, 'trim_silence_min_s')):
             rows.append({'path': path, 'region': region,
                          'start': round(begin, 3), 'end': round(end, 3),
                          'length': round(end - begin, 3)})

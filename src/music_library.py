@@ -12,6 +12,7 @@ from typing import Any
 import mutagen
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
+from src.config import setting
 
 
 
@@ -208,7 +209,7 @@ def drop_moved(paths: list) -> list:
     library = live_library()
     if library is not None:
         with _reconcile_lock:
-            if _reconcile_library(library, roots, bool(cfg.get('ignore_hidden_files', False))):
+            if _reconcile_library(library, roots, bool(setting(cfg, 'ignore_hidden_files'))):
                 save_library_cache(library)
 
     if gone_roots:
@@ -240,7 +241,7 @@ def _sync_worker(library: list) -> None:
             from src.config import load_config, music_dirs as _music_dirs
             cfg = load_config()
             roots = _music_dirs(cfg)
-            ignore_hidden = bool(cfg.get('ignore_hidden_files', False))
+            ignore_hidden = bool(setting(cfg, 'ignore_hidden_files'))
         except Exception:
             roots, ignore_hidden = [], False
         with _reconcile_lock:
@@ -999,8 +1000,8 @@ def sort_options(cfg: dict | None = None) -> dict:
         cfg = _opts_cache['cfg']
     return {
         'levels':       valid_levels(cfg.get('sort_levels')) or DEFAULT_SORT_LEVELS,
-        'use_tags':     cfg.get('sort_use_tags', True),
-        'ignore_words': [w.strip().lower() for w in cfg.get('sort_ignore_words', ['The', 'A', 'An'])
+        'use_tags':     setting(cfg, 'sort_use_tags'),
+        'ignore_words': [w.strip().lower() for w in setting(cfg, 'sort_ignore_words')
                          if w.strip()],
         'libraries':    {d: valid_levels(l) for d, l in (cfg.get('library_sort_levels') or {}).items()
                          if valid_levels(l)},

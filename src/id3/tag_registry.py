@@ -4,7 +4,7 @@ from typing import Dict, NamedTuple, Type, Literal, Optional
 
 from mutagen.id3 import *  # type: ignore[reportWildcardImportFromLibrary]
 from mutagen.id3._frames import *  # type: ignore[reportWildcardImportFromLibrary]
-from src.config import load_config
+from src.config import load_config, setting
 
 UICategory = Literal[
     'text',              # Simple text input (TIT2, TPE1, TALB, etc.)
@@ -371,7 +371,7 @@ def get_preferred_tag_name(tag_id: str) -> str:
     """Get the user-defined preferred tag name from config, falling back to the registry's first friendly name."""
     config = load_config()
     base_id, _desc, _lang = parse_composite_tag_id(tag_id)
-    prefs: dict = dict(config.get('tag_name_preferences', {}))
+    prefs: dict = dict(setting(config, 'tag_name_preferences'))
     if base_id in prefs:
         return prefs[base_id]
     info = TAG_REGISTRY.get(base_id)

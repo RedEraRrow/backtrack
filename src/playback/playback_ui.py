@@ -20,6 +20,7 @@ from src.playback.queue_pane import (  # noqa: F401 — re-exported
 from src.playback.player_art import (  # noqa: F401 — re-exported
     ART_MAX_WIDTH, _art_width_for_height, _draw_inline_art, _inline_art, art_image_incomplete, inline_art_enabled, redraw_art_image, set_resizing,
 )
+from src.config import setting
 
 
 # Absolute cursor positioning (\033[<row>;<col>H) — must require the trailing
@@ -318,8 +319,8 @@ def refresh_player_settings() -> None:
     try:
         from src.config import load_config
         cfg = load_config()
-        _ui_state['debug'] = bool(cfg.get('debug', False))
-        _ui_state['show_metadata'] = bool(cfg.get('player_show_metadata', True))
+        _ui_state['debug'] = bool(setting(cfg, 'debug'))
+        _ui_state['show_metadata'] = bool(setting(cfg, 'player_show_metadata'))
     except Exception:
         _ui_state['debug'] = False
 

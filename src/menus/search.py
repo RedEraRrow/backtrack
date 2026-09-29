@@ -12,6 +12,7 @@ from src.id3.id3_browser import inspect_tag_loop
 from src.id3.bulk_id3_manager import bulk_id3_manager
 from src.menus.common import _autoplay, _disc_track_cell, _menu_header
 from src.menus.play import _PLAY_ACTIONS, _handle_queue_action, _list_actions, _play_list, _queue_action_choices, _sorted_paths
+from src.config import setting
 
 
 # Search scope cycled with Tab in the live search screen (default: all fields).
@@ -144,7 +145,7 @@ def handle_search(library: list) -> str | None:
         return None
 
     _cfg = load_config()
-    _show_editor = _cfg.get("show_metadata_editor", True)
+    _show_editor = setting(_cfg, "show_metadata_editor")
     recent = get_recent_paths()
 
     scope = {'i': 0}                       # index into _SCOPE_CYCLE
@@ -303,7 +304,7 @@ def handle_search(library: list) -> str | None:
 def _play_entity(ent, library: list) -> str | None:
     """Open a chosen artist/album/disc/genre: list its tracks and act on one."""
     tracks = ent.tracks
-    _show_editor = load_config().get("show_metadata_editor", True)
+    _show_editor = setting(load_config(), "show_metadata_editor")
     choices = []
     for s in tracks:
         choices.append(prompt.Choice(

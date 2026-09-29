@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from src.utils import output as out
+from src.config import setting
 
 
 @dataclass
@@ -141,7 +142,7 @@ class Ctx:
                 if roots:
                     self._library = build_library(
                         roots,
-                        ignore_hidden=self.config.get('ignore_hidden_files', False))
+                        ignore_hidden=setting(self.config, 'ignore_hidden_files'))
                     save_library_cache(self._library, _async=False)
         # Always the same list: a fresh [] per access (for an empty library)
         # meant each track added went into a throwaway list, saved on its own.

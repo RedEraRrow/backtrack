@@ -6,6 +6,7 @@ from src.utils import prompt
 from src.utils import ui_utils
 from src.music_library import derive_album_credit
 from src.config import load_config, update_config
+from src.config import setting
 
 
 # Structured column layouts for browse lists (no string parsing — each Choice
@@ -97,7 +98,7 @@ def _disc_track_cell(song: dict) -> str:
 
 def _autoplay() -> bool:
     """Whether selecting a track should play immediately, skipping the action menu."""
-    return bool(load_config().get('autoplay_on_select', False))
+    return bool(setting(load_config(), 'autoplay_on_select'))
 
 
 # Settings rows carry their current state in a right-hand column, so every

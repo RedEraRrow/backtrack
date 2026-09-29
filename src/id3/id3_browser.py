@@ -42,6 +42,7 @@ from src.id3.id3_tag_handler import (
     parse_composite_tag_id,
 )
 from src.id3 import tag_registry as _reg
+from src.config import setting
 
 # Structured columns for the tag list. Column 1 holds the tag id AND the friendly
 # name as two styled segments (TAG bright + friendly dim) in a single column.
@@ -476,7 +477,7 @@ def _sort_candidates(base_id: str, raw: str) -> list[str]:
             # configured delimiter. A person still holding a comma is already
             # inverted and passes through as-is.
             from src.config import load_config
-            delim = load_config().get('sort_list_delimiter', '/')
+            delim = setting(load_config(), 'sort_list_delimiter')
             for people in readings:
                 _add(delim.join(p if _looks_inverted(p)
                                 else (_sort_single_name(p) or [p])[0]
@@ -513,7 +514,7 @@ def _prompt_sort_order(base_id: str, audio: ID3) -> str | None:
     # the sort frame is single: join them on the configured delimiter, which is
     # also what the engine splits them back on.
     from src.config import load_config
-    delim = load_config().get('sort_list_delimiter', '/')
+    delim = setting(load_config(), 'sort_list_delimiter')
     raw = delim.join(v for v in (str(t).strip() for t in frame.text) if v)
     if not raw:
         return None
@@ -911,7 +912,7 @@ def inspect_tag_loop(
 
     from src.config import load_config
     _cfg = load_config()
-    _has_lyrics = _cfg.get("show_lyrics_editor", True) and bool(find_lyrics(file_path))
+    _has_lyrics = setting(_cfg, "show_lyrics_editor") and bool(find_lyrics(file_path))
     _has_trim = _trim.HAS_FFMPEG
 
     def _save(audio_obj):

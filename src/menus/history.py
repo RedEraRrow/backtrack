@@ -12,6 +12,7 @@ from src.id3.id3_browser import inspect_tag_loop
 from src.id3.bulk_id3_manager import bulk_id3_manager
 from src.menus.common import _idx_of, _menu_header
 from src.menus.play import _queue_shortcut_kwargs
+from src.config import setting
 
 
 # Listening-history columns: title · artist · album · when (relative) · listened.
@@ -107,7 +108,7 @@ def _history_screen(library: list, cursor: int):
             title=title, value=path,
             cells=[title, artist, album, _relative_time(ts, now), _nice_dur(dur)]))
 
-    _show_editor = load_config().get("show_metadata_editor", True)
+    _show_editor = setting(load_config(), "show_metadata_editor")
 
     def _inspect_history(path: str) -> None:
         """`e`: open the metadata editor (lyrics sync and trim live inside it

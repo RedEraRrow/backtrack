@@ -65,6 +65,7 @@ from src.utils import prompt
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
 from src.utils import timefmt
+from src.config import setting
 
 # Preview columns for the commit pass: file · cut points · resulting duration.
 _COMMIT_COLUMNS = [
@@ -342,7 +343,7 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
     if len(paths) < 2:
         return _mark_manually()
 
-    window_s = float(load_config().get("trim_sting_window_s", 90.0))
+    window_s = float(setting(load_config(), "trim_sting_window_s"))
     ref_start_s, ref_dur_s = _window_bounds(reference_path, window_s, region)
     pcm_a = trim.decode_mono_pcm(reference_path, ref_start_s, ref_dur_s)
     cmp_start_s, cmp_dur_s = _window_bounds(paths[1], window_s, region)
@@ -418,8 +419,8 @@ def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bou
     region = 'head' if bound == 'in' else 'tail'
     which = "opening" if bound == 'in' else "closing"
     cfg = load_config()
-    window_s = float(cfg.get("trim_sting_window_s", 90.0))
-    min_score = float(cfg.get("trim_sting_min_score", 0.3))
+    window_s = float(setting(cfg, "trim_sting_window_s"))
+    min_score = float(setting(cfg, "trim_sting_min_score"))
 
     learned = _learn_sting_from_history(paths, region, window_s, min_score)
     used_history = learned is not None and prompt.confirm(
@@ -637,7 +638,7 @@ def apply_replaygain_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("No MP3 tracks to measure.")
         return
 
-    target_lufs = float(load_config().get("trim_target_lufs", -18.0))
+    target_lufs = float(setting(load_config(), "trim_target_lufs"))
     task_id = "trim_loudness"
     measurements: dict[str, dict] = {}
     for i, path in enumerate(mp3_paths):

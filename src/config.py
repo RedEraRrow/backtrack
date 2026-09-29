@@ -117,6 +117,15 @@ def load_config() -> dict:
     return cfg
 
 
+def setting(cfg: dict, key: str):
+    """One setting from `cfg`, or its DEFAULT_CONFIG default when `cfg` lacks it —
+    so each default is written once, here, rather than at every read."""
+    if key in cfg:
+        return cfg[key]
+    import copy
+    return copy.deepcopy(DEFAULT_CONFIG[key])
+
+
 def normalise_dir(path: str) -> str:
     """Absolute, ~-expanded form of one directory path ('' stays '')."""
     p = str(path or '').strip()

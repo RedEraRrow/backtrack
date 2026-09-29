@@ -13,6 +13,7 @@ from src.menus import main_menu
 from src.id3.tag_registry import TAG_REGISTRY
 from src.state import QuitToTerminal
 from src.utils import prompt, ui_utils
+from src.config import setting
 
 
 def _init_tag_preferences(config: dict) -> dict:
@@ -131,7 +132,7 @@ def _run(config: dict) -> None:
     ui_utils.show_loading("Building library…")
     library = build_library(
         roots,
-        ignore_hidden=config.get("ignore_hidden_files", False)
+        ignore_hidden=setting(config, "ignore_hidden_files")
     )
 
     save_library_cache(library, _async=False)
@@ -223,7 +224,7 @@ def _run_app() -> None:
         pass
 
     config = load_config()
-    log_setup(bool(config.get("debug", False)))
+    log_setup(bool(setting(config, "debug")))
     ui_utils.set_accent(config.get("accent_colour"))
     _wire_keyboard()
     _wire_playback()

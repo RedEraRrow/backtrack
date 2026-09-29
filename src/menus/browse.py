@@ -18,6 +18,7 @@ from src.menus.play import (
     _edit_paths, _list_actions, _list_result, _queue_shortcut_kwargs, _sorted_paths, play_queue,
 )
 from src.menus.sorting import _GROUP_SORTS, _pick_chain, _pick_sort, _sort_groups
+from src.config import setting
 
 
 def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | None:
@@ -45,7 +46,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                 ui_utils.show_status(f"Nothing here is tagged for {cat_choice.lower()}.")
                 break
             _cat_key = _field
-            _show_editor = _cfg.get("show_metadata_editor", True)
+            _show_editor = setting(_cfg, "show_metadata_editor")
             _scope_name = library_name(_cfg, scope) if scope else None
             _group_sort = (_cfg.get("group_sorts") or {}).get(cat, "name")
 
@@ -194,7 +195,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     # showing as its own entry (albums are distinct from the artist).
                     # Play / shuffle / edit hints act on every album; one album's
                     # row already does all of that one level down.
-                    _show_editor = _cfg.get("show_metadata_editor", True)
+                    _show_editor = setting(_cfg, "show_metadata_editor")
                     _single_album = len(album_list) <= 1
                     _alb_choices: list = []
                     _asc: dict = {}
@@ -309,7 +310,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                             cells=[label, format_tag_values(_artist), _dur_str]))
 
                     _track_context = NAV_STACK[-1] if NAV_STACK else selection
-                    _show_editor   = _cfg.get("show_metadata_editor", True)
+                    _show_editor   = setting(_cfg, "show_metadata_editor")
                     # Play / shuffle / edit-all hints; `e` edits the highlighted
                     # row. With a single track they're noise — the lone
                     # track row already does both jobs.
@@ -378,7 +379,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     if isinstance(path_choice_obj, str) and path_choice_obj.startswith("__work__"):
                         work_name    = path_choice_obj[len("__work__"):]
                         work_paths   = work_track_map.get(work_name, [])
-                        _show_editor = _cfg.get("show_metadata_editor", True)
+                        _show_editor = setting(_cfg, "show_metadata_editor")
                         _work_choices = [prompt.Choice(title=f"▸  Play all — {work_name}", value="__play_all__")]
                         if _show_editor:
                             _work_choices.append(prompt.Choice(title=f"Edit tags — {work_name}", value="__bulk_edit__"))

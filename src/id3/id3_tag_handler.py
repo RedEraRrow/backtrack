@@ -16,6 +16,7 @@ import re
 import time
 from src.utils import prompt, ui_utils
 from src.utils.prompt import chrome as prompt_chrome
+from src.config import setting
 
 
 
@@ -902,7 +903,7 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     else:
         try:
             from src.config import load_config
-            plain = bool(load_config().get('plain_text_editing', False))
+            plain = bool(setting(load_config(), 'plain_text_editing'))
         except Exception:
             plain = False
 
