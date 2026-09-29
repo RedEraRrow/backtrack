@@ -85,10 +85,15 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
         mode = 'continuous' if state['mode_sel'].startswith("Continuous") else 'per_disc'
         plan = bo.plan_renumber(ordered, skipped_fmt, mode)
         state['plan'] = plan
-        ticked = state['apply_set'] or {c.path for c in plan.changed}
+        changing = {c.path for c in plan.changed}
+        if not changing:
+            ui_utils.show_status("Already numbered that way.")
+            return False
+        ticked = (state['apply_set'] & changing) or changing
         choices = [
             prompt.Choice(title=name, value=c.path, checked=c.path in ticked,
-                          cells=[str(pos), name, why])
+                          disabled=not c.changed,
+                          cells=[str(pos), name, why or 'no change'])
             for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
         sub = ui_utils.plural(len(choices), "file") + (
             f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
@@ -108,7 +113,7 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
     applied = bo.apply_changes(
         state['plan'], library,
         lambda c: tw.write_fields(c.path, c.fields, {'track'}, overwrite=True),
-        selected=state['apply_set'])
+        selected=state['apply_set'] & {c.path for c in state['plan'].changed})
     ui_utils.show_status(bo.summarise(applied, "Renumbered"))
 
 

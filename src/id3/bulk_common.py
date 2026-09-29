@@ -100,11 +100,14 @@ def preview_and_apply(plan, library: list, header, writer, verb: str, *, count: 
                       columns=None, positions: bool = True) -> None:
     """Preview a plan and write what is ticked: every file listed, the changing
     ones ticked, live counts in the header, then the one-line summary. Only a
-    ticked row that changes is written — ticking one that says `unchanged(c)`
-    must not rewrite it."""
+    row that changes can be ticked: the rest are listed greyed out, saying
+    `unchanged(c)`, so the selection is visibly complete."""
     from src.utils import ui_utils
+    if not plan.changed:
+        ui_utils.show_status("Nothing to change.")
+        return
     choices = [
-        prompt.Choice(title=name, value=c.path, checked=c.changed,
+        prompt.Choice(title=name, value=c.path, checked=c.changed, disabled=not c.changed,
                       cells=([str(pos)] if positions else []) + [name, why or unchanged(c)])
         for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
 

@@ -52,5 +52,17 @@ class SelectMoveTest(unittest.TestCase):
         self.assertEqual(_run(['ENTER'], ['x', 'y'], place=place), 'x')
 
 
+    def test_greyed_rows_cannot_be_ticked(self):
+        def rows():
+            return [prompt.Choice(title='same', value='same', disabled=True),
+                    prompt.Choice(title='new', value='new', checked=True),
+                    prompt.Choice(title='kept', value='kept', disabled=True)]
+        # The cursor starts on the changing row; space there unticks it; moving
+        # down can't reach the greyed row, so a second space re-ticks the same one.
+        self.assertEqual(_run(['SPACE', 'DOWN', 'SPACE', 'ENTER'], rows(), multi=True), ['new'])
+        self.assertEqual(_run(['SPACE', 'ENTER'], rows(), multi=True), [])
+        self.assertEqual(_run(['SPACE', 'a', 'ENTER'], rows(), multi=True), ['new'])   # select-all too
+
+
 if __name__ == "__main__":
     unittest.main()
