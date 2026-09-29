@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from src.utils import prompt, prompt_core
+from src.utils.prompt import chrome
 
 
 class TransportHintClickTest(unittest.TestCase):
@@ -12,8 +13,8 @@ class TransportHintClickTest(unittest.TestCase):
         cells: dict = {}
         prompt_core.add_hint_click_cells(cells, "[^p] play/pause  [^n/^b] next/prev", 5,
                                          [("^p", "play/pause"), ("^n/^b", "next/prev")])
-        with patch.object(prompt, '_transport_handler', calls.append), \
-             patch.object(prompt, 'now_playing_click_action', lambda r, c: None):
+        with patch.object(chrome, '_transport_handler', calls.append), \
+             patch.object(chrome, 'now_playing_click_action', lambda r, c: None):
             click = lambda col: prompt.consume_chrome(f"MOUSE_CLICK:0:5:{col}", cells)
             cols = {v: c for (r, c), v in cells.items()}
             for key in ('\x10', '\x0e', '\x02'):

@@ -9,7 +9,7 @@ from src.utils import prompt_core as pc
 from src.utils import ui_utils
 from src.playback.player_geom import geom
 from src.utils import numbering
-from src.utils.prompt import _hint
+from src.utils.prompt_core import _hint
 from src.utils.prompt_core import add_hint_click_cells
 from src.utils.ui_utils import Colors as C
 from src import tuning as tune

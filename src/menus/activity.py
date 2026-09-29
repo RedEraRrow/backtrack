@@ -2,6 +2,7 @@
 from __future__ import annotations
 from src.utils.ui_utils import Colors as C
 from src.utils import prompt
+from src.utils import prompt_core
 from src.utils import ui_utils
 
 
@@ -34,10 +35,10 @@ def notification_centre() -> None:
         # shrinks underneath them — and pick up the transport keys while audio
         # is playing, like every other screen.
         pairs = prompt.chrome_hint_pairs(_hint_pairs)
-        hint = prompt._hint(*pairs)
+        hint = prompt_core._hint(*pairs)
         hint_lines = hint.split('\n')
         used = body.count('\n')
-        pad = max(0, prompt._hint_pin_target() - used - len(hint_lines))
+        pad = max(0, prompt_core._hint_pin_target() - used - len(hint_lines))
         sys.stdout.write(body + "\n" * pad + hint)
         sys.stdout.flush()
         first_row = 1 + used + pad

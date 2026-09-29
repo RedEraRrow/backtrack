@@ -61,7 +61,7 @@ class TagTextTest(unittest.TestCase):
 
 class EqualiserClickTest(unittest.TestCase):
     def test_band_columns_are_shared_by_drawing_and_clicks(self):
-        from src.utils import prompt
+        from src.utils.prompt import audio as prompt
         cols = prompt._eq_band_x(4, 40)
         self.assertEqual(cols, [5, 15, 25, 35])
         self.assertTrue(all(c < 40 for c in prompt._eq_band_x(40, 40)))

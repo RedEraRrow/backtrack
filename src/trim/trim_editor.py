@@ -39,11 +39,8 @@ from src.config import load_config
 from src.trim import trim
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
-from src.utils.prompt import (
-    _Widget, _read_key, _wait_for_keypress,
-    _set_raw, _restore_term_attrs, _get_term_attrs,
-    confirm as _confirm,
-)
+from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
+from src.utils.prompt import confirm as _confirm
 from src.utils import prompt as _promptmod
 from src.lyrics.lyrics_editor import (
     _EDIT_ORDER, _EDIT_MAXLEN, _EDIT_LIM, _EDIT_START, _EDIT_END,

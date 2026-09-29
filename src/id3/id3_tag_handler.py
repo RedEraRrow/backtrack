@@ -15,6 +15,7 @@ import os
 import re
 import time
 from src.utils import prompt, ui_utils
+from src.utils.prompt import chrome as prompt_chrome
 
 
 
@@ -1010,25 +1011,25 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         plain = len(mv_vals) < 2
 
     # Run the editor, flipping raw↔widget whenever Ctrl-T returns MODE_TOGGLE.
-    prompt._value_toggle_enabled = has_widget_toggle
-    prompt._toggle_hint_label = 'values' if multivalue else 'widget'
-    prompt._toggle_carry = None
+    prompt_chrome._value_toggle_enabled = has_widget_toggle
+    prompt_chrome._toggle_hint_label = 'values' if multivalue else 'widget'
+    prompt_chrome._toggle_carry = None
     try:
         while True:
             res = _edit_once(plain)
             if res is prompt.MODE_TOGGLE:
                 # Carry a half-typed text value into the list editor so it isn't
                 # lost when expanding from the field.
-                if multivalue and prompt._toggle_carry is not None:
-                    carry = prompt._toggle_carry.strip()
+                if multivalue and prompt_chrome._toggle_carry is not None:
+                    carry = prompt_chrome._toggle_carry.strip()
                     mv_vals = [carry] if carry else []
-                prompt._toggle_carry = None
+                prompt_chrome._toggle_carry = None
                 plain = not plain
                 continue
             return res
     finally:
-        prompt._value_toggle_enabled = False
-        prompt._toggle_hint_label = 'widget'
+        prompt_chrome._value_toggle_enabled = False
+        prompt_chrome._toggle_hint_label = 'widget'
 
 
 def display_tag_id(tag_id: str) -> str:

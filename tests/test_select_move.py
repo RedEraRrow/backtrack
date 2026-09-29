@@ -4,16 +4,17 @@ import unittest
 from unittest.mock import patch
 
 from src.utils import prompt
+from src.utils.prompt import lists
 
 
 def _run(keys, choices, on_move, index=0):
     """Drive select() with a scripted key sequence, returning its result."""
     feed = iter(keys)
-    with patch.object(prompt, '_read_key', lambda fd: next(feed)), \
-         patch.object(prompt, '_wait_for_keypress', lambda t: True), \
-         patch.object(prompt, '_set_raw'), patch.object(prompt, '_restore_term_attrs'), \
-         patch.object(prompt, '_get_term_attrs'), patch.object(prompt, '_Widget'), \
-         patch.object(prompt.sys.stdin, 'fileno', lambda: 0):
+    with patch.object(lists, '_read_key', lambda fd: next(feed)), \
+         patch.object(lists, '_wait_for_keypress', lambda t: True), \
+         patch.object(lists, '_set_raw'), patch.object(lists, '_restore_term_attrs'), \
+         patch.object(lists, '_get_term_attrs'), patch.object(lists, '_Widget'), \
+         patch.object(lists.sys.stdin, 'fileno', lambda: 0):
         return prompt.select("", choices=choices, on_move=on_move, index=index)
 
 

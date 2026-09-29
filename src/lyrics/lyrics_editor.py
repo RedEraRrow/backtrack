@@ -35,12 +35,11 @@ from src import tuning as tune
 from src.music_library import format_value_list
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
-from src.utils.prompt import (
-    _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs,
-    _cols, text as _prompt_text,
-)
+from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs, _cols
+from src.utils.prompt import text as _prompt_text
 from src.utils.prompt_core import add_hint_click_cells_auto, _visible_rows, now_playing_click_action
 from src.utils import prompt as _promptmod
+from src.utils.prompt import chrome as _prompt_chrome
 from src.utils.files import write_text_atomic, backup_copy
 from src.utils.log import log
 
@@ -163,7 +162,7 @@ def _np_transport(action: str) -> None:
 
 
 # Segmented timestamp editor (EDIT mode): start and end as MM:SS.mmm, each field
-# individually tabbable — mirrors the segmented time widget in prompt.py.
+# individually tabbable — mirrors the segmented time widget in prompt/values.py.
 _EDIT_ORDER  = ['sm', 'ss', 'sms', 'em', 'es', 'ems']
 _EDIT_MAXLEN = {'sm': 2, 'ss': 2, 'sms': 3, 'em': 2, 'es': 2, 'ems': 3}
 _EDIT_LIM    = {'sm': 99, 'ss': 59, 'sms': 999, 'em': 99, 'es': 59, 'ems': 999}
@@ -2326,8 +2325,8 @@ def lyrics_editor(mp3_path: str) -> None:
                 if key in ('\x10', '\x0e', '\x02'):
                     _np_transport({'\x10': 'playpause', '\x0e': 'next', '\x02': 'prev'}[key])
                     return True
-                if key == '\x0f' and _promptmod._player_opener is not None:
-                    _promptmod._player_opener()
+                if key == '\x0f' and _prompt_chrome._player_opener is not None:
+                    _prompt_chrome._player_opener()
                     sys.stdout.write("\033[?1000h\033[?1006h"); sys.stdout.flush()
                     w.anchor_reset()
                     return True
@@ -2356,8 +2355,8 @@ def lyrics_editor(mp3_path: str) -> None:
                     if _act in ('playpause', 'next', 'prev'):
                         _np_transport(_act); continue
                     if _act == 'open':
-                        if _promptmod._player_opener is not None:
-                            _promptmod._player_opener()
+                        if _prompt_chrome._player_opener is not None:
+                            _prompt_chrome._player_opener()
                             sys.stdout.write("\033[?1000h\033[?1006h"); sys.stdout.flush()
                             w.anchor_reset()
                         continue
