@@ -2,7 +2,6 @@
 from __future__ import annotations
 import re
 import sys
-import math
 
 # Allow running this file directly (`python3 src/utils/tz_widget.py`) for
 # standalone testing/fun: put the repo root on sys.path before the package
@@ -15,10 +14,9 @@ from src.utils import prompt as _prompt   # shared widget chrome (hints/transpor
 from src.utils.prompt_core import (
     _Widget, _read_key, _wait_for_keypress,
     _set_raw, _restore_term_attrs, _get_term_attrs,
-    _hint, _hint_lines, _visible_rows, _cols, _rows, C,
+    _visible_rows, _cols, C,
 )
 from src.utils import ui_utils
-from src import state as _state
 from src.state import QuitToTerminal
 
 _TIMEZONES = [
