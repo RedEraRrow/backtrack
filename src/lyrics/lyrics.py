@@ -13,7 +13,6 @@ from src.utils.ui_utils import Colors as C
 from src.lyrics.md_overlay import build_md_overlay, _reading_time
 from src.lyrics import lyrics_text as _lt
 from src import tuning as tune
-from src.lyrics.lyric_pane import handover
 
 def normalize_lyric_newlines(text: str) -> str:
     """Normalise CRLF/CR line endings to \\n."""
@@ -1163,12 +1162,8 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
     if track_duration > 0:
         _air_if_silent(float(track_duration))        # the run-out after the last line
 
-    # Close the gaps between beats, so a moment of silence belongs to the line just
-    # gone (by lyric_pane.handover's rule; a dead-air beat keeps its whole beat here).
-    for i in range(len(times) - 1):
-        a, b = times[i]
-        times[i] = (a, handover(a, b, times[i + 1][0], chunks[i]['is_stage'] or chunks[i]['is_air']))
-
+    # The gaps between beats are left as they are: the pane tiles the timeline
+    # (lyric_pane.handover), once.
     return chunks, times
 
 
