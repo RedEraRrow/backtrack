@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import random
 from src.utils import ui_utils
-from src.music_library import sort_tracks
+from src.music_library import drop_moved, sort_tracks
 from src.playback.playback import music_player
 from src.playback.session import REPEAT_OFF, active_session, is_client
 from src.id3.bulk_id3_manager import bulk_id3_manager
@@ -174,6 +174,9 @@ def _handle_queue_action(action: str | None, path: str | list[str], title: str,
     paths = [path] if isinstance(path, str) else list(path)
     if not paths:
         return False
+    paths = drop_moved(paths)
+    if not paths:
+        return True                        # nothing left to queue; drop_moved said why
 
     titles = _queue_titles_for_paths(paths, library or [])
     if not a.is_active():

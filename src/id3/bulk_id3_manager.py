@@ -19,7 +19,7 @@ from src import bulk_pattern as bp
 from src.music_library import format_value_list
 from src.utils import ui_utils
 from src.utils.ui_utils import get_terminal_width
-from src.music_library import refresh_library_entry
+from src.music_library import drop_moved, refresh_library_entry
 from src.trim import trim as _trim
 from src.trim.trim_bulk import trim_conveyor, apply_replaygain_op
 
@@ -248,6 +248,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
     if not album_tracks:
         ui_utils.show_status("No tracks found.")
+        return
+    album_tracks = drop_moved(album_tracks)
+    if not album_tracks:
         return
 
     cols = get_terminal_width()

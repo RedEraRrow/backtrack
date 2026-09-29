@@ -31,7 +31,7 @@ Stage directions (on a stage-direction row in SEG) — press x to cycle the kind
 from __future__ import annotations
 import sys, os, json, time
 
-from src.music_library import format_value_list
+from src.music_library import drop_moved, format_value_list
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
 from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs, _cols
@@ -749,6 +749,8 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
 
 def lyrics_editor(mp3_path: str) -> None:
     """Run the interactive lyrics/transcript sync editor for mp3_path until the user quits."""
+    if not drop_moved([mp3_path]):
+        return
     result = _load(mp3_path)
     if result is None:
         ui_utils.show_status("No lyrics or transcript found for this track.")

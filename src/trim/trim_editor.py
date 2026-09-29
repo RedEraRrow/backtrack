@@ -37,6 +37,7 @@ from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[reportPrivateImpor
 
 from src.config import load_config
 from src.trim import trim
+from src.music_library import drop_moved
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
 from src.utils.prompt_core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
@@ -805,6 +806,8 @@ def trim_editor(path: str, library: list | None = None) -> None:
     """Run the interactive trimmer on `path` until the user backs out or
     commits. Marking, auditioning and undo are all in-session; nothing is
     written to disk until 's' (section 4.2's safety requirement)."""
+    if not drop_moved([path]):
+        return
     if not trim.HAS_FFMPEG:
         ui_utils.show_status("Could not open the trimmer — ffmpeg isn't installed. See README.md.")
         return

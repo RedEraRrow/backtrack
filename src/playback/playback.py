@@ -33,6 +33,7 @@ from src.playback.playback_ui import (
 from src.playback import playback_ui
 from src.playback.player_geom import geom
 from src.utils.log import log
+from src.music_library import drop_moved
 from src.utils import prompt_core as pc
 from src.playback.session import (
     SESSION, is_client, has_other_windows,
@@ -91,6 +92,18 @@ def music_player(file_path: str, is_grouping: bool = False,
     dict: ``DETACH`` (minimised, still playing), ``STOP``, ``OK`` (queue
     finished), or ``ERROR``; q raises QuitToTerminal."""
     paths = queue_paths if queue_paths else [file_path]
+    kept = drop_moved(paths)
+    if len(kept) != len(paths):              # moved/renamed since listed: said so already
+        if not kept:
+            return {"status": "ERROR"}
+        keep = set(kept)
+        order = [i for i, p in enumerate(paths) if p in keep]
+        if queue_titles and len(queue_titles) == len(paths):
+            queue_titles = [queue_titles[i] for i in order]
+        queue_index = next((n for n, i in enumerate(order) if i >= queue_index), 0)
+        paths = kept
+        file_path = paths[queue_index]
+        queue_paths = paths
     # In a joined (client) window the audio lives in the host process: send the
     # play there and stay in this window's menus (the host's now-playing box
     # updates via the mirror). The full player view from a client is Phase 2c.

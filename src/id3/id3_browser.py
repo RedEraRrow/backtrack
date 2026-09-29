@@ -23,7 +23,7 @@ from src.utils import ui_utils
 from src.utils.prompt_core import _visible_rows
 from src.utils.ui_utils import Colors as C, get_terminal_width
 from src.art.album_art import render_album_art
-from src.music_library import refresh_library_entry
+from src.music_library import drop_moved, refresh_library_entry
 
 from src.id3.id3_tag_handler import (
     get_tag_info,
@@ -889,6 +889,8 @@ def inspect_tag_loop(
     # past the per-load check and crash downstream) — one clean, early message.
     if not file_path.lower().endswith('.mp3'):
         ui_utils.show_status("Tag editing is only supported for MP3 files.", duration=4.0)
+        return
+    if not drop_moved([file_path]):
         return
 
     # Duration is constant for the file — compute it ONCE here, not per render.

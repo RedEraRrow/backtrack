@@ -48,6 +48,7 @@ _sync_thread: threading.Thread | None = None
 _sync_trigger = threading.Event()
 _cache_mtime = 0
 _sync_lock = threading.Lock()
+_reconcile_lock = threading.Lock()   # the sync thread and drop_moved both reconcile
 _sync_state: dict[str, Any] = {
     "library": None,
 }
@@ -184,6 +185,44 @@ def _reconcile_library(library: list, music_dirs, ignore_hidden: bool = False) -
     return changed
 
 
+def drop_moved(paths: list) -> list:
+    """The `paths` that are still on disk. Any that have gone were moved or
+    renamed since the library was scanned: the library is re-synced now (a
+    rename comes back under its new name) and one plain message says so,
+    rather than each screen failing on a file that isn't there."""
+    present = [p for p in paths if os.path.exists(p)]
+    if len(present) == len(paths):
+        return present
+    kept = set(present)
+    missing = [p for p in paths if p not in kept]
+
+    from src.config import load_config, music_dirs as _music_dirs
+    from src.utils import ui_utils
+    from src.utils.log import log
+    cfg = load_config()
+    roots = _music_dirs(cfg)
+    gone_roots = sorted({r for p in missing if (r := library_of(p, roots)) and not os.path.isdir(r)})
+    log.warning("library path modified: %d file(s) gone (first: %s); missing folders: %s",
+                len(missing), missing[0], gone_roots or "none")
+
+    library = live_library()
+    if library is not None:
+        with _reconcile_lock:
+            if _reconcile_library(library, roots, bool(cfg.get('ignore_hidden_files', False))):
+                save_library_cache(library)
+
+    if gone_roots:
+        name = os.path.basename(gone_roots[0].rstrip(os.sep)) or gone_roots[0]
+        msg = (f"Library folder “{name}” was moved or renamed — "
+               "update it in Settings → Music directories.")
+    elif len(missing) == 1:
+        msg = f"“{os.path.basename(missing[0])}” was moved or renamed — library updated."
+    else:
+        msg = f"{len(missing)} files were moved or renamed — library updated."
+    ui_utils.show_status(msg, duration=5.0)
+    return present
+
+
 def _sync_worker(library: list) -> None:
     """Worker thread for background library synchronization."""
     global _cache_mtime
@@ -204,8 +243,9 @@ def _sync_worker(library: list) -> None:
             ignore_hidden = bool(cfg.get('ignore_hidden_files', False))
         except Exception:
             roots, ignore_hidden = [], False
-        if _reconcile_library(library, roots, ignore_hidden):
-            changed = True
+        with _reconcile_lock:
+            if _reconcile_library(library, roots, ignore_hidden):
+                changed = True
 
         # Check for modified files
         path_map = {track['path']: track for track in library}

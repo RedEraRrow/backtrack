@@ -29,7 +29,7 @@ from mutagen.id3 import ID3
 import mutagen.id3
 
 from src.history import log_listening_history
-from src.music_library import get_song_duration
+from src.music_library import drop_moved, get_song_duration
 
 # vlc.State attributes are dynamic; expose safe aliases (mirrors playback.py).
 _VLC_STATE_PAUSED = getattr(vlc.State, 'Paused', None)
@@ -512,17 +512,28 @@ class PlaybackSession:
         explicit skip). Returns the new path, or None if the queue is exhausted
         (which stops playback)."""
         with self._lock:
-            if not self.queue:
-                return None
-            nxt = self.index + 1
-            if self.mode == REPEAT_ONE and not manual:
-                nxt = self.index
-            elif nxt >= len(self.queue):
-                if self.mode == REPEAT_ALL:
-                    nxt = 0
-                else:
+            while True:
+                if not self.queue:
                     self.stop()
                     return None
+                nxt = self.index + 1
+                if self.mode == REPEAT_ONE and not manual:
+                    nxt = self.index
+                elif nxt >= len(self.queue):
+                    if self.mode == REPEAT_ALL:
+                        nxt = 0
+                    else:
+                        self.stop()
+                        return None
+                if drop_moved([self.queue[nxt]]):
+                    break
+                # Moved or renamed since it was queued: it leaves the queue, and
+                # the advance carries on to whatever followed it.
+                del self.queue[nxt]
+                if nxt < len(self.titles):
+                    del self.titles[nxt]
+                self.index = nxt - 1
+                manual = True
             self.index = nxt
             self._load(self.queue[self.index])
             return self.file_path
