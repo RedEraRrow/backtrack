@@ -55,14 +55,14 @@ _np_last_draw = [0.0]
 _status_prev_active = [False]            # was a background task shown last idle tick?
 
 # Self-pipe so background threads can wake the menu poll to repaint the box the
-# instant playback state changes (#14) — see ui_utils.pulse_now_playing(). The
+# instant playback state changes; see ui_utils.pulse_now_playing(). The
 # poll's select() watches the read end alongside stdin; a pulse makes it return
 # immediately and repaint, rather than waiting on the next keystroke or timeout.
 try:
     _wake_r, _wake_w = os.pipe()
     os.set_blocking(_wake_r, False)
     os.set_blocking(_wake_w, False)
-except OSError:                          # no pipes (e.g. odd sandbox) — degrade gracefully
+except OSError:                          # no pipes (e.g. odd sandbox): degrade gracefully
     _wake_r = _wake_w = -1
 
 
@@ -85,9 +85,8 @@ if _wake_r >= 0:
 # One entry per screen row holding what is currently displayed there, shared by
 # every writer (widget frames, the now-playing box, the status bar). A repaint
 # writes only the rows whose content actually changed and never erases a row
-# before rewriting it — the old "erase to end of screen, then redraw everything"
-# frame is what made the whole screen flicker and the miniplayer blink out and
-# back on every keystroke. Rows are also written *absolutely*, with no newlines,
+# before rewriting it: erasing to the end of the screen and redrawing everything
+# makes the screen flicker and the now-playing box blink on every keystroke. Rows are also written *absolutely*, with no newlines,
 # so a line-buffered stdout cannot flush a half-drawn frame.
 _screen: dict[int, str] = {}
 # The terminal size the model was painted at. A resize reflows what is on
@@ -97,7 +96,7 @@ _screen_size: list = [None]
 
 
 def screen_invalidate() -> None:
-    """Forget what is on screen — after a full clear, a resize, or a write by
+    """Forget what is on screen: after a full clear, a resize, or a write by
     something that doesn't go through here (the player view). A clear at a new
     size (a screen answering a resize) counts as the resize wipe too."""
     size = ui_utils.get_terminal_size()
@@ -109,7 +108,7 @@ def screen_invalidate() -> None:
 
 def _note_resize(was: tuple, size: tuple) -> None:
     """Log a resize: how long after the terminal reported it we're repainting,
-    and which rows of the old frame were wider than the new window — the ones
+    and which rows of the old frame were wider than the new window, the ones
     the terminal rewrapped before we could redraw."""
     if not _logging():
         return
@@ -149,10 +148,10 @@ _takeover_pending = [False]
 def screen_takeover_next() -> None:
     """Take the screen over on the next frame *without* clearing it first.
 
-    Called where a widget used to clear on entry: the next paint overwrites the
-    rows it needs and blanks whatever the previous screen left behind, in the
-    same flush. That removes the blank flash between every screen — a clear is
-    only genuinely needed when the terminal reflowed (resize) or something
+    Called where a widget would otherwise clear on entry: the next paint
+    overwrites the rows it needs and blanks whatever the previous screen left
+    behind, in the same flush, so there is no blank flash between screens. A
+    clear is only needed when the terminal reflowed (resize) or something
     painted outside this model.
     """
     _takeover_pending[0] = True
@@ -186,7 +185,7 @@ def screen_row_paint(row: int, text: str, extra: str = "") -> str:
 
     `extra` is for absolute overlays that write a few columns of a row something
     else owns (the volume bar sits on the album art's rows). Both layers are part
-    of the row's identity, so a row repaints when *either* changes — and a row
+    of the row's identity, so a row repaints when *either* changes, and a row
     whose overlay went away is erased rather than keeping stale glyphs. A blank
     row is content too: "" differs from anything previously drawn there.
     """
@@ -202,7 +201,7 @@ def screen_row_paint(row: int, text: str, extra: str = "") -> str:
 
 
 def screen_row_segment(row: int, text: str) -> str:
-    """Paint one row of plain text (no overlay) — see `screen_row_paint`."""
+    """Paint one row of plain text (no overlay); see `screen_row_paint`."""
     return screen_row_paint(row, text)
 
 
@@ -247,7 +246,7 @@ def _np_box_str(rows: int, lines: list) -> str:
     lines = lines[-max_box_rows:]
     h = len(lines)
     band = max(_np_prev_h[0], h)
-    # Rows the box no longer covers are blanked; rows it does are painted — both
+    # Rows the box no longer covers are blanked; rows it does are painted, both
     # through the shared screen model, so an unchanged box emits nothing at all
     # and a shrinking one clears exactly the rows it gave up.
     wanted: dict[int, str] = {}
@@ -287,8 +286,8 @@ def now_playing_box_segment() -> str:
 
 def invalidate_now_playing_box() -> None:
     """Drop the last-drawn box cache so the next idle tick repaints unconditionally.
-    Used on focus-in (#14): while a window is unfocused the terminal may not paint
-    our box writes, yet the cache advances as if it had — leaving the box stale
+    Used on focus-in: while a window is unfocused the terminal may not paint
+    our box writes, yet the cache advances as if it had, leaving the box stale
     after refocus until an interaction. Forcing a repaint fixes it without a click."""
     _np_prev_lines[0] = None
     _np_prev_sig[0] = object()          # sentinel: never equal to a real signature
@@ -299,12 +298,12 @@ def _render_now_playing_bar() -> None:
     """Idle-tick refresh so the clock/progress advance (and a background track
     change lands) when nothing else redraws. Repaints when either the track
     identity or the styled rows changed, so an idle screen never flickers yet a
-    new song is never missed (#14)."""
+    new song is never missed."""
     rows = ui_utils.get_terminal_height()
     cols = ui_utils.get_terminal_width()
     lines = ui_utils.now_playing_lines(cols)
     if len(lines) != _np_prev_h[0]:
-        # The box appeared or vanished — the menu must re-reserve rows for it.
+        # The box appeared or vanished: the menu must re-reserve rows for it.
         ui_utils.mark_now_playing_layout_dirty()
     if ui_utils.now_playing_signature() == _np_prev_sig[0] and lines == _np_prev_lines[0]:
         return
@@ -317,7 +316,7 @@ def _render_now_playing_bar() -> None:
 def _wait_for_keypress(timeout: float = 0.05) -> bool:
     """Block up to `timeout` seconds for a keypress; return whether one arrived.
 
-    Also refreshes the now-playing box (#14) at ~4 Hz so background-audio status
+    Also refreshes the now-playing box at ~4 Hz so background-audio status
     stays live on every widget/menu without each one needing its own tick."""
     now = time.time()
     if now - _np_last_draw[0] >= 0.12:
@@ -424,7 +423,7 @@ def rounded_header(title: str, detail: str = "", right: str = "",
                    subtitle: str | None = None) -> list[str]:
     """The app's boxed header for a file (or a set of them): bold `title`, dim
     `detail` after it (" · artist"), dim facts `right`-aligned, and the hints
-    toggle inline at the far right of the same row — then an optional dim
+    toggle inline at the far right of the same row, then an optional dim
     `subtitle` row and a blank row. When space runs out the detail is trimmed
     first, then the facts dropped, then the title trimmed; the toggle stays."""
     vl = ui_utils.visual_len
@@ -472,8 +471,8 @@ def place_help_toggle(out: list, first_row: int, cells: dict, i_key: bool = Fals
 
 def _hint(*pairs, extra="", always: bool = False) -> str:
     """
-    Highly adaptive layout engine for bottom hints.
-    Cascades: Centred Long Line -> Pyramid -> Grid -> Aligned Vertical Stack -> Split Vertical Stack.
+    Lays out the hint bar, falling back through: one line → pyramid → grid →
+    aligned stack → split stack.
     Every hint bar comes through here, so hiding them (hints_visible) is one
     check; `always` draws regardless (the player's own `[i] help` stays in its bar).
     """
@@ -503,7 +502,7 @@ def _hint(*pairs, extra="", always: bool = False) -> str:
         if not k: return f"{C.DIM}{v}{C.RESET}"
         return f"{C.RESET}{C.DIM}[{C.RESET}{C.BOLD}{k}{C.RESET}{C.DIM}] {v}{C.RESET}"
 
-    # Interpunct (·) — the one separator used everywhere: hint bars, player
+    # Interpunct (·): the one separator used everywhere: hint bars, player
     # details, bulk headers, multi-value fields.
     sep = f"{C.DIM} · {C.RESET}"
     raw_sep_len = len(' · ')
@@ -592,7 +591,7 @@ def _hint(*pairs, extra="", always: bool = False) -> str:
             stack_lines.append(f"{' ' * global_pad}{left_side} {right_side}")
         return "\n".join(stack_lines)
 
-    # LAYOUT 5: Split Vertical Stack (Ultimate Narrow Fallback)
+    # LAYOUT 5: Split Vertical Stack (narrowest fallback)
     # Key on row 1, value on row 2, dot separator between pairs.
     split_lines = []
     for i, (k, v, _) in enumerate(parsed_items):
@@ -617,7 +616,7 @@ def _hint(*pairs, extra="", always: bool = False) -> str:
 # into separate buttons: a '/' between keys is a non-clickable separator, and an
 # adjacent arrow cluster (``↑↓``, ``←→``) is one button per arrow. Each button
 # maps to the SAME synthesised key the keyboard produces, so the widgets need no
-# extra per-key logic — a click just replays that key through their normal switch.
+# extra per-key logic: a click just replays that key through their normal switch.
 
 _HINT_ARROWS = {'↑': 'UP', '↓': 'DOWN', '←': 'LEFT', '→': 'RIGHT', '⇞': 'PGUP', '⇟': 'PGDN'}
 _HINT_WORDS = {
@@ -657,7 +656,7 @@ def _hint_key_tokens(key: str) -> list[tuple[int, int, str]]:
 def add_hint_click_cells_auto(cells: dict, line: str, base_row: int,
                               left_inset: int = 0) -> None:
     """Like add_hint_click_cells but auto-detects ``[key]`` groups in the plain
-    text (no pairs needed). Use only on lines known to be a hint bar — arbitrary
+    text (no pairs needed). Use only on lines known to be a hint bar; arbitrary
     bracketed text (e.g. a lyric ``[Chorus]``) would be picked up as a key."""
     plain = ui_utils.display_text(line)
     for m in re.finditer(r'\[([^\[\]]+)\]', plain):
@@ -688,7 +687,7 @@ def add_hint_click_cells(cells: dict, line: str, base_row: int, pairs,
 
 def _hint_pin_target() -> int:
     """The flowed-line count after which a widget's hint bar sits pinned at the
-    bottom — directly above the miniplayer + status bar — so its keys keep the
+    bottom, directly above the now-playing box and status bar, so its keys keep the
     same screen position across redraws (repeated clicks don't chase the bar)."""
     rows = ui_utils.get_terminal_height()
     return rows - 1 - ui_utils.MARGIN_V - max(ui_utils.now_playing_height(), ui_utils.MARGIN_V)
@@ -754,9 +753,8 @@ class Choice:
         self.cursor_title = cursor_title  # alternate label shown when cursor is on this row
 
 
-# The single inter-column gap for every list in the app. Lists used to mix 2 and
-# 3 — the duration column sat a column closer to the edge in search and history
-# than in browse. Narrow terminals are handled by column `priority` (columns drop)
+# The single inter-column gap for every list in the app, so columns line up the
+# same way in every list. Narrow terminals are handled by column `priority` (columns drop)
 # and by the dynamically computed pin gap, not by varying this.
 COL_GAP = 3
 
@@ -768,8 +766,8 @@ class Column:
     align    : 'left' | 'right'
     flex     : absorbs leftover width, truncates (use for the title column)
     pin      : laid against the right edge (e.g. duration)
-    max_frac : clamp column to this fraction of total width (0.0–1.0)
-    gap      : leading gap before this column (defaults to `COL_GAP` — the one
+    max_frac : clamp column to this fraction of total width (0.0-1.0)
+    gap      : leading gap before this column (defaults to `COL_GAP`, the one
                value every list uses; the pin block's separation from the left
                block is computed per render, so this is only the minimum)
     priority : drop-order when the row is too narrow to show every column
@@ -819,7 +817,7 @@ def _style_cell(text: str, style: str, is_current: bool) -> str:
     if style == 'primary':
         return f"{C.BOLD}{text}{C.RESET}" if is_current else text
     if style == 'cursor':
-        # The block cursor as a cell segment — see block_cursor(), which does the
+        # The block cursor as a cell segment; see block_cursor(), which does the
         # same thing where a whole line rather than a table cell is being drawn.
         return f"{C.INVERT}{C.BOLD}{text}{C.RESET}"
     return text  # 'normal'
@@ -861,7 +859,7 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
                   visible_cells: list | None = None) -> list[int]:
     """Compute per-column widths that fit the effective width `eff`.
 
-    Content sets each column's natural width — scanned across *all* rows, so a
+    Content sets each column's natural width, scanned across *all* rows, so a
     wide entry far down the list is accounted for and the layout stays stable
     while scrolling. Natural widths are clamped by max_frac / max_width and
     floored by min_width. Then space is reconciled with the terminal:
@@ -966,7 +964,7 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
     total = sum(widths[i] for i in kept)
     if total < budget and flex_idxs:
         # Surplus: round-robin one unit at a time into the flex columns, each
-        # stopping at its own cap *or its own content*, whichever comes first —
+        # stopping at its own cap *or its own content*, whichever comes first:
         # growing a column past what it has to show only pads it with blanks and
         # pushes the pinned block away from the text it belongs to. Leftover is
         # deliberately unspent: _render_table_row turns it into the one gap
@@ -1003,7 +1001,7 @@ def _table_widths(rows_cells: list, columns: list, eff: int,
                 if widths[i] > floors[i] and (widest < 0 or widths[i] > widths[widest]):
                     widest = i
             if widest < 0:
-                break                    # everything at its floor — clip guard handles the rest
+                break                    # everything at its floor; clip guard handles the rest
             widths[widest] -= 1
             deficit -= 1
     return widths
@@ -1016,7 +1014,7 @@ def _render_table_row(cells: list, columns: list, is_current: bool,
     """Render one table row, laying out left-aligned and right-pinned columns
     and applying pointer/check/disabled styling.
 
-    `dim` greys a row that is selectable but not in focus — used by the sectioned
+    `dim` greys a row that is selectable but not in focus, used by the sectioned
     search to quiet every section except the one the cursor is in. Unlike
     `disabled` it keeps the normal row prefix, so columns stay aligned with the
     focused section above and below it.
@@ -1069,8 +1067,8 @@ def _render_table_row(cells: list, columns: list, is_current: bool,
 
 
 def edit_line(buf: list, pos: int, key: str) -> int | None:
-    """Apply one line-editing key to `buf` (a list of characters) in place —
-    typing, space, backspace, delete, ←/→, Home/End — and return the caret's new
+    """Apply one line-editing key to `buf` (a list of characters) in place
+    (typing, space, backspace, delete, ←/→, Home/End) and return the caret's new
     position, or None when `key` isn't one of them. The one editor every text
     field uses, so a key works the same in each."""
     if key == 'BACKSPACE':
@@ -1100,7 +1098,7 @@ def block_cursor(text: str, pos: int, base: str = '') -> str:
     Reverse video on the character itself, never a bar drawn between two of
     them: a drawn bar occupies a column of its own, so every keystroke and every
     arrow press shifts the rest of the line sideways under the reader's eye.
-    Past the end of the text the block sits on a space — the one place it does
+    Past the end of the text the block sits on a space: the one place it does
     add a column, and there is nothing to its right to shift.
 
     `base` is re-asserted after the block so a caller's row styling survives the
@@ -1113,7 +1111,7 @@ def block_cursor(text: str, pos: int, base: str = '') -> str:
 
 
 def block_cursor_width(text: str, pos: int) -> int:
-    """Columns `block_cursor` will occupy — one more than the text at its end."""
+    """Columns `block_cursor` will occupy: one more than the text at its end."""
     return len(text) + (1 if pos >= len(text) else 0)
 
 
@@ -1203,9 +1201,9 @@ def _read_key_raw(fd: int) -> str:
         try:
             # A lone Esc is just this byte; an arrow/function key sends more in
             # the same burst. Raw mode's read blocks while nothing is pending, so
-            # peek first — otherwise Esc looked dead until the *next* keypress
-            # arrived to unblock the read, and that keypress was then swallowed
-            # as part of the sequence. Hence "Esc only works if you press twice".
+            # peek first, or Esc looks dead until the *next* keypress
+            # arrives to unblock the read, and that keypress is then swallowed
+            # as part of the sequence, so Esc would only work on a second press.
             if not _byte_ready(fd, _ESC_SEQ_TIMEOUT):
                 return 'ESC'
             ch2 = os.read(fd, 1)
@@ -1244,10 +1242,8 @@ def _read_key_raw(fd: int) -> str:
                         buf += c
                     return 'ESC'
                 if seq.isdigit():
-                    # ESC [ <number> ~ — page/home/end/delete/insert. This used
-                    # to swallow four bytes and report 'ESC', so PgUp and PgDn
-                    # acted as "back" (the 5/6 entries in the table below were
-                    # dead code, never reached).
+                    # ESC [ <number> ~ : page/home/end/delete/insert. Read the
+                    # whole number, or PgUp and PgDn would come through as 'ESC'.
                     num, term = seq, ''
                     while len(num) < 4 and _byte_ready(fd, _ESC_SEQ_TIMEOUT):
                         c = os.read(fd, 1).decode('utf-8', errors='replace')
@@ -1277,7 +1273,7 @@ def _read_key_raw(fd: int) -> str:
                     'I': 'FOCUS_IN', 'O': 'FOCUS_OUT',
                 }.get(seq, 'ESC')
                 if mapped == 'FOCUS_IN':
-                    # Regained focus — force the now-playing box to repaint (it may
+                    # Regained focus: force the now-playing box to repaint (it may
                     # be stale from a background change while we were unfocused).
                     invalidate_now_playing_box()
                 return mapped
@@ -1306,10 +1302,10 @@ def _read_key_raw(fd: int) -> str:
 def _visible_rows() -> int:
     """Total lines a list widget may emit: the full terminal height minus the
     status bar (1) and the top+bottom vertical margins. Callers subtract their
-    OWN chrome (header, message, indicators, hints) — do not double-count it
-    here, or lists show a premature "N more" (they did, by ~5–7 rows)."""
+    OWN chrome (header, message, indicators, hints); do not double-count it
+    here, or lists show a premature "N more"."""
     _, rows = ui_utils.get_terminal_size()
-    # Reserve the status-bar row, plus the now-playing box's rows (#14) whenever
+    # Reserve the status-bar row, plus the now-playing box's rows whenever
     # background audio is active, so lists never collide with it.
     reserve = 1 + ui_utils.now_playing_height()
     return max(4, rows - reserve - 2 * ui_utils.MARGIN_V)
@@ -1339,23 +1335,20 @@ def _wrap_bordered_input_lines(text: str, content_width: int) -> list[str]:
 
 class _Widget:
     """
-    Renders a list of lines anchored to an absolute terminal row.
-
-    On first draw it queries the current cursor row and uses that as the
-    anchor. On resize it clears the entire screen and redraws from scratch —
-    this is the only reliable way to prevent ghost lines when the terminal
-    reflows content and changes the effective cursor position.
+    Paints a widget's lines from row 1 through the shared screen model. The
+    first frame takes the screen over without a clear; after a resize
+    (anchor_reset) it clears and repaints.
     """
 
     def __init__(self, fd: int) -> None:
-        """No anchor row yet — it's queried and fixed on the first render."""
+        """No frame painted yet."""
         self.fd      = fd
         self.row     = None   # anchor row, 1-based
         self.last_h  = 0
         self._full   = False  # whether we own the full screen
 
     def anchor_reset(self) -> None:
-        """Called on resize (or after another view owned the screen) — clears and
+        """Called on resize (or after another view owned the screen): clears and
         redraws from scratch next render."""
         self.row   = None
         self._full = True
@@ -1364,7 +1357,7 @@ class _Widget:
         """Paint `lines` from row 1, diffed against what is already on screen.
 
         Only rows whose content changed are written, in one buffered frame with
-        no newlines and no erase-to-end-of-screen — so the frame can't be flushed
+        no newlines and no erase-to-end-of-screen, so the frame can't be flushed
         half-drawn, and the rows this widget doesn't own (the now-playing box, the
         status bar) are left exactly as they are instead of being wiped and
         restamped on every keystroke.
@@ -1400,7 +1393,7 @@ class _Widget:
         self.last_h = len(padded)
 
         # The status bar and the box join the same frame, so everything lands in
-        # one flush — but each row still only costs anything if it changed.
+        # one flush, but each row still only costs anything if it changed.
         frame[rows] = ui_utils.get_status_line()
         frame = _takeover_rows(frame)
         parts = [C.HIDE]
@@ -1415,8 +1408,7 @@ class _Widget:
     def clear(self) -> None:
         """Clear the screen and reset anchor state, cursor still hidden.
 
-        It used to show the cursor here, which left it blinking at home until the
-        next screen painted. The cursor is only ever shown for a text caret, or by
+        The cursor is only ever shown for a text caret, or by
         `ui_utils.exit_alt_screen()` when the app hands the terminal back.
         """
         sys.stdout.write("\033[H\033[3J\033[J" + C.HIDE)

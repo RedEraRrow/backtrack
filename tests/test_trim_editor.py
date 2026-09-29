@@ -1,6 +1,6 @@
 """Headless tests for the pure half of src/trim/trim_editor.py: marks, undo,
 join-audition windows, sibling context, segmented-editor apply. No terminal
-or VLC — those need a live pass per docs/DEVELOPER.md's own testing note."""
+or VLC: those need a live pass per docs/DEVELOPER.md's own testing note."""
 import os
 import shutil
 import subprocess
@@ -180,14 +180,14 @@ class EditFieldKeyTest(unittest.TestCase):
 
 
 def _make_history_episode(path: str, lead_in_s: float, lead_tremolo_f: float, programme_tremolo_f: float) -> None:
-    """lead-in + the shared 3-tone sting + a programme tail — see
-    test_trim_bulk.py's identical helper for why lead-in/programme are both
+    """lead-in + the shared 3-tone sting + a programme tail. See
+    test_trim_bulk.py's similar helper for why lead-in/programme are both
     tremolo-modulated (not flat). Unlike that helper, the lead-in's own
     tremolo rate also varies per episode here: this test asserts on the exact
     correlated offset (not just which direction wins), and a lead-in that
     resembles another episode's lead-in too closely creates a second,
     near-tied correlation peak near position 0 that can beat the real one by
-    the barest numerical margin — flaky in exactly the way find_sting's own
+    the barest numerical margin: flaky in exactly the way find_sting's own
     peak-over-runner-up score is meant to catch for the real sting, just not
     reliably at this fixture's coarser scale."""
     subprocess.run([
@@ -208,8 +208,8 @@ def _make_history_episode(path: str, lead_in_s: float, lead_tremolo_f: float, pr
 
 @unittest.skipUnless(te.trim.HAS_FFMPEG, "ffmpeg not installed")
 class StingSuggestionTest(unittest.TestCase):
-    """`_sting_suggestion` (section 4.4): single-track parity with the bulk
-    conveyor's "learn from an earlier trim" — a lone edit shouldn't have to
+    """`_sting_suggestion`: single-track parity with the bulk
+    conveyor's "learn from an earlier trim". A lone edit shouldn't have to
     rediscover or mark by hand a sting some other track in the same folder
     was already correctly trimmed against."""
 

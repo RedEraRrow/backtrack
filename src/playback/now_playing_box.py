@@ -10,7 +10,7 @@ def _clip_ansi_to_width(text: str, max_cols: int) -> str:
     """Truncate text to max_cols visible columns, preserving embedded ANSI escapes.
 
     The player composes a clipped line into a wider row (borders, padding), so
-    it asks for no trailing reset — the caller closes its own styling.
+    it asks for no trailing reset: the caller closes its own styling.
     """
     return ui_utils.clip_ansi(text, max_cols, reset=False)
 
@@ -22,7 +22,7 @@ def _fit_segments(segs: list, budget: int) -> tuple[str, int]:
     Widths are counted in columns, not codepoints: the transport glyphs carry a
     text-presentation selector that occupies no column of its own, so counting
     codepoints would over-measure them and shrink the title to compensate.
-    Truncation walks the string a column at a time for the same reason — slicing
+    Truncation walks the string a column at a time for the same reason: slicing
     by index could sever a glyph from the selector that decides its width.
     """
     out = ""
@@ -47,7 +47,7 @@ def _clip_to_cols(text: str, cols: int) -> str:
     used = 0
     for ch in text:
         w = ui_utils.char_cols(ch)
-        if w == 0:                           # selector — rides with the previous glyph
+        if w == 0:                           # selector: rides with the previous glyph
             out.append(ch)
             continue
         if used + w > cols:                  # a 2-cell glyph needs 2 cells free
@@ -60,7 +60,7 @@ def _clip_to_cols(text: str, cols: int) -> str:
 def format_now_playing_bar(width: int) -> list[str] | None:
     """The background-audio now-playing box (#14), styling only (no colour): a
     rounded box whose bottom border doubles as the progress bar. Row 1 = top
-    border; row 2 = ``⏮ ⏸ ⏭  Title · Artist · Album … m:ss / m:ss`` (bold
+    border; row 2 = ``⏸ ⏭  Title · Artist · Album … m:ss / m:ss`` (bold
     title, dim rest); row 3 = the progress border (heavy ``━`` elapsed / light
     ``─`` remaining). The transport keys are advertised in the hint bar with
     every other key, not on the border.
@@ -74,7 +74,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
         ui_utils.set_now_playing_unboxed(False)
         return None
     # When the full player view is open in ANY window of the session, the player
-    # itself is the now-playing display — hide the ambient bar everywhere else so
+    # itself is the now-playing display, so hide the ambient bar everywhere else so
     # it doesn't double up (#14). view_holder is the token of whichever window
     # holds the view (broadcast to joined windows), or None when no view is open.
     if np.get('view_holder'):
@@ -91,7 +91,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     box_w = width - 2 * mh
     inner = box_w - 4                       # content columns between "│ " and " │"
 
-    # Play/pause then next. The glyph shows the action the key would take — ⏵
+    # Play/pause then next. The glyph shows the action the key would take: ⏵
     # while paused, ⏸ while playing. Widths come from ui_utils.char_cols, which
     # deliberately over-estimates these: no monospace font carries them, so the
     # terminal draws them from a fallback whose advance width this process
@@ -109,11 +109,11 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     # hold. A fixed threshold can't know: `right` grows with the track (an hour-
     # long file spends three more columns on the clock), and if the left side is
     # squeezed past its floor the gap below bottoms out at 1 and the content row
-    # runs *wider than its own border* — a visibly ragged box. Two tiers:
+    # runs *wider than its own border*, a visibly ragged box. Two tiers:
     # glyphs + a readable stub of title, or no box at all.
     _MIN_TITLE = 6
     if inner < ui_utils.visual_len(icon) + _MIN_TITLE + 2 + len(right):
-        # No box — the hint bar advertises the transport keys instead, so they
+        # No box: the hint bar advertises the transport keys instead, so they
         # are never both unadvertised and live.
         ui_utils.set_now_playing_unboxed(True)
         return None
@@ -135,7 +135,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     # The clock and the closing border are placed by absolute column (CSI G)
     # rather than by counting what precedes them. Everything left of the clock
     # contains transport glyphs whose real width is a fallback font's business,
-    # not this process's — so a row built purely by counting puts its right-hand
+    # not this process's, so a row built purely by counting puts its right-hand
     # border wherever that guess happened to land. Pinning both to the columns
     # they belong in makes the box square whatever the glyphs turn out to be;
     # the only thing that varies is the size of the gap before the clock.

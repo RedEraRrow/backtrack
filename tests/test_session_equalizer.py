@@ -1,5 +1,5 @@
-"""Tests for _apply_equalizer's RVA2 preamp support (src/playback/session.py,
-section 5.4.3) — without this, an RVA2 gain tag (what the trimmer's
+"""Tests for _apply_equalizer's RVA2 preamp support (src/playback/session.py).
+Without it, an RVA2 gain tag (what the trimmer's
 ReplayGain operation writes) has no audible effect in backtrack's own
 playback. A fake player stands in for vlc.MediaPlayer; vlc.AudioEqualizer
 itself is the real libvlc object."""

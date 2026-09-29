@@ -1,6 +1,6 @@
 """Headless tests for src/feed.py.
 
-The title cases come from a real feed — `tests/fixtures/friday_night_comedy.rss`
+The title cases come from a real feed: `tests/fixtures/friday_night_comedy.rss`
 is a trimmed copy of BBC Radio 4's *Friday Night Comedy*, kept because its
 titles were written by different people over ten years and disagree with each
 other in every way a title can. No test here touches the network.
@@ -66,7 +66,7 @@ class TitleParsingTest(unittest.TestCase):
         self.assertEqual(got.episode, 6)
 
     def test_an_en_dash_separator(self):
-        got = fd.parse_title("The News Quiz – Ep 4. Conference")
+        got = fd.parse_title("The News Quiz \u2013 Ep 4. Conference")
         self.assertEqual(got.show, "The News Quiz")
         self.assertEqual(got.episode, 4)
 

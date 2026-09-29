@@ -6,7 +6,7 @@ from src.utils import timefmt
 
 
 # Segmented timestamp editor (EDIT mode): start and end as MM:SS.mmm, each field
-# individually tabbable — mirrors the segmented time widget in prompt/values.py.
+# individually tabbable, like the segmented time widget in prompt/values.py.
 _EDIT_ORDER  = ['sm', 'ss', 'sms', 'em', 'es', 'ems']
 
 

@@ -146,8 +146,8 @@ def calendar_select(message: str = "Select date:", initial: str = "") -> str | N
                 continue
 
             key = _read_key(fd)
-            # A transport key, a click on the miniplayer, or a click on one of our
-            # own hint keys — handled the same way on every screen.
+            # A transport key, a click on the now-playing box, or a click on one of our
+            # own hint keys, handled the same way on every screen.
             _ch = consume_chrome(key, _hint_cells)
             if _ch is CHROME_HANDLED:
                 continue
@@ -411,8 +411,8 @@ def datetime_edit(message: str = "Edit date and time:", initial: str = "") -> st
                 continue
 
             key = _read_key(fd)
-            # A transport key, a click on the miniplayer, or a click on one of our
-            # own hint keys — handled the same way on every screen.
+            # A transport key, a click on the now-playing box, or a click on one of our
+            # own hint keys, handled the same way on every screen.
             _ch = consume_chrome(key, _hint_cells)
             if _ch is CHROME_HANDLED:
                 continue

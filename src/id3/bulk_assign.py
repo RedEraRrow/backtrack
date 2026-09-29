@@ -21,7 +21,7 @@ from src.id3.bulk_common import _RENUMBER_COLUMNS, _walk
 _PEOPLE_COLUMNS = [
     prompt.Column(style='primary', flex=True, max_frac=0.45),           # role / character (kept)
     prompt.Column(style='normal', flex=True),                           # name / actor (kept)
-    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=1),  # N/total or state — drops first
+    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=1),  # N/total or state, drops first
 ]
 
 
@@ -96,7 +96,7 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
             else:
                 state = f"{counts[r['orig']]}/{total}"
             choices.append(prompt.Choice(title=f"{r['role']} → {r['name']}", value=i,
-                                         cells=[r['role'] or '—', r['name'] or '—', state]))
+                                         cells=[r['role'] or '-', r['name'] or '-', state]))
         choices.append(prompt.separator())
         choices.append(prompt.Choice(title="＋  Add person to all files…", value="__add__"))
         choices.append(prompt.Choice(title="✔ Save changes", value="__save__"))
@@ -106,12 +106,12 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
                             columns=_PEOPLE_COLUMNS, header=header(sub),
                             shortcuts={'a': '__add__'}, extra_hints={'a': 'add'})
         if sel is None:
-            return                                          # cancel — no writes
+            return                                          # cancel: no writes
         if sel == '__add__':
-            role = prompt.text(f"{label} — role / character:")
+            role = prompt.text(f"{label}: role / character:")
             if role is None:
                 continue
-            name = prompt.text(f"{label} — name / person:")
+            name = prompt.text(f"{label}: name / person:")
             if name is None:
                 continue
             if role.strip() or name.strip():
@@ -180,13 +180,13 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
 
 
 def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> None:
-    """Edit a fraction tag (``n/N`` — TRCK / TPOS / MVIN) across many files.
+    """Edit a fraction tag (``n/N``: TRCK / TPOS / MVIN) across many files.
 
     Whichever half the selection already agrees on is seeded and editable; the
     half that differs between files is shown as a dim ``──  (varies)`` and, left
     alone, keeps each file's own value.  So you can set one common disc total
-    across tracks whose disc *numbers* differ — or renumber the discs while
-    leaving mixed totals intact — without the editor flattening the other half to
+    across tracks whose disc *numbers* differ (or renumber the discs while
+    leaving mixed totals intact) without the editor flattening the other half to
     whatever the first file happened to hold.
     """
     info = get_tag_info(tag_id)
@@ -225,7 +225,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
             frozenset({'total'}): 'the totals differ, the number is shared',
             frozenset({'current', 'total'}): 'numbers and totals both differ',
             }[frozenset(varies)]
-    res = prompt.fraction_edit(f"{label} across {ui_utils.plural(len(existing), 'file')} — {note}:",
+    res = prompt.fraction_edit(f"{label} across {ui_utils.plural(len(existing), 'file')}: {note}:",
                                tag=base_id, value=seed, varies=varies)
     if res is None or res is prompt.MODE_TOGGLE:
         return
@@ -233,7 +233,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
 
     plan: dict = {}
     for p, (cur, tot) in existing.items():
-        # None means "this half varied and was left alone" — keep the file's own.
+        # None means "this half varied and was left alone": keep the file's own.
         c = cur if new_cur is None else new_cur.strip()
         t = tot if new_tot is None else new_tot.strip()
         if not c:
@@ -245,7 +245,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
     choices, n_changed = [], 0
     for p in ordered:
         cur, tot = existing[p]
-        old = f"{cur}/{tot}" if tot else (cur or '—')
+        old = f"{cur}/{tot}" if tot else (cur or '-')
         changed = old != plan[p]
         n_changed += changed
         choices.append(prompt.Choice(
@@ -264,7 +264,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
             bits.append(f"{skipped_fmt} non-MP3 skipped")
         return header(' · '.join(bits))()
 
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+    sel = prompt.select("Preview (↵ applies):", choices=choices,
                         columns=_RENUMBER_COLUMNS, header=_frac_header, multi=True)
     if sel is None:
         return
@@ -322,7 +322,7 @@ _PATTERN_COLUMNS = [
 
 def assign_by_pattern(paths: list, library: list, header) -> None:
     """Assign one tag across an ordered selection by ranges, an every-N grouping,
-    or a date schedule (#IDEA: pattern-based bulk editing). MP3/ID3 only."""
+    or a date schedule. MP3/ID3 only."""
     by_path = {s['path']: s for s in library}
     # Overlay the on-disk disc/track numbers over the cached ones: the ranges and
     # the per-disc seeding are position-based, so ordering from a stale cache
@@ -344,7 +344,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
     n = len(ordered)
 
     # Every answer is kept here, so a screen reopened by walking back holds what
-    # it was left holding — typed rows and schedules included.
+    # it was left holding, typed rows and schedules included.
     state: dict = {'tag': '', 'mode': None, 'rows': [], 'sched': None, 'gs': '',
                    'tmpl': '', 'mode2': "Fill blanks only", 'apply_set': None}
 
@@ -367,7 +367,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
     def _modes() -> list:
         """The assignment modes this tag supports (schedules need a date frame)."""
         info = get_tag_info(state['tag'])
-        modes = ["Ranges (from–to → value)", "Every N tracks → value"]
+        modes = ["Ranges (from-to → value)", "Every N tracks → value"]
         if info and info.format_spec == 'ISO8601':
             modes += ["Date schedule", "Schedule per range (own start + interval)"]
         return modes
@@ -404,7 +404,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         mode = state['mode']
         assignments: dict = {}
         if mode.startswith("Ranges"):
-            rows = prompt.list_edit(f"Ranges for {tag_id} (positions 1–{n}; range no. as "
+            rows = prompt.list_edit(f"Ranges for {tag_id} (positions 1-{n}; range no. as "
                                     f"{{n}} 3 / {{r}} III / {{en}} Three):",
                                     state['rows'], ("FROM", "TO", "VALUE"))
             if not rows:
@@ -426,7 +426,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             if gs is None:
                 return False
             state['gs'] = str(gs)
-            tmpl = prompt.text("Value — group number as {n} 3, {r} III or {en} Three "
+            tmpl = prompt.text("Value: group number as {n} 3, {r} III or {en} Three "
                                "(e.g. Series {n}, Act {r}, Series {en}):",
                                default=state['tmpl'])
             if tmpl is None:
@@ -434,7 +434,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             state['tmpl'] = tmpl
             assignments = bp.assign_periodic(ordered, gs, tmpl)
         elif mode.startswith("Schedule per range"):
-            # Seeded with one row per disc — the common case is "each disc/series has
+            # Seeded with one row per disc: the common case is "each disc/series has
             # its own start date and cadence", so the positions are filled in from
             # the real disc boundaries and only START/EVERY need typing.
             runs = bp.disc_ranges(ordered)
@@ -448,7 +448,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
                 return ['track', 'disc'] if col == 4 else []
 
             rows = prompt.list_edit(
-                f"Per-range {tag_id} schedule — a row per disc ({shown}); "
+                f"Per-range {tag_id} schedule, a row per disc ({shown}); "
                 f"type digits into START, EVERY = days, STEP = track/disc:",
                 state['sched'] or seeded, ("FROM", "TO", "START", "EVERY", "STEP"),
                 col_hints=_sched_hints,
@@ -470,7 +470,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
                                         if len(row_errors) > 3 else ""), duration=tune.STATUS_WARNING_S)
                 if not specs:
                     return False
-                if not prompt.confirm(f"{ui_utils.plural(len(row_errors), 'row')} unusable — "
+                if not prompt.confirm(f"{ui_utils.plural(len(row_errors), 'row')} unusable: "
                                       f"apply the other {len(specs)}?"):
                     return False
             if not specs:
@@ -478,7 +478,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
                 return False
 
             # A time typed into START is kept per range. Only when no row carried one
-            # is a time worth asking about — and "No time" sits first, so Enter
+            # is a time worth asking about, and "No time" sits first, so Enter
             # accepts the plain dates most archives want.
             if not any(spec[3] for spec in specs):
                 tchoices = ["No time", "Same time for all"]
@@ -548,7 +548,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
 
         assignments = {p: v for p, v in assignments.items() if v}
         if not assignments:
-            ui_utils.show_status("Nothing to assign — check the ranges/positions.")
+            ui_utils.show_status("Nothing to assign: check the ranges/positions.")
             return False
         state['assignments'] = assignments
         return True
@@ -583,7 +583,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             return False
         sub = f"{tag_id} · {ui_utils.plural(len(choices), 'file')}" + (
             f" · {n_mp4} non-MP3 skipped" if n_mp4 else "")
-        sel = prompt.select("Preview — ↵ applies:", choices=choices,
+        sel = prompt.select("Preview (↵ applies):", choices=choices,
                             columns=_PATTERN_COLUMNS, header=header(sub), multi=True)
         if sel is None:
             return False
@@ -603,9 +603,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         ui_utils.show_status("No files selected.")
         return
 
-    # MP3 only: create_frame/save_id3 write ID3. The count of everything else
-    # was reported from a name that no longer existed — `if n_mp4:` raised
-    # NameError at the end of every successful run.
+    # MP3 only: create_frame/save_id3 write ID3.
     writable = [s for s in targets if tw.format_kind(s['path']) == 'mp3']
     n_other = len(targets) - len(writable)
     applied = bo.apply_frame_writes(

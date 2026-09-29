@@ -1,4 +1,4 @@
-"""Bulk ID3 tag operations across multiple files."""
+"""The bulk tag menu: per-tag set/rename/delete/copy, and the disc/track numbering operations."""
 from __future__ import annotations
 import os
 import re
@@ -43,9 +43,9 @@ from src.utils.log import quietly
 # friendly name as two styled segments (TAG bright + friendly dim) in one column.
 _BULK_COLUMNS = [
     prompt.Column(style='primary'),                                     # TAG (friendly)
-    prompt.Column(style='dynamic-dim', priority=1),                     # type / category — drops first
+    prompt.Column(style='dynamic-dim', priority=1),                     # type / category, drops first
     prompt.Column(style='normal', flex=True),                           # value summary (kept)
-    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=2),  # count / total — drops next
+    prompt.Column(style='dynamic-dim', align='right', pin=True, priority=2),  # count / total, drops next
 ]
 
 
@@ -66,8 +66,8 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("No MP3/MP4 tracks to renumber.")
         return
 
-    _MODES = ["Continuous (album-relative) — 1…N across all discs",
-              "Per-disc (disc-relative) — restart at 1 each disc"]
+    _MODES = ["Continuous (album-relative): 1…N across all discs",
+              "Per-disc (disc-relative): restart at 1 each disc"]
     state: dict = {'mode_sel': _MODES[0], 'apply_set': set()}
 
     def _ask_mode() -> bool:
@@ -97,7 +97,7 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
             for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
         sub = ui_utils.plural(len(choices), "file") + (
             f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
-        sel = prompt.select("Preview — ↵ applies:", choices=choices,
+        sel = prompt.select("Preview (↵ applies):", choices=choices,
                             columns=_RENUMBER_COLUMNS, header=header(sub), multi=True)
         if sel is None:
             return False
@@ -118,14 +118,7 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
 
 
 def reflow_discs_op(paths: list, library: list, header) -> None:
-    """Re-flow disc numbering after a disc is inserted, removed or appended.
-
-    Renumbering the distinct disc values onto a dense 1…N handles all three edits
-    with one rule: a disc parked at ``1.5`` becomes 2 and everything above shifts
-    up; a deleted disc closes its gap; an appended disc keeps its number and only
-    the totals move. "Totals only" fixes the "of N" half without renumbering, for
-    deliberately sparse discs. MP3 and MP4 both write, via tag_writer.
-    """
+    """Screens for bo.plan_reflow."""
     ordered, skipped_fmt = bo.read_numbering(paths)
     if not ordered:
         ui_utils.show_status("No MP3/MP4 tracks to reflow.")
@@ -137,8 +130,8 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
 
     mode_sel = prompt.select(
         "Disc numbering:",
-        choices=[f"Reflow — renumber the {ui_utils.plural(len(runs), 'disc')} to 1…{len(runs)} and set totals",
-                 "Totals only — set the disc total, keep the numbers as they are"],
+        choices=[f"Reflow: renumber the {ui_utils.plural(len(runs), 'disc')} to 1…{len(runs)} and set totals",
+                 "Totals only: set the disc total, keep the numbers as they are"],
         header=header(sub))
     if not mode_sel:
         return
@@ -155,14 +148,12 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
         return
     disc_totals, track_totals = 'disc' in which, 'track' in which
     if not renumber and not disc_totals and not track_totals:
-        ui_utils.show_status("Nothing to change — pick a total to update.")
+        ui_utils.show_status("Nothing to change: pick a total to update.")
         return
 
     plan = bo.plan_reflow(ordered, skipped_fmt, renumber=renumber,
                           disc_totals=disc_totals, track_totals=track_totals)
     if plan.message:
-        # Already dense with the right totals — say so, rather than showing an
-        # all-unticked preview that ends in "No tracks selected".
         ui_utils.show_status(plan.message)
         return
 
@@ -175,13 +166,7 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
 
 
 def strip_single_disc_op(paths: list, library: list, header) -> None:
-    """Remove the disc number from tracks that are disc 1 of 1.
-
-    A single-disc release doesn't need a disc tag: "1/1" is noise that shows up as
-    a disc header in browse lists and in file names derived from tags. Bare "1"
-    (no total) counts too, but only when nothing in the selection sits on another
-    disc — on a real multi-disc album an untotalled "1" is meaningful.
-    """
+    """Screens for bo.plan_strip_single_disc."""
     ordered, skipped_fmt = bo.read_numbering(paths)
     if not ordered:
         ui_utils.show_status("No MP3/MP4 tracks to change.")
@@ -203,13 +188,7 @@ def strip_single_disc_op(paths: list, library: list, header) -> None:
 
 
 def strip_length_tags_op(paths: list, library: list, header) -> None:
-    """Remove stale TLEN (track length) and non-zero TDLY (playlist delay).
-
-    Both hold millisecond values nothing recomputes once a file is cut by any
-    means, including a trim done outside backtrack — this is the cleanup pass
-    for files that predate that feature. MP3 only, since neither frame has an
-    MP4 analogue.
-    """
+    """Screens for bo.plan_strip_length_tags."""
     songs, skipped_fmt = bo.read_length_tags(paths)
     if not songs:
         ui_utils.show_status("No MP3 tracks to check.")
@@ -265,7 +244,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     tag_values: dict = {}
     # The first real frame seen for each tag.  `tag_values` holds *display*
     # summaries (newlines flattened to '\\', multi-values joined) which are fine
-    # on screen but lossy — editing must start from the frame itself.
+    # on screen but lossy: editing must start from the frame itself.
     tag_first_frame: dict = {}
 
     for path in album_tracks:
@@ -277,7 +256,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         try:
             audio = ID3(path)
         except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-            continue                          # untagged MP3 — simply has no tags yet
+            continue                          # untagged MP3: simply has no tags yet
         except (OSError, IOError):
             continue
         try:
@@ -295,8 +274,6 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                     val = f"{raw.gain:+g} dB"
                 elif hasattr(raw, 'text'):
                     # Rendered for the screen (values are stored with ';').
-                    # This used to concatenate with no separator at all, so a
-                    # two-genre frame summarised as "PopRock".
                     full_text = format_value_list(list(raw.text))
                     lines = [line for line in full_text.replace("\r\n", "\n").split("\n")]
                     val = "\\".join(lines)
@@ -349,7 +326,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             "Strip stale length tags",
         ]
         if _trim.HAS_FFMPEG:
-            # Hidden rather than offered and failing at the keypress (section 2.6).
+            # Hidden rather than offered and failing at the keypress.
             _automation_choices.append("Trim tracks…")
             _automation_choices.append("Measure loudness / set ReplayGain…")
         _automation_choices += ["Set picture type", "Copy from first track"]
@@ -360,7 +337,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         )
         if operation:
             break
-        # Backed out of the submenu — fall through to re-show the main menu.
+        # Backed out of the submenu: fall through to re-show the main menu.
 
     op_display = operation.lower()
     op_map = {
@@ -428,7 +405,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
     # Friendly-name column: modest, bounded width (truncates long names with an
     # ellipsis inside the brackets). Value column: bounded so the whole row fits
-    # the terminal — otherwise the line overflows and the label's closing bracket
+    # the terminal; otherwise the line overflows and the label's closing bracket
     # gets clipped by the fallback truncation.
     alias_budget = max(20, min(32, cols - 48))
     VAL_MAX = max(10, cols - alias_budget - 33)
@@ -503,7 +480,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
         selected_tags = prompt.select(
             # The operation names already end in their object ("Delete Tags",
-            # "Rename Tags"), and this prompt supplies its own — so use the verb
+            # "Rename Tags"), and this prompt supplies its own, so use the verb
             # alone, or the line reads "Select tags to delete tags:".
             message=f"Select tags to {_operation_verb(operation)}:",
             choices=tag_options,
@@ -542,19 +519,18 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 selected_tags = [t for t in selected_tags if t not in frac_sel]
                 if not selected_tags:
                     return
-            # Album art has its own picker and preview further down.  Routing it
-            # through the text-value prompt as well asked for the image, its
-            # picture type and its description a *second* time — the worst of the
-            # screen bloat here.  Art-only selections skip straight to that block.
+            # Album art has its own picker and preview further down, so it stays
+            # out of the text-value prompt (which would ask for the image, type
+            # and description a second time). Art-only selections skip straight
+            # to that block.
             value_sel = [t for t in selected_tags if not t.startswith('APIC')]
             if not value_sel:
                 target_val = "_album_art_"   # sentinel: the art block does the work
             else:
                 first_tag = value_sel[0]
-                # Seed the editor from the frame itself.  Seeding it from
-                # `tag_values` fed the '\\'-joined display summary back in and saved
-                # it verbatim, so every bulk pass over a lyric frame replaced its
-                # newlines with literal backslashes.
+                # Seed the editor from the frame itself, not `tag_values`: the
+                # '\\'-joined display summary would be saved verbatim, replacing a
+                # lyric frame's newlines with literal backslashes.
                 existing_vals = tag_values.get(first_tag, [])
                 fallback_val = tag_first_frame.get(first_tag)
                 if fallback_val is None:
@@ -571,7 +547,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 if source == "Enter a value":
                     target_val = prompt_for_value(first_tag, current_value=fallback_val)
                 elif source == "Find & replace (regex)":
-                    pat = prompt.text("Find (regex) — applied to each existing value:")
+                    pat = prompt.text("Find (regex), applied to each existing value:")
                     if not pat:
                         return
                     try:
@@ -626,7 +602,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     new_apic_type = None
     if apic_tags and operation != "Delete Tags":
         apic_action = prompt.select(
-            f"Album art — {len(apic_tags)} frame(s) selected:",
+            f"Album art: {ui_utils.plural(len(apic_tags), 'frame')} selected:",
             choices=["Replace image", "Edit description", "Edit picture type",
                      "Skip album art"],
             header=_bulk_header())
@@ -634,7 +610,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         if apic_action == "Replace image":
             picked = pick_nearby_cover(
                 album_tracks[0], header=_bulk_header,
-                title="Cover to embed on every ticked track — best guess first:")
+                title="Cover to embed on every ticked track (best guess first):")
             read = cm.read_image(picked) if isinstance(picked, str) else None
             if not read:
                 if isinstance(picked, str):
@@ -644,7 +620,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 img_data, mime = read
                 meta = _prompt_for_image_metadata(header=_bulk_header)
                 if meta is None:
-                    apic_tags = []          # cancelled — don't write anything
+                    apic_tags = []          # cancelled: don't write anything
                 else:
                     pic_type, desc = meta
                     new_apic_frame = APIC(encoding=3, mime=mime, type=pic_type,
@@ -654,31 +630,28 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             if new_apic_desc is None:
                 apic_tags = []
         elif apic_action == "Edit picture type":
-            # Type only — the old path asked for a description here too and then
-            # threw it away.
+            # Type only; the description is left as it is.
             new_apic_type = _prompt_for_picture_type(header=_bulk_header)
             if new_apic_type is None:
-                apic_tags = []              # cancelled — was a silent no-op before
+                apic_tags = []              # cancelled
         else:
             apic_tags = []
 
-    # Backing out of the art screens with nothing else selected ends the run.
-    # Falling through asked "Apply set value to N tracks?" and then reported
-    # "processed 0 files" — two screens of noise after an explicit cancel.
+    # Backing out of the art screens with nothing else selected ends the run,
+    # rather than asking to apply and then reporting "processed 0 files".
     # ("Add new tag" never selects existing tags, so it is exempt.)
     if operation != "Add New Tag" and not apic_tags and not non_apic_tags:
         ui_utils.show_status("Cancelled")
         return
 
-    # Album art gets a preview with per-row ticks, like every other bulk op —
-    # the old path went straight from a hand-typed path to a bare yes/no.  Enter
-    # on the preview IS the confirmation, so it replaces the confirm entirely.
+    # Album art gets a preview with per-row ticks, like every other bulk op.
+    # Enter on the preview IS the confirmation, so it replaces the confirm.
     apic_apply: set = set(album_tracks)
     if apic_tags:
         mp3s = [p for p in album_tracks if p.lower().endswith('.mp3')]
         n_other = len(album_tracks) - len(mp3s)
         if not mp3s:
-            ui_utils.show_status("No MP3s here — album-art frames are ID3-only.")
+            ui_utils.show_status("No MP3s here: album-art frames are ID3-only.")
             return
 
         had_art = {p: tw.has_cover(p) for p in mp3s}
@@ -720,7 +693,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             return _bulk_header(" · ".join(bits))()
 
         picked_rows = prompt.select(
-            "Preview — ↵ applies:",
+            "Preview (↵ applies):",
             choices=art_choices, columns=_COVER_PREVIEW_COLUMNS,
             header=_art_header, multi=True)
         if picked_rows is None:
@@ -775,11 +748,8 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             if apic_tags and path in apic_apply:
                 if new_apic_frame is not None:
                     # A replace clears every selected art frame and writes the new
-                    # one ONCE.  The old loop added the same frame per selected
-                    # key — and they share the `APIC:desc` hash key, so two
-                    # selected frames silently collapsed into one.  It also only
-                    # acted `if tag in audio`, so tracks with no art yet — the
-                    # ones most in need of a cover — were skipped in silence.
+                    # one ONCE (the frames share the `APIC:desc` hash key). Tracks
+                    # with no art yet get the cover too.
                     for tag in apic_tags:
                         audio.delall(tag)
                     audio.add(new_apic_frame)
@@ -827,7 +797,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                         else:
                             new_val = _compute_set_value(set_spec, audio.get(tag), path)
                             if new_val is None:
-                                continue   # no match / not applicable — leave frame as-is
+                                continue   # no match / not applicable: leave frame as-is
                         if new_val is None:
                             continue
                         # An invalid value keeps the old frame (apply_bulk_edit
@@ -848,6 +818,6 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
     msg = f"Successfully processed {count_modified} files."
     if count_other_fmt:
-        # Previously skipped in total silence, which read as "nothing happened".
+        # Say so, or a skip reads as "nothing happened".
         msg += f" {count_other_fmt} non-MP3 skipped (these ops are ID3-only)."
     ui_utils.show_status(msg)

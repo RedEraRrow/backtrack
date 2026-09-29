@@ -99,7 +99,7 @@ def select(message: str, choices: list, *,
 
     Args:
         message:    Prompt label shown above the list.
-        choices:    Items — str, dict, or Choice objects.
+        choices:    Items: str, dict, or Choice objects.
         header:     Optional lines rendered above the prompt.
         extra_hints: Extra key→action bindings merged into the hint bar.
         index:      Initial cursor position.
@@ -113,12 +113,12 @@ def select(message: str, choices: list, *,
         on_inspect: Called with the current row's value when `inspect_key` is
             pressed; runs its own view and returns, leaving selection/checkbox
             state intact (the list redraws afterwards). If it returns something
-            other than None, select() returns that instead — for a caller that
+            other than None, select() returns that instead, for a caller that
             must rebuild the list after the view changed what it shows.
         inspect_key: Key that triggers `on_inspect` (default 'd').
         row_actions: key→callback(current row value) map. Pressing the key runs
             the callback against the highlighted row and stays in the list (like
-            on_inspect, but any number of keys) — e.g. queue the current track.
+            on_inspect, but any number of keys), e.g. queue the current track.
             A callback that returns something other than None ends the list
             with that as the result, for a caller that must rebuild it.
         row_action_hints: key→label map surfaced in the hint bar for row_actions.
@@ -132,7 +132,7 @@ def select(message: str, choices: list, *,
         row_edit_col: which cell of the row the editing happens in.
         row_edit_key: the key that opens the cycle and advances it (default 'e').
         allow_back: when False, the cancel keys (←/b/Esc) are ignored so the
-            list can only move forward (Enter) or quit (q) — used for top-level
+            list can only move forward (Enter) or quit (q), used for top-level
             menus that have nowhere to go back to.
         actions:    (key, label, value) list-wide actions (play all, shuffle…),
             kept out of the rows so the cursor only moves through the list
@@ -228,7 +228,7 @@ def select(message: str, choices: list, *,
 
     # Inline row edit (opt-in, see row_edit): the cycle sits at _edit_i over
     # _edit_opts, with one position past the end being the text field. While
-    # typing, every key belongs to the buffer — including 'q' and the cycle key
+    # typing, every key belongs to the buffer, including 'q' and the cycle key
     # itself, which is why leaving the field is ↑↓/↵/Esc and nothing else.
     _edit_on    = False
     _edit_opts: list = []
@@ -267,7 +267,7 @@ def select(message: str, choices: list, *,
 
     def _edit_cell() -> list:
         """The cell under edit, as styled segments: a cycled option, or the live
-        text field. Segments rather than raw ANSI — the table measures a cell by
+        text field. Segments rather than raw ANSI: the table measures a cell by
         the length of its text, so escape codes inside one would be counted as
         visible and the cell truncated to nothing."""
         if not _editing_text():
@@ -284,7 +284,7 @@ def select(message: str, choices: list, *,
         nonlocal viewport
         cols    = _cols()
         # Refresh the now-playing box height up front so this frame's row budget
-        # (vis) and hint pinning match the box that render() will actually draw —
+        # (vis) and hint pinning match the box that render() will actually draw;
         # otherwise a just-appeared box paints over the pinned hints until the
         # next redraw (hints missing until you click/navigate).
         ui_utils.now_playing_lines(ui_utils.get_terminal_width())
@@ -301,10 +301,10 @@ def select(message: str, choices: list, *,
         layout_constraint = " " * max_header_w if (0 < max_header_w < cols - 20) else ""
 
         # The transport keys are surfaced here whenever background audio is
-        # playing (recomputed each render so they appear/vanish live) — see
+        # playing (recomputed each render so they appear/vanish live); see
         # `chrome_hint_pairs`.
         # One source for both the row budget below and the bar actually painted
-        # at the end of this function — they must agree or the list mis-sizes.
+        # at the end of this function: they must agree or the list mis-sizes.
         hints_now  = _edit_hints if _edit_on else combined_hints
         hint_lines = chrome_hint_lines(hints_now, extra=layout_constraint)
 
@@ -319,9 +319,8 @@ def select(message: str, choices: list, *,
         elif cursor >= viewport + vis:
             viewport = cursor - vis + 1
         # Growing the window (or deleting rows) leaves the viewport further down
-        # than it needs to be — the list stayed scrolled, showing "N above" with
-        # blank space below, until you navigated. Pull it back so the last row of
-        # the list sits on the last visible row at most.
+        # than it needs to be, leaving "N above" with blank space below. Pull it
+        # back so the last row of the list sits on the last visible row at most.
         viewport = max(0, min(viewport, n - vis))
 
         out = h_lines[:]
@@ -369,7 +368,7 @@ def select(message: str, choices: list, *,
                 label = label[:max_w - 1] + "…"
             if multi:
                 if items[i].disabled and not items[i].checked:
-                    # Dimmed (interlocked) — not selectable
+                    # Dimmed (interlocked), not selectable
                     out.append(f"   {C.DIM}• {label}{C.RESET}")
                 elif i == cursor:
                     glyph = f"{C.GREEN}✔{C.RESET}" if items[i].checked else f"{C.DIM}•{C.RESET}"
@@ -378,7 +377,7 @@ def select(message: str, choices: list, *,
                     glyph = f"{C.GREEN}✔{C.RESET}" if items[i].checked else f"{C.DIM}•{C.RESET}"
                     out.append(f"    {glyph} {C.DIM}{label}{C.RESET}")
             elif items[i].disabled:
-                # Section heading / separator — dim, no pointer, slightly outdented.
+                # Section heading / separator: dim, no pointer, slightly outdented.
                 out.append(f"  {C.DIM}{C.BOLD}{label}{C.RESET}" if label else "")
             elif i == cursor:
                 out.append(f"  {C.ACCENT}›{C.RESET} {C.PRIMARY}{C.BOLD}{label}{C.RESET}")
@@ -503,7 +502,7 @@ def select(message: str, choices: list, *,
             elif key in ('LEFT', 'b', 'ESC'):
                 if allow_back:
                     result = None; break
-                # Top-level menu: no back/cancel — only forward or quit.
+                # Top-level menu: no back/cancel, only forward or quit.
             elif key in ('q', 'Q'):              raise QuitToTerminal()
             elif on_inspect is not None and key == inspect_key and not items[cursor].disabled:
                 # Inspect the current row (e.g. a full detail view) without
@@ -520,7 +519,7 @@ def select(message: str, choices: list, *,
                 w.render(_lines())
             elif row_actions and key in row_actions and not items[cursor].disabled:
                 # Act on the highlighted row (e.g. queue this track) and stay in
-                # the list — the callback shows its own status; we just redraw.
+                # the list; the callback shows its own status; we just redraw.
                 _ret = row_actions[key](items[cursor].value)
                 if _ret is not None:
                     result = _ret; break
@@ -568,7 +567,7 @@ def select(message: str, choices: list, *,
                 # A click only confirms/toggles when it lands on a printed
                 # character; clicking the blank space anywhere in a row (trailing
                 # padding, gaps between table columns, the empty left margin) just
-                # moves the highlight — it never enters.
+                # moves the highlight; it never enters.
                 row_plain = _row_plain.get(idx, "")
                 on_char = 0 < col <= len(row_plain) and row_plain[col - 1] != ' '
                 if not on_char:
@@ -590,7 +589,7 @@ def select(message: str, choices: list, *,
                     w.render(_lines())
                 elif not multi and clickable:
                     if idx == cursor or _sel_last_click == idx:
-                        # Already on this item (keyboard or prior click) — confirm
+                        # Already on this item (keyboard or prior click): confirm
                         cursor = idx
                         result = items[cursor].value
                         break
@@ -599,7 +598,7 @@ def select(message: str, choices: list, *,
                         cursor = idx
                         w.render(_lines())
                 elif not multi:
-                    # Disabled/heading row — move cursor, reset click state
+                    # Disabled/heading row: move cursor, reset click state
                     _sel_last_click = None
                     cursor = idx
                     w.render(_lines())
@@ -634,9 +633,20 @@ def live_select(message: str, provider: Callable[[str], list], *,
     cancels. Returns the chosen Choice.value, or None.
 
     `row_actions`: key -> callback(current row value), same shape as
-    `select`'s — the only per-row hotkey mechanism available here, since every
+    `select`'s: the only per-row hotkey mechanism available here, since every
     other key types into the query. Bind non-printable keys only (e.g. a
     Ctrl-combo); the callback runs and the list stays open, redrawing after.
+
+    `count_of()` gives the number shown as "N results" when the list holds
+    more than the matches (e.g. section headings); by default it is len(list).
+
+    `on_cycle(step)` is called when `cycle_key` is pressed (e.g. to change the
+    search scope), then the results are recomputed.
+
+    `section_nav` makes Tab / Shift-Tab jump between section headings, and dims
+    the rows outside the section under the cursor.
+
+    `initial_query` pre-fills the query, caret at its end.
 
     `placeholder` is greyed out inside the empty field, behind the caret, and
     goes as soon as there is a query to show in its place.
@@ -688,7 +698,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
     def _owners() -> list[int]:
         """Per row, the index of the heading that owns it (-1 above the first).
 
-        Built in one pass and reused for the whole frame — resolving each row
+        Built in one pass and reused for the whole frame; resolving each row
         against the heading list separately is quadratic, and this runs on every
         keystroke of a live search.
         """
@@ -749,12 +759,12 @@ def live_select(message: str, provider: Callable[[str], list], *,
         out = _header_lines()
 
         qtext = "".join(query)
-        # An empty message means the header already names the screen — the query
+        # An empty message means the header already names the screen, so the query
         # then starts at the normal margin rather than behind a stray space.
         _label = f"{C.DIM}{message}{C.RESET} " if message else ""
         # A block cursor sitting on the character, not a bar drawn between two:
         # the query stays still as the caret walks it. Empty, the block sits on
-        # the placeholder's first letter — where typing will start — with the
+        # the placeholder's first letter (where typing will start) with the
         # rest of the hint dimmed behind it.
         if qtext:
             _field = block_cursor(qtext, qpos)
@@ -778,12 +788,11 @@ def live_select(message: str, provider: Callable[[str], list], *,
         elif cursor >= viewport + vis:
             viewport = cursor - vis + 1
         # Growing the window (or deleting rows) leaves the viewport further down
-        # than it needs to be — the list stayed scrolled, showing "N above" with
-        # blank space below, until you navigated. Pull it back so the last row of
-        # the list sits on the last visible row at most.
+        # than it needs to be, leaving "N above" with blank space below. Pull it
+        # back so the last row of the list sits on the last visible row at most.
         viewport = max(0, min(viewport, n - vis))
         out.append(f"  {C.DIM}╵ {viewport} above{C.RESET}" if viewport > 0 else "")
-        _fixed_rows[0] = len(out)   # rows before the first item — the click-math offset
+        _fixed_rows[0] = len(out)   # rows before the first item: the click-math offset
         _row_plain.clear()
 
         eff = min(cols, _COLUMNS_MAX_WIDTH)
@@ -840,7 +849,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
             key = _read_key(fd)
 
             # Transport keys, clicks on the now-playing box, and clicks on our own
-            # hint glyphs — handled once here, before the switch below.
+            # hint glyphs, handled once here, before the switch below.
             _ch = consume_chrome(key, _hint_cells)
             if _ch is CHROME_HANDLED:
                 continue
@@ -879,7 +888,7 @@ def live_select(message: str, provider: Callable[[str], list], *,
             elif key.startswith('MOUSE_CLICK:') and w.row is not None:
                 # Same two-click convention as `select`: a click on a row not
                 # already highlighted moves the cursor there; clicking it again
-                # (or a row already under the cursor) confirms — one click can't
+                # (or a row already under the cursor) confirms, so one click can't
                 # accidentally jump straight into a result.
                 parts = key.split(':')
                 r = int(parts[2]) if len(parts) > 2 else 0
@@ -994,7 +1003,7 @@ def confirm(message: str, default: bool = False) -> bool:
                 key = _hk                # replay the hint's key
             if   key == 'CTRL_C':    result = False; break
             # Esc backs out of every other screen, so it must do something here
-            # too — cancelling a yes/no question means "no".
+            # too: cancelling a yes/no question means "no".
             elif key == 'ESC':       result = False; break
             elif key == 'ENTER':     result = default; break
             elif key.lower() == 'y': result = True;  break

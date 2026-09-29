@@ -1,4 +1,4 @@
-"""Headless tests for src/id3/bulk_ops.py — the plan/apply core the bulk menu
+"""Headless tests for src/id3/bulk_ops.py: the plan/apply core the bulk menu
 and the CLI both drive. Fixtures are tag-only MP3s: these operations read and
 write frames, never audio."""
 import os
@@ -130,12 +130,12 @@ class StripSingleDiscTest(_Fixtures):
     def test_one_of_one_is_removed(self):
         plan = self._plan([("1", "1/1"), ("2", "1/1")])
         self.assertEqual(len(plan.changed), 2)
-        self.assertEqual(plan.changes[0].why, "disc 1/1 → —")
+        self.assertEqual(plan.changes[0].why, "disc 1/1 → -")
 
     def test_bare_one_is_removed_when_nothing_sits_on_another_disc(self):
         plan = self._plan([("1", "1"), ("2", "1")])
         self.assertEqual(len(plan.changed), 2)
-        self.assertEqual(plan.changes[0].why, "disc 1 → —")
+        self.assertEqual(plan.changes[0].why, "disc 1 → -")
 
     def test_bare_one_is_kept_on_a_real_multi_disc_album(self):
         plan = self._plan([("1", "1"), ("1", "2")])
@@ -143,12 +143,12 @@ class StripSingleDiscTest(_Fixtures):
         self.assertIn("nothing to remove", plan.message or "")
 
     def test_a_track_with_no_disc_tag_is_listed_and_left_alone(self):
-        # An untagged disc sorts as 0, so it leads the preview — look the row up
+        # An untagged disc sorts as 0, so it leads the preview, so look the row up
         # by path rather than assuming where the ordering puts it.
         plan = self._plan([("1", "1/1"), ("2", None)])
         by_path = {os.path.basename(c.path): c.why for c in plan.changes}
         self.assertEqual(len(plan.changes), 2)
-        self.assertEqual(by_path["00.mp3"], "disc 1/1 → —")
+        self.assertEqual(by_path["00.mp3"], "disc 1/1 → -")
         self.assertEqual(by_path["01.mp3"], "")
 
     def test_disc_two_of_three_is_kept_and_says_so(self):
@@ -256,7 +256,7 @@ class ApplyChangesTest(_Fixtures):
         events = []
         bo.apply_changes(self.plan, [], lambda c: bo.tw.clear_fields(c.path, {'disc'}),
                          on_event=lambda kind, change, detail: events.append((kind, detail)))
-        self.assertEqual(events, [("written", "disc 1/1 → —")] * 2)
+        self.assertEqual(events, [("written", "disc 1/1 → -")] * 2)
 
     def test_the_plans_skipped_count_reaches_the_result(self):
         self.plan.skipped = 4

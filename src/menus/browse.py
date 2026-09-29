@@ -23,7 +23,7 @@ from src.config import setting
 
 def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | None:
     """Drive the multi-level browse UI (groups → albums → tracks → actions) for
-    one category (a BROWSE_CATEGORIES key) — of the whole library, or of one
+    one category (a BROWSE_CATEGORIES key), of the whole library, or of one
     music directory (`scope`)."""
     library = library_ref[0]
     cat_choice, _field, _albums_level, _letters = BROWSE_CATEGORIES[cat]
@@ -89,7 +89,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
 
             group_paths = None
             if _letter_mode:
-                # LETTER VIEW: compact A–Z index. Play all / Edit act on everything.
+                # LETTER VIEW: compact A-Z index. Play all / Edit act on everything.
                 names = (sort_albums(group_names, grouped, _cfg) if _field == 'album'
                          else _sort_groups(group_names, grouped, _cat_key, _group_sort))
                 _choices = list(letters_found)
@@ -144,7 +144,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
             )
 
             if not selection:
-                # Back from a letter's filtered list → return to the A–Z index,
+                # Back from a letter's filtered list → return to the A-Z index,
                 # not out of the whole category. (Only when we actually drilled in
                 # via a letter; a plain or toggled full list still exits.)
                 if _letter_filter and _can_letter:
@@ -191,7 +191,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
 
                     album_list = sort_albums(list(albums.keys()), albums, _cfg)
 
-                    # Always present the album list — even a single album is worth
+                    # Always present the album list: even a single album is worth
                     # showing as its own entry (albums are distinct from the artist).
                     # Play / shuffle / edit hints act on every album; one album's
                     # row already does all of that one level down.
@@ -203,7 +203,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     if not _single_album:
                         _asc["s"] = "__sort__"; _aeh["s"] = "sort"
                     # Show the album artist (dimmed) when it differs from the
-                    # artist/genre we're browsing under (#33).
+                    # artist/genre we're browsing under.
                     for _a in album_list:
                         # Compare the *displayed* credit with the group we're under:
                         # an artist group is now named after the whole billing, so
@@ -266,7 +266,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         if work:
                             work_track_map.setdefault(work, []).append(t['path'])
 
-                        # Disc header — left-bar section marker (#34)
+                        # Disc header: left-bar section marker
                         if has_multiple_discs and disc_val != current_disc:
                             subtitle   = t.get('disc_subtitle', '')
                             disc_title = subtitle if subtitle else f"Disc {disc_val}"
@@ -274,7 +274,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                             current_disc = disc_val
                             current_work = None
 
-                        # Work header — thinner bar, indented under the disc (#34)
+                        # Work header: thinner bar, indented under the disc
                         if work and work != current_work:
                             d_pad = "  " if has_multiple_discs else ""
                             track_choices.append(prompt.Choice(title=f"{d_pad}▎{work}", value=f"__work__{work}", cursor_title=f"{d_pad}▍{work}"))
@@ -291,10 +291,10 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         mv_name = t.get('movement_name', '').strip()
 
                         if mv_name and mv_num != "":
-                            num_str = (str(t.get('track', '0')).zfill(2) + f" — {mv_num}.") if mv_num else str(t.get('track', '0')).zfill(2)
+                            num_str = (str(t.get('track', '0')).zfill(2) + f" - {mv_num}.") if mv_num else str(t.get('track', '0')).zfill(2)
                             label   = f"{indent}{num_str} {mv_name}"
                         else:
-                            label = f"{indent}{str(t.get('track', '0')).zfill(2)} — {t.get('title', 'Unknown')}"
+                            label = f"{indent}{str(t.get('track', '0')).zfill(2)} - {t.get('title', 'Unknown')}"
 
                         # Structured cells: [title, featured artist, duration].
                         # The full artist is shown (only when it differs from the
@@ -312,7 +312,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     _track_context = NAV_STACK[-1] if NAV_STACK else selection
                     _show_editor   = setting(_cfg, "show_metadata_editor")
                     # Play / shuffle / edit-all hints; `e` edits the highlighted
-                    # row. With a single track they're noise — the lone
+                    # row. With a single track they're noise: the lone
                     # track row already does both jobs.
                     _teh: dict = {"e": "edit"} if _show_editor else {}
                     _tsc: dict = {}
@@ -323,7 +323,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                                                       for t in final_tracks}) > 1)
                         _tsc["s"] = "__sort__"; _teh["s"] = "sort"
 
-                    # Album artist shown in the header subtitle (#33).
+                    # Album artist shown in the header subtitle.
                     _album_artist = format_tag_values(_album_artist_of(final_tracks))
                     _subtitle = _album_artist or (selection if _track_context != selection else cat_choice)
 
@@ -366,7 +366,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                                                         _menu_header(_track_context, _subtitle))):
                         continue
 
-                    # Disc header selected — play that disc directly.
+                    # Disc header selected: play that disc directly.
                     # Bulk-editing the disc's tags is `e` on this row, same as
                     # an ordinary track, so there's no separate disc page.
                     if isinstance(path_choice_obj, str) and path_choice_obj.startswith("__disc_"):
@@ -375,14 +375,14 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         play_queue(disc_paths, library=library)
                         continue
 
-                    # Work header selected — offer play or bulk edit for that work
+                    # Work header selected: offer play or bulk edit for that work
                     if isinstance(path_choice_obj, str) and path_choice_obj.startswith("__work__"):
                         work_name    = path_choice_obj[len("__work__"):]
                         work_paths   = work_track_map.get(work_name, [])
                         _show_editor = setting(_cfg, "show_metadata_editor")
-                        _work_choices = [prompt.Choice(title=f"▸  Play all — {work_name}", value="__play_all__")]
+                        _work_choices = [prompt.Choice(title=f"▸  Play all: {work_name}", value="__play_all__")]
                         if _show_editor:
-                            _work_choices.append(prompt.Choice(title=f"Edit tags — {work_name}", value="__bulk_edit__"))
+                            _work_choices.append(prompt.Choice(title=f"Edit tags: {work_name}", value="__bulk_edit__"))
 
                         # Only "Play all" (editor hidden) → skip the extra screen.
                         if len(_work_choices) == 1:
@@ -399,7 +399,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                             bulk_id3_manager(library, paths=work_paths)
                         continue
 
-                    # A track plays directly — metadata editing is `e`/`E` on
+                    # A track plays directly; metadata editing is `e`/`E` on
                     # the "Tracks:" list above, not a separate action page.
                     ui_utils.clear_screen()
                     music_player(path_choice_obj)

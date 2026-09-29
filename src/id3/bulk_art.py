@@ -17,12 +17,7 @@ from src.id3.id3_tag_handler import cover_label, picture_type_name
 
 
 def set_picture_type_op(paths: list, library: list, header) -> None:
-    """Set the picture type on art that's already embedded.
-
-    Rippers routinely tag a front cover as "Other" (type 0), which anything
-    looking specifically for a front cover then misses. This retypes in bulk
-    without touching the image. MP3 only — MP4's `covr` atom has no type field.
-    """
+    """Screens for bo.plan_set_picture_type."""
     art, skipped = bo.read_picture_types(paths)
     if not art:
         ui_utils.show_status("No MP3s with embedded art in this selection.")
@@ -87,7 +82,7 @@ def _cover_pattern_prompt(header) -> str | None:
             _show_tokens(header)
             continue
         if sel == "__custom__":
-            raw = prompt.text("Pattern (e.g. %track% %title% — 'Show all tokens' lists them):")
+            raw = prompt.text("Pattern (e.g. %track% %title%; 'Show all tokens' lists them):")
             if not raw:
                 continue
             unk = fnm.unknown_tokens(raw)
@@ -101,7 +96,8 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     """Embed a per-track cover image, pairing each track with the image file that
     belongs to it (a folder of ``01 - Song.jpg`` … or ``covers/1.png`` …).
 
-    Four pairing modes (auto / file name / track order / %token% pattern); a
+    Five pairing modes (auto / one cover per group / file name / track order /
+    %token% pattern); a
     preview where ``d`` opens a ranked per-file picker to choose or change the
     cover; fill-blanks by default with per-row checkboxes as the final word.
     MP3 (APIC) and MP4 (``covr``; JPEG/PNG only) both write."""
@@ -126,7 +122,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     n_images = len({img for imgs in dir_images.values() for img in imgs})
 
     # 1) Matching strategy. Each answer is kept in `state`, so a screen reopened
-    # by walking back holds what it was left holding — including covers chosen by
+    # by walking back holds what it was left holding, including covers chosen by
     # hand in the preview, which survive the plan being rebuilt.
     _MODES = ["Auto-detect (recommended)",
               "One cover per disc / series / work",
@@ -152,7 +148,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         return True
 
     def _ask_group():
-        """What counts as a group — only when one cover covers a group."""
+        """What counts as a group; only asked when one cover covers a group."""
         if not state['mode'].startswith("One cover per"):
             return _SKIP
         picked = prompt.select("Group tracks by:", choices=list(_GROUPS),
@@ -163,7 +159,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         return True
 
     def _ask_pattern():
-        """The image-name pattern — only for pattern matching."""
+        """The image-name pattern; only asked for pattern matching."""
         if state['mode'] != "Name pattern (%token%)":
             return _SKIP
         picked = _cover_pattern_prompt(header)
@@ -182,7 +178,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         return True
 
     def _ask_preview() -> bool:
-        """Pair everything up, then show it — `d` re-chooses one track's cover."""
+        """Pair everything up, then show it; `d` re-chooses one track's cover."""
         mode, pattern = state['mode'], state['pattern']
         grouped = mode.startswith("One cover per")
         group_by = _GROUPS[state['group']]
@@ -217,7 +213,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         # to pair with, auto or by hand).
         shown = [p for p in writable if dir_images[os.path.dirname(os.path.abspath(p))]]
 
-        # A cover shared by 2+ tracks is group art — badge every one of its rows with
+        # A cover shared by 2+ tracks is group art: badge every one of its rows with
         # the group (disc/season/work) so the column stays consistent, instead of one
         # row flipping to "high" just because its track number happens to match the
         # cover's number. Per-track (unique) covers keep the match-confidence label.
@@ -236,7 +232,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             """Cell text for a track's planned cover: label, plus a "has art" badge if replacing."""
             img = plan.get(p)
             if not img:
-                return "— none (d to choose) —"
+                return "none (d to choose)"
             label = cover_label(img, os.path.dirname(os.path.abspath(p)))
             if existing_art[p]:
                 return [(label, 'normal'), ('  · has art', 'static-dim')]
@@ -260,7 +256,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             state['manual'][p] = img        # remembered if this screen is revisited
             if img is None:
                 plan[p] = None
-                ch.cells = [os.path.basename(p), "— none (d to choose) —", '']
+                ch.cells = [os.path.basename(p), "none (d to choose)", '']
                 ch.checked = False
             else:
                 plan[p] = img
@@ -272,7 +268,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             applies to (None if the user backed out).
 
             A cover chosen for an unmatched track is usually right for its
-            neighbours too, but not always for the whole selection — a box set
+            neighbours too, but not always for the whole selection: a box set
             changes art per disc.  So the choice is: every track, everything from
             here down, a counted run from here, or this track alone.
             """
@@ -288,7 +284,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             scope = prompt.select(f"Apply {os.path.basename(picked)} to:", choices=choices,
                                   header=header("apply cover"))
             if scope is None:
-                return None                     # backed out — leave the row unchanged
+                return None                     # backed out: leave the row unchanged
             if scope == "all":
                 return shown
             if scope == "down":
@@ -301,7 +297,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
                 try:
                     n = int(raw.strip())
                 except ValueError:
-                    ui_utils.show_status("Not a number — applied to this track only.")
+                    ui_utils.show_status("Not a number, so applied to this track only.")
                     return [path]
                 n = max(1, min(n, len(below)))
                 return below[:n]
@@ -342,11 +338,11 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             if nk:
                 bits.append(f"{nk} ticked")
             elif n_match:
-                bits.append("0 ticked — existing art; Overwrite or Space/a to tick")
+                bits.append("0 ticked (existing art); Overwrite or Space/a to tick")
             return header(" · ".join(bits))()
 
         sel = prompt.select(
-            "Preview — ↵ applies:",
+            "Preview (↵ applies):",
             choices=preview_choices, columns=_COVER_PREVIEW_COLUMNS,
             header=_preview_header, multi=True,
             extra_hints={'d': 'choose cover'}, on_inspect=_reassign)
@@ -364,10 +360,9 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         return
 
     # 4) Apply. "Fill blanks only" is a hard flag here, as it is for derive /
-    #    sort / assign — not merely the state the checkboxes opened in. Ticking
-    #    a row by hand (or with 'a') under that policy no longer overwrites the
-    #    art it was chosen to preserve; those tracks are counted and reported
-    #    rather than silently passed over.
+    #    sort / assign, not merely the state the checkboxes opened in. A row
+    #    ticked by hand (or with 'a') under that policy keeps its existing art;
+    #    those tracks are counted and reported.
     overwrite = state['policy'] == "Overwrite existing"
     applied = bo.apply_covers({p: plan.get(p) for p in shown}, library,
                               overwrite=overwrite, selected=apply_paths)

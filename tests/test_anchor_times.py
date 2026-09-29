@@ -3,7 +3,7 @@
 The property these guard is the one the whole approach rests on: error is bounded
 by the distance between measurements and never accumulates. A test cannot show
 "no drift" directly, so it pins the three ways the drift-free property was
-actually lost in practice — a swallowed silence, a guess treated as a
+actually lost in practice: a swallowed silence, a guess treated as a
 measurement, and a transcription whose own segments overlap.
 """
 import sys
@@ -50,7 +50,7 @@ class AnchorTimes(unittest.TestCase):
 
         Modelling time as one ruler over word boundaries gives boundary 2 a single
         value, so the second line starts where the first stopped and every pause in
-        the episode disappears — which pulls every line early by the length of the
+        the episode disappears, which pulls every line early by the length of the
         pause before it.
         """
         words = script("hello there goodbye now")
@@ -77,7 +77,7 @@ class AnchorTimes(unittest.TestCase):
 
         The tail of the line that ran on belongs at the start of the gap, where
         that speech stopped; the head of the next belongs at the end, running into
-        the speech that was heard. Placed as one run they drag each other — which
+        the speech that was heard. Placed as one run they drag each other, which
         is what put "This week, Douz!" and "Here you are" both in the theme music.
         """
         words = [("aa", 0), ("bb", 0), ("tail", 0), ("head", 1), ("cc", 1), ("dd", 1)]
@@ -105,7 +105,7 @@ class AnchorTimes(unittest.TestCase):
     def test_a_one_for_one_mishearing_still_gives_a_time(self):
         """`creef` for Crieff is the same instant, however it was spelled.
 
-        We never need to know which word was said — the script owns that — only
+        We never need to know which word was said (the script owns that), only
         when. A token-for-token disagreement is therefore a usable clock reading,
         and throwing it away costs a measurement for nothing.
         """

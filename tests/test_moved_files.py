@@ -44,7 +44,7 @@ class DropMovedTest(unittest.TestCase):
         os.rename(self.b, c)
         self.assertEqual(ml.drop_moved([self.a, self.b]), [self.a])
         self.assertEqual(sorted(t['path'] for t in self.library), [self.a, c])
-        self.assertEqual(self.status, ["“b.mp3” was moved or renamed — library updated."])
+        self.assertEqual(self.status, ["“b.mp3” was moved or renamed: library updated."])
 
     def test_a_renamed_library_folder_says_so(self):
         os.rename(self.root, self.root + ' old')

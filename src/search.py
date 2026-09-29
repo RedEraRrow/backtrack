@@ -1,6 +1,6 @@
 """Fuzzy library search: tiered matching (exact → prefix → word → substring →
 subsequence → keyboard-aware typo) with search-engine-style ranking and match
-spans for highlighting. Pure and unit-testable — no I/O."""
+spans for highlighting. Pure and unit-testable, no I/O."""
 from __future__ import annotations
 
 import math
@@ -14,7 +14,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     'lyricist': 3.5, 'genre': 3.0, 'people': 2.0, 'disc_label': 4.0,
 }
 
-# Base quality per match tier (0–1), scaled by field weight and match geometry.
+# Base quality per match tier (0-1), scaled by field weight and match geometry.
 _TIER = {
     'exact': 1.00, 'prefix': 0.92, 'word': 0.85,
     'substring': 0.65, 'subsequence': 0.45, 'typo': 0.30,
@@ -32,7 +32,7 @@ _SOLID_BAND = tune.SEARCH_SOLID_BAND
 _WORD_RE = re.compile(r'\w+')
 
 # Connectors in a natural "title by artist" phrasing ("Hungry Like the Wolf
-# by Duran Duran"). Every other token still has to match some field — this
+# by Duran Duran"). Every other token still has to match some field; this
 # just stops one filler word from sinking an otherwise-good result. If a
 # track's own title happens to contain one of these ("Stand By Me"), the
 # token still matches normally and scores as usual; this only changes what
@@ -42,7 +42,7 @@ _CONNECTOR_WORDS = {'by', 'feat', 'ft', 'featuring', 'vs'}
 
 @dataclass
 class Match:
-    score: float                 # 0–1 quality (pre field-weight)
+    score: float                 # 0-1 quality (pre field-weight)
     spans: list                  # [(start, end)] char ranges within the field value
     tier: str
 
@@ -60,7 +60,7 @@ class SearchResult:
 # ---------------------------------------------------------------------------
 
 # Physical key geometry: a key sits at (row, col + stagger), so "adjacent" is a
-# real distance rather than a hand-listed neighbour table — s/d are neighbours,
+# real distance rather than a hand-listed neighbour table: s/d are neighbours,
 # and so are s/w and s/e one row up. QWERTY until told otherwise; utils.keyboard
 # detects the real one at startup and hands it to use_layout().
 _QWERTY_ROWS = ("1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./")
@@ -105,7 +105,7 @@ _SLIP_INDEL    = 0.6
 _SLIP_RANDOM   = 1.0
 
 # Slip rides in the fraction of each DP cost, well below the 1.0 an edit costs,
-# so a cell still compares by edit count first and only then by plausibility —
+# so a cell still compares by edit count first and only then by plausibility,
 # one float per cell instead of a tuple, which this inner loop feels.
 _SLIP_SCALE = 1e-4
 
@@ -113,7 +113,7 @@ _SLIP_SCALE = 1e-4
 def _lev(a: str, b: str, max_d: int):
     """Bounded Levenshtein: (distance, implausibility) or None past max_d.
 
-    The distance is ordinary integer Levenshtein — it alone decides whether the
+    The distance is ordinary integer Levenshtein; it alone decides whether the
     words are close enough, so what counts as a typo at all is unchanged. Riding
     in the fraction of each cost is the summed slip cost of the edits, which
     breaks ties on distance in favour of the more typo-like alignment: the pair
@@ -180,7 +180,7 @@ def _subseq(value_lower: str, token: str):
 def _typo(value_lower: str, token: str):
     """Closest word in the value within a small edit distance.
 
-    Returns (span, dist, slip) or None — `slip` being how poorly the edits are
+    Returns (span, dist, slip) or None, `slip` being how poorly the edits are
     explained by neighbouring keys (see _lev). Words tie-break on it, so a query
     that fat-fingered its way to this word wins over one that merely happens to
     be the same distance away.
@@ -197,12 +197,12 @@ def _typo(value_lower: str, token: str):
 
 
 # A subsequence match only means something when the matched characters are
-# either packed together — a contracted spelling, "cabpres" for "Cabin
-# Pressure" — or each sitting at the start of a word, an initialism. Scattered
+# either packed together (a contracted spelling, "cabpres" for "Cabin
+# Pressure") or each sitting at the start of a word, an initialism. Scattered
 # through a long value it means nothing at all: every letter of "sondheim"
 # appears, in order, inside both "Thomas Trueblood and the Ridiculous Marathon"
 # and "The Sark Football Team and Hovercraft Enthusiasm". Neither is a result
-# anyone was looking for, and a low score is not enough to keep them out —
+# anyone was looking for, and a low score is not enough to keep them out:
 # scoring only decides the order of things already on screen.
 #
 # Requiring the match to *begin* at a word boundary is not sufficient on its
@@ -217,7 +217,7 @@ def _starts_word(value_lower: str, i: int) -> bool:
 
 
 def _subseq_is_meaningful(value_lower: str, token: str, spans: list) -> bool:
-    """Whether a subsequence match is tight enough — or word-aligned enough — to
+    """Whether a subsequence match is tight enough (or word-aligned enough) to
     be worth reporting at all."""
     if len(token) < _SUBSEQ_MIN_LEN:
         return False
@@ -282,7 +282,7 @@ def _merge_spans(spans: list) -> list:
 
 
 def highlight_spans(value: str, tokens: list) -> list:
-    """Merged char ranges in `value` matched by any token — for UI highlighting."""
+    """Merged char ranges in `value` matched by any token, for UI highlighting."""
     spans: list = []
     for t in tokens:
         mt = match_token(t, value)
@@ -315,11 +315,11 @@ def _disc_label(song: dict) -> str:
 
     Deliberately just one form, not both combined: a disc's subtitle number
     and its physical disc number can legitimately disagree (a series
-    renumbered relative to its disc ordinal — disc 5 can be "Series 4"), and
+    renumbered relative to its disc ordinal: disc 5 can be "Series 4"), and
     fuzzy-matching a combined string would let a bare digit in the query hit
     whichever number happens to contain it, regardless of which one the
     query meant. An exact "disc N" lookup is handled separately, as a hard
-    constraint against the real disc field (`extract_disc_constraint`) —
+    constraint against the real disc field (`extract_disc_constraint`),
     never through this fuzzy text.
     """
     if _total_discs(song) <= 1:
@@ -334,7 +334,7 @@ def _disc_label(song: dict) -> str:
 def _disc_display_label(song: dict) -> str:
     """Human-facing disc label: subtitle and disc number together when both
     exist ("Series 4 (Disc 5)"), so a divergence between them is visible
-    rather than hidden. For display only — never fed to the matcher."""
+    rather than hidden. For display only, never fed to the matcher."""
     label = _disc_label(song)
     if not label:
         return ''
@@ -346,14 +346,14 @@ def _disc_display_label(song: dict) -> str:
 
 
 # "disc"/"cd" immediately followed by a number is treated as an exact lookup
-# against the real disc field, not fuzzy text — see `_disc_label`.
+# against the real disc field, not fuzzy text (see `_disc_label`).
 _DISC_WORDS = {'disc', 'cd'}
 
 
 def extract_disc_constraint(tokens: list) -> tuple[list, str | None]:
     """Pull a "disc N" / "cd N" pair out of `tokens`, if present, as a hard
     constraint on the track's actual disc number. Returns (remaining_tokens,
-    disc_number) — remaining_tokens is `tokens` unchanged when no such pair
+    disc_number); remaining_tokens is `tokens` unchanged when no such pair
     is found. Only the first match is taken; a query naming two disc numbers
     is unusual enough not to need defining behaviour for."""
     for i in range(len(tokens) - 1):
@@ -363,8 +363,8 @@ def extract_disc_constraint(tokens: list) -> tuple[list, str | None]:
 
 
 def _field_value(song: dict, f: str) -> str:
-    """A track's value for field `f` — most fields are stored directly;
-    'disc_label' is computed (section: disc search)."""
+    """A track's value for field `f`. Most fields are stored directly;
+    'disc_label' is computed (see `_disc_label`)."""
     if f == 'disc_label':
         return _disc_label(song)
     return str(song.get(f, '') or '')
@@ -374,11 +374,11 @@ def search(library: list, query: str, fields: list | None = None, *,
            recent: set | None = None, weights: dict | None = None,
            limit: int | None = None, min_ratio: float = tune.SEARCH_MIN_RATIO) -> list:
     """Rank the library against a query. Every token must match some field (fuzzy
-    AND) — except a connector word (_CONNECTOR_WORDS, e.g. "by"), which is
+    AND), except a connector word (_CONNECTOR_WORDS, e.g. "by"), which is
     dropped rather than sinking the result when it matches nothing, so "Hungry
     Like the Wolf by Duran Duran" isn't rejected over "by". Different tokens
     can each match a different field of the same track ("Hungry" against the
-    title, "Duran" against the artist) — nothing requires them to agree.
+    title, "Duran" against the artist); nothing requires them to agree.
     Contiguous ("solid") matches get a large band so exact substrings sort
     above fuzzy ones; within a band the fine score (field weight × match geometry
     + recent/play-count boosts) orders results. Results whose fine score falls
@@ -390,8 +390,8 @@ def search(library: list, query: str, fields: list | None = None, *,
     if not tokens:
         return []
 
-    # "disc N" is an exact lookup against the real field, not fuzzy text —
-    # see `_disc_label`. Only meaningful when disc search is actually in
+    # "disc N" is an exact lookup against the real field, not fuzzy text
+    # (see `_disc_label`). Only meaningful when disc search is actually in
     # scope, so a plain title/artist search isn't affected.
     disc_number = None
     if 'disc_label' in fields:
@@ -474,7 +474,7 @@ ENTITY_FIELDS = ('artist', 'album', 'composer', 'lyricist', 'genre', 'people')
 
 # Weight of group size against match quality when ranking entities. Quality
 # dominates (a near-exact name beats a vague one however large), but among
-# comparably good matches the bigger group wins — that is the whole point of
+# comparably good matches the bigger group wins; that is the whole point of
 # collapsing them.
 _ENTITY_QUALITY = tune.SEARCH_ENTITY_QUALITY
 _ENTITY_SIZE = 50.0
@@ -483,7 +483,7 @@ _ENTITY_SIZE = 50.0
 
 @dataclass
 class Entity:
-    """A named thing several result tracks share — an artist, album, genre."""
+    """A named thing several result tracks share: an artist, album, genre."""
     kind: str                              # one of ENTITY_FIELDS
     name: str
     tracks: list = _dcfield(default_factory=list)
@@ -501,7 +501,7 @@ def _entity_values(song: dict, kind: str) -> list:
     from src.music_library import group_values, people_names
     if kind == 'people':                   # exact pairs: a role may contain commas
         return people_names(song)
-    # The same split Browse uses, so "AC/DC" is one artist in both — splitting
+    # The same split Browse uses, so "AC/DC" is one artist in both; splitting
     # on / and , here turned it into "AC" and "DC".
     return group_values(kind, song.get(kind))
 
@@ -550,18 +550,18 @@ def collect_entities(results: list, tokens: list, kinds: tuple = ENTITY_FIELDS,
 
 
 def collect_disc_entities(results: list, tokens: list, min_tracks: int = 1) -> list:
-    """Group `results` into per-disc entities within multi-disc albums — e.g.
+    """Group `results` into per-disc entities within multi-disc albums, e.g.
     "John Finnemore's Souvenir Programme Series 1" should surface just that
     disc's tracks, not the whole album's. Grouped by (artist, album, disc
     number), never by the disc label alone: two different albums can each
     have a "Disc 1" or even both happen to call one "Series 1", and those
     must stay distinct groups. Only albums that actually have more than one
-    disc are considered — a single-disc album has no separate disc to find.
+    disc are considered: a single-disc album has no separate disc to find.
 
     An explicit "disc N" in the query (`extract_disc_constraint`) is checked
     against the real disc field directly, same as `search`; the remaining
     tokens are matched fuzzily against `_disc_label` alone (never the
-    combined display form — see its docstring for why that would let "series
+    combined display form; see its docstring for why that would let "series
     4" and "disc 4" cross-match a disc where those two numbers disagree).
     """
     if not tokens:
@@ -573,7 +573,7 @@ def collect_disc_entities(results: list, tokens: list, min_tracks: int = 1) -> l
     buckets: dict = {}
     for r in results:
         song = r.song
-        if not _disc_label(song):   # blank for a single-disc album — see _disc_label
+        if not _disc_label(song):   # blank for a single-disc album, see _disc_label
             continue
         if disc_number is not None and _disc_number(song) != disc_number:
             continue
@@ -589,13 +589,13 @@ def collect_disc_entities(results: list, tokens: list, min_tracks: int = 1) -> l
             continue
         if ent is None:
             if tokens:
-                quality = _name_quality(f"{album} — {_disc_label(song)}", tokens)
+                quality = _name_quality(f"{album}, {_disc_label(song)}", tokens)
                 if quality is None:
                     buckets[key] = False       # remember the miss
                     continue
             else:
                 quality = 1.0   # the disc-number constraint alone already decided this
-            name = f"{album} — {_disc_display_label(song)}"
+            name = f"{album}, {_disc_display_label(song)}"
             ent = Entity(kind='disc', name=name, score=quality, subtitle=artist)
             buckets[key] = ent
         ent.tracks.append(song)

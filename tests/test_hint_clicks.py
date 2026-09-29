@@ -1,5 +1,6 @@
-"""Clicking a transport hint (^p, ^n/^b) acts like pressing it: consume_chrome
-used to hand the control character back to widgets that don't handle it."""
+"""Clicking a transport hint (^p, ^n/^b) acts like pressing it (consume_chrome
+runs it rather than handing the control character to widgets that don't handle
+it), and the page arrows are clickable keys."""
 import unittest
 from unittest.mock import patch
 

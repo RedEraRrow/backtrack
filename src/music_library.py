@@ -23,8 +23,7 @@ SYNC_INTERVAL_SECONDS = 30
 
 # Bump whenever `_get_default_metadata` gains a field or an extractor learns a new
 # tag: cached entries carrying an older version are re-read on the next sync even
-# though their mtime hasn't moved. (Before this, each new field needed its own
-# `'field' not in track` special case.)
+# though their mtime hasn't moved.
 METADATA_VERSION = 6
 
 
@@ -61,7 +60,7 @@ _YEAR_RE = re.compile(r'(\d{4})')
 
 
 def year_of(value: Any) -> int:
-    """The year in any date form — '1970', '1970-04-01', '2005-09-15 18:30:00' —
+    """The year in any date form ('1970', '1970-04-01', '2005-09-15 18:30:00'),
     or 0 when there is none ('Unknown Year', '').
 
     ID3's TDRC is a timestamp, so the year is the first four-digit run rather
@@ -72,7 +71,7 @@ def year_of(value: Any) -> int:
 
 
 def album_year(songs: list) -> int:
-    """One representative year for an album: the **earliest corroborated** year —
+    """One representative year for an album: the **earliest corroborated** year:
     the oldest that at least two tracks share, or the oldest of all when every
     track carries a different date. 0 if none of them carry a year.
 
@@ -102,7 +101,7 @@ def to_num(v: Any) -> float:
 
 def start_background_sync(library: list) -> None:
     """Start (or wake) the daemon thread that periodically reconciles the library
-    against disk. Safe to call repeatedly — a live thread is just re-triggered."""
+    against disk. Safe to call repeatedly: a live thread is just re-triggered."""
     global _sync_thread
 
     with _sync_lock:
@@ -130,7 +129,7 @@ def _reconcile_library(library: list, music_dirs, ignore_hidden: bool = False) -
     """Add files that appeared and drop entries whose file vanished, under any of
     `music_dirs` (an external rename/move shows up as a remove + an add). Cheap:
     a directory walk (no tag parsing) diffed against the known paths; tags are
-    read only for genuinely new files. Mutates `library` in place; returns True
+    read only for new files. Mutates `library` in place; returns True
     if anything changed.
 
     Guarded against a temporarily unavailable directory (unmounted/network
@@ -215,12 +214,12 @@ def drop_moved(paths: list) -> list:
 
     if gone_roots:
         name = os.path.basename(gone_roots[0].rstrip(os.sep)) or gone_roots[0]
-        msg = (f"Library folder “{name}” was moved or renamed — "
+        msg = (f"Library folder “{name}” was moved or renamed: "
                "update it in Settings → Music directories.")
     elif len(missing) == 1:
-        msg = f"“{os.path.basename(missing[0])}” was moved or renamed — library updated."
+        msg = f"“{os.path.basename(missing[0])}” was moved or renamed: library updated."
     else:
-        msg = f"{len(missing)} files were moved or renamed — library updated."
+        msg = f"{len(missing)} files were moved or renamed: library updated."
     ui_utils.show_status(msg, duration=tune.STATUS_WARNING_S)
     return present
 
@@ -432,9 +431,9 @@ def _extract_id3_metadata(tags: ID3) -> dict:
     if 'TIT1' in tags:
         result['grouping'] = first_text(tags['TIT1'])
 
-    # Work name — try sources in priority order:
+    # Work name: try sources in priority order:
     #   1. TXXX:WORK (MusicBrainz Picard / standard classical convention)
-    #   2. TIT1 (Content Group / Grouping — iTunes and many editors store the work here)
+    #   2. TIT1 (Content Group / Grouping; iTunes and many editors store the work here)
     #   3. TIT3 (Subtitle) is already mapped via frame_map above
     if not result.get('work'):
         for txxx_key in ('TXXX:WORK', 'TXXX:work', 'TXXX:Work'):
@@ -446,8 +445,8 @@ def _extract_id3_metadata(tags: ID3) -> dict:
         result['work'] = result['grouping']
 
     # People from TMCL (performers) / TIPL (involved people). Store each as
-    # "Name (Role)" when a role is present so search matches — and the results
-    # people column can show — both the person and their role/character.
+    # "Name (Role)" when a role is present so search matches (and the results
+    # people column can show) both the person and their role/character.
     credits = []
     for frame_id in ('TMCL', 'TIPL'):
         frame = tags.get(frame_id)
@@ -481,7 +480,7 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
         '\xa9day': 'year',
         '\xa9wrk': 'work',
         'tmpo': 'bpm',
-        # Sort atoms — the MP4 counterparts of the TSO* frames.
+        # Sort atoms: the MP4 counterparts of the TSO* frames.
         'sonm': 'Title Sort Order',
         'soar': 'Performer Sort Order',
         'soaa': 'Album Artist Sort Order',
@@ -495,7 +494,7 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
                 val = tags[mp4_atom]
                 if val:
                     # Handle both list and direct values. A multi-value atom
-                    # (artist/genre) joins with '; ' — same shape as the ID3 side,
+                    # (artist/genre) joins with '; ', the same shape as the ID3 side,
                     # so browsing splits it back into one group per value.
                     if isinstance(val, list):
                         parts = [str(v).strip() for v in val if str(v).strip()]
@@ -509,7 +508,7 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
 
     # Freeform ('----') atoms. MP4 has no standard atom for some fields the ID3
     # side covers, and iTunes puts them here instead. Values come back as bytes,
-    # so they are decoded rather than str()'d — str() on bytes yields "b'...'".
+    # so they are decoded rather than str()'d: str() on bytes yields "b'...'".
     freeform_map = {
         '----:com.apple.iTunes:LYRICIST': 'lyricist',
     }
@@ -555,7 +554,7 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
     except (KeyError, IndexError, TypeError):
         pass
 
-    # Grouping (©grp) — fall back to it as work name if ©wrk is absent
+    # Grouping (©grp): fall back to it as work name if ©wrk is absent
     try:
         if '©grp' in tags and tags['©grp']:
             val = tags['©grp']
@@ -673,7 +672,7 @@ def load_library_cache() -> list:
 
 
 def first_text(frame) -> str:
-    """A text frame's first value, trimmed — '' when the frame is missing or
+    """A text frame's first value, trimmed, or '' when the frame is missing or
     empty. For reading a single value to show or test; an editor wanting the
     exact stored text, or every value of a list frame, reads the frame itself."""
     if frame is None or not getattr(frame, 'text', None):
@@ -711,8 +710,8 @@ def refresh_library_entry(library: list | None, file_path: str) -> dict:
         Updated track metadata
 
     `library` None means the caller isn't tracking one: the fresh entry is
-    returned and nothing is saved. Never pass a stand-in list for "no library"
-    — it would be saved as the whole cache, one track long.
+    returned and nothing is saved. Never pass a stand-in list for "no library":
+    it would be saved as the whole cache, one track long.
     """
     fresh = get_metadata(file_path)
     if library is None:
@@ -731,7 +730,7 @@ def refresh_library_entry(library: list | None, file_path: str) -> dict:
 # Values from a multi-value frame reach the library joined with '; ' (see
 # `_extract_id3_metadata`). List-like fields are split apart again for browsing,
 # so a track tagged "Pop; Rock" is filed under Pop *and* under Rock rather than
-# under a merged "Pop; Rock" pseudo-genre — both entries lead to the same album.
+# under a merged "Pop; Rock" pseudo-genre; both entries lead to the same album.
 # Fields whose text is one single title (album, grouping) are never split: a
 # semicolon there belongs to the name.
 _LIST_FIELDS = frozenset({'artist', 'album_artist', 'genre', 'composer', 'lyricist'})
@@ -760,7 +759,7 @@ def format_tag_values(value: Any) -> str:
     what round-trips through the editors) and only *displayed* comma-separated,
     which reads as a list rather than as machine output.
 
-    Only for list-like fields — artist, album artist, genre, composer, lyricist, people.
+    Only for list-like fields: artist, album artist, genre, composer, lyricist, people.
     Never pass a single-title field: an album really called "Songs; Ohia" would
     come back as "Songs, Ohia".
 
@@ -773,7 +772,7 @@ def format_tag_values(value: Any) -> str:
 
 
 def format_value_list(values: list[str]) -> str:
-    """Render already-separated values for the screen — the list-taking form of
+    """Render already-separated values for the screen: the list-taking form of
     `format_tag_values`, for callers holding a frame's real value list (no
     re-splitting, so a value containing ';' stays whole).
     """
@@ -800,10 +799,10 @@ def derive_album_credit(songs: list) -> str:
     """The credit an album carrying no album-artist tag is filed under ('' if its
     tracks name no artist at all).
 
-    Each track's artist tag is one *cast* — a multi-value credit "A; B" is a duo,
+    Each track's artist tag is one *cast*: a multi-value credit "A; B" is a duo,
     not two separate artists. The album is filed under its **anchor**: the artists
     credited on every track. So a duet album survives a guest appearance on one
-    track, while a genuinely disjoint line-up (nobody credited throughout) is a
+    track, while a disjoint line-up (nobody credited throughout) is a
     compilation and collapses to "Various Artists".
     """
     casts = [c for c in (split_tag_values(s.get("artist")) for s in songs) if c]
@@ -853,7 +852,7 @@ def get_grouped_data(library: list, category: str) -> dict:
                 name = values[0].split(',')[0].split('&')[0].strip() or values[0]
             else:
                 # A credit naming several people is one *billing*, so it gets one
-                # entry reading "Ada Lark, Bo Vale" — not an entry per name. (Genre
+                # entry reading "Ada Lark, Bo Vale", not an entry per name. (Genre
                 # is the opposite: its values are independent facets and do split.)
                 name = format_tag_values(val) or "Unknown"
 
@@ -897,7 +896,7 @@ def get_grouped_data(library: list, category: str) -> dict:
 def _group_albums(library: list) -> dict:
     """Albums by name *and* album artist, so two "Greatest Hits" by different
     artists are two rows. A name only one album uses stays as it is; a shared
-    one gets its album artist added — "Greatest Hits (ABBA)"."""
+    one gets its album artist added: "Greatest Hits (ABBA)"."""
     by_id: dict[tuple[str, str], list] = {}
     names: dict[tuple[str, str], str] = {}
     for song in library:
@@ -936,7 +935,7 @@ def _sort_text(value: str) -> str:
 def _tagged_sort_key(display_name: str, songs: list, category: str) -> str | None:
     """The sort-order value that belongs to this group, or None if none applies.
 
-    A multi-value credit and its sort frame pair up **by position** —
+    A multi-value credit and its sort frame pair up **by position**:
     `TPE2 = "Cee Dot" / "Dee Ray"` alongside `TSO2 = "Dot, Cee" / "Ray, Dee"`. A
     group named after the whole billing takes the first value's sort name; a group
     named after one artist may only claim the value at its own index, never a
@@ -968,7 +967,7 @@ def get_group_sort_key(display_name: str, songs: list, category: str,
 
     Priority:
         1. Explicit sort-order tag (TSOP/TSO2/TSOA), matched to this group by
-           position within a multi-value credit — unless sort tags are off
+           position within a multi-value credit, unless sort tags are off
         2. Display name through `sort_text` (leading words dropped, case and
            accents folded)
     """
@@ -1011,7 +1010,7 @@ _opts_cache: dict = {}
 def sort_options(cfg: dict | None = None) -> dict:
     """The sort settings: `levels`, `use_tags`, `ignore_words`, `libraries`
     (directory → its own levels). Read from `cfg`, else from the config file
-    (cached on its mtime — group keys are computed per row, per render)."""
+    (cached on its mtime; group keys are computed per row, per render)."""
     from src.config import music_dirs
     if cfg is None:
         from src.config import CONFIG_FILE, load_config

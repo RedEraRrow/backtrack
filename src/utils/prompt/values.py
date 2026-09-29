@@ -27,11 +27,11 @@ def fraction_edit(message: str = "Edit metadata pair:",
                     varies: object = ()) -> dict | None:
     """
     In-place editor for an isolated single tag's current/total values.
-    Allows integers, floats, spaces, and strings.
+    Accepts any text in either half.
 
     ``varies`` names the fields ('current' / 'total') that differ across a bulk
     selection.  Those open blank, render as a dim ``──`` placeholder, and come
-    back as ``None`` if left untouched — meaning "keep each file's own value" —
+    back as ``None`` if left untouched (meaning "keep each file's own value"),
     so you can set the half the files share without flattening the half they
     don't.  Typing into such a field turns it into a real value for everything.
 
@@ -47,7 +47,7 @@ def fraction_edit(message: str = "Edit metadata pair:",
     }
     lbl_idx, lbl_tot = tag_config.get(tag.upper(), ("Index", "of"))
 
-    # 2. Extract baseline values from the value string (e.g., "3.5/12" -> current="3.5", total="12")
+    # Extract baseline values from the value string (e.g., "3.5/12" -> current="3.5", total="12")
     parts = str(value).split('/') if '/' in str(value) else str(value).split('⁄') if '⁄' in str(value) else [value, ""] if value else ["", ""]
     curr_val = parts[0].strip()
     tot_val = parts[1].strip() if len(parts) > 1 else ""
@@ -123,8 +123,8 @@ def fraction_edit(message: str = "Edit metadata pair:",
                 continue
 
             key = _read_key(fd)
-            # A transport key, a click on the miniplayer, or a click on one of our
-            # own hint keys — handled the same way on every screen.
+            # A transport key, a click on the now-playing box, or a click on one of our
+            # own hint keys, handled the same way on every screen.
             _ch = consume_chrome(key, _hint_cells)
             if _ch is CHROME_HANDLED:
                 continue
@@ -279,8 +279,8 @@ def time_edit(message: str = "Edit time:", initial: str = "00:00:00") -> str | N
                 continue
 
             key = _read_key(fd)
-            # A transport key, a click on the miniplayer, or a click on one of our
-            # own hint keys — handled the same way on every screen.
+            # A transport key, a click on the now-playing box, or a click on one of our
+            # own hint keys, handled the same way on every screen.
             _ch = consume_chrome(key, _hint_cells)
             if _ch is CHROME_HANDLED:
                 continue
@@ -404,8 +404,8 @@ def number_edit(message: str = "Edit number:", *, value: int = 0,
                 continue
 
             key = _read_key(fd)
-            # A transport key, a click on the miniplayer, or a click on one of our
-            # own hint keys — handled the same way on every screen.
+            # A transport key, a click on the now-playing box, or a click on one of our
+            # own hint keys, handled the same way on every screen.
             _ch = consume_chrome(key, _hint_cells)
             if _ch is CHROME_HANDLED:
                 continue
@@ -474,7 +474,7 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
         filled = f"{C.ACCENT}{'★' * stars}{C.RESET}"
         empty = f"{C.DIM}{'☆' * (5 - stars)}{C.RESET}"
         rlabel = "unrated" if stars == 0 else f"{stars}/5"
-        # Plays and Rater take typing but drew nothing to type against — the
+        # Plays and Rater take typing but drew nothing to type against: the
         # block shows which field has the keyboard and where the next character
         # lands. Both append at the end, so the block rides there.
         cshown = "".join(cbuf) if cbuf else str(count)
@@ -501,7 +501,7 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
             f"  {_mark(2)} {_lab(2, 'Rater ')}   {rater}",
         ]
         # The keys of the focused row: stars, the play count, or (the Rater's
-        # e-mail) just typing — where q is a letter, not quit.
+        # e-mail) just typing, where q is a letter, not quit.
         pairs = [("tab/⇧tab", "field")]
         pairs += {0: [("←→", "stars")], 1: [("←→", "±1"), ("⇞⇟", "±10")]}.get(field, [])
         pairs += [("↵", "save"), ("esc", "back")] + ([("q", "quit app")] if field != 2 else [])
@@ -524,8 +524,8 @@ def rating_edit(message: str = "Rating:", *, stars: int = 0, count: int = 0,
                 continue
 
             key = _read_key(fd)
-            # A transport key, a click on the miniplayer, or a click on one of our
-            # own hint keys — handled the same way on every screen.
+            # A transport key, a click on the now-playing box, or a click on one of our
+            # own hint keys, handled the same way on every screen.
             _ch = consume_chrome(key, _hint_cells)
             if _ch is CHROME_HANDLED:
                 continue

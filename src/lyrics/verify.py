@@ -15,7 +15,7 @@ from src.utils import timefmt
 
 
 # The MD side of `_word_streams`, memoised on the script's mtime+size. Verify and
-# speaker-split both ask for it, and each ran the whole read-and-parse again — on
+# speaker-split both ask for it, and each ran the whole read-and-parse again, and on
 # a long episode that is the pause you feel before the report appears. The JSON
 # side is not cached: `segs` is the live, edited state.
 _MD_TOKS_CACHE: dict[str, tuple[tuple, list, dict]] = {}
@@ -25,18 +25,18 @@ def _md_word_stream(md_path: str) -> tuple[list[tuple], dict]:
     """The MD script's two halves, read and parsed once.
 
     Returns (md_toks, line_dirs):
-      md_toks   — (token, line_id, speaker, word_index, raw_word): every token,
+      md_toks:   (token, line_id, speaker, word_index, raw_word): every token,
                   carrying WHICH WORD of its line it came from. A word can yield
                   two tokens ("no-one") or none ("..."), so the word index has to
                   be recorded as the stream is built; a direction's position is a
                   word offset, and only this makes the two commensurable.
-      line_dirs — line_id → (n_words, [(word_offset, dir_text, after_punctuation),
+      line_dirs: line_id → (n_words, [(word_offset, dir_text, after_punctuation),
                   ...]): the inline directions on that line, how long the line is,
-                  and whether each one follows a mark the script ended a thought on
-                  — which is what decides whether cutting there is safe to do in
+                  and whether each one follows a mark the script ended a thought on,
+                  which is what decides whether cutting there is safe to do in
                   bulk or only worth suggesting.
 
-    `line_id` is the 0-based dialogue-line index — the SAME id space as the
+    `line_id` is the 0-based dialogue-line index: the SAME id space as the
     overlay's `line_ref`, so a computed split can pin each piece directly.
     """
     from src.lyrics.lyrics import _parse_markdown_dialogue
@@ -80,13 +80,13 @@ def _word_streams(segs: list, md_path: str):
     """Shared word-level alignment core for verification and speaker-splitting.
 
     Returns (js_toks, md_toks, ops):
-      js_toks: (token, seg_index, word_index, start)             — spoken words
-      md_toks: (token, line_id, speaker, md_word_index, raw)     — MD dialogue words
+      js_toks: (token, seg_index, word_index, start)             spoken words
+      md_toks: (token, line_id, speaker, md_word_index, raw)     MD dialogue words
       ops:     `lyrics_text.align_tokens` opcodes over the two streams
     Both streams use `_norm_words`/`_spoken_text` so punctuation is ignored,
     hyphens are spaces, and inline stage directions never count as dialogue; the
     alignment then reconciles the spellings the two conventions differ on.
-    line_id is the 0-based dialogue-line index — the SAME id space as the overlay's
+    line_id is the 0-based dialogue-line index: the SAME id space as the overlay's
     `line_ref`, so a computed split can pin each piece directly.
     """
     md_toks, _dirs = _md_word_stream(md_path)
@@ -103,7 +103,7 @@ def _word_streams(segs: list, md_path: str):
                     js_toks.append((tok, si, wi, w.get('start')))
                     js_raw.append(w.get('word', ''))
         else:
-            # Word-less segment (SYLT / USLT, or one imported without timings) —
+            # Word-less segment (SYLT / USLT, or one imported without timings):
             # fall back to its text, exactly as `build_md_overlay` does. Skipping it
             # here made verify and the overlay disagree about which segments exist,
             # so a split computed from one did not line up with the other.
@@ -124,30 +124,30 @@ def _split_candidates(segs: list, md_path: str) -> tuple[list[dict], list[tuple]
     Two things ask for a cut, and both are the script drawing a line the transcript
     ran through:
 
-      • an MD LINE CHANGE inside the segment — Whisper merged consecutive script
+      • an MD LINE CHANGE inside the segment: Whisper merged consecutive script
         lines (MARTIN's "Dash away ..." + DOUGLAS & MARTIN's "... dash away, dash
         away, all!"), so one segment carries two speakers;
-      • an INLINE STAGE DIRECTION inside it — `*(Australian accent)* Yip! *(Normal
+      • an INLINE STAGE DIRECTION inside it: `*(Australian accent)* Yip! *(Normal
         voice)* Mrs Badcrumble, ...` is one MD line but four beats, and a direction
         with no boundary to sit on has nowhere to go but after the whole segment,
         where it reads as a note on somebody else's words.
 
     A direction only earns a cut in BULK where the script has already punctuated its
-    way out of the word before it.  One that interrupts a sentence — `Captain *(he
-    assumes a French accent)* Martin duCref` — may well deserve its own beat, but
+    way out of the word before it.  One that interrupts a sentence, `Captain *(he
+    assumes a French accent)* Martin duCref`, may well deserve its own beat, but
     that is a judgement about the performance, not something to do to 300 segments
     unattended, so it comes back as a suggestion instead.  A speaker change is never
     mid-sentence and is always cut.
 
     Returns (candidates, unplaced, suggested):
-      candidates — {seg, boundaries, line_refs, runs}: cut points, and the line each
+      candidates: {seg, boundaries, line_refs, runs}: cut points, and the line each
                    resulting piece pins to, so splitting lands one segment per
-                   script beat — the clean baseline to word-split from.
-      unplaced   — (line_id, word_offset, dir_text) for a direction sitting mid-line
+                   script beat, the clean baseline to word-split from.
+      unplaced:   (line_id, word_offset, dir_text) for a direction sitting mid-line
                    whose word never aligned to the transcript, so there is no
                    boundary to cut at.  Reported rather than guessed: snapping to a
                    nearby word would put the direction somewhere the script does not.
-      suggested  — (line_id, word_offset, dir_text) for a cut that IS placeable but
+      suggested:  (line_id, word_offset, dir_text) for a cut that IS placeable but
                    falls mid-sentence, offered for you to make by hand.
     """
     import bisect
@@ -157,7 +157,7 @@ def _split_candidates(segs: list, md_path: str) -> tuple[list[dict], list[tuple]
 
     # Which words of each line carry a comparison token at all.  '...' and '♪' are
     # words of the script but none of the transcript, so a direction standing
-    # against one — `Well ... *(he sighs)* ... we've got` — has to cut at the next
+    # against one, `Well ... *(he sighs)* ... we've got`, has to cut at the next
     # word that IS compared.  Stepping over them is not snapping: they are not
     # speech, so nothing spoken ends up on the wrong side of the cut.
     tokenized: dict = defaultdict(list)
@@ -177,7 +177,7 @@ def _split_candidates(segs: list, md_path: str) -> tuple[list[dict], list[tuple]
     for ln, (n_words, dirs) in line_dirs.items():
         for pos, text, punctuated in dirs:
             if not 0 < pos < n_words:
-                continue                           # opens or closes the line — no cut
+                continue                           # opens or closes the line: no cut
             at = _cut_at(ln, pos)
             if at is None:
                 continue                           # only unspoken words follow it
@@ -223,13 +223,13 @@ def _split_candidates(segs: list, md_path: str) -> tuple[list[dict], list[tuple]
 
 def _verify_matchup(segs: list, md_path: str) -> dict:
     """Full word-level verification of the JSON↔MD matchup.  Diffs the entire
-    spoken word stream against the entire MD dialogue word stream (normalized:
+    spoken word stream against the entire MD dialogue word stream (normalised:
     punctuation ignored, hyphens→spaces).  Independent of the segment alignment,
-    so it surfaces every word the alignment missed — EXTRA / MISSING / CHANGED —
+    so it surfaces every word the alignment missed (EXTRA / MISSING / CHANGED),
     plus SPLIT segments that merge two speakers into one.
 
-    A spelling the two conventions simply write differently — "take-off" against
-    "takeoff", "twenty-five" against "25" — is matched rather than reported twice as
+    A spelling the two conventions simply write differently ("take-off" against
+    "takeoff", "twenty-five" against "25") is matched rather than reported twice as
     a missing word and an extra one; an elision ("'cause" / "because") is matched for
     timing but still shown, because that one IS a difference in the script.
 
@@ -266,7 +266,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
             # it is matched and pinned; nothing to report.
             n_equal += (k2 - k1); continue
         if tag == 'elision':
-            # Matched for timing — the word IS said — but the script and the
+            # Matched for timing (the word IS said), but the script and the
             # transcript disagree about how to write it, and that is worth seeing.
             n_elision += (k2 - k1)
             detail = f"{C.DIM}{heard}{C.RESET}  {C.ACCENT}→{C.RESET}  {C.PRIMARY}{script}{C.RESET}"
@@ -277,7 +277,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
         elif tag == 'insert':
             n_missing += (k2 - k1)
             loc = f"{md_toks[k1][2] or '?'} · L{md_toks[k1][1]}"
-            lines.append(_row(t, '–', 'MISSING', C.YELLOW, loc, f"{C.PRIMARY}{script}{C.RESET}"))
+            lines.append(_row(t, '-', 'MISSING', C.YELLOW, loc, f"{C.PRIMARY}{script}{C.RESET}"))
         else:
             n_changed += max(i2 - i1, k2 - k1)
             detail = f"{C.DIM}{heard}{C.RESET}  {C.ACCENT}→{C.RESET}  {C.PRIMARY}{script}{C.RESET}"
@@ -309,7 +309,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
 
     for ln, pos, text in unplaced:
         # The script puts a direction between two words the transcript does not
-        # have a boundary for — it dropped or reworded the word it sits against.
+        # have a boundary for: it dropped or reworded the word it sits against.
         split_lines.append(_row(None, '✦', 'UNPLACED', C.YELLOW, f"L{ln} w{pos}",
                                 f"{C.DIM}({text}){C.RESET}"))
 
@@ -324,7 +324,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
         f"{C.BOLD}VERIFY · JSON ↔ MD word matchup{C.RESET}"
         f"   {C.DIM}(punctuation ignored · hyphens = spaces){C.RESET}",
         f"{C.BOLD}{rate}%{C.RESET} matched  {C.DIM}({n_equal}/{total_md} words){C.RESET}    "
-        f"{C.YELLOW}– {n_missing} missing{C.RESET}   {C.CYAN}+ {n_extra} extra{C.RESET}   "
+        f"{C.YELLOW}- {n_missing} missing{C.RESET}   {C.CYAN}+ {n_extra} extra{C.RESET}   "
         f"{C.MAGENTA}~ {n_changed} changed{C.RESET}   {C.GREEN}⇄ {len(split)} to split{C.RESET}"
         + (f"   {C.ACCENT}≈ {n_elision} elided{C.RESET}" if n_elision else "")
         + (f"   {C.DIM}· {len(suggested)} mid-line{C.RESET}" if suggested else "")
@@ -336,7 +336,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
         if lines:
             body.append("")
         body.append(f"{C.BOLD}Segments the script splits into more than one beat"
-                    f"{C.RESET}  {C.DIM}— a new speaker, or a stage direction, part "
+                    f"{C.RESET}  {C.DIM}: a new speaker, or a stage direction, part "
                     f"way through{C.RESET}")
         body += split_lines
     if not body:

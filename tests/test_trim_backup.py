@@ -1,4 +1,4 @@
-"""Tests for the trim engine's backup/undo store (section 6 of the trim spec).
+"""Tests for the trim engine's backup/undo store .
 Synthetic fixtures generated at test time; skipped when ffmpeg is absent.
 `trim.load_config` is monkeypatched to an isolated backup dir so tests never
 touch the real config/backup store.
@@ -127,8 +127,8 @@ class BackupTest(unittest.TestCase):
 
 @unittest.skipUnless(trim.HAS_FFMPEG, "ffmpeg not installed")
 class LearnedStingSourceTest(unittest.TestCase):
-    """`learned_sting_source` (section 4.4's "learn from correctly trimmed
-    tracks"): the manifest entry to learn a shared sting from — a real prior
+    """`learned_sting_source` ("learn from correctly trimmed
+    tracks"): the manifest entry to learn a shared sting from, a real prior
     trim in the same folder, not the current file's own history."""
 
     def setUp(self):

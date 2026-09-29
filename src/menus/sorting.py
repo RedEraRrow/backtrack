@@ -14,14 +14,14 @@ from src.menus.common import _SETTINGS_COLUMNS, _commit, _idx_of
 # Artist and genre lists order their names; everything that holds albums and
 # tracks follows the shared sort chain (music_library.sort_tracks), or a
 # library's own. Both are chosen with `s` and saved.
-_GROUP_SORTS = [("name", "Name (A–Z)"), ("name_desc", "Name (Z–A)"), ("tracks", "Most tracks")]
+_GROUP_SORTS = [("name", "Name (A-Z)"), ("name_desc", "Name (Z-A)"), ("tracks", "Most tracks")]
 
 
 _BY_TRACK = [['disc', 'asc'], ['track', 'asc'], ['title', 'asc'], ['date', 'asc']]
 
 
 _CHAIN_PRESETS = [
-    ("Album A–Z, then oldest", DEFAULT_SORT_LEVELS),
+    ("Album A-Z, then oldest", DEFAULT_SORT_LEVELS),
     ("Oldest first", [['album_year', 'asc'], ['album', 'asc']] + _BY_TRACK),
     ("Newest first", [['album_year', 'desc'], ['album', 'asc']] + _BY_TRACK),
     ("Album artist, then oldest", [['album_artist', 'asc'], ['album_year', 'asc'], ['album', 'asc']] + _BY_TRACK),
@@ -57,7 +57,7 @@ def _direction_label(field: str, direction: str) -> str:
     kind = SORT_FIELDS[field][2]
     asc = direction == 'asc'
     if kind == 'text':
-        return "A–Z" if asc else "Z–A"
+        return "A-Z" if asc else "Z-A"
     if field in ('album_year', 'date'):
         return "oldest first" if asc else "newest first"
     return "lowest first" if asc else "highest first"

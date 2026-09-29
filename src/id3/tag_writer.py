@@ -1,13 +1,7 @@
-"""Format-agnostic tag writer for the bulk "Derive from filename" operation.
-
-Writes a small, fixed set of fields — title, track(+total), disc(+total), album,
-artist — to either MP3 (ID3v2) or the MP4 family (m4a/mp4/m4p/aac), so bulk
-derivation works across formats. Two robustness guarantees the rest of the app
-did not previously have:
-
-  * **Blank MP3s** (no ID3 header) get a fresh ID3 created rather than raising.
-  * **Non-MP3s** are written via their native MP4 atoms; anything genuinely
-    unsupported returns ``unsupported=True`` instead of throwing.
+"""Format-agnostic tag writer: the fields the bulk and CLI operations set (title,
+artist, album_artist, album, track, disc, disc_subtitle, year), plus cover art,
+for MP3 (ID3v2) and MP4 (m4a/mp4/m4p). A blank MP3 gets a fresh ID3; an
+unsupported format returns ``unsupported=True`` instead of raising.
 
 Field semantics: ``track`` and ``disc`` are treated as single units that carry
 their totals. "Fill blanks only" means a field is written only when its tag is
@@ -26,31 +20,29 @@ from src.utils.log import quietly
 from src.music_library import first_text
 
 # The fields this writer understands (track/disc carry their totals). The
-# compilation flag is not a user field — it rides along when a compilation is
+# compilation flag is not a user field: it rides along when a compilation is
 # detected and the album artist is written.
 FIELDS = ('title', 'artist', 'album_artist', 'album', 'track', 'disc',
           'disc_subtitle', 'year')
 
-# Sort-order tags ride with their base field when the 'sort' pseudo-field is
-# applied. The sort *string* is supplied by the caller as values['<base>_sort']
-# (computed by the smart sort engine); the writer just stores it.
-# base field → (ID3 frame class, MP4 sort atom), for the sort tags generated
-# alongside a written field. Derived from the canonical table in tag_registry so
-# this can't drift from the bulk manager's and the browser's view of it; `auto`
-# is what marks a sort tag as one an ordinary write should produce.
+# base field → (ID3 frame class, MP4 sort atom). Sort-order tags ride with their
+# base field when the 'sort' pseudo-field is applied; the caller supplies the
+# sort string as values['<base>_sort'] and the writer just stores it. Derived
+# from the canonical table in tag_registry; `auto` marks a sort tag as one an
+# ordinary write should produce.
 _SORT_MAP = {
     t.field: (getattr(_mid3, t.frame), t.atom)
     for t in _reg.SORT_TAGS if t.auto
 }
 
 def _is_placeholder(value) -> bool:
-    """A name the app derives rather than stores — see id3_tag_handler."""
+    """A name the app derives rather than stores (see id3_tag_handler)."""
     from src.id3.id3_tag_handler import is_placeholder_name
     return is_placeholder_name(value)
 
 
 _MP3_EXTS = ('.mp3',)
-# Raw .aac (ADTS) is not an MP4 container and has no atoms — MP4() raises on it —
+# Raw .aac (ADTS) is not an MP4 container and has no atoms (MP4() raises on it),
 # so it isn't tag-writable (music_library likewise only reads .m4a/.mp4/.m4p as MP4).
 # It stays playable/scannable, just reported unsupported for tag writes.
 _MP4_EXTS = ('.m4a', '.mp4', '.m4p')
@@ -90,7 +82,7 @@ def writable_fields(path: str) -> set:
     """Fields that can actually be written for this file's format.
 
     MP4 has no standard disc-subtitle atom, so ``disc_subtitle`` is dropped for
-    the MP4 family — the plan/preview must not claim a write it can't perform.
+    the MP4 family: the plan/preview must not claim a write it can't perform.
     """
     kind = format_kind(path)
     if kind == 'unsupported':
@@ -156,7 +148,7 @@ def _mp4_present(audio: MP4) -> dict[str, bool]:
     return {
         'title': _txt('\xa9nam'), 'artist': _txt('\xa9ART'), 'album_artist': _txt('aART'),
         'album': _txt('\xa9alb'), 'track': _pair('trkn'), 'disc': _pair('disk'),
-        'disc_subtitle': False,           # no standard MP4 atom — never written
+        'disc_subtitle': False,           # no standard MP4 atom, never written
         'year': _txt('\xa9day'),
         'compilation': bool(tags.get('cpil')),
     }
@@ -189,7 +181,7 @@ def read_number_pairs(path: str) -> dict:
 
     Returns ``{'track', 'total_tracks', 'disc', 'total_discs'}`` as strings, with
     ``''`` for anything absent.  Read from disk rather than the library cache,
-    because the cache is exactly what is stale in the case that matters most —
+    because the cache is exactly what is stale in the case that matters most:
     a disc you have just renumbered by hand, before the next re-scan.  The disc
     value keeps any fraction (``'1.5'``), which is how a disc gets parked between
     two others ahead of a reflow.
@@ -226,8 +218,9 @@ def read_number_pairs(path: str) -> dict:
 def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False) -> WriteResult:
     """Write the chosen fields to ``path``.
 
-    ``values`` is a parser dict (title/track/total_tracks/disc/total_discs/album/
-    artist). ``apply_fields`` is the subset of :data:`FIELDS` the user opted into.
+    ``values`` is a parser dict keyed by :data:`FIELDS` (plus ``total_tracks``,
+    ``total_discs``, ``compilation`` and ``'<base>_sort'``).
+    ``apply_fields`` is the subset of :data:`FIELDS` the user opted into.
     Only fields with a derived value are written; existing values are preserved
     unless ``overwrite`` is True.
     """
@@ -298,7 +291,7 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
     return res
 
 
-# Where each clearable field lives, per format — for `clear_fields`.
+# Where each clearable field lives, per format, for `clear_fields`.
 _FIELD_HOMES: dict[str, tuple[str, str]] = {
     'track':       ('TRCK', 'trkn'),
     'disc':        ('TPOS', 'disk'),
@@ -313,7 +306,7 @@ _FIELD_HOMES: dict[str, tuple[str, str]] = {
 def clear_fields(path: str, fields) -> WriteResult:
     """Remove the chosen fields from ``path`` entirely (MP3 and MP4).
 
-    `write_fields` can only *set* a value — it skips anything empty — so removing
+    `write_fields` can only *set* a value (it skips anything empty), so removing
     a tag needs its own path. Fields already absent aren't reported as written, so
     a no-op file isn't rewritten.
     """
@@ -356,7 +349,7 @@ def clear_fields(path: str, fields) -> WriteResult:
 
 
 def stale_length_tags(path: str) -> tuple[bool, bool]:
-    """(has_tlen, has_stale_tdly) for path — MP3 only, MP4 has neither frame.
+    """(has_tlen, has_stale_tdly) for path. MP3 only: MP4 has neither frame.
 
     TLEN (track length, ms) is suspect the instant a file is cut by any means,
     including outside backtrack. TDLY (playlist delay, ms) is equally suspect
@@ -427,7 +420,7 @@ def _set_field(audio, kind: str, f: str, values: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Album art (APIC / covr) — used by the per-file album-art bulk op
+# Album art (APIC / covr), used by the per-file album-art bulk op
 # ---------------------------------------------------------------------------
 
 def has_cover(path: str) -> bool:
@@ -497,7 +490,7 @@ def write_cover(path: str, data: bytes, mime: str, *, pic_type: int = 3,
 
     Honours fill-blanks: a file that already has art is left untouched unless
     ``overwrite`` is set (reported via ``skipped_existing``). MP4 ``covr`` only
-    holds JPEG/PNG — anything else returns ``skipped_format=True`` rather than
+    holds JPEG/PNG: anything else returns ``skipped_format=True`` rather than
     silently writing nothing. On MP3, existing APIC frames are replaced so the
     new art is the only cover.
     """

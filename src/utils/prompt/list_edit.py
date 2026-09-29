@@ -1,4 +1,4 @@
-"""The multi-column row editor (people, timestamps, imports) behind list_edit."""
+"""list_edit: the multi-column row editor (people, timestamps, pasted or imported rows)."""
 from __future__ import annotations
 import re
 import sys
@@ -22,7 +22,7 @@ from src.utils.prompt_core import edit_line
 
 
 # ---------------------------------------------------------------------------
-# Timestamp cells — a split date/time field inside a list_edit table.
+# Timestamp cells: a split date/time field inside a list_edit table.
 #
 # The cell is a fixed mask.  Every slot that is still a placeholder letter shows
 # dim, so the shape of what you are filling in is always on screen and only the
@@ -74,7 +74,7 @@ def _ts_value(buf: list) -> str:
     """Assemble the cell's value at whatever precision has actually been filled.
 
     Leaving the time blank yields a plain date, which is a valid timestamp in its
-    own right — the field never forces a time it was not given.
+    own right: the field never forces a time it was not given.
     """
     d = _ts_digits(buf)
     if ' ' in d[0:4]:
@@ -96,7 +96,7 @@ def _ts_step(pos: int, delta: int) -> int:
     slots = _TS_SLOTS
     if pos in slots:
         k = slots.index(pos)
-    else:                                   # sitting on a separator — snap inward
+    else:                                   # sitting on a separator: snap inward
         k = 0 if delta > 0 else len(slots) - 1
     k = max(0, min(len(slots) - 1, k + delta))
     return slots[k]
@@ -108,7 +108,7 @@ def _render_timestamp_cell(buf: list, pos: int, width: int, active: bool,
 
     `base` is the styling the surrounding row is already drawn in (the selected
     row's colour + bold).  Every span closes by resetting AND re-asserting it,
-    because a bare reset would end the row's own styling too — the dim separator
+    because a bare reset would end the row's own styling too: the dim separator
     after the year would leave the rest of the stamp, and every column after it,
     unstyled.  Same rule the lyric renderer follows for markdown emphasis.
     """
@@ -160,7 +160,7 @@ def _layout_columns(num_cols: int, avail_w: int, col_ratios=None, col_mins=None)
     Ratios (or an even split) set the starting widths; any column below its
     minimum is then raised to it and the difference taken back from whichever
     columns have the most room to spare.  A minimum is what keeps a fixed-shape
-    cell — a full timestamp, say — readable at any terminal width while the
+    cell (a full timestamp, say) readable at any terminal width while the
     short columns beside it shrink instead.
     """
     if col_ratios and len(col_ratios) == num_cols:
@@ -177,7 +177,7 @@ def _layout_columns(num_cols: int, avail_w: int, col_ratios=None, col_mins=None)
     mins = [max(0, int(m or 0)) for m in mins]
 
     if sum(mins) >= avail_w:
-        # Too narrow to satisfy every minimum — share it out in their proportion
+        # Too narrow to satisfy every minimum: share it out in their proportion
         # rather than starving the last column to nothing.
         total = sum(mins) or 1
         shared = [max(1, int(avail_w * m / total)) for m in mins]
@@ -219,7 +219,7 @@ def _build_list_edit_lines(
     col_ratios: tuple | None = None, col_mins: tuple | None = None,
     col_types: dict | None = None,
 ) -> tuple[list[str], int, int, int]:
-    """Lay out the full list_edit screen — header, column-aligned rows (or barrel-mode cell), hints —
+    """Lay out the full list_edit screen (header, column-aligned rows or barrel-mode cell, hints)
     and report the resulting viewport/visible-row/header-row counts."""
     num_cols = len(headers)
     cols = _cols()
@@ -251,7 +251,7 @@ def _build_list_edit_lines(
 
         u_parts = ["─" * col_widths[i] for i in range(num_cols - 1)]
         # The last column absorbs whatever width is left over, so rule it to what
-        # it actually holds — otherwise the underline trails far past the content
+        # it actually holds; otherwise the underline trails far past the content
         # as a long bar of nothing.
         _last_content = max([len(headers[-1])] + [
             len(str((list(it) if isinstance(it, (list, tuple)) else [it])[num_cols - 1]))
@@ -462,12 +462,16 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
               col_ratios: tuple | None = None, col_hints: object = None,
               col_mins: tuple | None = None, col_types: dict | None = None) -> list | None:
     """Arrow keys navigate, 'a' adds, 'e' edits in-place, 'd' deletes, Enter saves.
+    'i' imports rows typed in the system editor, 'f' imports them from a file.
 
     Supports in-place cell editing with Tab navigation between columns.
     fixed_rows: disables add/delete (rows can only be edited, not added or removed).
     locked_cols: set of column indices that cannot be edited.
     col_ratios: relative starting widths for the columns.
-    col_mins:   per-column minimum widths, honoured before the ratios — this is
+    col_hints:  callable(col, row) -> candidate values for a cell. With two or
+                more, and the cell's value among them, the cell opens as a
+                barrel that cycles through them instead of free text.
+    col_mins:   per-column minimum widths, honoured before the ratios: this is
                 what keeps a fixed-shape cell readable when the table is narrow.
     col_types:  {column index: type} for cells that edit as something other than
                 free text. ``'timestamp'`` gives a split date/time field masked
@@ -726,7 +730,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                     edit_pos = nxt if nxt != edit_pos else edit_pos
                     _render()
 
-                # Anything else (letters, punctuation) is simply not accepted —
+                # Anything else (letters, punctuation) is simply not accepted:
                 # the mask supplies every separator already.
 
             elif edit_mode:
@@ -852,7 +856,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                         while edit_col < num_cols and edit_col in locked_cols:
                             edit_col += 1
                         if edit_col >= num_cols:
-                            edit_col = 0  # all cols locked — allow no editing
+                            edit_col = 0  # all cols locked: allow no editing
                     edit_backup = items[cursor]
 
                     if num_cols > 1:
@@ -915,7 +919,7 @@ def list_edit(message: str, initial_items: list | None = None, headers: tuple[st
                         _set_raw(fd)
                     else:
                         # Path prompt (with completion), then auto-detect the format.
-                        # Clear to a fresh screen first — path() renders inline from
+                        # Clear to a fresh screen first: path() renders inline from
                         # the cursor, so without this it draws over the list and spills.
                         _restore_term_attrs(fd, old)
                         ui_utils.clear_screen()

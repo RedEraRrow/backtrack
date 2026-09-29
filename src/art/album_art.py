@@ -14,19 +14,19 @@ def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
     if img is None: return "Error decoding image."
 
     # Normalise to 3-channel BGR, compositing any alpha channel over black.
-    if img.ndim == 2:                                    # grayscale
+    if img.ndim == 2:                                    # greyscale
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     elif img.shape[2] == 4:                              # BGRA
         alpha = img[:, :, 3:4].astype(np.float32) / 255.0
         img = (img[:, :, :3].astype(np.float32) * alpha).astype(np.uint8)
-    elif img.shape[2] == 2:                              # gray + alpha
+    elif img.shape[2] == 2:                              # grey + alpha
         alpha = img[:, :, 1:2].astype(np.float32) / 255.0
         gray = (img[:, :, 0:1].astype(np.float32) * alpha).astype(np.uint8)
         img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
     # 2. Resize maintaining aspect ratio
     # Terminal cells are ~2:1 (tall:wide); half-blocks give 2 pixel rows per char row,
-    # so those factors cancel — resize to full pixel height, step-by-2 does the rest.
+    # so those factors cancel: resize to full pixel height, step-by-2 does the rest.
     width = max(1, width)
     aspect_ratio = img.shape[0] / img.shape[1]
     # Round to an even height >= 2 so the final char row always has both pixels
@@ -35,13 +35,10 @@ def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
     height = max(2, height - (height % 2))
     img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
 
-    # 3. Convert to ANSI half-blocks
-    # Standard approach: Top half = foreground, Bottom half = background
-    # using the UPPER HALF BLOCK character (U+2580)
+    # 3. Convert to ANSI half-blocks (U+2580): top pixel as foreground, bottom as background
     output = []
     for y in range(0, img.shape[0], 2):
         for x in range(img.shape[1]):
-            # Get color of top and bottom pixel
             top = img[y, x]
             bottom = img[y+1, x] if y + 1 < img.shape[0] else top
             
@@ -53,15 +50,11 @@ def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
     return "".join(output)
 
 def render_album_art(image_source: str | bytes, width: int = 100, is_bytes: bool = False) -> str:
-    """
-    Handles both file paths (str) and raw image data (bytes).
-    """
+    """Render art from a path or raw bytes to terminal text."""
     if is_bytes:
-        # If it's already bytes, we can pass it directly
         assert isinstance(image_source, bytes)
         return render_native_half_block(image_source, width)
     else:
-        # If it's a string, we MUST read the file to get bytes first
         if not isinstance(image_source, str):
             return "Error: Expected a file path string."
             

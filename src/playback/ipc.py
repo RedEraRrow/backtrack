@@ -1,18 +1,18 @@
 """Local IPC for multi-window shared playback sessions
 
-One process **hosts** a session (owns the VLC player, Phase 1's ``PlaybackSession``)
+One process **hosts** a session (owns the VLC player, a ``PlaybackSession``)
 and runs a :class:`SessionServer` on a per-session Unix socket under
 ``$CONFIG_DIR/sessions/``. Other windows **discover** live sessions
 (:func:`list_sessions`), pick one, and connect a :class:`SessionClient` to mirror
-the host's now-playing snapshots and (Phase 2b) send transport/queue commands.
+the host's now-playing snapshots and send transport/queue commands.
 
 Each host also writes a small JSON registry file so the launch chooser can label
 sessions (and show what's playing) without opening a connection. Everything is a
-local Unix socket in the user's own config dir — no network exposure.
+local Unix socket in the user's own config dir, so nothing is exposed to the network.
 
 This module is pure transport + discovery; it holds no playback logic, so it can
-be unit-tested headlessly with a fake command handler / snapshot source. macOS &
-Linux (AF_UNIX); a Windows loopback-TCP fallback is a later concern.
+be unit-tested headlessly with a fake command handler / snapshot source. Unix
+sockets only (no Windows support).
 """
 from __future__ import annotations
 
@@ -143,7 +143,7 @@ def _cleanup(session_id: str) -> None:
 
     The host-election lock (`.host.lock`) is normally deleted by the window that
     wins a hand-off, but a crash mid-election would otherwise leave it behind and
-    permanently deadlock every future election for this session id — so a dead
+    permanently deadlock every future election for this session id, so a dead
     session's lock is swept here too.
     """
     for p in (_registry_path(session_id), _socket_path(session_id),
@@ -307,7 +307,7 @@ class SessionServer:
 class SessionClient:
     """Connects to a hosted session: mirrors its now-playing snapshots and sends
     commands. ``on_snapshot(dict|None)`` fires on each update; ``on_disconnect()``
-    fires when the host goes away (used later for hand-off)."""
+    fires when the host goes away (the player wires it to ``attempt_handoff``)."""
 
     def __init__(self, socket_path: str, *, on_snapshot=None, on_disconnect=None) -> None:
         self.socket_path = socket_path

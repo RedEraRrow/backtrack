@@ -19,7 +19,7 @@ def main_menu(library_ref: list) -> None:
             choices=_opts,
             header=_menu_header("Music Player"),
             index=_cursor,
-            allow_back=False,   # top level: no ←/b/Esc exit — only Enter or q/Exit
+            allow_back=False,   # top level: no ←/b/Esc exit, only Enter or q/Exit
         )
 
         if not choice or choice == "Exit":

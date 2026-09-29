@@ -3,7 +3,7 @@
 Audio ownership, the queue, and the track lifecycle live in ``session.py``; this
 module is the foreground renderer/controller. Opening a track starts the shared
 session and attaches this view; **leaving the view (b/Esc) keeps the session
-playing in the background** — only Stop (s) ends it. The session's background
+playing in the background**; only Stop (s) ends it. The session's background
 tick advances the queue and logs history whether or not this view is attached.
 """
 from __future__ import annotations
@@ -76,8 +76,8 @@ def music_player(file_path: str, is_grouping: bool = False,
                  queue_titles: list[str] | None = None, queue_index: int = 0,
                  queue_paths: list[str] | None = None, mode: str | None = None) -> dict:
     """Start the shared session on ``file_path`` (with its queue) and open the
-    player view. Kept name/signature for existing callers; audio now persists in
-    the background after the view is left (only Stop ends it). Returns a status
+    player view. Audio keeps playing after the view is left; only Stop ends it.
+    Returns a status
     dict: ``DETACH`` (minimised, still playing), ``STOP``, ``OK`` (queue
     finished), or ``ERROR``; q raises QuitToTerminal."""
     paths = queue_paths if queue_paths else [file_path]
@@ -95,7 +95,7 @@ def music_player(file_path: str, is_grouping: bool = False,
         queue_paths = paths
     # In a joined (client) window the audio lives in the host process: send the
     # play there and stay in this window's menus (the host's now-playing box
-    # updates via the mirror). The full player view from a client is Phase 2c.
+    # updates via the mirror). Ctrl-O opens the client player view.
     if is_client():
         from src.playback.session import active_session
         active_session().start(file_path, queue=paths, titles=queue_titles,
@@ -113,7 +113,7 @@ def music_player(file_path: str, is_grouping: bool = False,
 
 def open_player_view() -> dict:
     """Render + control the current session in the foreground until the user
-    leaves. Does NOT stop the session on ``DETACH`` — audio keeps playing.
+    leaves. Does NOT stop the session on ``DETACH``: audio keeps playing.
     Claims the cross-window view lock; if another window holds it, just detaches."""
     from src.playback.session import my_token
     if not SESSION.is_active():
@@ -148,7 +148,7 @@ def _seek_step(key: str, duration: float, elapsed: float) -> tuple[float, str] |
 def _step_volume(remote, target, delta: int):
     """A +/- press in a joined window. The host's volume only reaches this
     window with its next snapshot (a quarter-second later), so quick presses
-    step from the level just asked for, not the stale one — five fast presses
+    step from the level just asked for, not the stale one, so five fast presses
     are +25, not +5. Returns the new (level, time)."""
     now = time.time()
     base = target[0] if target and now - target[1] < 1.0 else remote.get_volume()
@@ -158,10 +158,10 @@ def _step_volume(remote, target, delta: int):
 
 
 def open_client_player_view() -> dict:
-    """Full player view for a *joined* window (#14 Phase 2c): renders the host's
+    """Full player view for a *joined* window (#14): renders the host's
     current track from its snapshots + the track file on the shared disk, with
     transport routed to the host. Elapsed is interpolated between snapshots for a
-    smooth progress bar. (Lyrics on a client are a later addition.)"""
+    smooth progress bar. No lyrics pane on a client (see playback_ui `lyrics_pane`)."""
     from src.playback import session as sess
     from mutagen.id3 import ID3
 
@@ -202,7 +202,7 @@ def open_client_player_view() -> dict:
                 np = remote.now_playing()
                 if np is None or not np.get('file_path'):
                     return {"status": "OK"}          # host stopped / no track
-                # Another window won a simultaneous grab or took the view — never
+                # Another window won a simultaneous grab or took the view: never
                 # show a second player; step back to the mirror (#14).
                 if np.get('view_holder') not in (None, token):
                     return {"status": "DETACH"}
@@ -227,7 +227,7 @@ def open_client_player_view() -> dict:
                             audio = ID3(fp)
                         except Exception:
                             # No ID3 tag (an M4A, an untagged MP3): an empty one,
-                            # as the host player uses — the layout reads from it.
+                            # as the host player uses; the layout reads from it.
                             audio = ID3()
                     duration = float(np.get('duration') or 0.0)
                     prog_row, ctrl_row, _lr, width, _br = draw_full_ui(
@@ -281,7 +281,7 @@ def open_client_player_view() -> dict:
                         vol_target = _step_volume(remote, vol_target, -5)
                     elif key in ('b', 'B') or key == 'ESC':
                         # Pinned open while another window browses this session
-                        # (#14) — the two windows stay specialised until one closes.
+                        # (#14): the two windows stay specialised until one closes.
                         if has_other_windows():
                             toast = 'Close the other window to leave the player'
                             toast_expiry = time.time() + tune.TOAST_MEDIUM_S
@@ -373,7 +373,7 @@ def _player_view_loop() -> dict:
         # are or keeps a second set of rules for them.
         _tl = None
         # Whatever this track's words come from, say so in the same breath as
-        # choosing it — the 'm' panel then names the real source rather than a
+        # choosing it, so the 'm' panel then names the real source rather than a
         # guess reconstructed later from the file names.
         _srcs, _est = [], False
         if dialogue_state.is_active():
@@ -394,7 +394,7 @@ def _player_view_loop() -> dict:
         # Say it out loud. Paced-out timing looks right for the first minute and is
         # a line adrift by the last, which is not something a still screen shows.
         if dialogue_state.is_active() and dialogue_state.timing_source == 'estimated':
-            toast_text = "⚠ No transcript — lyric timing is estimated and will drift"
+            toast_text = "⚠ No transcript: lyric timing is estimated and will drift"
             toast_expiry = time.time() + tune.TOAST_LONG_S
 
         if audio and audio.getall('EQU2'):
@@ -414,7 +414,7 @@ def _player_view_loop() -> dict:
         if pane and _ui_state['show_lyrics'] and not _ui_state.get('show_queue'):
             # A full redraw has just wiped the screen, so what the pane last
             # painted is gone. Its record is of rows it wrote, not rows that
-            # survived, so it is told — and repaints in step with the rest of the
+            # survived, so it is told, and repaints in step with the rest of the
             # UI rather than a tick later.
             _mp = getattr(SESSION, 'mp', None)
             _ms = _mp.get_time() if _mp is not None else 0
@@ -454,7 +454,7 @@ def _player_view_loop() -> dict:
                 return {"status": "OK"}
 
             # Redraw at every size the window passes through, as soon as it's
-            # seen — the gap in which the terminal shows the old frame reflowed
+            # seen: the gap in which the terminal shows the old frame reflowed
             # is one loop tick, not a debounce window. Mid-resize the art image
             # is only the quick preview; once the size has held still for
             # ART_FULL_IMAGE_SETTLE_S, the full-quality image goes on top.
@@ -507,7 +507,7 @@ def _player_view_loop() -> dict:
                 continue
 
             # Live-refresh the queue pane when the queue changes mid-track (e.g.
-            # another window queued a song) — not only on track change.
+            # another window queued a song), not only on track change.
             t = SESSION.track()
             q_sig = (tuple(t.titles), t.index)
             if q_sig != last_q_sig:
@@ -575,13 +575,13 @@ def _player_view_loop() -> dict:
                     update_ctrl_ui()
                 elif key == ']':                  # NEXT track (skip), stay in the view
                     if SESSION.next(manual=True) is None:
-                        return {"status": "OK"}   # was the last track — queue finished
+                        return {"status": "OK"}   # was the last track: queue finished
                     _prepare(); _redraw_full(); continue
                 elif key == '[':                  # PREVIOUS track (or restart current)
                     if SESSION.prev() is not None:
                         _prepare(); _redraw_full()
                     continue
-                elif key in ('b', 'B') or key == 'ESC':   # MINIMISE — keep playing (#14)
+                elif key in ('b', 'B') or key == 'ESC':   # minimise, keep playing (#14)
                     # Pinned open while another window is browsing this session:
                     # the two windows stay specialised until one closes (#14).
                     if has_other_windows():
@@ -622,7 +622,7 @@ def _player_view_loop() -> dict:
             if pane and _ui_state.get('show_lyrics', True) and not _ui_state.get('show_queue'):
                 # Every tick takes the same path: the frame is a function of the
                 # clock and the geometry and nothing else. A seek is just a
-                # different number arriving, a resize just a different box —
+                # different number arriving, a resize just a different box;
                 # neither is an event anyone has to notice, and neither can leave
                 # the words disagreeing with the audio. Only rows that differ get
                 # written, so an unchanged frame costs nothing.

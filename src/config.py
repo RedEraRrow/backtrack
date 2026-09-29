@@ -20,7 +20,7 @@ DEFAULT_CONFIG = {
     "show_lyrics_editor": True,
     "tag_name_preferences": {},
     "sort_list_delimiter": "/",
-    # The one sort chain albums and tracks follow everywhere — [field, "asc"|"desc"]
+    # The one sort chain albums and tracks follow everywhere: [field, "asc"|"desc"]
     # pairs, first wins (fields: music_library.SORT_FIELDS). Empty = the default.
     "sort_levels": [],
     "sort_use_tags": True,
@@ -31,11 +31,11 @@ DEFAULT_CONFIG = {
     "library_names": {},
     # Browse menu categories in order (menus.common.BROWSE_CATEGORIES keys); empty = default.
     "browse_menu": [],
-    # Each non-album browse list's order (category → a _GROUP_SORTS mode), as last chosen with s.
+    # Each non-album browse list's order (category → a menus.sorting._GROUP_SORTS mode), as last chosen with s.
     "group_sorts": {},
     "plain_text_editing": False,
     "autoplay_on_select": False,
-    # Album art in the player as a real image rather than text blocks — iTerm2
+    # Album art in the player as a real image rather than text blocks. iTerm2
     # only (elsewhere the text art is used regardless). Experimental.
     "art_inline_images": False,
     # The accent colour: a ui_utils.ACCENT_PRESETS key, or "#RRGGBB".
@@ -43,7 +43,7 @@ DEFAULT_CONFIG = {
     # The player's track details line (year, genre, disc/track…), which `m`
     # shows or hides; remembered between plays.
     "player_show_metadata": True,
-    # Playback volume, 0–100. Owned by the player session: restored at launch and
+    # Playback volume, 0-100. Owned by the player session: restored at launch and
     # written back whenever it changes.
     "volume": 100,
     # Override for locating the ffmpeg binary (trimming), when it isn't on PATH.
@@ -52,25 +52,25 @@ DEFAULT_CONFIG = {
     # CONFIG_DIR (alongside config.json/history.log), not the cache dir, which
     # is disposable.
     "trim_backup_dir": "",
-    # Sting matching (bulk seeding, section 4.4): a match's score (peak vs.
+    # Sting matching (bulk seeding): a match's score (peak vs.
     # runner-up) must clear this to seed automatically; below it, the track is
     # left unseeded with the score shown rather than seeded wrongly. The window
     # scanned per candidate track, in seconds.
     "trim_sting_min_score": 0.3,
     "trim_sting_window_s": 90.0,
-    # Silence detection (section 4.3), the baseline cut-point suggestion when
+    # Silence detection, the baseline cut-point suggestion when
     # there's no sting to match against. Higher-bitrate sources tolerate a
     # tighter (higher) noise floor than low-bitrate speech.
     "trim_silence_noise_db": -32.0,
     "trim_silence_min_s": 0.4,
     "trim_scan_window_s": 30.0,
-    # ReplayGain target (section 5.4). Speech-led radio sits lower than a
+    # ReplayGain target. Speech-led radio sits lower than a
     # music target, hence -18 rather than the usual -14/-23.
     "trim_target_lufs": -18.0,
     # --- command-line defaults -------------------------------------------
     # Each of these backs a CLI flag: the flag wins when given, this wins over
     # the value compiled in, so a common invocation can be short. A falsy value
-    # — "" or 0 — means "no preference, use the built-in", so an untouched
+    # ("" or 0) means "no preference, use the built-in", so an untouched
     # config behaves exactly as if these keys were not here.
     "cli_output_dir": "",          # --output, for feed sync and lyric export
     "cli_rename_pattern": "",      # bulk rename --pattern
@@ -118,7 +118,7 @@ def load_config() -> dict:
 
 
 def setting(cfg: dict, key: str):
-    """One setting from `cfg`, or its DEFAULT_CONFIG default when `cfg` lacks it —
+    """One setting from `cfg`, or its DEFAULT_CONFIG default when `cfg` lacks it:
     so each default is written once, here, rather than at every read."""
     if key in cfg:
         return cfg[key]
@@ -174,7 +174,7 @@ def set_music_dirs(config: dict, dirs: list[str]) -> list[str]:
 def update_config(changes: dict) -> dict:
     """Save just `changes` into the config as it is on disk now, and return that
     fresh config. The way every screen saves: writing back a whole dict loaded
-    earlier puts back anything changed since — the volume set in the player
+    earlier puts back anything changed since: the volume set in the player
     while Settings was open, another window's edit, a CLI run."""
     cfg = load_config()
     cfg.update(changes)
@@ -183,7 +183,7 @@ def update_config(changes: dict) -> dict:
 
 
 def changed_keys(before: dict, after: dict) -> dict:
-    """The entries of `after` that differ from `before` — what an edit made to a
+    """The entries of `after` that differ from `before`: what an edit made to a
     working copy of the config, ready for update_config."""
     return {k: v for k, v in after.items() if before.get(k, object()) != v}
 

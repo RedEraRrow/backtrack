@@ -15,7 +15,7 @@ _queue_ctx: dict = {'titles': [], 'paths': [], 'index': 0, 'meta': [], 'visible'
 
 def set_queue_context(titles: list[str], index: int, paths: list[str] | None = None) -> None:
     """Register the current play queue so the queue view can render it. The
-    per-track details are only gathered again when the queue itself changed —
+    per-track details are only re-read when the queue itself changed:
     moving to the next track changes just the index."""
     titles, paths = list(titles or []), list(paths or [])
     if titles != _queue_ctx['titles'] or paths != _queue_ctx['paths']:
@@ -27,8 +27,8 @@ def set_queue_context(titles: list[str], index: int, paths: list[str] | None = N
 
 def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
     """Title/artist/album for each queued track: from the in-memory library,
-    reading a file's tags only when it isn't in there (a CLI-played file) —
-    reading every queued file used to stall each track change on a long queue."""
+    reading a file's tags only when it isn't in there (a CLI-played file),
+    since reading every queued file would stall each track change on a long queue."""
     by_path = {t['path']: t for t in (live_library() or [])}
     meta: list[dict] = []
     for i, title in enumerate(titles):
@@ -181,6 +181,10 @@ def _queue_is_compilation_without_album_artist(meta: list[dict]) -> bool:
 
 
 def _queue_should_show_artist(meta: list[dict]) -> bool:
+    """Whether the queue needs an artist. On a one-album queue, only when some
+    track's artist differs from the album artist (or it is a compilation with no
+    album artist); otherwise when the artists vary or any differs from its album
+    artist."""
     if _queue_all_same_album(meta):
         return any(
             item.get('artist') and item.get('album_artist') and item['artist'] != item['album_artist']
@@ -197,6 +201,9 @@ def _queue_should_show_artist(meta: list[dict]) -> bool:
 
 
 def _queue_meta_value(item: dict, same_album: bool = False, compilation_without_album_artist: bool = False) -> str:
+    """The detail beside a queued title. On a one-album queue, the artist only when
+    it differs from the album artist (always, on a compilation with no album
+    artist); otherwise artist - album."""
     if same_album or compilation_without_album_artist:
         artist = item.get('artist')
         album_artist = item.get('album_artist')
@@ -214,7 +221,7 @@ def _queue_meta_value(item: dict, same_album: bool = False, compilation_without_
     if item.get('album'):
         album = item['album']
         pieces.append(f"{C.DIM}{C.ITALIC}{album}{C.RESET}")
-    return ' — '.join(pieces)
+    return ' - '.join(pieces)
 
 
 def _queue_should_show_album(meta: list[dict]) -> bool:

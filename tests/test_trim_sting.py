@@ -1,7 +1,7 @@
-"""Tests for sting matching (src/trim/trim.py, section 4.4). Synthetic
+"""Tests for sting matching (src/trim/trim.py). Synthetic
 fixtures generated at test time; skipped when ffmpeg is absent.
 
-The matched offset is a *seed*, not a final placement — section 4.4 already
+The matched offset is a *seed*, not a final placement: the editor already
 treats the join audition as an approximation the user nudges by ear, and the
 same applies here. Empirically (see the tolerance below) the envelope method
 lands within a handful of frames, not necessarily one; that's still a huge
@@ -15,13 +15,13 @@ import unittest
 
 from src.trim import trim
 
-# A few MPEG frames' worth of slack — the envelope hop (10ms) plus the
+# A few MPEG frames' worth of slack: the envelope hop (10ms) plus the
 # inherent fuzziness of locating a transient from a smoothed RMS envelope.
 _OFFSET_TOLERANCE_S = 0.08
 
 
 def _make_sting(path: str, sample_rate: int = 44100) -> None:
-    """A short, distinctive 3-tone sequence — stands in for a real sting."""
+    """A short, distinctive 3-tone sequence that stands in for a real sting."""
     subprocess.run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
@@ -34,7 +34,7 @@ def _make_sting(path: str, sample_rate: int = 44100) -> None:
 
 def _make_episode(path: str, lead_in_s: float, sting_filter: str,
                   programme_freq: int, sample_rate: int = 44100) -> None:
-    """lead-in tone (not silence — see trim.py's median/MAD note) + the sting
+    """lead-in tone (not silence; see trim.py's median/MAD note) + the sting
     (optionally filtered) + programme content, one concat/encode pass."""
     inputs: list[str] = []
     parts: list[str] = []
@@ -103,7 +103,7 @@ class FindStingTest(unittest.TestCase):
         self.assertGreater(score, 0.5)
 
     def test_track_without_the_sting_scores_low(self):
-        """A confidently wrong offset is worse than admitting no match — the
+        """A confidently wrong offset is worse than admitting no match: the
         score must separate a real hit from a track that never had the sting."""
         path = os.path.join(self.tmp, "no_sting.mp3")
         subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -122,7 +122,7 @@ class FindStingTest(unittest.TestCase):
 
 @unittest.skipUnless(trim.HAS_FFMPEG, "ffmpeg not installed")
 class FindCandidateStingsTest(unittest.TestCase):
-    """Auto-discovery (section 5.2.1): given two tracks from the same group,
+    """Auto-discovery: given two tracks from the same group,
     find the segment they share, without a pre-extracted reference clip."""
 
     def setUp(self):

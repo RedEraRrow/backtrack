@@ -1,11 +1,11 @@
-"""One place for lyric text handling: normalising, stripping, and locating.
+"""One place for lyric text handling: normalising, stripping and matching.
 
-Matching a markdown script against a Whisper transcript, timing a sentence, and
-deciding which line is on screen all rest on the same three questions — what
-counts as the same word, what counts as spoken, and which line covers a moment.
-Each used to be answered separately in `lyrics.py`, `lyrics_editor.py` and
-`md_overlay.py`, with normalisers that disagreed about Unicode and punctuation,
-so a word could match during alignment and fail during verification.
+Matching a markdown script against a Whisper transcript and timing a sentence
+both rest on the same two questions: what counts as the same word, and what
+counts as spoken.  They are answered here once, for `lyrics.py`,
+`lyrics_editor.py` and `md_overlay.py`, so a word can't match during alignment
+and fail during verification.  Which line covers a moment is
+`lyric_pane.Timeline.index_at`.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import unicodedata
 
 # Apostrophes that Unicode files as LETTERS: the Hawaiian ʻokina and the modifier
 # / curly quotes the scripts use for elision.  `\w` and category 'L' both match
-# them, so without this they survive normalization and "Molokaʻi" could never meet
+# them, so without this they survive normalisation and "Molokaʻi" could never meet
 # a transcript's "Molokai".  They are punctuation here, and go the same way as a
 # plain "'".
 _APOSTROPHE_LIKE = '\u02b9\u02bb\u02bc\u02bd\u02bf\u2018\u2019\u201b'
@@ -25,14 +25,14 @@ _DROP_APOSTROPHE = {ord(c): None for c in _APOSTROPHE_LIKE}
 
 
 def norm(t: str) -> str:
-    """Canonical match normalization: Unicode-fold (NFKD), lowercase, joiners
+    """Canonical match normalisation: Unicode-fold (NFKD), lowercase, joiners
     (hyphens / periods / slashes)→spaces, other punctuation dropped.  This is the
     single basis for ALL JSON↔MD comparison (alignment and the verify report) so
     the two never disagree about what 'matches'.  Treating '.' and '/' as word
     boundaries makes a dotted abbreviation match its spoken-out letters
     (C.P.L. → "c p l" == "C P L", G.P → "g p" == "G P").  Folding keeps non-ASCII
     letters (accented Latin → base letter, Cyrillic/CJK preserved) instead of
-    deleting them, which previously made non-English lyrics vanish from the stream.
+    deleting them, which would make non-English lyrics vanish from the stream.
     """
     t = unicodedata.normalize('NFKD', (t or "")).lower()
     t = t.translate(_DROP_APOSTROPHE)
@@ -48,8 +48,8 @@ def norm_words(t: str) -> list[str]:
 def matchable(word: str) -> str:
     """One word reduced to bare letters and digits, for word-by-word matching.
 
-    The same NFKD fold as `norm` — so the two can't disagree about accents or
-    scripts — but joiners close up instead of splitting, because this compares a
+    The same NFKD fold as `norm` (so the two can't disagree about accents or
+    scripts), but joiners close up instead of splitting, because this compares a
     single token against a single transcript token: "C.P.L." meets "cpl", and
     "don't" meets "dont", rather than becoming several tokens to re-align.
     """
@@ -65,22 +65,22 @@ def matchable(word: str) -> str:
 # Shared patterns so `spoken_text` (what counts as dialogue) and
 # `inline_stage_dirs` (where a mid-line direction sits) can never disagree.
 _LINK_RE  = re.compile(r'\[([^\]]*)\]\([^)]*\)')      # [text](url)
-# An editorial note about how a word is said — *[He pronounces 'Flos' as
-# 'Floss.']* — is about the dialogue, not part of it, so it never reaches the
+# An editorial note about how a word is said, *[He pronounces 'Flos' as
+# 'Floss.']*, is about the dialogue, not part of it, so it never reaches the
 # spoken stream. <ins> marks emphasis inside a word (*<ins>6</ins>33 Squadron*)
-# and has to come off before tokenizing, or "633" arrives as "ins6 ins33".
+# and has to come off before tokenising, or "633" arrives as "ins6 ins33".
 _NOTE_RE  = re.compile(r'\*\[[^\]]*\]\*')
 _INS_RE   = re.compile(r'</?ins>')
 # A stage direction is a parenthetical, optionally emphasised: *(sighs)* / (aside).
-# It may contain a bracket of its own — *(A ringtone sounds ('Questa o quella' from
-# Verdi's Rigoletto), then a beep.)* — so a bare [^)]* would stop at the inner one
+# It may contain a bracket of its own, *(A ringtone sounds ('Questa o quella' from
+# Verdi's Rigoletto), then a beep.)*, so a bare [^)]* would stop at the inner one
 # and leave the rest of the direction to be read as dialogue.
 #
 # One emphasised span holding BOTH a direction and dialogue, *She pauses (softly)*,
 # is not recognised, deliberately: the pattern that used to read it treated the
 # whole span as the direction and silently deleted the words, which is how "Patek
 # Philippe" once vanished from Limerick.  A direction is its own thought and gets
-# its own emphasis — *She pauses* *(softly)* — see docs/script-etiquette.md.
+# its own emphasis (*She pauses* *(softly)*); see docs/script-etiquette.md.
 _PAREN_BODY = r'(?:[^()]|\([^()]*\))*'
 _PAREN      = rf'\({_PAREN_BODY}\)'
 _STAGE_RE = re.compile(rf'(?P<open>\*?)\((?P<dir>{_PAREN_BODY})\)(?P<close>\*?)')
@@ -89,7 +89,7 @@ _LETTER_RE   = re.compile(r'[^\W\d_]')
 
 # How many letters a BARE parenthetical needs before it counts as a direction
 # rather than the script's own punctuation.  Ariane DeVere's transcripts use "(!)"
-# for a sarcastic line and "(a)" / "(b)" to letter a list — both are read aloud or
+# for a sarcastic line and "(a)" / "(b)" to letter a list: both are read aloud or
 # printed as written, and neither is a note to the reader.  Two letters clears
 # them while keeping every real aside, the shortest of which is "(Ding)".  An
 # author-marked *(dir)* is always a direction, however short.
@@ -97,8 +97,8 @@ _MIN_BARE_DIR_LETTERS = 2
 
 # A standalone direction: a whole line that is nothing but a parenthetical, or an
 # editorial note in brackets.  Built from the SAME _PAREN as the inline matcher so
-# a nested bracket — *(A ringtone sounds ('Questa o quella' from Verdi's
-# Rigoletto), then a beep.)* — is one direction to both, not a direction to one
+# a nested bracket, *(A ringtone sounds ('Questa o quella' from Verdi's
+# Rigoletto), then a beep.)*, is one direction to both, not a direction to one
 # and stray dialogue to the other.
 _STANDALONE_DIR_RE = re.compile(rf'\*+\((?P<paren>{_PAREN_BODY})\)\*+'
                                 rf'|\((?P<bare>{_PAREN_BODY})\)'
@@ -106,24 +106,24 @@ _STANDALONE_DIR_RE = re.compile(rf'\*+\((?P<paren>{_PAREN_BODY})\)\*+'
 
 
 def _dir_text(m: re.Match) -> str:
-    """The direction a `_STAGE_RE` match carries — '' when the match is not one.
+    """The direction a `_STAGE_RE` match carries, '' when the match is not one.
 
     The pattern deliberately matches EVERY parenthetical so one scan can find both
     the directions and the text between them; this is where a match is judged.
     """
     body = (m.group('dir') or '').strip()
     if m.group('open') and m.group('close'):
-        return body                                    # *(dir)* — the author said so
+        return body                                    # *(dir)*: the author said so
     if len(_LETTER_RE.findall(body)) >= _MIN_BARE_DIR_LETTERS:
         return body                                    # (In Spanish accent)
-    return ''                                          # (!) / (a) — spoken punctuation
+    return ''                                          # (!) / (a): spoken punctuation
 
 
 def standalone_stage_dir(line: str) -> str | None:
     """The direction a whole MD line consists of, or None if it is not one.
 
     `_parse_markdown_dialogue` asks this before it looks for a `Speaker:` header,
-    so a direction that happens to contain a colon — *(Immediately: bing bong.)* —
+    so a direction that happens to contain a colon, *(Immediately: bing bong.)*,
     is never mistaken for dialogue.
     """
     m = _STANDALONE_DIR_RE.fullmatch((line or "").strip())
@@ -137,9 +137,8 @@ def _scan(t: str) -> tuple[str, list[tuple[int, str]]]:
     """Split an MD dialogue line into (spoken text, inline directions).
 
     ONE pass, so the word offsets reported for the directions are literally word
-    offsets into the string returned beside them.  `spoken_text` and
-    `inline_stage_dirs` used to strip the line separately and count words in
-    different strings, which drifted whenever a removal left punctuation behind.
+    offsets into the string returned beside them.  Stripping the line and counting
+    words in separate strings drifts whenever a removal leaves punctuation behind.
     """
     if not t:
         return t or "", []
@@ -151,7 +150,7 @@ def _scan(t: str) -> tuple[str, list[tuple[int, str]]]:
     last = 0
     for m in _STAGE_RE.finditer(t):
         d = _dir_text(m)
-        if not d:                 # not a direction — it stays in the spoken text
+        if not d:                 # not a direction: it stays in the spoken text
             continue
         out.append(t[last:m.start()])
         # An emphasis marker on only ONE side of the direction is opening or
@@ -178,9 +177,9 @@ def spoken_text(t: str) -> str:
 def clean_for_timing(text: str) -> str:
     """`spoken_text` reduced further to a bare word run, for word-count timing.
 
-    Emphasis markers go too — an italicised word is spoken like any other, but a
+    Emphasis markers go too: an italicised word is spoken like any other, but a
     stray `*` left behind by a direction that was wrapped in emphasis would be
-    counted as a word — and runs of whitespace collapse to one.
+    counted as a word.  Runs of whitespace collapse to one.
     """
     return re.sub(r'\s+', ' ', _EMPHASIS_RE.sub('', spoken_text(text or ""))).strip()
 
@@ -203,7 +202,7 @@ _TERMINATOR_RE = re.compile(r'(?:[.!?;:,\u2026\u266a]|--|\.\.\.)[\"\'\u2019\u201
 
 
 def ends_a_thought(word: str) -> bool:
-    """Whether the script has punctuated its way out of this word — i.e. whether a
+    """Whether the script has punctuated its way out of this word, i.e. whether a
     segment may be cut straight after it without landing mid-sentence."""
     return bool(_TERMINATOR_RE.search((word or "").strip()))
 
@@ -211,9 +210,6 @@ def ends_a_thought(word: str) -> bool:
 def strip_markdown(text: str) -> str:
     """Strip markdown emphasis/code markers (*_`~) for plain-text display."""
     return _EMPHASIS_RE.sub('', text)
-
-
-# --- which line is on screen ----------------------------------------------
 
 
 # --- matching across the two conventions -----------------------------------
@@ -224,7 +220,7 @@ def strip_markdown(text: str) -> str:
 # "takeoff"), writes numbers as digits where the script writes words ("twenty-five"
 # / "25"), and expands the elisions the script preserves ("'cause" / "because").
 # Left alone each one reads as a missing word AND an extra word, which is both a
-# false discrepancy in the report and — worse — a hole in the timing, because the
+# false discrepancy in the report and a hole in the timing, because the
 # words either side of it never get pinned to a segment.
 #
 # These reconcile a run of one stream against a run of the other.  Every one is a
@@ -240,7 +236,7 @@ _NUM_TENS = {'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60,
              'seventy': 70, 'eighty': 80, 'ninety': 90}
 _NUM_SCALE = {'thousand': 1000, 'million': 1000000, 'billion': 1000000000}
 # 'oh' is a number only as a spoken digit ("flight level two-five-oh"), and in these
-# scripts it is overwhelmingly the interjection — 734 of them.  Reading it as 0
+# scripts it is overwhelmingly the interjection: 734 of them.  Reading it as 0
 # would match "Oh, dear" against any stray zero, so it is left out entirely.
 
 
@@ -294,7 +290,7 @@ def _number_value(toks: list[str]) -> int | None:
 
 
 def _is_elision(a: str, b: str, a_raw: str, b_raw: str) -> bool:
-    """Whether one token is the other with its head dropped — 'cause / because.
+    """Whether one token is the other with its head dropped: 'cause / because.
 
     The apostrophe in the RAW word is what says so.  Judging on the letters alone
     would pair "is" with "his" and "at" with "that", which are different words;
@@ -308,7 +304,7 @@ def _is_elision(a: str, b: str, a_raw: str, b_raw: str) -> bool:
         return False
     # A shared TAIL rather than a clean suffix, because the scripts spell the
     # shortened form as it sounds: "'scuse" against "excuse" keeps "cuse" and loses
-    # the x.  The apostrophe above is what makes this safe — without it the same
+    # the x.  The apostrophe above is what makes this safe: without it the same
     # test would pair "is" with "his".
     n = 0
     while n < len(short) and short[-1 - n] == long_[-1 - n]:
@@ -317,7 +313,7 @@ def _is_elision(a: str, b: str, a_raw: str, b_raw: str) -> bool:
 
 
 # Longest run either side a reconciliation may cover.  Ten, because the scripts
-# hyphenate chants and stammers as one written word that Whisper hears as many —
+# hyphenate chants and stammers as one written word that Whisper hears as many:
 # "no-no-no-no-no-no-no-no-no", "fa-la-la-la-laa", spelling out "Q-I-K-I-Q-T".
 # Nothing can match falsely at any length: a reconciliation is exact string or
 # exact numeric equality, never a resemblance.
@@ -347,7 +343,7 @@ def align_tokens(js: list[str], md: list[str],
                  md_raw: list[str] | None = None) -> list[tuple]:
     """Align a transcript token stream against a script one.
 
-    Returns opcodes in difflib's shape — (tag, i1, i2, j1, j2) over js and md — but
+    Returns opcodes in difflib's shape, (tag, i1, i2, j1, j2) over js and md, but
     with two additions:
 
       • runs that difflib called a replacement because the two conventions spell
@@ -378,7 +374,7 @@ def _rewalk_between_gaps(ops, js, md, js_raw, md_raw) -> list[tuple]:
     """Re-walk the whole stretch between two gaps, rather than each gap alone.
 
     difflib anchors on any run of identical tokens, and these scripts repeat
-    themselves — "five point nine, well, five point eight, no-o-o, five point nine,
+    themselves: "five point nine, well, five point eight, no-o-o, five point nine,
     say five point eight five".  It will happily latch the LAST "five point" it
     heard onto the FIRST one in the script, stranding everything between as a
     deletion and an insertion that re-walking either half cannot fix, because the
@@ -388,7 +384,7 @@ def _rewalk_between_gaps(ops, js, md, js_raw, md_raw) -> list[tuple]:
     search scores an identical pair at zero cost too, so difflib's answer is still
     available to it and it departs only for something strictly cheaper.  That makes
     the cell budget the only thing worth gating on, and there is no attempt to guess
-    in advance which anchors are real — a wrong guess costs a search, never an
+    in advance which anchors are real: a wrong guess costs a search, never an
     answer.  Bounded passes, because a re-walk can expose another stranded run
     behind the one it just resolved.
     """
@@ -405,7 +401,7 @@ def _rewalk_between_gaps(ops, js, md, js_raw, md_raw) -> list[tuple]:
                 if ops[k][0] not in GAP:
                     continue
                 if (ops[k][2] - ops[i][1]) * (ops[k][4] - ops[i][3]) > _GAP_LIMIT:
-                    break                     # too wide to search — leave it split
+                    break                     # too wide to search: leave it split
                 last = k
             if last > i:
                 out.extend(_walk_gap(js, md, js_raw, md_raw,
@@ -460,7 +456,7 @@ def _walk_gap(js, md, js_raw, md_raw, i1, i2, j1, j2) -> list[tuple]:
     a, b = n, m
     while (a, b) != (0, 0):
         cost, bp = best[a][b]
-        if bp is None:                            # unreachable — fall back whole
+        if bp is None:                            # unreachable: fall back whole
             return [('replace', i1, i2, j1, j2)]
         pa, pb, kind = bp
         path.append((kind, i1 + pa, i1 + a, j1 + pb, j1 + b))
@@ -473,8 +469,8 @@ def _coalesce(ops: list[tuple]) -> list[tuple]:
     'replace' the report expects, so the output reads like difflib's.
 
     Reconciliations are deliberately NOT merged into each other.  Two adjacent ones
-    are two separate answers — "eleven thirty" against "11 30" is a pair of numbers,
-    not one four-token blur — and merging them would throw away the word-for-word
+    are two separate answers ("eleven thirty" against "11 30" is a pair of numbers,
+    not one four-token blur), and merging them would throw away the word-for-word
     pairing that the timing is hung on.
     """
     out: list[tuple] = []
@@ -505,8 +501,8 @@ def pair_tokens(ops: list[tuple], placement: bool = False) -> list[tuple[int, in
 
     `placement` also pairs the words the two streams DISAGREE about.  They are not
     matches and never count as any, but a 'replace' still says where in the speech
-    the script's word sits — "'e" against a heard "he" is the same moment, whatever
-    the spelling — and a consumer placing words on a timeline wants that.  Without
+    the script's word sits ("'e" against a heard "he" is the same moment, whatever
+    the spelling), and a consumer placing words on a timeline wants that.  Without
     it an unmatched word falls back to riding with its neighbours on the line, which
     puts it in the wrong segment whenever it happens to open one.  A consumer
     choosing where to CUT should leave this off: knowing roughly where a word is is

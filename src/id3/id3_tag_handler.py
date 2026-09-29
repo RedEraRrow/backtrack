@@ -1,4 +1,6 @@
-"""ID3 frame creation, value prompts, and bulk-operation helpers."""
+"""ID3 frame creation, value prompts and the cover picker, plus apply_bulk_edit:
+the one set/rename/delete every bulk path shares (apply_bulk_operation_to_files
+is the CLI's file loop around it)."""
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -61,7 +63,7 @@ CLEAR_COVER = object()
 
 _COVER_PICK_COLUMNS = [
     prompt.Column(style='primary', flex=True),                          # image name
-    prompt.Column(style='dynamic-dim', align='right', max_width=10, priority=1),  # size — drops first when narrow
+    prompt.Column(style='dynamic-dim', align='right', max_width=10, priority=1),  # size, drops first when narrow
     prompt.Column(style='dynamic-dim', align='right', pin=True),  # confidence / current (kept)
 ]
 
@@ -135,7 +137,7 @@ def pick_nearby_cover(file_path: str, *, tokens: dict | None = None,
         choices.append(prompt.Choice(title="No art for this file", value='__none__',
                                      cells=["No art for this file", '', '']))
 
-    msg = title or "Album art — top row is the best guess:"
+    msg = title or "Album art (top row is the best guess):"
     hdr = header(ui_utils.plural(len(ranked), "candidate")) if header else None
     sel = prompt.select(msg, choices=choices, columns=_COVER_PICK_COLUMNS,
                         header=hdr, index=cur_idx)
@@ -179,10 +181,9 @@ def _prompt_for_image_metadata(*, initial_type: int = 3, initial_desc: str = '',
                                header=None) -> tuple[int, str] | None:
     """Pick the picture type and its description on ONE screen.
 
-    Prefilled with Cover (front) and no description — the overwhelmingly common
-    case — so Enter accepts immediately instead of walking the user through a
-    type screen and then a description screen for every single image.  `d` edits
-    the description in place, without leaving the list.
+    Prefilled with Cover (front) and no description, the usual case, so Enter
+    accepts immediately. `d` edits the description in place, without leaving
+    the list.
 
     Returns (pic_type, description) or None if cancelled.
     """
@@ -190,7 +191,7 @@ def _prompt_for_image_metadata(*, initial_type: int = 3, initial_desc: str = '',
 
     def _desc_cell() -> str:
         """The description column's text, or a placeholder when it's blank."""
-        return desc if desc else "— no description —"
+        return desc if desc else "(no description)"
 
     choices, index = [], 0
     for i, (pt, label) in enumerate(_PICTURE_TYPES):
@@ -222,7 +223,7 @@ def _prompt_for_image_metadata(*, initial_type: int = 3, initial_desc: str = '',
 # "Various Artists" is *derived*, never stored: the app works it out from the
 # tracks (see music_library.derive_album_credit) and shows it wherever a
 # compilation has no single artist. Writing it into a tag turns an inference into
-# data that then has to be maintained — and it hides the real per-track artists.
+# data that then has to be maintained, and it hides the real per-track artists.
 # The compilation flag (TCMP) is the thing worth storing.
 _PLACEHOLDER_NAMES = frozenset({
     'various artists', 'various', 'va', 'v.a.', 'v/a', 'unknown', 'unknown artist',
@@ -248,7 +249,7 @@ def strip_placeholder_names(tag_id: str, values: list[str]) -> list[str]:
 def _as_value_list(value: Any) -> list[str]:
     """Normalise a text-frame value into a list of non-empty strings.
 
-    A plain string becomes a one-element list; a list (multi-value, #60) is
+    A plain string becomes a one-element list; a list (multi-value) is
     stripped of blank entries. Order is preserved."""
     if isinstance(value, (list, tuple)):
         return [s for s in (str(v).strip() for v in value) if s]
@@ -259,7 +260,7 @@ def _as_value_list(value: Any) -> list[str]:
 def _has_multivalue(audio: ID3) -> bool:
     """True if any text frame in `audio` holds more than one value.
 
-    People frames (TMCL/TIPL) are skipped — their `.text` is a flat role/name
+    People frames (TMCL/TIPL) are skipped: their `.text` is a flat role/name
     pair list, not a multi-value text field."""
     for frame in audio.values():
         if getattr(frame, 'people', None) is not None:
@@ -271,7 +272,7 @@ def _has_multivalue(audio: ID3) -> bool:
 
 
 def load_id3(path: str) -> ID3:
-    """A file's ID3 tag, or a new empty one when the MP3 has none yet — ready to
+    """A file's ID3 tag, or a new empty one when the MP3 has none yet, ready to
     add frames to and hand to save_id3(audio, path)."""
     try:
         return ID3(path)
@@ -299,16 +300,15 @@ def save_id3(audio: ID3, path: str | None = None) -> None:
 
 
 def people_to_text(pairs) -> str:
-    """Credits as editable text, one "role: name" per line — the form the plain
+    """Credits as editable text, one "role: name" per line: the form the plain
     editor and the clipboard use, and people_from_text reads back."""
     return "\n".join(f"{r}: {n}" for r, n in pairs)
 
 
 def people_from_text(text: str) -> list:
     """[[role, name], …] from people_to_text's "role: name" lines (a line with
-    no ": " is a name with no role). Split at the first ": " only — a role can
-    hold commas ("Sundry Ruffians, Publishers"), which the generic row parser
-    this used to go through split on."""
+    no ": " is a name with no role). Split at the first ": " only: a role can
+    hold commas ("Sundry Ruffians, Publishers")."""
     pairs = []
     for line in text.splitlines():
         line = line.strip()
@@ -336,8 +336,7 @@ def create_frame(tag_id: str, value: Any) -> Frame | None:
         if st is not None and st.build is not None:
             return st.build(value)
 
-        # APIC is a BINARY frame but its UI category is 'image'. (The old
-        # `frame_type == 'IMAGE'` check never matched, so APICs never saved.)
+        # APIC is a BINARY frame but its UI category is 'image', so test that.
         if info.ui_category == 'image':
             if isinstance(value, dict) and value.get('__image__'):
                 data = value.get('data') or b''
@@ -354,7 +353,7 @@ def create_frame(tag_id: str, value: Any) -> Frame | None:
             frame_class = info.mutagen_class
 
             # COMM/USLT carry a single (possibly multi-line) body from the
-            # system-editor path — keep them scalar.
+            # system-editor path: keep them scalar.
             if frame_class in [COMM, USLT]:
                 text_val = str(value).strip()
                 if not text_val:
@@ -364,7 +363,7 @@ def create_frame(tag_id: str, value: Any) -> Frame | None:
                     clean_lang = 'eng'
                 return frame_class(encoding=3, lang=clean_lang, desc=parsed_desc, text=text_val)
 
-            # Multi-value text frames (#60): value may be a list of strings.
+            # Multi-value text frames: value may be a list of strings.
             vals = strip_placeholder_names(tag_id, _as_value_list(value))
             if not vals:
                 return None
@@ -413,7 +412,7 @@ def create_frame(tag_id: str, value: Any) -> Frame | None:
                     return info.mutagen_class(encoding=3, people=people_list)
                 return None
             # Text-list frames (genre TCON, language TLAN): a plain string or,
-            # for multi-value (#60), a list of strings.
+            # for multi-value, a list of strings.
             vals = _as_value_list(value)
             if not vals:
                 return None
@@ -474,7 +473,7 @@ def create_apic_frame(data: bytes, mime: str = '', pic_type: int = 3, desc: str 
 
 
 def rename_would_replace(audio_obj: ID3, new_id: str) -> bool:
-    """Whether the file already has a frame with id `new_id` — adding the
+    """Whether the file already has a frame with id `new_id`: adding the
     renamed frame would replace it, so a rename onto it is refused."""
     return bool(audio_obj.getall(new_id)) or new_id in audio_obj
 
@@ -533,7 +532,7 @@ def _prompt_for_equalisation(current_value: Any) -> dict | None:
     if current_value is not None and hasattr(current_value, 'adjustments'):
         existing = [(float(freq), float(gain)) for freq, gain in current_value.adjustments]
 
-    adjustments = prompt.equaliser_edit("Equalisation — boost/cut per frequency band:", existing)
+    adjustments = prompt.equaliser_edit("Equalisation: boost/cut per frequency band:", existing)
     if adjustments is None:
         return None
     return {'__eq__': True, 'adjustments': sorted(adjustments)}
@@ -589,7 +588,7 @@ def _prompt_for_rating(current_value: Any) -> dict | None:
     A rating the user didn't touch is written back as the exact byte that was
     read. Stars are a 6-value view of a 0-255 field, so re-deriving the byte
     from the stars would quietly rewrite any value another player stored between
-    our canonical ones — editing only the play count on a track rated 100 by
+    our canonical ones: editing only the play count on a track rated 100 by
     another app would move it to 128. Only a star the user actually changed
     takes the canonical byte for its new rating.
     """
@@ -629,7 +628,7 @@ def _current_text(current_value: Any) -> str:
     return str(current_value)
 
 
-# Musical keys for TKEY (ID3: ground keys A–G, ♯, minor 'm', off-key 'o').
+# Musical keys for TKEY (ID3: ground keys A-G, ♯, minor 'm', off-key 'o').
 # The 12 chromatic notes: (ID3 value with '#', pretty display with ♯, flat enharmonic).
 # The tag stores plain ASCII ('C#'); the picker shows the ♯ glyph and full names.
 _KEY_NOTES = (
@@ -706,7 +705,7 @@ def _prompt_for_isrc(current_value: Any) -> str | None:
         return None
     norm = re.sub(r'[\s-]', '', raw).upper()
     if not _ISRC_RE.match(norm):
-        if not prompt.confirm(f"'{norm}' doesn't look like a valid ISRC — save anyway?"):
+        if not prompt.confirm(f"'{norm}' doesn't look like a valid ISRC. Save anyway?"):
             return None
     return norm
 
@@ -732,15 +731,9 @@ def _prompt_for_rbuf(current_value: Any) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Structured frames — one row each, instead of three hand-synced if-chains.
-#
-# A frame like POPM or EQU2 needs three separate things said about it: which
-# editor collects a value, how that value becomes a mutagen frame, and how the
-# stored frame reads back as a one-line summary. Those three lived in
-# `prompt_for_value`, `create_frame` and `summarize_tag_value` respectively, and
-# adding a frame meant remembering to edit all three — miss one and the frame
-# silently doesn't save, or shows as raw repr. They are now one table, and the
-# three functions look the frame up here.
+# Structured frames: one row per structured frame, with its editor, its builder
+# and its summary. prompt_for_value, create_frame and summarize_tag_value all
+# look it up here.
 #
 # `marker` is the key the editor stamps on its payload dict, so `build` can tell
 # a real payload from whatever else might reach it.
@@ -750,8 +743,8 @@ def _prompt_for_rbuf(current_value: Any) -> dict | None:
 # answer to "does this spec have a real widget behind Ctrl-T?": the specs listed
 # here are exactly the ones whose smart editor differs from a plain text field,
 # so `has_widget_toggle` reads the same table the widget dispatch does instead of
-# repeating the list. INT_BIG adds no suffix of its own — its hint depends on the
-# frame's category — but it does get a numeric spinner, so it belongs here.
+# repeating the list. INT_BIG adds no suffix of its own (its hint depends on the
+# frame's category) but it does get a numeric spinner, so it belongs here.
 _FORMAT_HINTS = {
     'FRACTIONAL': ' (n/total)',
     'ISO8601':    ' (ISO 8601)',
@@ -872,7 +865,7 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     # Extract editor-ready defaults from whatever current_value is.
     # It may be a raw mutagen frame (single-file edit), a summary string
     # (bulk edit path), or None (new tag).
-    # Multi-value candidates (#60): plain text frames the registry doesn't flag
+    # Multi-value candidates: plain text frames the registry doesn't flag
     # single-only (e.g. genre, artist, composer, conductor, mood, language).
     multivalue = (ui_cat == 'text' and info.frame_type in ('TEXT', 'LIST')
                   and not info.single_only)
@@ -888,21 +881,19 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
     elif hasattr(current_value, 'text'):
         txt = current_value.text
         # USLT and USER carry a single scalar string, not the value *list* every
-        # other text frame uses.  Iterating one splits it into characters, so the
-        # editor opened pre-filled with just the first letter of the lyrics — and
-        # saving wrote that one character back over the whole body.
+        # other text frame uses, so it must not be iterated into characters.
         if isinstance(txt, str):
             default_vals = [txt] if txt else []
         else:
             default_vals = [str(t) for t in txt] if txt else []
         default_val = default_vals[0] if default_vals else ""
     else:
-        # Already a plain string (bulk edit summary — multi-values joined by '; ').
+        # Already a plain string (bulk edit summary: multi-values joined by '; ').
         default_val = str(current_value)
         default_vals = [s for s in (p.strip() for p in default_val.split('; ')) if s]
 
-    # Power-user option (#62): edit values as raw text instead of the smart
-    # widget — via the config default, or flipped per-edit with Ctrl-T. Binary/
+    # Power-user option: edit values as raw text instead of the smart
+    # widget, via the config default, or flipped per-edit with Ctrl-T. Binary/
     # asset frames (image, SYLT, EQU2, RVA2) have no raw-text form, so no toggle.
     if force_plain is not None:
         plain = force_plain
@@ -958,14 +949,14 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
                 return people_from_text(txt)
             return prompt.list_edit(f"{label}:", initial_people or [], ("ROLE", "NAME"))
 
-        # Multi-value text frames (#60): a simple single-line field by default,
-        # with Ctrl-T expanding to the structured list editor (#60 avenue A).
+        # Multi-value text frames: a simple single-line field by default,
+        # with Ctrl-T expanding to the structured list editor.
         # `as_plain` is the text field; the list is the "widget" side. mv_vals
         # carries the current values across a toggle (see the run loop below).
         if multivalue:
             if as_plain:
                 return prompt.text(f"{label}:", default=(mv_vals[0] if mv_vals else ""))
-            return prompt.list_edit(f"{label} — values:", list(mv_vals), ("VALUE",))
+            return prompt.list_edit(f"{label} values:", list(mv_vals), ("VALUE",))
 
         if as_plain:
             hint = _FORMAT_HINTS.get(fmt or '', '')
@@ -1012,13 +1003,13 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         # Default: plain text (TEXT_UTF8, URL, LIST_STRING, etc.)
         return prompt.text(f"{label}:", default=default_val)
 
-    # The raw↔widget toggle (#62) is only meaningful when the smart editor
+    # The raw↔widget toggle is only meaningful when the smart editor
     # actually differs from a plain text field. For plain-text/URL frames the
-    # "smart widget" IS prompt.text(), so a toggle would be a no-op — don't
+    # "smart widget" IS prompt.text(), so a toggle would be a no-op; don't
     # advertise it there.
     has_widget_toggle = (multivalue or ui_cat == 'people' or fmt in _FORMAT_HINTS)
 
-    # Multi-value frames (#60 avenue A): edit as a simple text field by default,
+    # Multi-value frames: edit as a simple text field by default,
     # Ctrl-T expands to the list editor. Open straight into the list when the
     # frame already holds 2+ values (a single field can't show them). mv_vals is
     # the working set carried across toggles.
@@ -1095,13 +1086,13 @@ def summarize_tag_value(tag_id: str, raw_frame, display: bool = False) -> str:
             return f"{n} band{'s' if n != 1 else ''}"
         if hasattr(raw_frame, 'gain') and hasattr(raw_frame, 'channel'):
             return f"{getattr(raw_frame, 'gain', 0):+g} dB"
-        return "—"
+        return "-"
 
     # Generic text. Multi-values join with the storage separator by default,
     # because this summary also seeds editors and the clipboard where it has to
     # round-trip; `display=True` renders them as a list for the screen instead.
     if hasattr(raw_frame, 'text'):
-        # COMM/USLT/USER carry a single scalar string, not a value list —
+        # COMM/USLT/USER carry a single scalar string, not a value list:
         # iterating one walks its characters (see the matching guard in
         # create_frame). Keep it a one-element list so it summarizes whole.
         raw_text = raw_frame.text

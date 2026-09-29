@@ -1,7 +1,7 @@
 """The one place the CLI decides what its output looks like.
 
-Two modes, one set of calls. A command says *what* it produced — a table, a
-record, an event, a failure — and never how to render it, so adding `--json`
+Two modes, one set of calls. A command says *what* it produced (a table, a
+record, an event, a failure) and never how to render it, so adding `--json`
 needed no second code path and a new command gets both modes for free.
 
 Human tables are laid out by `prompt_core._table_widths` / `_render_table_row`,
@@ -35,7 +35,7 @@ NOT_FOUND = 3     # the thing asked for isn't there
 EXISTS = 4        # the thing asked for is there already
 NO_TOOL = 5       # a required external tool (ffmpeg, VLC) is missing
 
-# Bumped when a field changes meaning or goes away — never for an addition, so a
+# Bumped when a field changes meaning or goes away, never for an addition, so a
 # consumer can add fields without a version bump breaking it.
 SCHEMA_VERSION = 1
 
@@ -47,8 +47,8 @@ def configure(*, json_mode: bool = False, quiet: bool = False,
               colour: bool | None = None) -> None:
     """Fix the output mode for the run. Called once, by `cli.main`.
 
-    `colour` defaults to `ui_utils.colour_enabled()` — a terminal with NO_COLOR
-    unset — and JSON never carries colour whatever the terminal is.
+    `colour` defaults to `ui_utils.colour_enabled()` (a terminal with NO_COLOR
+    unset), and JSON never carries colour whatever the terminal is.
     """
     global _json, _quiet
     _json, _quiet = json_mode, quiet
@@ -63,7 +63,7 @@ def json_mode() -> bool:
 
 
 def is_tty() -> bool:
-    """Whether stdout is a terminal — the switch between a table and bare paths."""
+    """Whether stdout is a terminal: the switch between a table and bare paths."""
     try:
         return bool(sys.stdout.isatty())
     except (AttributeError, ValueError):
@@ -84,8 +84,7 @@ def _write(text: str = "") -> None:
 def record(kind: str, body: dict, *, human: str | None = None) -> None:
     """One object: a JSON line, or `human` (falling back to aligned key/value).
 
-    Used for the single-subject commands — `library stat`, `rip status`-shaped
-    things, one track's tags.
+    Used for the single-subject commands: `library stat`, one track's tags.
     """
     if _json:
         _write(json.dumps(_envelope(kind, body)))
@@ -117,7 +116,7 @@ def table(kind: str, rows: list, columns: list, *,
     """A list: JSON array, an aligned table on a terminal, or bare `pipe_key`s.
 
     `rows` are dicts. `columns` are `prompt_core.Column` specs, and `cells` maps
-    one row to the list of strings those columns render — keeping the JSON
+    one row to the list of strings those columns render, keeping the JSON
     (whole objects) and the table (chosen fields) from having to agree on shape.
     """
     if _json:
@@ -159,7 +158,7 @@ def event(kind: str, **fields) -> None:
 
 
 def note(text: str) -> None:
-    """An aside for a human — a count, a "nothing to do". Never emitted as JSON.
+    """An aside for a human: a count, a "nothing to do". Never emitted as JSON.
 
     Anything a script needs belongs in a `record` or an `event`; this is the
     sentence a person reads and a pipeline correctly ignores.
@@ -197,7 +196,7 @@ def code_name(code: int) -> str:
 
 
 def read_stdin_paths() -> list[str]:
-    """Paths piped in on stdin, one per line — blank lines and comments dropped.
+    """Paths piped in on stdin, one per line, blank lines and comments dropped.
 
     The other half of `table`'s piped output, so a list of tracks flows into a
     command that takes tracks. Returns [] when stdin is a terminal, so a command

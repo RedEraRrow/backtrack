@@ -1,5 +1,5 @@
 """
-Launcher for Backtrack — a terminal music player and tag editor.
+Launcher for Backtrack, a terminal music player and tag editor.
 """
 
 from src.main import main

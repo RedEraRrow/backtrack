@@ -1,6 +1,7 @@
 """Writes that used to lose data: a one-track cache, ID3 bytes in an MP4, a tag
 deleted before its replacement was known to be valid, a rename onto an existing
-frame, other lyrics frames wiped on save, a stale config saved over a newer one."""
+frame, other lyrics frames wiped on save, a stale config saved over a newer one,
+and a config file cut short by a crash mid-write."""
 import os
 import shutil
 import tempfile

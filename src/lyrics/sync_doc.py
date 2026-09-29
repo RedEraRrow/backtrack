@@ -1,5 +1,5 @@
 """The lyrics editor's document: finding and loading a track's timed lyrics, the
-sidecar that keeps segment ids, and the per-segment checks the review phases use."""
+working copy (.sync.json) that keeps segment ids, and the per-segment checks the review phases use."""
 from __future__ import annotations
 import os, json
 from src import tuning as tune
@@ -25,14 +25,14 @@ def _find_transcript(mp3_path: str) -> str | None:
 
 
 def _sidecar_path(jpath: str) -> str:
-    """Working document that sits beside the transcript.  Edits autosave here and
+    """The working copy (.sync.json) beside the transcript.  Edits autosave here and
     are only written back to the transcript when the user commits."""
     return jpath[:-5] + ".sync.json" if jpath.endswith(".json") else jpath + ".sync.json"
 
 
 def _file_fp(path: str) -> str:
     """Cheap content fingerprint (size + short hash) used to detect that the
-    original transcript.json changed under a working sidecar (external edit)."""
+    original transcript.json changed under the working copy (external edit)."""
     try:
         import hashlib
         with open(path, "rb") as f:
@@ -45,7 +45,7 @@ def _file_fp(path: str) -> str:
 def _ensure_ids(segs: list, meta: dict) -> None:
     """Assign immutable ids to any block/word that lacks one.
 
-    `wid` (word) is the atomic, permanent identity — splitting a segment just
+    `wid` (word) is the atomic, permanent identity: splitting a segment just
     partitions its word list and joining concatenates it, so wids are never
     reassigned and the JSON↔MD alignment they carry survives any mutation.
     `bid` identifies word-less blocks (stage directions / dead air).  The `meta`
@@ -63,14 +63,14 @@ def _ensure_ids(segs: list, meta: dict) -> None:
     meta["next_bid"] = nb
 
 
-# Fields the editor adds for its own bookkeeping — stripped when committing so the
+# Fields the editor adds for its own bookkeeping, stripped when committing so the
 # transcript.json the user chose to keep clean stays in its original schema.
 _SIDECAR_FIELDS = ("wid", "bid", "line_ref", "_md_text")
 
 
 def _clean_seg(seg: dict) -> dict:
     """Deep-ish copy of a seg with editor-only fields removed (for the Whisper
-    export): drops the sidecar bookkeeping AND `kind`, leaving a plain Whisper
+    export): drops the working-copy bookkeeping AND `kind`, leaving a plain Whisper
     segment (start/end/text/avg_logprob/words)."""
     _strip = _SIDECAR_FIELDS + ("kind", "words")
     out = {k: v for k, v in seg.items() if k not in _strip}
@@ -96,7 +96,7 @@ def _make_stage_dir(text: str, start: float | None = None, end: float | None = N
 # ── Review mode: walk each flagged line so things get fixed without scrolling ──
 # Phases run in order; each is recomputed live, so fixing a line drops it and
 # stopping/saving/re-entering simply resumes on whatever is still outstanding.
-# Two programs: 'issues' (R) and 'dirs' — stage directions to categorise/time (D).
+# Three programs: 'issues' (R), 'dirs' (D) and 'long' (L).
 _REVIEW_PROGRAMS = {
     'issues': ('md', 'words', 'overlaps'),
     'dirs':   ('uncat', 'untimed'),
@@ -170,9 +170,9 @@ def _split_rank(word: str) -> int:
 def _best_split_index(words: list, text_toks: list | None = None) -> int:
     """The word index (1..len-1) to split at: PRIORITISE a real punctuation break
     (strongest, then nearest the middle); only fall back to the middle when the
-    line genuinely has none.  Word timing tokens usually carry no punctuation
+    line has none.  Word timing tokens usually carry no punctuation
     (it's only in the segment text), so pass the text's whitespace tokens when
-    they line up 1:1 — that's where the commas/periods actually are."""
+    they line up 1:1, since that's where the commas/periods actually are."""
     n = len(words)
     toks = (text_toks if (text_toks and len(text_toks) == n)
             else [w.get('word', '') for w in words])
@@ -217,7 +217,7 @@ def _rebuild_srt(segs: list) -> str:
         if _kind == 'stage_dir' and txt:
             txt = f"*({txt})*"
         if _kind == 'dead_air' and not txt:
-            continue  # pure silence — no SRT block
+            continue  # pure silence: no SRT block
         if txt and s is not None:
             blocks.append(f"{i}\n{timefmt.srt(s)} --> {timefmt.srt(e if e is not None else s)}\n{txt}\n")
     return "\n".join(blocks)
@@ -242,14 +242,14 @@ def _load(mp3_path: str) -> tuple[list, str, dict] | None:
     if jpath:
         sc = _sidecar_path(jpath)
         if os.path.isfile(sc):
-            # Resume from the working document (already carries ids + alignment).
+            # Resume from the working copy (already carries ids + alignment).
             with open(sc, encoding='utf-8') as f:
                 sdata = json.load(f)
             segs = sdata['segments']
             meta = sdata.get('meta', {})
             _ensure_ids(segs, meta)   # ids for anything hand-added since last save
-            # Detect that transcript.json changed under us since this sidecar was
-            # written (external edit / commit elsewhere) — warn, don't clobber.
+            # Detect that transcript.json changed under us since this working copy was
+            # written (external edit / commit elsewhere): warn, don't clobber.
             _fp_now  = _file_fp(jpath)
             _drift   = bool(meta.get('source_fp')) and _fp_now != meta['source_fp']
             return segs, SOURCE_TRANSCRIPT, {'jpath': jpath, 'sidecar': sc,
@@ -276,7 +276,7 @@ def _load(mp3_path: str) -> tuple[list, str, dict] | None:
                 end_ms = (entries[i + 1][1] if i + 1 < len(entries)
                           else start_ms + tune.LYRIC_FABRICATED_END_MS)
                 # Reconstruct the stage_dir marker that do_save wraps as *(...)*
-                # so the overlay's reconciliation recognises it as materialized
+                # so the overlay's reconciliation recognises it as materialised
                 # (otherwise it round-trips as a plain seg and re-duplicates).
                 _m  = _re.match(r'^\*\((.*)\)\*$', text.strip())
                 seg = {'text': _m.group(1) if _m else text,

@@ -1,11 +1,7 @@
 """The plan/apply core behind the bulk operations.
 
-Every one of these operations has the same five steps — read the files, work out
-what each one becomes, show it, write the ticked rows, say what happened — and
-four of them had grown their own copy of the last two. The copies had already
-drifted (one counted a skipped file as an error, another refreshed the library
-entry only on some paths), which is the usual cost of writing an apply loop five
-times.
+Every one of these operations has the same five steps: read the files, work out
+what each one becomes, show it, write the ticked rows, say what happened.
 
 This module owns the halves that are not a screen: a `plan_*` reads the files and
 returns what each one would become, and `apply_changes` writes a plan. The bulk
@@ -13,7 +9,7 @@ menu supplies the preview between them; the CLI supplies flags. Neither owns the
 logic, so they cannot disagree about what an operation does.
 
 Per the house recipe (docs/DEVELOPER.md), the transforms themselves stay in the
-pure modules — `bulk_pattern` for numbering, `filename_parser` for derivation,
+pure modules: `bulk_pattern` for numbering, `filename_parser` for derivation,
 `file_namer` for names, `cover_matcher` for art. This layer is the file I/O
 either side of them.
 """
@@ -37,9 +33,9 @@ from src.utils.log import quietly
 class Change:
     """What one file would become.
 
-    `why` is the one-line reason shown in the preview ("disc 1/1 → —"); an empty
+    `why` is the one-line reason shown in the preview ("disc 1/1 → -"); an empty
     `why` means this file is a candidate the operation leaves alone, which is
-    still listed — unticked — so the selection is visibly complete rather than
+    still listed (unticked) so the selection is visibly complete rather than
     silently filtered. `fields` is the same decision as data, for `--json` and
     `--dry-run`.
     """
@@ -58,8 +54,8 @@ class Plan:
     """Every candidate file for one operation, in the order it will be shown.
 
     `skipped` counts files the operation cannot touch at all (wrong format).
-    `message` is set when the plan cannot proceed — no writable files, or nothing
-    that needs changing — and carries the sentence to show instead of a preview.
+    `message` is set when the plan cannot proceed (no writable files, or nothing
+    that needs changing) and carries the sentence to show instead of a preview.
     """
     changes: list[Change] = field(default_factory=list)
     skipped: int = 0
@@ -120,7 +116,7 @@ def apply_changes(plan: Plan, library: list, writer: Callable[[Change], object],
     `writer` performs one file's write and returns a `tag_writer.WriteResult`, or
     None when it wrote by some other route (raising on failure). `selected`
     defaults to every changed file. `on_event` is called as
-    `(kind, change, detail)` with kind `'written'`, `'skipped'` or `'error'` — it
+    `(kind, change, detail)` with kind `'written'`, `'skipped'` or `'error'`: it
     is how progress reaches a terminal and how `--json` emits one line per file.
 
     A failed library refresh is swallowed: the tag write already succeeded, and
@@ -167,12 +163,8 @@ def summarise(applied: Applied, verb: str, noun: str = "file",
               skipped_note: str = "unsupported skipped",
               kept_note: str = "kept existing (fill blanks only)",
               unsupported_note: str = "skipped (format cannot hold it)") -> str:
-    """The one-line report every operation ends with.
-
-    Reads "Renumbered 12 files. 2 unsupported skipped. 1 error." — the existing
-    wording, in one place rather than five, and counted through `ui_utils.plural`
-    like the previews above it. These five messages were the last "file(s)" left
-    in the app.
+    """The one-line report every operation ends with: "Renumbered 12 files.
+    2 unsupported skipped. 1 error."
     """
     from src.utils import ui_utils
     msg = f"{verb} {ui_utils.plural(applied.written, noun)}."
@@ -196,7 +188,7 @@ def read_numbering(paths: list) -> tuple[list, int]:
     """Every writable file's stored track/disc numbering, in disc/track order.
 
     Returns `(ordered, skipped)`. Split from the plans because a preview screen
-    re-plans every time it is shown — the numbering is read once, and changing
+    re-plans every time it is shown: the numbering is read once, and changing
     the mode then costs no disc I/O.
     """
     songs, skipped = _gather(
@@ -268,10 +260,10 @@ def plan_reflow(ordered: list, skipped: int, *, renumber: bool = True,
 
     plan = Plan(changes=changes, skipped=skipped)
     if not plan.changed:
-        # Already dense with the right totals — say so, rather than showing an
+        # Already dense with the right totals: say so, rather than showing an
         # all-unticked preview that ends in "No tracks selected".
         plan.message = (f"Disc numbering is already 1…{len(runs)} with matching "
-                        "totals — nothing to do.")
+                        "totals: nothing to do.")
     return plan
 
 
@@ -281,7 +273,7 @@ def plan_strip_single_disc(ordered: list, skipped: int) -> Plan:
     A single-disc release doesn't need a disc tag: "1/1" is noise that shows up
     as a disc header in browse lists and in names derived from tags. A bare "1"
     with no total counts too, but only when nothing else in the selection sits on
-    another disc — on a real multi-disc album an untotalled "1" is meaningful.
+    another disc: on a real multi-disc album an untotalled "1" is meaningful.
     """
     if not ordered:
         return Plan(skipped=skipped, message="No MP3/MP4 tracks to change.")
@@ -295,9 +287,9 @@ def plan_strip_single_disc(ordered: list, skipped: int) -> Plan:
         if not disc:
             why = ""                                   # nothing to remove
         elif total == '1':
-            why = f"disc {disc}/{total} → —"
+            why = f"disc {disc}/{total} → -"
         elif not total and disc == '1' and single_disc:
-            why = "disc 1 → —"
+            why = "disc 1 → -"
         else:
             why = ""
         stored = disc + (f"/{total}" if total else "")
@@ -307,7 +299,7 @@ def plan_strip_single_disc(ordered: list, skipped: int) -> Plan:
 
     plan = Plan(changes=changes, skipped=skipped)
     if not plan.changed:
-        plan.message = "No tracks are disc 1 of 1 — nothing to remove."
+        plan.message = "No tracks are disc 1 of 1, nothing to remove."
     return plan
 
 
@@ -323,7 +315,7 @@ def plan_strip_length_tags(songs: list, skipped: int) -> Plan:
     """Remove stale TLEN (track length) and non-zero TDLY (playlist delay).
 
     Both hold millisecond values nothing recomputes once a file is cut by any
-    means, including a trim done outside backtrack. MP3 only — neither frame has
+    means, including a trim done outside backtrack. MP3 only: neither frame has
     an MP4 analogue.
     """
     if not songs:
@@ -345,7 +337,7 @@ def plan_strip_length_tags(songs: list, skipped: int) -> Plan:
 def strip_length_writer(change: Change) -> None:
     """Delete the stale frames named in a `plan_strip_length_tags` change.
 
-    Not a `tag_writer` call — `write_fields` can only set a value, and these are
+    Not a `tag_writer` call: `write_fields` can only set a value, and these are
     raw ID3 frames with no cross-format equivalent.
     """
     audio = ID3(change.path)
@@ -359,7 +351,7 @@ def read_picture_types(paths: list) -> tuple[list, int]:
 
     Read on its own because the picture-type picker's header shows what is
     already in the selection ("Other ×495 · Cover (front) ×411") before asking
-    what to change it to — so the read happens before the question, not after.
+    what to change it to, so the read happens before the question, not after.
     """
     art = []
     for path in paths:
@@ -380,7 +372,7 @@ def plan_set_picture_type(art: list, skipped: int, pic_type: int) -> Plan:
     """Retype embedded art without touching the image itself.
 
     Rippers routinely tag a front cover as "Other" (type 0), which anything
-    looking specifically for a front cover then misses. MP3 only — MP4's `covr`
+    looking specifically for a front cover then misses. MP3 only: MP4's `covr`
     atom has no type field.
     """
     _name = picture_type_name
@@ -404,7 +396,7 @@ def plan_set_picture_type(art: list, skipped: int, pic_type: int) -> Plan:
 
 
 def position_rows(plan: Plan) -> list[tuple[int, str, str]]:
-    """`(position, basename, why)` per change — the preview's three columns.
+    """`(position, basename, why)` per change: the preview's three columns.
 
     Shared so the bulk menu's table and the CLI's table cannot drift apart in
     what they show or the order they show it in.
@@ -440,8 +432,8 @@ def _sort_value(base_id: str, raw: str) -> str | None:
 def sort_base() -> list[tuple[str, str]]:
     """base field -> sort frame id, for the fields a derive run produces.
 
-    The `auto` rows of the canonical table, so composer — never derived from a
-    filename — is not among them.
+    The `auto` rows of the canonical table, so composer (never derived from a
+    filename) is not among them.
     """
     from src.id3 import tag_registry as _reg
     return [(t.field, t.frame) for t in _reg.SORT_TAGS if t.auto]
@@ -462,9 +454,9 @@ def plan_write(derived, apply_fields: set, overwrite: bool,
     """Fields that would actually be written for one file: {field: value_str}.
 
     Honours fill-blanks (skip fields already present unless overwrite), only
-    includes fields with a derived value, and — crucially — only fields the
-    file's *format* can store (so the preview never claims a write it can't
-    perform, e.g. disc subtitle on MP4). Pure — used for the preview and tests.
+    includes fields with a derived value, and only fields the file's *format*
+    can store (so the preview never claims a write it can't perform, e.g. disc
+    subtitle on MP4). Pure: used for the preview and tests.
     """
     supported = tw.writable_fields(path)
     d = derived.as_dict()
@@ -491,7 +483,7 @@ def plan_derive(paths: list, apply_fields: set, *, overwrite: bool = False,
                 regex_base: str | None = None) -> tuple[Plan, dict]:
     """Derive tags from file and folder names for every writable file.
 
-    Returns `(plan, derived)` — the plan drives the preview and the write, and
+    Returns `(plan, derived)`: the plan drives the preview and the write, and
     the raw `derived` mapping is kept because the detail view shows what was
     parsed, including the fields the plan then declines to write.
     """
@@ -515,7 +507,7 @@ def plan_derive(paths: list, apply_fields: set, *, overwrite: bool = False,
 
     plan = Plan(changes=changes, skipped=skipped)
     if not plan.changed:
-        plan.message = ("Nothing to write — selected fields are already set "
+        plan.message = ("Nothing to write: selected fields are already set "
                         "(try Overwrite).")
     return plan, derived
 
@@ -593,8 +585,8 @@ def apply_covers(covers: dict, library: list, *, overwrite: bool = False,
                  on_event: Callable[[str, Change, str], None] | None = None) -> Applied:
     """Embed `{track path: image path}`, reading each image at most once.
 
-    An album's tracks nearly all share one cover, so the read is cached — without
-    it a 40-track album decoded the same JPEG 40 times.
+    An album's tracks nearly all share one cover, so the read is cached; without
+    it a 40-track album would decode the same JPEG 40 times.
     """
     from src.id3 import cover_matcher as cm
 

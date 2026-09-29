@@ -7,7 +7,7 @@ from src.utils import ui_utils
 
 
 def activity_centre() -> None:
-    """A live panel of current background activities — opens from Settings or by
+    """A live panel of current background activities. Opens from Settings or by
     clicking the status-bar ● beacon. Lists each running job with its live status
     and a pulsing dot, updating as they start/finish; closes on Esc / b / q, and
     shows a placeholder when nothing is running."""
@@ -30,9 +30,9 @@ def activity_centre() -> None:
         else:
             out.append(f"   {C.DIM}Nothing running right now.{C.RESET}\n")
         body = "".join(out) + "\n\n"
-        # Pin the hints to the bottom, above the miniplayer and status bar, so
+        # Pin the hints to the bottom, above the now-playing box and status bar, so
         # their keys hold a fixed position as the running-task list grows and
-        # shrinks underneath them — and pick up the transport keys while audio
+        # shrinks underneath them, and pick up the transport keys while audio
         # is playing, like every other screen.
         pairs = prompt.chrome_hint_pairs(_hint_pairs)
         hint = prompt_core._hint(*pairs)
@@ -59,7 +59,7 @@ def activity_centre() -> None:
                     last = sig
                 key = get_key_non_blocking()
                 if key:
-                    # Transport keys and clicks (on the hints or the miniplayer)
+                    # Transport keys and clicks (on the hints or the now-playing box)
                     # act here, like every other screen; a clicked `esc/b`
                     # comes back as its key.
                     _ch = prompt.consume_chrome(key, hint_cells)

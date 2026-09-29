@@ -5,22 +5,24 @@ into tags, this finds the image file that belongs to each track and pairs them
 up, so a folder of ``01 - Song.mp3`` + ``01 - Song.jpg`` (or ``covers/1.png`` …)
 can have each track's own artwork embedded in one pass.
 
-Pure and unit-testable — no UI, no writes. The bulk op in ``bulk_art``
-owns the preview/apply; ``tag_writer.write_cover`` owns the actual embedding.
+Pure and unit-testable: no UI, no writes. ``bulk_art`` owns the preview;
+``bulk_ops.apply_covers`` and ``tag_writer.write_cover`` do the writing.
 
-Four pairing strategies are exposed (all return ``{track_path: image_path|None}``):
+The pairing strategies (all return ``{track_path: image_path|None}``):
 
-  * :func:`plan_auto`      — score every (track, image) pair and greedily assign
-                             the best 1:1 matches (the recommended default).
-  * :func:`plan_basename`  — strict same-stem pairing (``x.mp3`` ↔ ``x.jpg``).
-  * :func:`plan_positional`— order tracks and images and zip them together.
-  * :func:`plan_template`  — render a ``%token%`` pattern into the expected image
-                             stem and match by name.
+  * :func:`plan_best`: what "auto" uses. Per-track pairing, falling back to
+    one cover per group when that fits better.
+  * :func:`plan_auto`: score every (track, image) pair and greedily assign the
+    best 1:1 matches.
+  * :func:`plan_grouped`: one cover shared across each disc / series / work.
+  * :func:`plan_basename`: strict same-stem pairing (``x.mp3`` ↔ ``x.jpg``).
+  * :func:`plan_positional`: order tracks and images and zip them together.
+  * :func:`plan_template`: render a ``%token%`` pattern into the expected image
+    stem and match by name.
 
 Scoring favours *track-specific* art: an exact name match, then a track-number
 match, then title-word overlap. Whole-album names (cover/folder/front/…) rank
-low on purpose — embedding one shared cover on every track is the existing
-"Add album art" flow, not this one.
+low on purpose.
 """
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ import re
 from src.id3 import file_namer as fnm
 
 # Image formats we can read and embed. MP3/APIC accepts all of these; MP4 `covr`
-# is limited to JPEG/PNG (see :func:`mp4_storable`).
+# is limited to JPEG/PNG (see tag_writer.write_cover).
 IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
 
 _EXT_TO_MIME = {
@@ -52,7 +54,7 @@ def _is_disc_dir(name: str) -> bool:
     """Whether ``name`` looks like a per-disc subfolder (CD1, Disc 2, DVD1, …)."""
     return bool(_DISC_DIR_RE.match(name.strip()))
 
-# Whole-album / non-track-specific image names — kept as candidates but scored
+# Whole-album / non-track-specific image names: kept as candidates but scored
 # low so they never out-rank a real per-track match.
 _GENERIC_NAMES = ('cover', 'folder', 'front', 'albumart', 'albumartsmall',
                   'album', 'back', 'thumb', 'thumbnail', 'artwork', 'art',
@@ -63,8 +65,8 @@ _GENERIC_NAMES = ('cover', 'folder', 'front', 'albumart', 'albumartsmall',
 MATCH_FLOOR = 150.0
 
 # Words too ordinary to be evidence of anything on their own. Without this, a
-# two-word title sharing only "the" with an image name scored 300 × 1/2 = 150 —
-# exactly MATCH_FLOOR — and was auto-checked as a confident match. They still
+# two-word title sharing only "the" with an image name scores 300 × 1/2 = 150,
+# exactly MATCH_FLOOR, and would be auto-checked as a confident match. They still
 # count towards a title that is genuinely mostly stop-words; they just can't
 # carry a match by themselves.
 _STOP_WORDS = frozenset({
@@ -174,7 +176,7 @@ def track_number(track_path: str, tokens: dict[str, str] | None) -> int | None:
     m = _LEADING_NUM_RE.match(stem)
     if m:
         n = int(m.group(1))
-        # A 4-digit run is a year, not a track — guarded by {1,3} in the regex,
+        # A 4-digit run is a year, not a track: guarded by {1,3} in the regex,
         # but a leading "05 - " style is exactly what we want.
         return n
     return None
@@ -319,7 +321,7 @@ def plan_basename(tracks: list[str], images: list[str],
 
 
 def _positional_key(track_path: str, tokens: dict[str, str] | None) -> tuple:
-    """Order tracks by (disc/season, track, name) — the natural album order."""
+    """Order tracks by (disc/season, track, name): the natural album order."""
     tokens = tokens or {}
     disc = tokens.get('disc', '')
     disc_n = int(disc) if str(disc).isdigit() else (season_number(track_path) or 0)
@@ -350,7 +352,7 @@ def plan_positional(tracks: list[str], images: list[str],
 
 
 # ---------------------------------------------------------------------------
-# Group pairing — ONE cover shared across a disc / series / work
+# Group pairing: ONE cover shared across a disc / series / work
 # ---------------------------------------------------------------------------
 
 def group_key(track_path: str, tokens: dict[str, str] | None,
@@ -438,7 +440,7 @@ def plan_grouped(tracks: list[str], images: list[str], group_by: str = 'auto',
     plan: dict[str, str | None] = {t: None for t in tracks}
     used: set[str] = set()
 
-    # Pass 1 — match a numbered group to the image bearing that number.
+    # Pass 1: match a numbered group to the image bearing that number.
     for k in ordered_keys:
         _kind, val = k
         if not isinstance(val, int) or val == 0:
@@ -451,7 +453,7 @@ def plan_grouped(tracks: list[str], images: list[str], group_by: str = 'auto',
             for t in groups[k]:
                 plan[t] = cands[0]
 
-    # Pass 2 — positionally fill any group still without a cover.
+    # Pass 2: positionally fill any group still without a cover.
     remaining = [img for img in ordered_images if img not in used]
     ri = 0
     for k in ordered_keys:
@@ -468,10 +470,11 @@ def plan_grouped(tracks: list[str], images: list[str], group_by: str = 'auto',
 def plan_best(tracks: list[str], images: list[str],
               token_cache: dict[str, dict] | None = None) -> dict[str, str | None]:
     """Auto strategy: per-track pairing, but fall back to one-cover-per-group
-    when that clearly fits better — i.e. there are ≥2 real groups, each matched
+    when that clearly fits better, i.e. there are ≥2 real groups, each matched
     to a *distinct* image, and grouping covers more tracks than per-track does.
     This keeps normal albums per-track while catching a box set / series whose
-    artwork is per disc/season.
+    artwork is per disc/season. With nothing paired per track, a lone album
+    cover goes on every track.
     """
     token_cache = token_cache or {}
     per = plan_auto(tracks, images, token_cache)
@@ -484,8 +487,8 @@ def plan_best(tracks: list[str], images: list[str],
 
     if len(groups) >= 2 and len(grp_imgs) >= 2 and grp_n > per_n:
         return grp
-    # Nothing paired per-track (e.g. a single shared album cover — common on a
-    # multi-disc release, `The Wall/Cover.jpg` above `CD1`/`CD2`). Put that one
+    # Nothing paired per-track (e.g. a single shared album cover, common on a
+    # multi-disc release: `The Wall/Cover.jpg` above `CD1`/`CD2`). Put that one
     # cover on every track so it's ready to apply in one go rather than a manual
     # pick per row.
     if per_n == 0:

@@ -1,4 +1,6 @@
-"""Terminal helpers: ANSI colours, sizing, formatting, status bar, progress bar."""
+"""Terminal helpers: ANSI colours, sizing and resize tracking, the display-width
+scanner, formatting, the status bar, the now-playing box registry, the alt
+screen and the progress bar."""
 from __future__ import annotations
 import os
 import sys
@@ -36,17 +38,17 @@ def _sigwinch_handler(signum: int, frame: Any) -> None:
 
 
 def last_resize_signal_at() -> float:
-    """Monotonic time of the last resize report — to tell whether one arrived
+    """Monotonic time of the last resize report, to tell whether one arrived
     while something slow was under way."""
     return _last_resize_signal
 
 
 def ms_since_resize_signal() -> float:
-    """How long ago the terminal last reported a resize, in ms — for the
+    """How long ago the terminal last reported a resize, in ms, for the
     diagnostics log, to show how far behind the resize a redraw landed."""
     return (_time.monotonic() - _last_resize_signal) * 1000
 
-# SIGWINCH doesn't exist on Windows — guard so importing ui_utils never raises there.
+# SIGWINCH doesn't exist on Windows; guard so importing ui_utils never raises there.
 _HAS_SIGWINCH = hasattr(signal, "SIGWINCH")
 if _HAS_SIGWINCH:
     signal.signal(signal.SIGWINCH, _sigwinch_handler)
@@ -62,7 +64,7 @@ def mark_now_playing_layout_dirty() -> None:
 
 def consume_resize() -> bool:
     """True (and clears the flags) if the terminal was resized *or* the now-playing
-    box changed height since last call — both need a full re-render/re-layout."""
+    box changed height since last call: both need a full re-render/re-layout."""
     global _resize_flag, _np_layout_dirty
     if _resize_flag or _np_layout_dirty:
         _resize_flag = False
@@ -70,7 +72,7 @@ def consume_resize() -> bool:
         return True
     return False
 
-# Global content margins.  All widgets and the playback UI read from here —
+# Global content margins.  All widgets and the playback UI read from here:
 # change these two values to tune the whole app at once.
 MARGIN_H = 2   # columns reserved on each horizontal side (left and right)
 MARGIN_V = 1   # rows reserved on each vertical side (top and bottom)
@@ -104,7 +106,7 @@ class Colors:
     SHOW = "\033[?25h"
 
 
-# The styling half of Colors — everything that paints rather than moves the
+# The styling half of Colors: everything that paints rather than moves the
 # cursor. Suppressing colour must not suppress HIDE/SHOW, which are cursor
 # control and still needed on a pipe.
 _STYLE_NAMES = ('PRIMARY', 'WHITE', 'ACCENT', 'CYAN', 'YELLOW', 'MAGENTA', 'GREEN',
@@ -115,7 +117,7 @@ _STYLE_CODES = {name: getattr(Colors, name) for name in _STYLE_NAMES}
 def colour_enabled() -> bool:
     """Whether colour should be emitted: a terminal, and NO_COLOR unset.
 
-    An empty NO_COLOR still counts as set — that is what the convention says,
+    An empty NO_COLOR still counts as set: that is what the convention says,
     and `NO_COLOR=` in an environment is a deliberate act.
     """
     if os.environ.get("NO_COLOR") is not None:
@@ -209,7 +211,7 @@ _screen_invalidator = None
 def set_screen_invalidator(fn) -> None:
     """Register the painter's "forget what's on screen" hook.
 
-    Registered by `prompt_core` (which can't be imported here — it imports this
+    Registered by `prompt_core` (which can't be imported here, as it imports this
     module), so every existing `clear_screen()` keeps meaning "the screen is now
     blank" for the diffed painter as well.
     """
@@ -231,7 +233,7 @@ def enter_alt_screen() -> None:
     hollow cursor when the window loses focus; unsupported terminals ignore it.
     And turns auto-wrap off (\\033[?7l): every row is placed explicitly, so a
     row too wide for the window should be cut at the edge, not run onto the
-    next — which is what a write still sized for the old width does in the
+    next, which is what a write still sized for the old width does in the
     moment between a resize and the redraw that answers it.
     """
     sys.stdout.write("\033[?1049h\033[?1004h\033[?7l\033[H\033[3J\033[J" + Colors.HIDE)
@@ -250,7 +252,7 @@ def clear_screen() -> None:
     """Overwrite screen content from home without triggering scrollback save.
 
     Leaves the cursor **hidden**: a bare clear parks it at home, where it blinks
-    in the top-left corner until the next frame happens to hide it — during a
+    in the top-left corner until the next frame happens to hide it; during a
     library build or any slow step, that's a visible flashing caret.
     """
     sys.stdout.write("\033[H\033[3J\033[J" + Colors.HIDE)
@@ -262,7 +264,7 @@ BACKGROUND_TASKS: dict[str, str] = {}
 _toast_message: str = ""
 _toast_expiry: float = 0.0
 
-# Now-playing box (#14): the playback layer registers a provider so the widget
+# Now-playing box: the playback layer registers a provider so the widget
 # layer can draw a background-audio box without importing playback (keeps the
 # dependency flowing one way). provider(width) -> list[str] | None (styled rows,
 # top to bottom; drawn just above the breadcrumb status line).
@@ -281,12 +283,12 @@ def set_now_playing_provider(fn) -> None:
 
 
 def set_now_playing_signature(sig: tuple | None) -> None:
-    """Record the identity of the track the box provider just rendered (#14)."""
+    """Record the identity of the track the box provider just rendered."""
     global _now_playing_sig
     _now_playing_sig = sig
 
 
-# Event-driven repaint (#14): background threads (a joined window's snapshot
+# Event-driven repaint: background threads (a joined window's snapshot
 # receiver, the host's auto-advance tick) call pulse_now_playing() when the
 # now-playing state changes so the menu poll repaints the box *immediately*
 # instead of only on the next keystroke. The waker is registered by the input
@@ -303,7 +305,7 @@ def set_now_playing_waker(fn) -> None:
 
 def pulse_now_playing() -> None:
     """Ask the active menu poll to repaint the now-playing box now (no-op if no
-    poll is listening — e.g. the full player view drives its own redraws)."""
+    poll is listening, e.g. the full player view drives its own redraws)."""
     if _np_waker is not None:
         with quietly():
             _np_waker()
@@ -323,7 +325,7 @@ def now_playing_lines(width: int) -> list[str]:
     try:
         lines = _now_playing_provider(width) or []
     except Exception:
-        # A provider that raised tells us nothing about what's playing — keep the
+        # A provider that raised tells us nothing about what's playing; keep the
         # box exactly as it was rather than blinking it out and back next tick.
         return _now_playing_lines
     _now_playing_lines = list(lines)
@@ -335,7 +337,7 @@ def now_playing_active() -> bool:
     return bool(_now_playing_lines)
 
 
-# Audio is playing but the box could not be drawn — the terminal is too narrow
+# Audio is playing but the box could not be drawn: the terminal is too narrow
 # for it. The box normally advertises the transport keys in its own top border,
 # so this is the one state where the hint bar has to advertise them instead
 # (see `prompt.chrome_hint_pairs`). Deliberately *not* set when the full player
@@ -378,7 +380,7 @@ _PULSE_RAMP = (238, 243, 248, 253, 255, 253, 248, 243)
 
 
 def pulse_circle() -> str:
-    """A white ● whose brightness pulses over time — the beacon next to a running
+    """A white ● whose brightness pulses over time: the beacon next to a running
     background activity. The status bar is re-rendered ~8 Hz while a task is
     active (see the menu idle tick), which animates this."""
     code = _PULSE_RAMP[int(_time.time() * 6) % len(_PULSE_RAMP)]
@@ -463,7 +465,7 @@ def get_status_line() -> str:
 def get_terminal_size(default: tuple = (80, 24)) -> tuple:
     """Terminal (columns, rows), falling back to `default` if the query fails.
 
-    Memoised — see `_size_cache`; a resize (SIGWINCH) clears it.
+    Memoised; see `_size_cache`; a resize (SIGWINCH) clears it.
     """
     global _size_cache, _size_cache_at
     if _size_cache is not None:
@@ -495,9 +497,7 @@ def get_terminal_height(default: int = 24) -> int:
 # Display width: one ANSI scanner, one column table, for the whole app.
 #
 # Every module that measures, clips or pads a styled line goes through this
-# block. It used to be five divergent implementations — each with its own idea
-# of which escape sequences exist — and the width maths disagreed between them,
-# so a line measured in one module and clipped in another could overrun.
+# block.
 # ---------------------------------------------------------------------------
 
 # The escape sequences a terminal consumes without drawing anything. In order:
@@ -517,7 +517,7 @@ _ANSI_RE = re.compile(
 def _scan(s: str):
     """Yield ``(is_escape, chunk)`` across `s`.
 
-    One chunk per escape sequence, one per printable character — the single
+    One chunk per escape sequence, one per printable character: the single
     walk every width routine below is built on, so measuring and clipping can
     never disagree about where an escape starts or ends.
     """
@@ -553,7 +553,7 @@ _ZERO_WIDTH_SET = frozenset(_ZERO_WIDTH)
 # which UTR#51 says to render wide and which every modern terminal does. The
 # media-control glyphs are the app's own case, and their true width is not
 # knowable from Unicode alone. U+23EE ⏮ and U+23ED ⏭ are emoji-by-default; U+23F8
-# ⏸ and U+23F5 ⏵ are text-by-default and "should" be one cell — but no monospace
+# ⏸ and U+23F5 ⏵ are text-by-default and "should" be one cell, but no monospace
 # font on a stock macOS box carries any of them, so they are drawn by whichever
 # fallback font does, and Apple Color Emoji (which has ⏮ ⏸ ⏭) draws two cells
 # wide whatever the default presentation says. All four report east-asian-width
@@ -561,7 +561,7 @@ _ZERO_WIDTH_SET = frozenset(_ZERO_WIDTH)
 #
 # They are listed as wide deliberately, as an over-estimate. Reserving two cells
 # and getting one leaves a small gap; reserving one and getting two overruns
-# whatever sits to the right — and that is the miniplayer's closing border.
+# whatever sits to the right, and that is the now-playing box's closing border.
 _WIDE_SET = frozenset('⏮⏭⏸⏵⏪⏩⏫⏬⏯⏱⏲⏰')
 
 _cols_cache: dict = {}
@@ -585,7 +585,7 @@ def display_text(s: str) -> str:
     """`s` with ANSI escapes and zero-width codepoints removed.
 
     Every remaining character occupies at least one column, but *not* always
-    exactly one — a wide glyph still takes two, so `visual_len` is what you
+    exactly one: a wide glyph still takes two, so `visual_len` is what you
     want for width maths. This is for callers that need the plain characters
     themselves (cursor hit-testing, writing a styled report out as text).
     """
@@ -600,7 +600,7 @@ def visual_len(s: str) -> int:
 
     Not the same as `len`: escapes and combining marks take no column, and an
     emoji-presentation or East-Asian-wide character takes two. The ASCII fast
-    path keeps the common case a plain length — this is called per line in the
+    path keeps the common case a plain length, as this is called per line in the
     render path.
     """
     if not s:
@@ -615,7 +615,7 @@ def clip_ansi(text: str, max_cols: int, reset: bool = True) -> str:
 
     Escapes ride along without being counted, so the styling that survives the
     cut still closes properly; a zero-width mark rides along with the glyph it
-    belongs to; and a two-cell glyph is never split across the boundary — it is
+    belongs to; and a two-cell glyph is never split across the boundary: it is
     dropped whole, leaving a one-column gap, because half of one renders as a
     stray cell that pushes everything after it out of line.
 
@@ -676,11 +676,7 @@ def truncate_text(text: str, max_width: int, placeholder: str = "…", front: bo
 
 
 def plural(n: int, singular: str, many: str | None = None) -> str:
-    """``"1 result"`` / ``"156 results"`` — the count and its noun, agreeing.
-
-    The app used to write "156 result(s)" everywhere. "(s)" is a note to the
-    reader that the program didn't know which it was; it always does.
-    """
+    """``"1 result"`` / ``"156 results"``: the count and its noun, agreeing."""
     return f"{n} {singular if abs(n) == 1 else (many or singular + 's')}"
 
 
@@ -692,8 +688,7 @@ def format_time(seconds: int | float) -> str:
     """Convert seconds (may be float) to a compact time string.
 
     Preserves sub-second precision by appending centiseconds when the
-    input contains a fractional portion. Behavior for large values is
-    unchanged (hours/days/etc are shown as needed).
+    input contains a fractional portion.
     """
     try:
         total = float(seconds)
@@ -727,7 +722,7 @@ def _get_breadcrumb_str(width: int) -> str:
     """Render NAV_STACK as a '>'-joined breadcrumb that fits `width`.
 
     Over-long trails shed whole path components from the front, keeping the
-    deepest ones — those say where you are; the ones above are context you can
+    deepest ones: those say where you are; the ones above are context you can
     infer. Slicing the joined string by character instead turned "Bleak
     Expectations > A Childhood Cruelly Kippered" into "…pectations > A Childhood
     Cruelly Kippered", where the leading fragment is a word that was never in
@@ -757,7 +752,7 @@ def _get_breadcrumb_str(width: int) -> str:
     out = "… > " + sep.join(kept)
     if len(out) <= max_length:
         return out
-    # Not even the deepest component fits beside the marker — truncate it from
+    # Not even the deepest component fits beside the marker: truncate it from
     # its end, so what remains is the start of a real name rather than the tail
     # of one. truncate_text handles a width too small for the ellipsis itself.
     return truncate_text(NAV_STACK[-1], max_length)
@@ -766,7 +761,7 @@ def _get_breadcrumb_str(width: int) -> str:
 
 def get_progress_bar(progress: float, width: int = 40) -> str:
     """
-    Exact mimic of the pip/rich progress bar style.
+    A pip-style progress bar.
     [━━━━━━━━━━━━━━━━━━━━━━━━╸          ]
     """
     progress = max(0, min(1, progress))
@@ -777,7 +772,7 @@ def get_progress_bar(progress: float, width: int = 40) -> str:
 
     bar = "━" * whole_blocks
 
-    # Add the "smooth" tip (the 'pip' secret sauce)
+    # half-cell tip
     if whole_blocks < width:
         if remainder > 0.6:
             bar += "━" # Almost full

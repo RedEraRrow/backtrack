@@ -1,4 +1,5 @@
-"""Playback UI rendering: album art, metadata, credits, volume bar, lyric panes."""
+"""The player screen: layout, metadata and credits, transport controls, volume bar,
+and the diffed frame painter."""
 from __future__ import annotations
 import re
 import sys
@@ -13,17 +14,17 @@ from src.utils.prompt_core import add_hint_click_cells
 from src.utils.ui_utils import Colors as C
 from src import tuning as tune
 from src.utils.log import log
-from src.playback.queue_pane import (  # noqa: F401 — re-exported
+from src.playback.queue_pane import (  # noqa: F401 (re-exported)
     _place_queue, _queue_click_rows, has_queue, queue_click_index, set_queue_context,
 )
-from src.playback.player_art import (  # noqa: F401 — re-exported
+from src.playback.player_art import (  # noqa: F401 (re-exported)
     ART_MAX_WIDTH, _art_width_for_height, _draw_inline_art, _inline_art, art_image_incomplete, inline_art_enabled, redraw_art_image, set_resizing,
 )
 from src.config import setting
 from src.music_library import year_of
 
 
-# Absolute cursor positioning (\033[<row>;<col>H) — must require the trailing
+# Absolute cursor positioning (\033[<row>;<col>H): must require the trailing
 # 'H' so it does NOT also match a 24-bit colour prefix like \033[38;2;r;g;bm,
 # which every half-block art line starts with. Matching those made the renderer
 # treat art lines as absolute (row-less), so metadata flowed to the top and drew
@@ -41,13 +42,13 @@ def _render_frame_buffer(buf: list, rows: int) -> None:
     """Flush the assembled frame, writing only the rows whose content changed.
 
     `buf[0]` is a clear sequence, deliberately **dropped**: erasing the whole
-    screen every frame made the player flicker on every progress tick, and with a
-    diffed paint it isn't needed — rows the frame stops using are blanked
+    screen every frame makes the player flicker on every progress tick, and with a
+    diffed paint it isn't needed: rows the frame stops using are blanked
     explicitly, and `ui_utils.clear_screen()` (entry, resize, exit) already drops
     the painter's model so the next frame repaints in full.
 
     `row` counts only flow (relative) lines; absolute-positioned items (the
-    volume bar, controls, lyrics) pass through WITHOUT consuming a row slot —
+    volume bar, controls, lyrics) pass through WITHOUT consuming a row slot;
     otherwise everything after them (e.g. the metadata) is pushed off-place.
     Their rows are forgotten, so a later flow paint of the same row still lands.
     """
@@ -58,7 +59,7 @@ def _render_frame_buffer(buf: list, rows: int) -> None:
         m = _ABS_ROW_RE.match(item)
         if m:
             # An overlay: it writes a few columns of a row the art (or another
-            # flow line) also occupies — the volume bar sits to the right of the
+            # flow line) also occupies: the volume bar sits to the right of the
             # art, on the art's own rows. It is layered *over* that row rather
             # than replacing it; dropping the row's flow content blanked the art.
             overlay.setdefault(int(m.group(0)[2:-1].split(';')[0]), []).append(item)
@@ -69,15 +70,15 @@ def _render_frame_buffer(buf: list, rows: int) -> None:
 
     # Every row this frame could need to touch: its own content, plus rows a
     # taller previous frame used, plus rows whose overlay has now gone away.
-    # Blank counts as content — a row left out of this frame must be *erased*,
+    # Blank counts as content: a row left out of this frame must be *erased*,
     # not left showing the previous screen.
     touched = set(flow) | set(overlay)
     touched |= {r for r in range(row + 1, _player_prev_rows[0] + 1) if r <= rows}
     touched |= {r for r in _player_overlay_rows[0] if r not in overlay and r <= rows}
     # The player owns the whole screen, so anything the painter still remembers
-    # from the screen before it — the menu's miniplayer box, a taller list — is
-    # blanked here. Entry used to rely on a full clear per frame; without one, a
-    # first frame shorter than the previous screen left its bottom rows behind.
+    # from the screen before it (the menu's now-playing box, a taller list) is
+    # blanked here. There is no full clear per frame, so without this a first
+    # frame shorter than the previous screen would leave its bottom rows behind.
     touched |= {r for r in pc.screen_rows() if r <= rows and r not in touched}
     _player_prev_rows[0] = row
     _player_overlay_rows[0] = set(overlay)
@@ -111,7 +112,9 @@ _ui_state = {
     'show_credits': False,
     'show_lyrics': False,
     'show_queue': False,
-    'pane_mode': 'off',   # off → lyrics → queue → lyrics+credits (single-key cycle)
+    # Single-key cycle: off → lyrics → queue → lyrics+credits (credits alone when
+    # the track has no lyrics).
+    'pane_mode': 'off',
     # False in a joined window's player view: lyrics are only painted by the
     # window playing the audio, so there the panel offers credits and the queue.
     'lyrics_pane': True,
@@ -213,7 +216,7 @@ def _volume_bar_cells(volume: int) -> list[str]:
 
     # Keep the bar's bottom in line with the art's bottom even when the layout is
     # tight: the art's flow lines are clipped at `rows - MARGIN_V`, but these
-    # absolute cells aren't — so clamp the bar to the same limit instead of
+    # absolute cells aren't, so clamp the bar to the same limit instead of
     # letting it hang below a shortened art.
     rows = ui_utils.get_terminal_size()[1]
     visible = (rows - ui_utils.MARGIN_V) - top + 1
@@ -223,26 +226,26 @@ def _volume_bar_cells(volume: int) -> list[str]:
         return []
 
     pct = max(0.0, min(100.0, float(volume))) / 100.0
-    # Whole-cell fill (rounded to the nearest row). A sub-cell partial block left
-    # the top of the boundary cell as empty background — reading as a gap between
-    # the fill and the tube — so every cell is now either solid fill or tube.
+    # Whole-cell fill (rounded to the nearest row). A sub-cell partial block leaves
+    # the top of the boundary cell as empty background, reading as a gap between
+    # the fill and the tube, so every cell is either solid fill or tube.
     filled = int(round(pct * height))
 
     cells: list[str] = []
     for d in range(height):  # d = distance from the bottom (0 = bottom row)
         row = top + (height - 1 - d)
         if d < filled:
-            glyph = f"{C.DIM}█{C.RESET}"            # filled level — dim, not bright
+            glyph = f"{C.DIM}█{C.RESET}"            # filled level: dim, not bright
         else:
-            glyph = f"{C.DIM}░{C.RESET}"            # unused section — hollow "tube"
+            glyph = f"{C.DIM}░{C.RESET}"            # unused section: hollow "tube"
         cells.append(f"\033[{row};{bar_col}H{glyph}")
 
     # Speaker glyph at the top; percentage just below the bar in a fixed 3-wide
     # field so shorter values (100 → 90 → 0) fully overwrite the previous one.
     cells.append(f"\033[{top};{bar_col}H{C.DIM}♪{C.RESET}")
     label_col = max(1, bar_col - 1)
-    # Label from the clamped percentage the bar itself was drawn from — printing
-    # the raw value showed VLC's "-1" under an empty tube.
+    # Label from the clamped percentage the bar itself was drawn from: printing
+    # the raw value would show VLC's "-1" under an empty tube.
     cells.append(f"\033[{top + height};{label_col}H{C.DIM}{int(round(pct * 100)):>3}{C.RESET}")
     return cells
 
@@ -255,7 +258,7 @@ def draw_volume_bar(volume: int) -> None:
         sys.stdout.flush()
         geo = _volume_bar_geometry()
         if geo:                          # those rows now carry glyphs we didn't
-            _, top, height = geo         # record — let the next frame repaint them
+            _, top, height = geo         # record, so let the next frame repaint them
             pc.screen_forget_rows(top, top + height)
 
 
@@ -270,7 +273,7 @@ def toggle_metadata() -> None:
         log.warning("couldn't save player_show_metadata: %s", exc)
     refresh_player_settings()
 def toggle_help() -> None:
-    """Show or hide the hint bar — the app-wide switch, so every screen follows."""
+    """Show or hide the hint bar: the app-wide switch, so every screen follows."""
     pc.toggle_hints()
 def _set_pane_mode(mode: str) -> None:
     """Set the right-pane mode and sync the show_lyrics/show_credits/show_queue flags to match it."""
@@ -312,8 +315,8 @@ def refresh_player_settings() -> None:
     """Re-read the player's settings (`debug`, `player_show_metadata`) into
     `_ui_state`.
 
-    Called when a track loads and when the metadata panel is toggled — both rare,
-    both moments where the answer could have changed — rather than on every draw,
+    Called when a track loads and when the metadata panel is toggled (both rare,
+    both moments where the answer could have changed) rather than on every draw,
     which would re-read the file for a value that almost never moves.
     """
     try:
@@ -330,8 +333,8 @@ def set_lyric_sources(track: str, files: list[str], estimated: bool = False) -> 
 
     Set by the player from what the load RESOLVED, never from what it hoped to
     find, so the 'm' panel names the document being read rather than the one that
-    ought to be there — the difference between the two is the whole bug class this
-    exists to make visible.
+    ought to be there: the difference between the two is the bug class this
+    exists to make visible. The panel only shows it with Diagnostics on.
 
     Stamped with the track it belongs to, and the panel only shows it for that
     track. Naming another episode's files would be worse than naming none, and a
@@ -399,7 +402,7 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
 def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
                    width: int | None = None,
                    has_lyrics: bool = True, has_credits: bool = True) -> tuple[str, str]:
-    """Build the centered transport-controls line and the shortcuts/help hint line below it."""
+    """Build the centred transport-controls line and the shortcuts/help hint line below it."""
     pp_icon = "⏵" if is_paused else "⏸"
     transport_icons = ["⏮ ", pp_icon, "⏭"]
     controls = "  ".join(transport_icons)
@@ -506,7 +509,7 @@ def transport_click_action(row: int, col: int, ctrl_row: int) -> str | None:
 
 
 def volume_from_click(row: int, col: int) -> int | None:
-    """If (row, col) lands on the vertical volume bar, return the volume (0–100)
+    """If (row, col) lands on the vertical volume bar, return the volume (0-100)
     for that height (top = 100, bottom = 0); else None."""
     geo = _volume_bar_geometry()
     if geo is None:
@@ -523,7 +526,7 @@ def volume_from_click(row: int, col: int) -> int | None:
 
 def progress_from_click(row: int, col: int) -> float | None:
     """If (row, col) lands on the horizontal progress bar, return the fraction of
-    the track that column represents (0.0–1.0); else None. The '[' and ']' caps
+    the track that column represents (0.0-1.0); else None. The '[' and ']' caps
     count as the two ends, so clicking either edge seeks to the start / end."""
     if geom.prog_row is None or geom.prog_col is None or geom.prog_w <= 0:
         return None
@@ -544,7 +547,7 @@ def hint_click_key(row: int, col: int) -> str | None:
 
 
 def _movement_roman(s: str) -> str:
-    """A movement number as a Roman numeral — the convention for classical
+    """A movement number as a Roman numeral, the convention for classical
     movements. Non-numeric (or unnumbered) values pass through unchanged.
     """
     return numbering.roman(s) or s
@@ -588,7 +591,7 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
 
     # Album and artist ALWAYS show; the 'm' toggle only governs the extras below.
     if artist and album:
-        second = f"{artist} — {album}"
+        second = f"{artist} - {album}"
     else:
         second = artist or album
     if second:
@@ -634,7 +637,7 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
             details.append(_disc_str(disc, disc_total))
 
         # A movement number already says where the track sits in the work, so the
-        # track number would only repeat it — show one or the other, never both.
+        # track number would only repeat it: show one or the other, never both.
         if track and not movement:
             details.append(_track_str(track, track_total))
 
@@ -703,7 +706,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     _inline_art['path'] = None
     geom.reset_frame()
 
-    # 1. Clear terminal — home first (no scroll), erase saved lines, erase to end.
+    # buf[0] is a clear sequence that _render_frame_buffer drops (see there).
     frame_buffer = ["\033[H\033[3J\033[J"]
 
     def emit(text):
@@ -770,7 +773,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
             ctrl_row = prog_row + 1
 
             # Recompute now that the art geometry is set, so the transport line
-            # centers over the art. The hint-line count is unchanged from the
+            # centres over the art. The hint-line count is unchanged from the
             # early call that sized the art above.
             ctrl_row, shortcut_lines = _place_controls(
                 emit, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
@@ -839,7 +842,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         ctrl_row, shortcut_lines = _place_controls(
             emit, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
 
-        _pane_top = geom.art_top  # right pane aligns with art top after any vertical centering
+        _pane_top = geom.art_top  # right pane aligns with art top after any vertical centring
 
         # Queue view takes over the whole right pane when toggled on.
         if _ui_state['show_queue']:
@@ -901,7 +904,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         art_str, art_lines = _art_width_for_height(file_path, cols, max_art_h, pre_art)
         actual_art_w = max((ui_utils.visual_len(l) for l in art_lines), default=cols) if art_lines else cols
         if actual_art_w < cols:
-            # Art was narrowed to fit terminal height — centre it.
+            # Art was narrowed to fit terminal height: centre it.
             art_lines = _align_art_lines(art_lines, cols)
             geom.art_left = max(0, (cols - actual_art_w) // 2)
             geom.art_width = actual_art_w

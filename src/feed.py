@@ -39,13 +39,13 @@ _MONTHS = {name.lower(): number for number, name in enumerate(
      'august', 'september', 'october', 'november', 'december'), start=1)}
 _MONTHS.update({name[:3]: number for name, number in list(_MONTHS.items())})
 
-# "Ep 2." / "Ep5." / "Ep. 12" — the separator before it is whatever the writer
+# "Ep 2." / "Ep5." / "Ep. 12": the separator before it is whatever the writer
 # felt like that week, including nothing at all.
 _EPISODE_RE = re.compile(
     r'^(?P<show>.+?)[\s:\u2013\u2014-]*\bEp\.?\s*(?P<episode>\d+)\b\s*[.:]?\s*(?P<title>.*)$',
     re.IGNORECASE)
 
-# "Show - 6. Title" — a bare number where another feed would write "Ep".
+# "Show - 6. Title": a bare number where another feed would write "Ep".
 _NUMBERED_RE = re.compile(
     r'^(?P<show>.+?)\s*[\u2013\u2014-]\s*(?P<episode>\d+)\.\s+(?P<title>.+)$')
 
@@ -76,16 +76,16 @@ def normalise_whitespace(text: str) -> str:
 class ParsedTitle:
     """What a title turned out to say.
 
-    `raw` is always the title as published — every other field is a reading of
+    `raw` is always the title as published; every other field is a reading of
     it, and a wrong reading should never cost the original.
 
     `date_source` says where the date came from, because a feed's `pubDate` is
     frequently the upload time rather than the broadcast date:
 
-    * ``title``      — day, month and year all came from the title
-    * ``title+feed`` — day and month from the title, year from `pubDate`
-    * ``feed``       — nothing datelike in the title, so `pubDate` it is
-    * ``''``         — no date at all
+    * ``title``:      day, month and year all came from the title
+    * ``title+feed``: day and month from the title, year from `pubDate`
+    * ``feed``:       nothing datelike in the title, so `pubDate` it is
+    * ``''``:         no date at all
     """
     raw: str
     title: str = ''
@@ -125,7 +125,7 @@ def parse_title(raw: str, pub_date: datetime | None = None) -> ParsedTitle:
             parsed.show = _clean_show(match.group('show'), parsed.series)
             # The date *is* the episode title here ("31st May"), kept as written.
             # Leaving it empty put the whole raw title in, show prefix and all,
-            # so a track row read "Dead Ringers — Dead Ringers - 31st May".
+            # so a track row showed the show twice: "Dead Ringers", then "Dead Ringers - 31st May".
             parsed.title = normalise_whitespace(text[match.start('day'):])
             day = int(match.group('day'))
             year = match.group('year')
@@ -153,7 +153,7 @@ def _clean_show(text: str, series: int | None = None) -> str:
     """Tidy a captured show prefix.
 
     Trailing punctuation is a separator, not part of the name. A series marker
-    is its own field, so "A Show Series 2" is the show "A Show" — leaving it in
+    is its own field, so "A Show Series 2" is the show "A Show"; leaving it in
     filed each series under its own album.
     """
     cleaned = normalise_whitespace(text)
@@ -195,7 +195,7 @@ class Item:
         return self.guid or self.url
 
     def as_dict(self) -> dict:
-        """A flat, JSON-able view — the shape `feed fetch --json` prints."""
+        """A flat, JSON-able view: the shape `feed fetch --json` prints."""
         body = {k: v for k, v in asdict(self).items() if k != 'parsed'}
         body.update(asdict(self.parsed))
         body['key'] = self.key
@@ -241,7 +241,7 @@ def parse_feed(data: bytes | str) -> Feed:
 
     channel = root.find('channel')
     if channel is None:
-        raise ValueError("no <channel> — is this an RSS feed?")
+        raise ValueError("no <channel>: is this an RSS feed?")
 
     feed = Feed(title=normalise_whitespace(channel.findtext('title') or ''),
                 link=(channel.findtext('link') or '').strip(),
@@ -435,7 +435,7 @@ def tag_plan(item: Item, feed_title: str = '') -> tuple[dict, dict]:
     """The tags an imported episode should carry: `(fields, frames)`.
 
     `fields` are `tag_writer`'s cross-format ones, written to MP3 and MP4 alike.
-    `frames` are raw ID3 the writer has no field for — the genre, the full
+    `frames` are raw ID3 the writer has no field for: the genre, the full
     broadcast date (its `year` field would keep only the year), and the raw
     title kept verbatim in a comment so the original survives however the parse
     went. MP4 downloads get the fields and not the frames, which is the same

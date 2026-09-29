@@ -2,8 +2,8 @@
 
 The inverse of the "Derive from filename" op: instead of parsing names into
 tags, this expands a ``%token%`` pattern using the file's existing tags to make
-a clean, uniform file name. Pure and unit-testable; the bulk op in
-``bulk_names`` handles the UI, preview, and the actual (two-phase) rename.
+a clean, uniform file name. Pure and unit-testable; ``bulk_names`` owns the
+screens and ``bulk_ops.rename_files`` does the two-phase rename.
 
 MP3 exposes the full token set; MP4/m4a exposes the common atoms.
 """
@@ -88,7 +88,7 @@ _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _TOKEN_RE = re.compile(r'%([a-zA-Z]+)(?::([a-zA-Z]+))?(?::([a-zA-Z]+))?%')
 
 _MP3_EXTS = ('.mp3',)
-# Raw .aac (ADTS) has no MP4 atoms — not tag-writable (see tag_writer).
+# Raw .aac (ADTS) has no MP4 atoms, so it is not tag-writable (see tag_writer).
 _MP4_EXTS = ('.m4a', '.mp4', '.m4p')
 
 
@@ -201,9 +201,9 @@ def _cleanup(s: str) -> str:
     """Tidy a rendered name: collapse whitespace and drop separators orphaned
     by an empty token (e.g. an empty %artist% in '%artist% - %title%')."""
     s = re.sub(r'\s+', ' ', s)
-    s = re.sub(r'(?:\s*[-–]\s*){2,}', ' - ', s)   # collapse runs of dashes
-    s = re.sub(r'^[\s\-–_.]+', '', s)             # leading separators
-    s = re.sub(r'[\s\-–_.]+$', '', s)             # trailing separators
+    s = re.sub(r'(?:\s*[-\u2013]\s*){2,}', ' - ', s)   # collapse runs of dashes
+    s = re.sub(r'^[\s\-\u2013_.]+', '', s)             # leading separators
+    s = re.sub(r'[\s\-\u2013_.]+$', '', s)             # trailing separators
     return s.strip()
 
 
@@ -219,7 +219,7 @@ def render(pattern: str, tokens: dict[str, str]) -> str:
     def _sub(m: re.Match) -> str:
         """Look up one %token% match's value, blank if absent.
 
-        A trailing style renders a numeric token as roman or words —
+        A trailing style renders a numeric token as roman or words:
         ``%track:r%`` → IV, ``%disc:en%`` → Two, ``%movementno:r:l%`` → iv.
         A non-numeric value is returned untouched.
         """
@@ -243,8 +243,8 @@ def unknown_tokens(pattern: str) -> list[str]:
 
 
 def artists_vary(paths: list[str], token_cache: dict[str, dict] | None = None) -> bool:
-    """True if the selection has more than one distinct (non-empty) track artist
-    — the signal to include %artist% in the default file-name pattern."""
+    """True if the selection has more than one distinct (non-empty) track artist:
+    the signal to include %artist% in the default file-name pattern."""
     seen: set[str] = set()
     for p in paths:
         toks = (token_cache or {}).get(p) or read_tokens(p)
@@ -267,7 +267,7 @@ def plan_renames(paths: list[str], pattern: str,
     """
     results: list[tuple[str, str, str]] = []
     # Per-directory set of taken names, seeded with EVERY existing file (batch
-    # members included) — a name on disk is occupied until vacated. A file may
+    # members included): a name on disk is occupied until vacated. A file may
     # still reclaim its OWN current name (see the `!= own` guard below).
     taken: dict[str, set[str]] = {}
     for p in paths:
@@ -289,7 +289,7 @@ def plan_renames(paths: list[str], pattern: str,
         own = old_base.lower()
         candidate = f"{base}{ext}"
         n = 2
-        # Skip any name that's taken — unless it's this file's own current name.
+        # Skip any name that's taken, unless it's this file's own current name.
         while candidate.lower() in taken[d] and candidate.lower() != own:
             candidate = f"{base} ({n}){ext}"
             n += 1

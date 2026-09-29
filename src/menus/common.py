@@ -9,11 +9,11 @@ from src.config import load_config, update_config
 from src.config import setting
 
 
-# Structured column layouts for browse lists (no string parsing — each Choice
+# Structured column layouts for browse lists (no string parsing: each Choice
 # carries explicit `cells`).
 _TRACK_COLUMNS = [
     prompt.Column(style='primary', max_frac=0.5),                # title (truncates)
-    prompt.Column(style='dynamic-dim', flex=True, align='left', priority=1),  # featured artist — drops first when narrow
+    prompt.Column(style='dynamic-dim', flex=True, align='left', priority=1),  # featured artist: drops first when narrow
     prompt.Column(style='dynamic-dim', align='right', pin=True),  # duration (pinned right, kept)
 ]
 
@@ -39,7 +39,7 @@ def _menu_header(title: str, subtitle: str | None = None):
     The header names the screen, so the accompanying select() message is left
     empty ("") whenever it would only say the same thing one line further down
     ("Albums" over "Albums:"). Pass a message only when it tells you something
-    the header does not — "Action:" under a track title, "Sort by:" over a list
+    the header does not: "Action:" under a track title, "Sort by:" over a list
     of sort modes.
     """
 
@@ -60,7 +60,7 @@ def _menu_header(title: str, subtitle: str | None = None):
 def _album_artist_of(songs: list) -> str:
     """First non-empty album artist among a group's songs.
 
-    With no album artist, fall back to the credit derived from the track casts —
+    With no album artist, fall back to the credit derived from the track casts,
     the same anchor rule the artist grouping uses, so the displayed credit and
     the group a track is filed under can never disagree.
     """
@@ -105,12 +105,12 @@ def _autoplay() -> bool:
 # setting can be read without changing it: a tick/cross for the on/off ones, the
 # value itself for the rest. Labels are sentence case, like every other screen.
 _SETTINGS_COLUMNS = [
-    prompt.Column(style='primary'),                 # label — sized to its content
+    prompt.Column(style='primary'),                 # label, sized to its content
     prompt.Column(style='dynamic-dim', flex=True),  # state, left-aligned just after
 ]
 
 
-# The on/off pair: filled and hollow, not a tick and a cross — ✘ reads as
+# The on/off pair: filled and hollow, not a tick and a cross: ✘ reads as
 # *invalid* rather than *off*. ● and ○ differ only in fill, which is exactly
 # the difference.
 ON_GLYPH, OFF_GLYPH = "●", "○"
@@ -130,7 +130,7 @@ def _space_toggles(values) -> dict:
 
 
 # Browse categories: key → (label, field grouped by, drills into an album list
-# first, offers the A–Z letter index). Which appear, and in what order, is the
+# first, offers the A-Z letter index). Which appear, and in what order, is the
 # `browse_menu` setting; "libraries" is the Libraries submenu, not a field.
 BROWSE_CATEGORIES = {
     'artists':   ("Artists",   'artist',   True,  True),

@@ -1,37 +1,37 @@
-"""Bulk trimming: candidate detection (section 5.1), sting-based seeding with
-auto-discovered candidates (section 4.4/5.2.1/5.2.2), and the conveyor that
-walks a selection marking each track in turn before committing the whole
-batch in one pass (5.2). The per-track marking screen is trim_editor's
-`_run_marking_screen` — this module adds sting seeding, the group strip, the
+"""Bulk trimming: candidate detection, sting-based seeding with
+auto-discovered candidates, and the conveyor that walks a selection marking
+each track in turn before committing the whole batch in one pass. The
+per-track marking screen is trim_editor's `_run_marking_screen`; this module
+adds sting seeding, the group strip, the
 walk, and the commit pass on top, never re-implementing marking/audition/undo.
 
 Candidate discovery (`trim.find_candidate_stings`) compares the reference
-track against one other track in the group to find segments they share —
-there's usually more than one (a continuity announcement, the theme, a
+track against one other track in the group to find segments they share.
+There's usually more than one (a continuity announcement, the theme, a
 trailer), so every candidate is listed with its score and is auditionable
 before picking. "Mark manually" is always offered alongside, for when nothing
 scores well enough or the group is a lone pair with no useful comparison.
 
-Head and tail are seeded independently (section 5.2.2): an opening sting and
+Head and tail are seeded independently: an opening sting and
 a closing one are offered as two separate questions, each with its own
 keep/drop anchor, since keeping the theme while dropping a closing
 announcement (or vice versa) is an ordinary combination, not a special case.
 
-Declining the sting offer falls back to `_propagate_absolute_offset` (5.2.1):
-mark one track normally, copy its absolute timestamps to the rest. Explicitly
-the weaker tool — it assumes identical padding, which a single overrunning
-episode breaks — so it never commits on its own; every track still goes
+Declining the sting offer falls back to `_propagate_absolute_offset`: mark
+one track normally, copy its absolute timestamps to the rest. Explicitly the
+weaker tool (it assumes identical padding, which a single overrunning episode
+breaks), so it never commits on its own; every track still goes
 through the normal per-track review in the walk that follows.
 
-Silence detection (4.3) is the fallback when there's no sting: it isn't a
-separate bulk feature, it's inherited for free from `_run_marking_screen`'s
-'[' / ']' jump-to-candidate keys, available on every track this conveyor
-opens exactly as it is in single-track trim. Chapters (3.3) are handled the
+Silence detection is the fallback when there's no sting. It isn't a
+separate bulk feature: it comes from `_run_marking_screen`'s '[' / ']'
+jump-to-candidate keys, available on every track this conveyor opens exactly
+as it is in single-track trim. Chapters are handled the
 same way, via trim_editor's `resolve_chapters`, asked per track as its turn
 in the walk comes up rather than batched at commit time.
 
-`apply_replaygain_op` (section 5.4) is a separate bulk operation over the
-same material, not part of the trim commit — it measures loudness and
+`apply_replaygain_op` is a separate bulk operation over the same material,
+not part of the trim commit: it measures loudness and
 proposes a per-track gain as tags only, and only makes sense run after
 trimming (a pre-trim measurement would include the material about to be cut).
 """
@@ -77,14 +77,14 @@ _COMMIT_COLUMNS = [
 
 
 # ---------------------------------------------------------------------------
-# Candidate detection (section 5.1) — a pass over the cached library list,
+# Candidate detection: a pass over the cached library list,
 # no file access. Groups are keyed by (artist, album), matching how the
 # browse menus already group a series/season.
 # ---------------------------------------------------------------------------
 
 def _group_by_album(library: list) -> dict[tuple[str, str], list[dict]]:
-    """MP3 tracks with a cached duration, grouped by (artist, album) — trimming
-    is MP3-only (section 2.2), so non-MP3 tracks are excluded up front."""
+    """MP3 tracks with a cached duration, grouped by (artist, album). Trimming
+    is MP3-only, so non-MP3 tracks are excluded up front."""
     groups: dict[tuple[str, str], list[dict]] = {}
     for t in library:
         path = t.get('path')
@@ -100,9 +100,9 @@ def round_duration_candidates(library: list, *, tolerance_s: float = 1.0) -> lis
     """Signal 1: a cluster of >=2 tracks in a group sharing an identical
     duration that's a whole number of minutes. Near-conclusive on its own,
     but a group that is *entirely* one round duration only counts once a
-    sibling group (same artist) proves that varying naturally is the norm —
-    a series that genuinely always runs the same length isn't a false
-    positive to flag (section 5.1's "beware false positives")."""
+    sibling group (same artist) proves that varying naturally is the norm:
+    a series that really does always run the same length isn't a false
+    positive to flag."""
     groups = _group_by_album(library)
     results = []
     for (artist, album), tracks in groups.items():
@@ -128,10 +128,10 @@ def round_duration_candidates(library: list, *, tolerance_s: float = 1.0) -> lis
         varies_within = any(abs(d - best_value) > tolerance_s * 3 for d in others)
 
         if best_count < len(tracks) and not varies_within:
-            continue  # the "outliers" aren't actually different — no real cluster
+            continue  # the "outliers" aren't actually different, no real cluster
 
         if best_count == len(tracks):
-            # Whole group is one round value — only flag if a sibling group
+            # Whole group is one round value: only flag if a sibling group
             # (same artist, different album) shows real tracks vary naturally.
             varies_across = any(
                 len(sib) >= 2 and (max(s['duration'] for s in sib) - min(s['duration'] for s in sib)) > tolerance_s * 3
@@ -191,13 +191,13 @@ def group_duration_mismatch(library: list, *, mismatch_ratio: float = 1.10) -> l
 
 
 # ---------------------------------------------------------------------------
-# Sting seeding (section 4.4 / 5.2.1 / 5.2.2). Pure aside from the ffmpeg
-# decode calls it makes through trim.decode_mono_pcm/find_sting — no terminal
+# Sting seeding. Pure aside from the ffmpeg decode calls it makes through
+# trim.decode_mono_pcm/find_sting: no terminal
 # output, no marks mutation; the conveyor decides what to do with the result.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# The conveyor (section 5.2).
+# The conveyor.
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -209,8 +209,8 @@ class _TrackState:
 
 
 def _build_strip(paths: list[str], state: dict[str, _TrackState], idx: int) -> list[str]:
-    """One line of group state: position, and a glyph per track — the only
-    group-level UI (section 5.2). ● current, ✔ marked, ◐ partly marked,
+    """One line of group state: position, and a glyph per track, the only
+    group-level UI. ● current, ✔ marked, ◐ partly marked,
     ○ untouched."""
     indent = " " * ui_utils.MARGIN_H
     glyphs = []
@@ -233,7 +233,7 @@ def _build_strip(paths: list[str], state: dict[str, _TrackState], idx: int) -> l
 
 
 def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list, header) -> None:
-    """One write pass over every track marked done (section 5.2.3): a preview
+    """One write pass over every track marked done: a preview
     first, then synchronous foreground trims. A per-track failure is tallied
     and doesn't abort the group; Esc between tracks finishes the current file
     then stops and reports what was and wasn't written."""
@@ -251,10 +251,10 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
             title=os.path.basename(p), value=p, checked=True,
             cells=[os.path.basename(p),
                    f"{timefmt.clock(m.in_snapped)} → {timefmt.clock(m.out_snapped)}",
-                   f"{dur:.1f}s" if dur is not None else "—"]))
+                   f"{dur:.1f}s" if dur is not None else "-"]))
 
     sub = ui_utils.plural(len(todo), "track") + " marked"
-    sel = prompt.select("Preview — ↵ commits:", choices=rows,
+    sel = prompt.select("Preview, ↵ commits:", choices=rows,
                         columns=_COMMIT_COLUMNS, header=header(sub), multi=True)
     if not sel:
         return
@@ -299,13 +299,13 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
 
 def _mark_sting(reference_path: str, track_length: float, frame_dur: float) -> tuple[float, float] | None:
     """Mark the sting's own boundaries on the reference track, reusing the
-    normal marking screen with relabeled hints — these marks are the sting's
+    normal marking screen with relabelled hints: these marks are the sting's
     extent, not a cut point. None if the user backs out."""
     m = Marks()
     outcome = _run_marking_screen(
         reference_path, m, [],
         track_length=track_length, frame_dur=frame_dur,
-        track_name="Mark the sting — its start and end", track_artist="",
+        track_name="Mark the sting: its start and end", track_artist="",
         siblings=[],
         finish_key='s', finish_hint='use as sting', finish_verb='use this as the sting',
     )
@@ -315,9 +315,9 @@ def _mark_sting(reference_path: str, track_length: float, frame_dur: float) -> t
 
 
 def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float, float] | None:
-    """Offer auto-discovered candidate stings (5.2.1) — segments the
-    reference track (paths[0]) shares with another track in the group, each
-    auditionable — or fall back to marking the sting by hand. `region`
+    """Offer auto-discovered candidate stings (segments the
+    reference track, paths[0], shares with another track in the group, each
+    auditionable), or fall back to marking the sting by hand. `region`
     controls whether the head or tail of each track is scanned (opening vs.
     closing sting). None if the user backs out entirely."""
     reference_path = paths[0]
@@ -343,7 +343,7 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
     candidates = trim.find_candidate_stings(pcm_a, pcm_b)
     if not candidates:
         return _mark_manually()
-    # Candidates are relative to the scanned window — make them absolute
+    # Candidates are relative to the scanned window: make them absolute
     # positions in the reference track before they're used as sting bounds.
     for c in candidates:
         c['start'] += ref_start_s
@@ -396,13 +396,13 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
 
 
 def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bound: str = 'in') -> None:
-    """Pick the sting once — learned from an earlier trim in this folder,
-    auto-discovered against the reference track (paths[0]), or marked by hand
-    — ask which side the cut falls on (skipped when learned: direction
+    """Pick the sting once (learned from an earlier trim in this folder,
+    auto-discovered against the reference track, paths[0], or marked by
+    hand), ask which side the cut falls on (skipped when learned: direction
     already answers it), then seed every other track's mark from the shape
-    match (section 5.2.1). `bound` is 'in' (an opening sting) or 'out' (a
-    closing one) — head and tail carry the keep/drop choice independently
-    (section 5.2.2). Tracks that score too low are left unseeded."""
+    match. `bound` is 'in' (an opening sting) or 'out' (a closing one); head
+    and tail carry the keep/drop choice independently. Tracks that score too
+    low are left unseeded."""
     region = 'head' if bound == 'in' else 'tail'
     which = "opening" if bound == 'in' else "closing"
     cfg = load_config()
@@ -411,7 +411,7 @@ def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bou
 
     learned = trim.learn_sting_from_history(paths, region, window_s, min_score)
     used_history = learned is not None and prompt.confirm(
-        f"Found a matching {which} sting from an earlier trim in this folder — use it?", default=True)
+        f"Found a matching {which} sting from an earlier trim in this folder. Use it?", default=True)
 
     def _apply(path: str, mark_s: float) -> bool:
         try:
@@ -439,13 +439,13 @@ def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bou
 
         if bound == 'in':
             choices = [
-                prompt.Choice(title="Keep it — the in-point is the sting's start", value='start'),
-                prompt.Choice(title="Drop it — the in-point is the sting's end", value='end'),
+                prompt.Choice(title="Keep it: the in-point is the sting's start", value='start'),
+                prompt.Choice(title="Drop it: the in-point is the sting's end", value='end'),
             ]
         else:
             choices = [
-                prompt.Choice(title="Keep it — the out-point is the sting's end", value='end'),
-                prompt.Choice(title="Drop it — the out-point is the sting's start", value='start'),
+                prompt.Choice(title="Keep it: the out-point is the sting's end", value='end'),
+                prompt.Choice(title="Drop it: the out-point is the sting's start", value='start'),
             ]
         side = prompt.select("Which side of the sting does the cut fall on?", choices=choices)
         if side is None:
@@ -480,10 +480,10 @@ def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bou
 
 
 def _propagate_absolute_offset(paths: list[str], state: dict[str, _TrackState]) -> None:
-    """Fallback seeding for a group with no usable sting (section 5.2.1): mark
-    the reference track normally, then copy its absolute in/out timestamps to
-    every other track directly. The weaker tool — padding varies between
-    episodes, and a news bulletin overrunning shifts everything after it — so
+    """Fallback seeding for a group with no usable sting: mark the reference
+    track normally, then copy its absolute in/out timestamps to every other
+    track directly. The weaker tool (padding varies between episodes, and a
+    news bulletin overrunning shifts everything after it), so
     it never commits on its own; each track still goes through the normal
     per-track review (and re-marking) in the walk that follows."""
     reference_path = paths[0]
@@ -521,18 +521,18 @@ def _propagate_absolute_offset(paths: list[str], state: dict[str, _TrackState]) 
         seeded += 1
 
     ui_utils.show_status(
-        f"Propagated the same timestamps to {ui_utils.plural(seeded, 'other track')} — "
+        f"Propagated the same timestamps to {ui_utils.plural(seeded, 'other track')}; "
         f"review each one, padding may vary.")
 
 
 def trim_conveyor(paths: list, library: list, header) -> None:
     """Walk `paths` one track at a time, marking each with the same screen as
-    single-track trim, then commit the whole batch in one pass (section 5.2).
+    single-track trim, then commit the whole batch in one pass.
     Marking is separated from writing: nothing is trimmed until the preview
     at the end is confirmed."""
     mp3_paths = [p for p in paths if tw.format_kind(p) == 'mp3']
     if not trim.HAS_FFMPEG:
-        ui_utils.show_status("Could not open the trimmer — ffmpeg isn't installed. See README.md.")
+        ui_utils.show_status("Could not open the trimmer: ffmpeg isn't installed. See README.md.")
         return
     if not mp3_paths:
         ui_utils.show_status("No MP3 tracks to trim.")
@@ -542,14 +542,14 @@ def trim_conveyor(paths: list, library: list, header) -> None:
     flags: dict = {}
     idx = 0
 
-    # Sting seeding is the primary way a group gets seeded (section 4.4) — on
-    # offer before the walk starts, not a hidden extra. Head and tail are
-    # independent (section 5.2.2): a series can have either, both, or neither.
+    # Sting seeding is the primary way a group gets seeded: on offer before
+    # the walk starts, not a hidden extra. Head and tail are independent: a
+    # series can have either, both, or neither.
     if len(mp3_paths) > 1:
         if prompt.confirm("Seed this group from a shared opening (a sting)?", default=True):
             _seed_group_by_sting(mp3_paths, state, bound='in')
         elif prompt.confirm(
-                "No sting — propagate one track's timestamp to the rest instead? "
+                "No sting? Propagate one track's timestamp to the rest instead? "
                 "(the weaker tool: assumes identical padding across episodes)", default=False):
             _propagate_absolute_offset(mp3_paths, state)
         if prompt.confirm("Seed the tail from a shared closing too?", default=False):
@@ -582,7 +582,7 @@ def trim_conveyor(paths: list, library: list, header) -> None:
         if outcome == 's':
             s.done = True
             # A track's chapter questions come up when its turn comes, not
-            # batched at commit time, and only if it has chapters (section 5.2).
+            # batched at commit time, and only if it has chapters.
             assert s.marks.in_snapped is not None and s.marks.out_snapped is not None
             s.chapters = resolve_chapters(path, s.marks.in_snapped, s.marks.out_snapped)
             idx += 1
@@ -611,15 +611,15 @@ _REPLAYGAIN_COLUMNS = [
 
 
 def apply_replaygain_op(paths: list, library: list, header) -> None:
-    """Measure loudness and propose a per-track gain (section 5.4): tags
-    only, no audio bytes change. A separate operation from the trim, and one
-    that only makes sense run after it — a pre-trim measurement would
+    """Measure loudness and propose a per-track gain: tags only,
+    no audio bytes change. A separate operation from the trim, and one that
+    only makes sense run after it: a pre-trim measurement would
     include the continuity announcement or trailer about to be cut, which is
     exactly the loud material that would skew it. A track already at target
-    gets no frame written (section 5.4.5)."""
+    gets no frame written."""
     mp3_paths = [p for p in paths if tw.format_kind(p) == 'mp3']
     if not trim.HAS_FFMPEG:
-        ui_utils.show_status("Could not measure loudness — ffmpeg isn't installed. See README.md.")
+        ui_utils.show_status("Could not measure loudness: ffmpeg isn't installed. See README.md.")
         return
     if not mp3_paths:
         ui_utils.show_status("No MP3 tracks to measure.")
@@ -642,11 +642,11 @@ def apply_replaygain_op(paths: list, library: list, header) -> None:
         ui_utils.show_status("Could not measure any of these tracks.")
         return
 
-    # Write nothing when there's nothing to correct — the same rule as the
+    # Write nothing when there's nothing to correct: the same rule as the
     # sort-tag convention in docs/tag-etiquette.md.
     candidates = {p for p, m in measurements.items() if abs(m['gain_db']) >= 0.1}
     if not candidates:
-        ui_utils.show_status("Every measured track is already at target — nothing to write.")
+        ui_utils.show_status("Every measured track is already at target, nothing to write.")
         return
 
     rows = []
@@ -661,7 +661,7 @@ def apply_replaygain_op(paths: list, library: list, header) -> None:
                    f"{m['gain_db']:+.2f} dB{clip_note}"]))
 
     sub = f"target {target_lufs:.0f} LUFS · " + ui_utils.plural(len(candidates), "track") + " to change"
-    sel = prompt.select("Preview — ↵ writes gain tags:", choices=rows,
+    sel = prompt.select("Preview, ↵ writes gain tags:", choices=rows,
                         columns=_REPLAYGAIN_COLUMNS, header=header(sub), multi=True)
     if not sel:
         return

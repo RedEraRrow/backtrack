@@ -5,7 +5,7 @@ import sys
 import math
 
 # Allow running this file directly (`python3 src/utils/tz_widget.py`) for
-# standalone testing/fun — put the repo root on sys.path before the package
+# standalone testing/fun: put the repo root on sys.path before the package
 # imports below, which otherwise require running as `python3 -m src.utils...`.
 if __name__ == '__main__' and __package__ in (None, ''):
     import os
@@ -1406,13 +1406,13 @@ def timezone_select(initial_offset: str = "") -> str | None:
                 lines.append("")
                 zone_rows_emitted += 1
 
-        # Hint bar — via the shared chrome, so it carries the transport keys
+        # Hint bar, via the shared chrome, so it carries the transport keys
         # while background audio is playing and its keys are clickable.
         _tz_pairs = [("←→", "offset"), ("↑↓", "zone"),
                      ("↵", "confirm"), ("esc", "cancel/clear")]
         hint_line_count = len(_prompt.chrome_hint_lines(_tz_pairs))
 
-        # Map fills remaining rows — search line is always 1 slot (blank when empty)
+        # Map fills remaining rows; search line is always 1 slot (blank when empty)
         fixed_rows = 1 + 1 + MAX_ZONE_ROWS + hint_line_count  # strip + search + zones + hints
         if not search_str:
             lines.insert(1, "")  # blank placeholder keeps map stable

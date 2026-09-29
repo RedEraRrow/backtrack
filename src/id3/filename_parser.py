@@ -8,15 +8,15 @@ album_artist, artist (track/performer), year/date, and a compilation flag.
 
 Agreed behaviour:
   * Title: `_`→space, whitespace collapsed; case never altered.
-  * A leading ``ARTIST - TITLE`` (after the track number) is extracted — ARTIST
-    becomes the track artist (TPE1) — only when there's evidence ARTIST really is
+  * A leading ``ARTIST - TITLE`` (after the track number) is extracted (ARTIST
+    becomes the track artist, TPE1) only when there's evidence ARTIST really is
     an artist: it's a compilation, or the album artist appears within the prefix
     (covering exact matches and ``Artist feat. Guest``). Otherwise the ``-`` is
     assumed to be part of the title (so ``Interlude - Reprise`` stays a title).
   * album_artist (TPE2) comes from the grandparent folder. A ``Various Artists`` /
     ``Various`` / ``VA`` / ``Compilations`` grandparent marks a **compilation**
-    (album_artist = "Various Artists", compilation flag set), with the per-track
-    artist taken from the file name.
+    (compilation flag set; "Various Artists" is derived by the app, never stored),
+    with the per-track artist taken from the file name.
   * Disc from filename (``2-05``) wins over folder; ``CD/Disc/Disk/Series/Season``
     folders set the disc, and a `` · Disc 2 - Subtitle`` folder also yields a
     disc subtitle. ``SxxExx`` maps season→disc, episode→track.
@@ -44,7 +44,7 @@ _DISC_FOLDER_RE = re.compile(
     r'^\s*(cd|dis[ck]|series|season)\s*[-_ ]?(\d{1,3})\b\s*[-_:]?\s*(.*)$',
     re.IGNORECASE)
 
-_ARTIST_TITLE_RE = re.compile(r'\s*(.+?)\s+[-–—]\s+(.+)$')      # "Artist - Title"
+_ARTIST_TITLE_RE = re.compile(r'\s*(.+?)\s+[-\u2013\u2014]\s+(.+)$')      # "Artist - Title"
 _FULL_DATE_RE = re.compile(r'(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)')
 _YEAR_PAREN_RE = re.compile(r'[\(\[](\d{4})[\)\]]')
 _YEAR_LEAD_RE = re.compile(r'^\s*(\d{4})\s*[-_]\s*(.+)$')
@@ -156,7 +156,7 @@ def _norm_artist(s: str) -> str:
 
 
 def _prefix_is_artist(prefix: str | None, album_artist: str | None) -> bool:
-    """True when the album artist actually appears in a filename prefix — the
+    """True when the album artist actually appears in a filename prefix: the
     signal that the prefix is a real track artist (exact or ``feat.`` form)."""
     if not prefix or not album_artist:
         return False
@@ -252,7 +252,7 @@ def parse_one(path: str, known_artist: str | None = None, root: str | None = Non
     if is_comp:
         # Flag the compilation, but don't *write* "Various Artists": the app
         # derives that name from the tracks, so storing it would replace an
-        # inference with data — and there's nothing to fill in here anyway.
+        # inference with data, and there's nothing to fill in here anyway.
         d.compilation = True
         d.artist = fn_artist                       # per-track artist from the name
         title = split_title
@@ -284,10 +284,10 @@ def derive_all(paths: list[str], known_artist: str | None = None,
 
     ``total_tracks`` is the size of the file's (album, disc) group (or the highest
     track number seen in it). ``total_discs`` is the count of distinct discs in the
-    album group — set only when disc information exists.
+    album group, set only when disc information exists.
 
-    With ``template`` (``%token%``) or ``regex`` (raw named groups) set — mutually
-    exclusive — matched files have those fields override auto-detection; folder-
+    With ``template`` (``%token%``) or ``regex`` (raw named groups) set (mutually
+    exclusive), matched files have those fields override auto-detection; folder-
     derived values are kept for fields the override doesn't capture.
     """
     override = None
@@ -342,7 +342,7 @@ def derive_all(paths: list[str], known_artist: str | None = None,
 
 
 # ---------------------------------------------------------------------------
-# Template override — reverse a Picard-style token pattern into fields.
+# Template override: reverse a Picard-style token pattern into fields.
 # ---------------------------------------------------------------------------
 
 # token → (regex fragment, field). Numeric tokens are greedy digits; text tokens
@@ -404,7 +404,7 @@ def _fields_from_groups(groups: dict, known_artist: str | None = None) -> Derive
         if field is None:
             continue
         if field in _NUMERIC_FIELDS:
-            # Digits, a Roman numeral, or words — so a capture of "III" or
+            # Digits, a Roman numeral, or words, so a capture of "III" or
             # "three" lands as 3 whether it came from a template or a raw regex.
             num = numbering.parse(val)
             if num is not None:
@@ -429,7 +429,7 @@ def compile_regex(pattern: str) -> re.Pattern:
         raise TemplateError(f"Invalid regex: {e}")
     if not (set(compiled.groupindex) & set(_GROUP_FIELD)):
         raise TemplateError(
-            "No recognised named group — use e.g. (?P<track>\\d+), (?P<title>.+)")
+            "No recognised named group: use e.g. (?P<track>\\d+), (?P<title>.+)")
     return compiled
 
 
@@ -439,8 +439,8 @@ def unrecognised_regex_groups(compiled: re.Pattern) -> list[str]:
 
 
 def _regex_target(path: str, base: str | None = None) -> str:
-    """The string a regex runs against: the file stem, or — when ``base`` is
-    given — the path relative to ``base`` (``/``-separated, extension dropped),
+    """The string a regex runs against: the file stem, or (when ``base`` is
+    given) the path relative to ``base`` (``/``-separated, extension dropped),
     so a regex can capture folder levels like Artist/Album."""
     if base:
         try:

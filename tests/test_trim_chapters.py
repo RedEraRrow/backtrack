@@ -1,6 +1,6 @@
-"""Tests for chapter handling (src/trim/trim.py, section 3.3): the pure
+"""Tests for chapter handling (src/trim/trim.py): the pure
 classify/rebase/clamp transforms, and the CHAP/CTOC read/write round-trip.
-Fixture mirrors section 9's guidance: one chapter survives, one is
+Fixture: one chapter survives, one is
 destroyed, one straddles the in-point.
 """
 import os
@@ -147,7 +147,7 @@ class ChapterReadWriteRoundTripTest(unittest.TestCase):
         trim.write_chapters(self.path, survivors, [], None)
         chapters, child_order, flags = trim.read_chapters(self.path)
         self.assertEqual(len(chapters), 1)
-        self.assertIsNone(child_order)   # no CTOC written — nothing to reference
+        self.assertIsNone(child_order)   # no CTOC written: nothing to reference
 
 
 @unittest.skipUnless(trim.HAS_FFMPEG, "ffmpeg not installed")

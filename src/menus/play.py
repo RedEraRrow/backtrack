@@ -21,8 +21,8 @@ def play_queue(paths: list, mode: str = "linear", library: list | None = None) -
 
     titles = _queue_titles_for_paths(playlist, library or [])
 
-    # The shared session owns the queue and auto-advances in the background
-    # (feature #14), so this just starts it and opens the player. Minimising the
+    # The shared session owns the queue and auto-advances in the background,
+    # so this just starts it and opens the player. Minimising the
     # player ('b'/Esc) returns here with audio still playing; Stop ('s') ends it.
     session_mode = REPEAT_OFF
     music_player(playlist[0], queue_titles=titles, queue_index=0,
@@ -35,7 +35,7 @@ _PLAY_ACTIONS = ("__play_all__", "__shuffle__", "__album_shuffle__")
 
 def _list_actions(show_editor: bool, albums: bool = True) -> list:
     """Play all / shuffle / album shuffle / edit all for a browse list (select's
-    actions=). `albums` is whether the list holds more than one album — album
+    actions=). `albums` is whether the list holds more than one album; album
     shuffle means nothing within one. `E` edits everything listed; `e` is each
     list's edit-the-highlighted-row."""
     acts = [("p", "play all", "__play_all__"), ("x", "shuffle", "__shuffle__")]
@@ -48,7 +48,7 @@ def _list_actions(show_editor: bool, albums: bool = True) -> list:
 
 def _sorted_paths(groups: list, cfg: dict) -> list:
     """Every track of `groups` (lists of tracks, in the order shown), each
-    group in the sort chain's order — what Play all plays. dict.fromkeys: a
+    group in the sort chain's order (what Play all plays). dict.fromkeys: a
     track under two groups (multi-value genre/artist) plays once."""
     return list(dict.fromkeys(t['path'] for g in groups for t in sort_tracks(g, cfg)))
 
@@ -64,7 +64,7 @@ def _edit_paths(library: list, paths: list, value) -> tuple:
 def _list_result(res, library: list, paths, sort) -> bool:
     """What every browse list does alike with select()'s result: rebuild after
     an edit, re-sort (`sort()`), play or shuffle, or bulk-edit everything listed
-    (`paths()`, in the order shown). True when handled — go round again."""
+    (`paths()`, in the order shown). True when handled: go round again."""
     if isinstance(res, tuple) and res[0] == "__edited__":
         return True
     if res == "__sort__":
@@ -97,7 +97,7 @@ def _play_list(action: str, paths: list, library: list) -> str | None:
 
 
 def _queue_action_choices() -> list:
-    """Track-menu queue actions for the *search* results (#14), which use the
+    """Track-menu queue actions for the *search* results, which use the
     `live_select` widget and so can't take the listing-level n/a shortcuts that
     Browse/History now use. Offered whenever something is playing or we're a
     joined window. Routes through active_session() (local host or remote)."""

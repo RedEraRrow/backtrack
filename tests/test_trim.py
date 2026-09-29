@@ -15,7 +15,7 @@ RATES = (22050, 24000, 44100, 48000)
 
 
 def _make_fixture(path: str, sample_rate: int, bitrate_args: list[str]) -> None:
-    """tone / silence / tone / silence / tone, per section 9."""
+    """tone / silence / tone / silence / tone."""
     subprocess.run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", f"sine=frequency=300:duration=2:sample_rate={sample_rate}",
@@ -61,7 +61,7 @@ class TrimEngineTest(unittest.TestCase):
             audio.save(path, v2_version=3)
         return path
 
-    # -- stream copy: output bytes appear verbatim in the source (section 2.1) --
+    # -- stream copy: output bytes appear verbatim in the source --
     def test_stream_copy_is_verbatim(self):
         src = self._fixture()
         out = os.path.join(self.tmp, "out.mp3")
@@ -72,7 +72,7 @@ class TrimEngineTest(unittest.TestCase):
         mid = out_bytes[len(out_bytes) // 4: len(out_bytes) // 4 + 512]
         self.assertIn(mid, src_bytes)
 
-    # -- duration: out - in, not affected by a -to-style origin bug (section 2.4) --
+    # -- duration: out - in, not affected by a -to-style origin bug --
     def test_duration_matches_cut_length_cbr(self):
         self._assert_duration_matches(vbr=False)
 
@@ -89,7 +89,7 @@ class TrimEngineTest(unittest.TestCase):
         actual = MP3(out).info.length
         self.assertLess(abs(actual - expected), frame_dur * 1.5)
 
-    # -- format identity: sample rate and channel count survive (section 2.2) --
+    # -- format identity: sample rate and channel count survive --
     def test_format_identity_across_rates(self):
         for rate in RATES:
             with self.subTest(rate=rate):
@@ -102,7 +102,7 @@ class TrimEngineTest(unittest.TestCase):
                 self.assertEqual(src_info.sample_rate, out_info.sample_rate)  # type: ignore[reportAttributeAccessIssue]
                 self.assertEqual(src_info.channels, out_info.channels)  # type: ignore[reportAttributeAccessIssue]
 
-    # -- tags: everything survives except TLEN/TDLY; provenance is added (section 3.1/3.2/3.5) --
+    # -- tags: everything survives except TLEN/TDLY; provenance is added --
     def test_tags_survive_except_length_frames(self):
         src = self._fixture()
         audio = ID3(src)
@@ -136,7 +136,7 @@ class TrimEngineTest(unittest.TestCase):
         self.assertTrue(r.ok, r.error)
         self.assertIn('TDLY', ID3(out))
 
-    # -- Xing/Info header rewritten for the new length (section 3.4) --
+    # -- Xing/Info header rewritten for the new length --
     def test_xing_header_rewritten(self):
         src = self._fixture(vbr=True)
         out = os.path.join(self.tmp, "out.mp3")
@@ -145,7 +145,7 @@ class TrimEngineTest(unittest.TestCase):
         expected = r.snapped_out - r.snapped_in
         self.assertLess(abs(MP3(out).info.length - expected), trim.probe_frame_duration(src) * 1.5)
 
-    # -- snapping: mid-frame requests snap outward, reported value is the snapped one (section 2.3) --
+    # -- snapping: mid-frame requests snap outward, reported value is the snapped one --
     def test_snapping_rounds_outward(self):
         src = self._fixture()
         frame_dur = trim.probe_frame_duration(src)
@@ -166,7 +166,7 @@ class TrimEngineTest(unittest.TestCase):
 
 
 class SnapPureTest(unittest.TestCase):
-    """No ffmpeg needed — these are plain arithmetic."""
+    """No ffmpeg needed: these are plain arithmetic."""
 
     def test_snap_in_exact_multiple_stays_put(self):
         fd = 1152 / 44100

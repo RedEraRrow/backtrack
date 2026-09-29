@@ -1,7 +1,6 @@
 """The lyric pane: what is on screen at a moment of a track.
 
-Rewritten around four rules, because the previous version broke each of them and
-every bug traced back to one of the breaks.
+Four rules:
 
 1.  THE AUDIO POSITION IS THE ONLY CLOCK.  Nothing counts lines, remembers where
     it was, or nudges itself by an offset.  A seek is not an event to handle; it
@@ -10,10 +9,8 @@ every bug traced back to one of the breaks.
 
 2.  THE TIMELINE TILES THE TRACK.  Beats are contiguous and never overlap: each
     one ends exactly where the next begins.  Every instant therefore belongs to
-    exactly one beat, and finding it is one bisect with no tie to break.  Gaps
-    are what made the old display show the next line during a silence, and the
-    fix was patching windows after the fact, repeatedly.  Here it is an invariant
-    established once, when the timeline is built, and asserted.
+    exactly one beat, and finding it is one bisect with no tie to break.  This is
+    an invariant established once, when the timeline is built, and asserted.
 
 3.  A FRAME IS A PURE FUNCTION OF (TIME, GEOMETRY).  No incremental drawing, no
     "has the index changed" test.  Redrawing is decided by comparing the frame to
@@ -56,7 +53,7 @@ class Beat:
 
 @dataclass(frozen=True)
 class Geometry:
-    """Where the pane is and how big — everything the renderer needs of the screen."""
+    """Where the pane is and how big: everything the renderer needs of the screen."""
     row: int
     col: int
     width: int
@@ -87,8 +84,8 @@ def handover(start: float, end: float, next_start: float, keep_whole: bool,
 def _tile(beats: list[Beat], duration: float) -> list[Beat]:
     """Turn a sorted run of beats into a tiling of the track.
 
-    The boundary between two beats is ONE number — the instant the second takes
-    over from the first — so it is computed once. Deriving it twice, once as an
+    The boundary between two beats is ONE number (the instant the second takes
+    over from the first), so it is computed once. Deriving it twice, once as an
     end and again as a start, is how a beat ends up owning a moment its neighbour
     also claims, or neither of them does.
 
@@ -113,8 +110,7 @@ class Timeline:
     def __init__(self, beats: list[Beat], duration: float = 0.0):
         self.beats = _tile(beats, duration)
         self._ends = [b.end for b in self.beats]
-        # The invariant the rest of the module relies on, checked once rather
-        # than assumed in a dozen places.
+        # The invariant the rest of the module relies on, checked once, here.
         assert all(a.end == b.start for a, b in zip(self.beats, self.beats[1:])), \
             "timeline is not contiguous"
 
@@ -132,7 +128,7 @@ class Timeline:
 # --- building one from each source ------------------------------------------
 
 def from_chunks(chunks: list[dict], times: list[tuple], duration: float) -> Timeline:
-    """From the dialogue transcript, via `lyrics._chunks_from_segments`."""
+    """From DialoguePlaybackState's chunks."""
     beats = []
     for c, (a, b) in zip(chunks, times):
         kind = SILENCE if c.get('is_air') else (DIRECTION if c.get('is_stage') else LINE)
@@ -181,8 +177,8 @@ def _speaker_rows(beat: Beat, width: int, active: bool) -> list[str]:
 def _text_rows(beat: Beat, width: int, active: bool) -> list[str]:
     """The text column: what is introduced, what is said, what interrupts.
 
-    In that order, always. A direction that introduces a line reads above it —
-    the chime sounds before the announcement — and one that interrupts reads
+    In that order, always. A direction that introduces a line reads above it
+    (the chime sounds before the announcement), and one that interrupts reads
     below. Getting this backwards put the effect before its cause.
     """
     from src.lyrics.lyrics import _dir_rows, _md_rows
@@ -243,7 +239,7 @@ class Pane:
     """Draws the pane, and only the rows of it that have changed.
 
     Holding the last frame is the whole of its state, and it is a picture of the
-    screen rather than a position in the track — so it can never disagree with
+    screen rather than a position in the track, so it can never disagree with
     the audio about where we are. A resize, a seek and an ordinary tick all take
     the same path: build the frame, compare, write the differences.
     """

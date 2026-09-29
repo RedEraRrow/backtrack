@@ -63,8 +63,8 @@ def summary(mp3: str) -> int:
 
     `worst` is the longest run of speech holding no measurement at either end of
     it, so it is the bound on how far out a single line in that episode can be.
-    Nothing accumulates past it, so this is a ceiling on the error, not a estimate
-    of it — an episode with a small worst figure needs no further attention.
+    Nothing accumulates past it, so this is a ceiling on the error, not an estimate
+    of it: an episode with a small worst figure needs no further attention.
     """
     mp3 = Path(mp3).resolve()
     jp = mp3.with_suffix(".json")

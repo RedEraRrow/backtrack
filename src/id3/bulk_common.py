@@ -8,7 +8,7 @@ from src.id3 import file_namer as fnm
 from src.utils import numbering
 
 
-# Sentinel: this step does not apply to the answers so far — step over it,
+# Sentinel: this step does not apply to the answers so far: step over it,
 # whichever way the walk is going.
 _SKIP = object()
 
@@ -21,7 +21,7 @@ def _walk(steps: list) -> bool:
     irrelevant (a template question after choosing regex detection). Back out of
     the first screen and the whole walk returns False: the operation is off. Any
     other back returns to the screen before, which still holds what was decided
-    there — an accidental ↵ costs one keystroke, not the whole automation.
+    there: an accidental ↵ costs one keystroke, not the whole automation.
 
     Skipped steps are stepped over in the direction of travel, so a question that
     does not apply never traps the walk going forwards or back.
@@ -49,13 +49,13 @@ _sort_value = bo._sort_value
 _plan_write = bo.plan_write
 
 
-# source text frame → sort frame, for the standalone "apply sort orders" op —
+# source text frame → sort frame, for the standalone "apply sort orders" op:
 # every sort tag, composer included.
 _SORT_SRC = [(t.field, t.source, t.frame) for t in _reg.SORT_TAGS]
 
 
 _RENUMBER_COLUMNS = [
-    prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),  # position (index) — drops first
+    prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),  # position (index), drops first
     prompt.Column(style='primary', flex=True),                       # file (kept)
     prompt.Column(style='dynamic-dim', align='right', pin=True),  # old → new (the change, kept)
 ]
@@ -85,7 +85,7 @@ def _show_tokens(header) -> None:
         suffix = "" if style == 'n' else f":{style}"
         rows.append(prompt.Choice(title=f"%track{suffix}%", value=f"__style_{style}",
                                   disabled=True,
-                                  cells=[f"%track{suffix}%", f"{desc} — any numeric token"]))
+                                  cells=[f"%track{suffix}%", f"{desc}, any numeric token"]))
     rows.append(prompt.Choice(title="%track:r:l%", value="__style_case", disabled=True,
                               cells=["%track:r:l%", f"case: {numbering.CASES}"]))
     rows.append(prompt.separator())
@@ -118,7 +118,7 @@ def preview_and_apply(plan, library: list, header, writer, verb: str, *, count: 
             bits.append(f"{skipped} {skipped_note}")
         return header(' · '.join(bits))()
 
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+    sel = prompt.select("Preview (↵ applies):", choices=choices,
                         columns=columns or _RENUMBER_COLUMNS, header=_header, multi=True)
     if sel is None:
         return

@@ -28,12 +28,12 @@ def _init_tag_preferences(config: dict) -> dict:
 def _take_player_if_free(link, info: dict) -> None:
     """On joining, if the session is playing and no window currently holds the
     player view, open it here and lock it to this window (#14). The existing
-    window then can't open the player until this one leaves it, and vice-versa —
+    window then can't open the player until this one leaves it, and vice versa:
     the player view is single-instance across the session. Does nothing if the
     session is idle or another window already has the view."""
     from src.playback.playback import open_client_player_view
     if not info.get("now_playing"):
-        return                                   # session was idle — nothing to open
+        return                                   # session was idle, nothing to open
     # Session was playing when listed: get the freshest view_holder before
     # deciding (wait briefly for the first mirrored push, else fall back).
     snap = None
@@ -50,7 +50,7 @@ def _take_player_if_free(link, info: dict) -> None:
 
 def _maybe_join_session() -> None:
     """If other Backtrack windows are already running, offer to join one of their
-    sessions (mirror + control it) or start a fresh one (#14 Phase 2)."""
+    sessions (mirror + control it) or start a fresh one (#14)."""
     try:
         from src.playback import ipc
         from src.playback import session as sess
@@ -63,7 +63,7 @@ def _maybe_join_session() -> None:
                              value="__new__")]
     for s in sessions:
         np = s.get("now_playing") or {}
-        now = f" — ▶ {np.get('title')}" if np and np.get("title") else " — (idle)"
+        now = f", ▶ {np.get('title')}" if np and np.get("title") else " (idle)"
         choices.append(prompt.Choice(title=f"Join: {s.get('label', 'Session')}{now}", value=s))
     pick = prompt.select("Another Backtrack session is running:", choices=choices)
     if not isinstance(pick, dict):           # None/back or "__new__" → host a new one
@@ -72,7 +72,7 @@ def _maybe_join_session() -> None:
     info = cast(dict, pick)
     sock = info["socket"]
     sid = info.get("id", "")
-    # If the host goes away, elect a new host / reconnect (#14 Phase 2d). Each
+    # If the host goes away, the link elects a new host or reconnects (#14). Each
     # mirrored snapshot repaints this window's now-playing box immediately, so a
     # joined window stays live without needing a keystroke (#14).
     link = sess.client_link(sock, sid)
@@ -82,7 +82,7 @@ def _maybe_join_session() -> None:
         # Take the player view for this window if it's free (see docstring).
         _take_player_if_free(link, info)
     else:
-        ui_utils.show_status("Could not join that session — starting a new one.")
+        ui_utils.show_status("Could not join that session, starting a new one.")
 
 
 def _run(config: dict) -> None:
@@ -94,7 +94,7 @@ def _run(config: dict) -> None:
     SESSION.bind_config(config)
     config = _init_tag_preferences(config)
     # Persist immediately so first-run tag preferences survive an instant quit;
-    # the settings menu also autosaves, so "save & quit" (q) needs nothing more.
+    # the settings menu autosaves, so quitting needs nothing more.
     update_config({'tag_name_preferences': config['tag_name_preferences']})
 
     library = load_library_cache()
@@ -106,7 +106,7 @@ def _run(config: dict) -> None:
 
         library_ref = [library]
         # No save on the way out: everything that changes a setting saves it
-        # as it goes, and this dict is the one loaded at startup — saving it here
+        # as it goes, and this dict is the one loaded at startup, and saving it here
         # put back every setting as it was when the app opened.
         main_menu(library_ref)
         return
@@ -229,7 +229,7 @@ def _run_app() -> None:
     try:
         _run(config)
     except QuitToTerminal:
-        pass  # Shift-Q from anywhere in the menus — unwind straight to the shell.
+        pass  # q from anywhere: unwind straight to the shell.
     except Exception:
         log.exception("crashed")
         raise

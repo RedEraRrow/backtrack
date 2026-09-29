@@ -1,4 +1,4 @@
-"""Shared MD↔JSON alignment: the single source of truth for how a markdown
+"""Shared MD↔JSON alignment: the one place that decides how a markdown
 script (speakers, stage directions, emphasis, punctuation) is overlaid onto a
 timed transcript's segments.
 
@@ -48,14 +48,14 @@ def _sd_scope(seg: dict) -> str:
 
 def _is_framed(seg: dict) -> bool:
     """A beat that stands alone as its own framed section (dotted rules, no
-    speaker): dead air (silence — belongs to nobody) or an external stage
+    speaker): dead air (silence, belongs to nobody) or an external stage
     direction (scene/sound, or another person's aside)."""
     k = seg.get('kind')
     return k == 'dead_air' or (k == 'stage_dir' and _sd_scope(seg) == 'external')
 
 
 def _is_note(raw: str) -> bool:
-    """True for a music-note token — '♪', or '♪.' where the script punctuated it.
+    """True for a music-note token: '♪', or '♪.' where the script punctuated it.
     It carries no comparison token of its own, so it is only ever placed by the
     rule that keeps an opening ♪ with the phrase it introduces."""
     return '\u266a' in raw and not _norm_words(raw)
@@ -73,14 +73,14 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
     """Overlay the MD script onto the JSON segments via ONE word-level alignment.
 
     The JSON and MD are the same spoken words (modulo punctuation / hyphens / ♪).
-    So we align the two word streams once (difflib) and then, line by line, hand
+    So we align the two word streams once (`align_tokens`) and then, line by line, hand
     each MD line's words to whichever segment its words lined up with:
       • one segment covers the line  → it shows the whole line (with punctuation),
       • several segments cover it     → each shows its own run of the line's words.
     A segment whose words span two MD lines shows both (and is a split candidate).
 
     Returns (overlay, quality, links):
-      overlay — [{kind:'speaker'|'stage_dir', text, before_si, stage?, line?, lean?}],
+      overlay: [{kind:'speaker'|'stage_dir', text, before_si, stage?, line?, lean?}],
                 display only.  A speaker banner's `line` is the MD line it labels
                 (None for a banner raised over a stage direction), so a consumer
                 can scope the speaker to exactly the segs `links` pins to it
@@ -88,8 +88,8 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
                 ('prev'/'next') says which side of its boundary it is ABOUT, for a
                 consumer that cannot give it a beat of its own; standalone
                 directions (their own MD line) lean 'next' by default.
-      quality — si → {score, md_text} for every dialogue seg the MD explains.
-      links   — si → line_id, the seg's MD line, recorded by the caller as line_ref.
+      quality: si → {score, md_text} for every dialogue seg the MD explains.
+      links:   si → line_id, the seg's MD line, recorded by the caller as line_ref.
     """
     import bisect
     from collections import Counter, OrderedDict, defaultdict
@@ -124,7 +124,7 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
         lid += 1
 
     def _score(a: str, b: str) -> float:
-        """Word-overlap score between two normalized strings, counting repeats.
+        """Word-overlap score between two normalised strings, counting repeats.
 
         A multiset, not a set: '♪ Three men went to mow, went to mow a meadow ♪'
         is half repeated words, and collapsing them scored a segment that had
@@ -144,14 +144,14 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
         if ws:
             for wi, w in enumerate(ws):
                 js_words.append((w.get('word', ''), si, wi))
-        else:                    # word-less seg (SYLT/USLT) — fall back to its text
+        else:                    # word-less seg (SYLT/USLT): fall back to its text
             for wi, rw in enumerate(segs[si].get('text', '').split()):
                 js_words.append((rw, si, wi))
     js_ctoks = [(t, ji) for ji, (rw, _, _) in enumerate(js_words) for t in _norm_words(rw)]
     md_ctoks = [(t, mi) for mi, (rw, _) in enumerate(md_words) for t in _norm_words(rw)]
     # `align_tokens` rather than difflib direct: the transcript and the script spell
     # numbers, hyphens and elisions differently, and a run left unmatched over a
-    # spelling is a run of words with no segment — the gap in the timing the reader
+    # spelling is a run of words with no segment: the gap in the timing the reader
     # actually sees.  See `lyrics_text.align_tokens`.
     ops = _lt.align_tokens([t for t, _ in js_ctoks], [t for t, _ in md_ctoks],
                            [js_words[ji][0] for _, ji in js_ctoks],
@@ -195,7 +195,7 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
                 else:
                     seg_of_md[mi] = cur
         else:
-            # no seg aligned to this line — recover a seg the alignment dropped
+            # no seg aligned to this line: recover a seg the alignment dropped
             # (e.g. reordered) via its line_ref pin, if its words are in the line.
             lw = set(_norm(" ".join(md_words[mi][0] for mi in mis)).split())
             for si in dia:
@@ -223,7 +223,7 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
             md_text = " ".join(md_words[mi][0] for mi in mis)
             quality[si] = {'score': _score(norm_segs[si], _norm(md_text)), 'md_text': md_text}
         elif norm_segs[si].split():
-            # Real speech with no MD behind it. Scored at 0 whatever its length —
+            # Real speech with no MD behind it. Scored at 0 whatever its length:
             # a two-word segment the script does not account for is exactly as much
             # of a discrepancy as a twenty-word one, and was silently unflagged.
             quality[si] = {'score': 0.0, 'md_text': ''}
@@ -231,7 +231,7 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
     # ── Mid-line stage directions → anchored floating overlays ─────────────────
     # Each was recorded with the number of spoken words that precede it on its MD
     # line.  When the line was split across segments there is a real seg boundary
-    # at that position — anchor the direction there.  Otherwise (the whole line is
+    # at that position, so anchor the direction there.  Otherwise (the whole line is
     # one segment, so its text can't be broken mid-flow) drop it just after the
     # segment holding the preceding words.  They join stage_dirs so the same
     # commit/reconcile path applies.
@@ -242,7 +242,7 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
         prev_si = seg_of_md[mis[pos - 1]] if 0 < pos <= len(mis) else None
         next_si = seg_of_md[mis[pos]]     if pos < len(mis)      else None
         # Carry the line's speaker on every direction so the emit step can attribute
-        # it — e.g. `MARTIN: *(exasperated noise)*` between two ARTHUR turns gets a
+        # it, e.g. `MARTIN: *(exasperated noise)*` between two ARTHUR turns gets a
         # MARTIN banner. (For a direction on its own line's own speaker, the context
         # check below suppresses a redundant banner.)
         _spk = line_meta.get(d['line'], {}).get('speaker', '')
@@ -258,7 +258,7 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
         elif prev_si is not None:
             # No boundary here to hang it on, so it falls PAST the segment holding
             # its line.  When the same direction is already placed on this line
-            # that is a repeat landing on somebody else's words — `*(Ding)* Ding!
+            # that is a repeat landing on somebody else's words: `*(Ding)* Ding!
             # *(Ding)* Ding!` kept whole by the transcript would stamp a (Ding) on
             # the reply that follows.  One is all the line can carry.
             if (d['line'], d['text']) in placed_on_line:
@@ -315,7 +315,7 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
                 mat_seg[idx] = _si
                 break
 
-    # Speaker in effect just before a seg position — the last dialogue line above
+    # Speaker in effect just before a seg position: the last dialogue line above
     # it. Used to decide when a direction needs its own banner (a different
     # speaker) vs. when the surrounding speaker already covers it.
     _dia_spk = sorted((si, line_meta.get(links.get(si), {}).get('speaker', '')) for si in dia)
@@ -354,7 +354,7 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
         if sd.get('anchor_si') is not None:   # mid-line dir pinned to a seg boundary
             bsi = min(sd['anchor_si'], len(segs))
             # An inline direction belongs to its speaker's line, so it sits AFTER
-            # the banner (order 2) — e.g. a line that opens with *(a noise)*: the
+            # the banner (order 2), e.g. a line that opens with *(a noise)*: the
             # noise reads under MARTIN, not orphaned above the MARTIN banner.
             order = 2
         else:
@@ -376,7 +376,7 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
     # order at a tie: 0 standalone stage dir → 1 speaker banner → 2 inline stage dir
     items.sort(key=lambda t: (t[0], t[1]))
     # Two identical beats at one anchor say nothing the first does not.  A line the
-    # transcript kept whole — `*(Ding)* Ding! *(Ding)* Ding! *(Ding)* Ding!` — has no
+    # transcript kept whole (`*(Ding)* Ding! *(Ding)* Ding! *(Ding)* Ding!`) has no
     # seg boundary to hang the repeats on, so they all fall to the same place and
     # stack up as three identical ✦ rows against the line after.
     overlay: list = []

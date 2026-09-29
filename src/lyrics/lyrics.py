@@ -16,7 +16,7 @@ from src import tuning as tune
 from src.lyrics.lyric_pane import handover
 
 def normalize_lyric_newlines(text: str) -> str:
-    """Normalize CRLF/CR line endings to \\n."""
+    """Normalise CRLF/CR line endings to \\n."""
     if not text:
         return ""
     return text.replace('\r\n', '\n').replace('\r', '\n')
@@ -117,7 +117,7 @@ _EXPAND_CACHE_MAX = 10
 
 
 
-# A clear leading "Speaker: " label (capitalised single token) — NOT a mid-line
+# A clear leading "Speaker: " label (capitalised single token), NOT a mid-line
 # colon like "9:00" or "waiting: for you", which must not be stripped.
 _SPEAKER_PREFIX_RE = re.compile(r"^[A-Z][A-Za-z.'-]{0,19}:\s")
 
@@ -131,12 +131,10 @@ def _timing_word_count(text: str) -> int:
     return len(text.split())
 
 
-# Shortest window a line may be given.  A one-word line still needs long enough
-# to be read, so proportional allocation alone is not enough.
+# See tuning.LYRIC_MIN_LINE_S.
 _MIN_LINE_S = tune.LYRIC_MIN_LINE_S
 
-# Speaking rate assumed when the track length is unknown (mutagen gave us
-# nothing and VLC has not been probed yet).  Only reachable in that fallback.
+# See tuning.LYRIC_FALLBACK_WPS.
 _FALLBACK_WPS = tune.LYRIC_FALLBACK_WPS
 
 
@@ -145,7 +143,7 @@ def _allocate_line_seconds(counts: list, track_duration: float) -> list:
     every line getting at least _MIN_LINE_S.
 
     Lifting a short line up to the floor has to come out of the others, or the
-    windows drift past the end of the track — so the floor is applied by
+    windows drift past the end of the track, so the floor is applied by
     water-filling: pin whatever falls below it, re-divide the time that is left
     over the lines still free, and repeat until nothing new gets pinned.  The
     returned durations sum to track_duration.
@@ -213,9 +211,9 @@ def build_uslt_line_times(lines: list, track_duration: float) -> list[tuple[floa
 
 
 def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
-    """Parse markdown dialogue text into DialogueLine entries, recognizing
+    """Parse markdown dialogue text into DialogueLine entries, recognising
     stage-direction-only lines, `**Speaker** (stage dir): text` headers, and
-    unlabeled continuation lines appended to the previous entry."""
+    unlabelled continuation lines appended to the previous entry."""
     lines = normalize_lyric_newlines(text).split('\n')
     dialogue_lines = []
 
@@ -224,8 +222,8 @@ def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
         if not stripped:
             continue
 
-        # Stage-direction-only lines FIRST, so one whose text contains a colon —
-        # *(Immediately: bing bong.)* — is never split as a `Speaker: text` header.
+        # Stage-direction-only lines FIRST, so one whose text contains a colon,
+        # *(Immediately: bing bong.)*, is never split as a `Speaker: text` header.
         # `standalone_stage_dir` shares the bracket grammar with the inline matcher.
         sdir = _lt.standalone_stage_dir(stripped)
         if sdir is not None:
@@ -238,7 +236,7 @@ def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
 
             # Extract stage dirs from the header (e.g., "**A** (sigh): text").  All
             # of them: "**DEROCHE** *(Swiss accent)* *(muffled)*:" carries two, and
-            # taking only the first dropped the second on the floor.  Cut by span —
+            # taking only the first dropped the second on the floor.  Cut by span:
             # str.replace would also delete an identical bracket elsewhere.
             dirs = [(m.start(), m.end(), m.group(1))
                     for m in re.finditer(r'\(([^)]+)\)', header)]
@@ -247,7 +245,7 @@ def _parse_markdown_dialogue(text: str) -> list[DialogueLine]:
                 header = header[:lo] + header[hi:]
 
             # Extract all **Name** bolded blocks.  Cutting the directions out can
-            # leave the markers behind — "**DEROCHE** ** **" — so blanks are dropped
+            # leave the markers behind ("**DEROCHE** ** **"), so blanks are dropped
             # rather than becoming a nameless speaker.
             speakers = re.findall(r'\*\*([^*]+)\*\*', header)
 
@@ -274,8 +272,8 @@ def _apply_markdown_formatting(text: str, base: str = "",
     of a highlighted row).  Each emphasis span closes by resetting AND then
     re-asserting `base`, so an emphasised word never leaves the rest of the line
     stripped of the row's own styling.  `strong`/`em` override the styles used for
-    **strong** / *emphasis* when a caller wants them to stand out more.  The
-    defaults reproduce the previous behaviour exactly (both bold, plain reset)."""
+    **strong** / *emphasis* when a caller wants them to stand out more (both
+    default to bold)."""
     if not text:
         return ""
     strong = C.BOLD if strong is None else strong
@@ -291,7 +289,7 @@ def _apply_markdown_formatting(text: str, base: str = "",
 
 
 def _md_visible_len(text: str) -> int:
-    """Printed width of a markdown fragment — what it measures after the emphasis
+    """Printed width of a markdown fragment: what it measures after the emphasis
     markers are consumed.  Derived from the rendered output rather than a marker
     strip-list, so it can never disagree with `_apply_markdown_formatting` about
     which characters actually reach the screen."""
@@ -301,7 +299,7 @@ def _md_visible_len(text: str) -> int:
 def _close_open_md(row: str) -> tuple[str, str]:
     """Close any emphasis span still open at a row's end.
 
-    Returns (row, reopen) — the row with the outstanding markers appended, and
+    Returns (row, reopen): the row with the outstanding markers appended, and
     the markers needed to reopen the same spans at the head of the next row, so a
     **strong** or *emphasised* phrase that wraps keeps its styling on every row
     instead of leaving a literal `**` on screen.
@@ -333,7 +331,7 @@ def _md_rows(text: str, width: int, base: str = '', active: bool = False,
     Emphasis mirrors the editor's `_compose`: **strong** is bold, *emphasis* is
     italic, and a ♪ is accented on the active row / dim elsewhere so its glyph
     reads consistently instead of inheriting the row's weight.  Every span
-    restores `base` — the row's own colour — so the emphasis never strips the rest
+    restores `base` (the row's own colour), so the emphasis never strips the rest
     of the line of the row's styling.
     """
     words = normalize_lyric_newlines(text).replace('\n', ' ').split()
@@ -397,6 +395,9 @@ def _format_speaker_list(items: list[str]) -> str:
 
 
 class DialogueLine:
+    """One parsed line of the markdown script: speakers, a stage direction, the
+    text, and its timing window once matched."""
+
     def __init__(self, speakers: list[str] | None = None, stage_dir: str = "", text: str = "", start: float = 0.0, end: float = 0.0):
         """Store speakers, stage direction and text (whitespace-trimmed) plus the timing window."""
         self.speakers = speakers or []
@@ -407,7 +408,7 @@ class DialogueLine:
 
     @property
     def speaker(self) -> str:
-        """Compatibility property for existing rendering logic."""
+        """The speakers as one display string ('A, B and C')."""
         return _format_speaker_list(self.speakers)
 
     def is_stage_direction(self) -> bool:
@@ -447,7 +448,7 @@ def expand_dialogue_into_sentences(
     # Monotonic cursor: each sentence scans forward from where the last left off.
     wt_cursor = 0
 
-    # The shared word normalizer: both sides of this comparison go through the
+    # The shared word normaliser: both sides of this comparison go through the
     # same fold as the aligner, so a word that matches when the overlay is built
     # still matches when the sentence is timed.
     _norm = _lt.matchable
@@ -486,7 +487,7 @@ def expand_dialogue_into_sentences(
         if line.is_empty():
             continue
 
-        # Stage-direction-only lines have no spoken words — give them a time
+        # Stage-direction-only lines have no spoken words: give them a time
         # window from the current position to the next word timing start (i.e.
         # they fill the gap), and mark them so the renderer can place them in
         # the text column without a speaker label.
@@ -502,7 +503,7 @@ def expand_dialogue_into_sentences(
                 'cues': [], 'is_stage': True, 'is_air': False,
             })
             time_windows.append((gap_start, gap_end))
-            # Don't advance total_elapsed — stage directions don't consume time.
+            # Don't advance total_elapsed: stage directions don't consume time.
             continue
 
         spoken_text_only = clean_text_for_timing(line.text)
@@ -662,7 +663,7 @@ def import_lrc(audio_path: str, lrc_path: str) -> tuple[str, int]:
 def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]],
                       desc: str = '', lang: str = 'eng') -> None:
     """Write timestamped lyrics to the file's SYLT frame for `desc`/`lang`,
-    replacing that one frame only — other SYLT frames (other languages or
+    replacing that one frame only; other SYLT frames (other languages or
     descriptions) are kept."""
     from mutagen.id3._frames import SYLT
     from src.id3.id3_tag_handler import load_id3, save_id3
@@ -679,7 +680,7 @@ def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]],
 
 
 def _parse_uslt(audio) -> list[tuple[str, int]]:
-    """Extract USLT text into (line, 0) tuples, normalizing newlines and dropping blank lines."""
+    """Extract USLT text into (line, 0) tuples, normalising newlines and dropping blank lines."""
     tags = audio.getall('USLT')
     if not tags:
         return []
@@ -692,10 +693,8 @@ def _parse_uslt(audio) -> list[tuple[str, int]]:
 
 
 def _find_markdown_for_audio(audio_path: str) -> str | None:
-    """Tries (in order):
-      1. {basename}.md
-      2. {basename}.dialogue.md
-    """
+    """The script beside a track: `<stem>.md`, `<stem>.dialogue.md`, else
+    `transcript.md`; None if none exists."""
     base = Path(audio_path).stem
     parent = Path(audio_path).parent
 
@@ -711,12 +710,12 @@ def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | Non
     """Find SRT and/or JSON timing files next to or beneath the audio file.
 
     Search order (JSON):
-      1. {stem}.json or {stem}_timings.json in the same directory
+      1. `<stem>.json`, `<stem>_timings.json` or `transcript.json` beside the track
       2. Subdirectories: any *.json whose stem matches the audio stem OR whose
          name contains "timings"
-    Same stem matching handles the pattern where the audio and transcript share
-    a filename (e.g. both named ' .mp3' / ' .json') but live in different dirs.
-    Returns (srt_path, json_path).
+    Stem matching handles an audio file and transcript that share a name but
+    live in different dirs (e.g. `ep1.mp3` and `timings/ep1.json`).  The lyrics
+    editor uses the same finder.  Returns (srt_path, json_path).
     """
     base = Path(audio_path).stem
     parent = Path(audio_path).parent
@@ -735,7 +734,7 @@ def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | Non
                 break
 
     # JSON: same dir first. Each candidate is opened and checked, because a file
-    # can be named like a transcript without being one — an anchor transcription
+    # can be named like a transcript without being one: an anchor transcription
     # sitting in `timings/` matches by stem, and taking it would quietly cost the
     # track its real timings.
     for name in [f"{base}.json", f"{base}_timings.json", "transcript.json"]:
@@ -744,7 +743,7 @@ def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | Non
             json_path = str(candidate)
             break
 
-    # JSON: subdirectories — match by stem or "timings" in name
+    # JSON: subdirectories, match by stem or "timings" in name
     if not json_path:
         for json_file in sorted(parent.rglob("*.json")):
             if json_file.parent == parent:
@@ -773,11 +772,11 @@ def load_transcript(path) -> dict | None:
     """A timed transcript read off disk, or None if that file is not one.
 
     Not everything named `<track>.json` beside a track is a transcript. A
-    transcription's own export — MacWhisper writes a bare list of
-    {"text", "timestamp"} — is an ANCHOR file: it exists to be aligned against,
+    transcription's own export (MacWhisper writes a bare list of
+    {"text", "timestamp"}) is an ANCHOR file: it exists to be aligned against,
     not to be played from. Mistaking one for a transcript silently drops playback
     onto the evenly-paced fallback, which starts about right and drifts further
-    the longer the track runs, so the shape is checked rather than assumed.
+    the longer the track runs, so the shape is checked.
     """
     try:
         with open(path, encoding='utf-8') as fh:
@@ -797,7 +796,7 @@ def _parse_word_timings_json(json_path: str) -> list[dict]:
     Prefers a top-level ``word_segments`` list (WhisperX / the lyrics-editor
     export, already spoken-only); otherwise flattens ``segments[].words``.  The
     editor's enriched transcripts add ``kind: stage_dir`` / ``dead_air`` segments
-    that carry no spoken words — those are skipped so the timing stream stays
+    that carry no spoken words; those are skipped so the timing stream stays
     purely the spoken words regardless of which format the file is in."""
     data = load_transcript(json_path)
     if not data:
@@ -821,14 +820,14 @@ def _find_enriched_transcript(audio_path: str) -> str | None:
 
     The editor's `.sync.json` is deliberately SKIPPED: it is a work-in-progress
     save, so treating it as authoritative would let a half-finished edit change
-    what playback shows.  The MD script is the shared source of truth instead —
+    what playback shows.  The MD script is the shared authority instead:
     `_chunks_from_segments` re-derives the speakers and directions from it on every
     load.  Returns None when no enriched transcript exists."""
     _, json_path = _find_timing_files_for_audio(audio_path)
     parent = Path(audio_path).parent
     candidates: list[Path] = []
     # Prefer any enriched transcript files that are NOT the editor's working
-    # sidecar ("*.sync.json") — the sidecar is a WIP save and should not be
+    # copy (.sync.json): that is a WIP save and should not be
     # treated as the authoritative enriched transcript for playback. Look for
     # other JSON files that contain editor `kind` beats instead.
     if json_path:
@@ -862,7 +861,7 @@ def _find_enriched_transcript(audio_path: str) -> str | None:
 
 def _parse_air_beats(json_path: str) -> list[tuple[float, float]]:
     """Timed silence windows (start, end) from an enriched transcript's `dead_air`
-    segments — the editor's explicit silences, in absolute track time."""
+    segments: the editor's explicit silences, in absolute track time."""
     try:
         with open(json_path, encoding='utf-8') as f:
             data = json.load(f)
@@ -877,7 +876,7 @@ def _parse_air_beats(json_path: str) -> list[tuple[float, float]]:
 
 def _parse_stage_dirs(json_path: str) -> list[tuple[float, float, str]]:
     """Timed stage-direction windows (start, end, text) from an enriched
-    transcript's `stage_dir` segments — preserves the editor's explicit
+    transcript's `stage_dir` segments; preserves the editor's explicit
     standalone directions for playback merging."""
     try:
         with open(json_path, encoding='utf-8') as f:
@@ -902,7 +901,7 @@ def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict],
     # contains most of its words. This anchors MD→timings to the user's
     # Whisper segments and reduces mis-association of repeated words.
     if json_segments:
-        # Precompute normalized word sets for segments
+        # Precompute normalised word sets for segments
         seg_word_sets: list[set[str]] = []
         for seg in json_segments:
             txt = seg.get('text', '') if isinstance(seg, dict) else ''
@@ -976,7 +975,7 @@ def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict],
 # something happening *during* the speech (a bell still dinging, a name being
 # struggled over), so it rides along on the line itself instead of stealing a beat
 # from it.  Set from the gap distribution of real scripts, where the large
-# majority of directions sit in a clear pause and a handful genuinely overlap.
+# majority of directions sit in a clear pause and a handful overlap.
 _SD_MIN_GAP = 0.35
 _SD_READ_FRACTION = tune.LYRIC_SD_READ_FRACTION
 
@@ -986,7 +985,7 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
     """Build playback chunks from a timed transcript, overlaid with the MD script.
 
     The transcript owns the timing; the MD owns everything the timing cannot
-    carry — who is speaking, the script's own punctuation and capitalisation, its
+    carry: who is speaking, the script's own punctuation and capitalisation, its
     markdown emphasis, and the stage directions.  Both are joined by
     `md_overlay.build_md_overlay`, the SAME single word-level alignment the lyrics
     editor renders from, so the player and the editor can never disagree about a
@@ -995,11 +994,11 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
     A queued direction is given the silence it sits in as its own beat; one with
     no silence to occupy is attached to the following line (see `_SD_MIN_GAP`).
     Any silence still unclaimed and longer than `_AIR_THRESHOLD` becomes a dead-air
-    beat, so no line is left on screen — or shown early — while nobody is speaking.
+    beat, so no line is left on screen, or shown early, while nobody is speaking.
     `track_duration` extends that to the run-out after the last line; 0 means
     unknown, which leaves the run-out alone.
 
-    Returns (chunks, line_times) in the shape `draw_dialogue_window` expects.
+    Returns (chunks, line_times) in the shape `lyric_pane.from_chunks` expects.
     """
     overlay, quality, links = build_md_overlay(segs, md_path)
 
@@ -1040,7 +1039,7 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
         """Place queued directions in the silence before `next_start`.
 
         With enough silence each gets a beat of its own.  Without it the direction
-        becomes a CUE on the line it belongs with — an extra bracketed row in the
+        becomes a CUE on the line it belongs with: an extra bracketed row in the
         text column, the way the editor floats one, rather than a note hung off the
         speaker: '*(She pronounces it "roth.")*' describes one word, not the whole
         line, and the speaker column is reserved for the MD banner's own aside
@@ -1054,7 +1053,7 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
             return []
         held = pending
         pending = []
-        if next_start is None:                       # nothing follows — show them out
+        if next_start is None:                       # nothing follows: show them out
             t = _prev_end()
             for text, _lean in held:
                 span = _reading_time(text)
@@ -1088,9 +1087,9 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
     def _air_if_silent(next_start: float) -> None:
         """Blank the display through silence that nothing else claimed.
 
-        The lyric pane resolves a moment in a gap to the line that
-        comes NEXT, so without this the upcoming line sits on screen for the whole
-        pause — up to several seconds before anyone says it.  A dead-air beat holds
+        The lyric pane tiles the beats (lyric_pane._tile / handover), so a moment
+        in a gap belongs to the beat before it, and without this the line just
+        gone stays on screen for the whole pause.  A dead-air beat holds
         that space instead, drawn as nothing (the previous and next lines stay
         dimmed either side, so the place in the script is still legible).
 
@@ -1118,7 +1117,7 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
         kind = seg.get('kind')
 
         if s_start is None or s_end is None:
-            # Untimed beat — keep it out of the timeline rather than parking the
+            # Untimed beat: keep it out of the timeline rather than parking the
             # display on a zero-length window.  Anything queued stays queued, to
             # be placed against the next segment that does carry a time.
             continue
@@ -1130,7 +1129,7 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
         _air_if_silent(float(s_start))
 
         if kind == 'dead_air':
-            # Silence, unless a direction is riding along — then it is silence
+            # Silence, unless a direction is riding along, and then it is silence
             # with something to say about it.
             _emit({**_stage(carried[0] if carried else ''), 'parent_idx': si,
                    'cues': carried[1:], 'is_stage': bool(carried),
@@ -1149,7 +1148,7 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
                 line_seen.add(line)
             # `stage_dir` is the MD banner's aside and belongs to the speaker;
             # `cues` are directions about the words, shown in the text column.
-            # `carried` introduces this line — the bing bong before the
+            # `carried` introduces this line: the bing bong before the
             # announcement, the door before whoever walks through it. It reads
             # above the words, not under them. A direction that leaned 'prev' was
             # attached to the line just gone by `_flush` and stays under that one.
@@ -1196,7 +1195,7 @@ class DialoguePlaybackState:
         # Where the timing came from, so playback can say so rather than look
         # confident. 'transcript' is measured; 'estimated' is the script paced
         # across the track, which starts about right and drifts all the way to the
-        # middle — the failure that is impossible to spot from a still screen.
+        # middle, the failure that is impossible to spot from a still screen.
         self.timing_source = 'none'
         loaded_from_segments = False  # Track if we already have a full segmentation
 
@@ -1261,17 +1260,15 @@ class DialoguePlaybackState:
             self._merge_air_beats(audio_path)
 
     def _merge_air_beats(self, audio_path: str) -> None:
-        """Fold the editor's explicit dead-air windows (from the enriched sidecar)
-        into the timeline as silence beats, wherever they land in a gap not already
-        covered by a spoken/stage/air chunk.  They render as the usual unlabelled
-        `⋯` silence indicator — we just place them where the editor marked them,
-        rather than only inferring silence from wide gaps."""
+        """Fold the explicit dead-air and stage-direction beats from an enriched
+        transcript (never the .sync.json) into the timeline, wherever they land in
+        a gap nothing else covers. Dead air draws as a blank row."""
         enriched = _find_enriched_transcript(audio_path)
         if not enriched:
             return
         for a_s, a_e in _parse_air_beats(enriched):
             if any(not (e <= a_s or s >= a_e) for (s, e) in self.line_times):
-                continue   # overlaps existing content — leave it be
+                continue   # overlaps existing content: leave it be
             pos = bisect.bisect_left([s for (s, _) in self.line_times], a_s)
             self.line_times.insert(pos, (a_s, a_e))
             self.expanded_chunks.insert(pos, {

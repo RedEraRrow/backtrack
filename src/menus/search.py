@@ -15,9 +15,9 @@ from src.config import setting
 from src.music_library import track_title
 
 
-# Search scope cycled with Tab in the live search screen (default: all fields).
-# 'disc_label' is a computed field (search._disc_label) — a disc's subtitle
-# when tagged, else "Disc N" for any multi-disc album — not a scope of its
+# Search scope cycled with ^F in the live search screen (default: all fields).
+# 'disc_label' is a computed field (search._disc_label): a disc's subtitle
+# when tagged, else "Disc N" for any multi-disc album. It is not a scope of its
 # own (it rides along under "all fields", the same as "people" does).
 _ALL_SEARCH_FIELDS = ['title', 'artist', 'album', 'composer', 'lyricist', 'genre', 'people', 'disc_label']
 
@@ -27,8 +27,7 @@ _SCOPE_CYCLE = ['all', 'title', 'artist', 'album', 'composer', 'lyricist', 'genr
 
 # Columns for live search results: title (matched chars accented) · artist ·
 # album · people (whoever matched) · disc/track · duration. `title` flexes;
-# the rest are width-capped so the layout stays aligned across queries.
-# title · artist · album · people · disc/track · duration. On narrow terminals
+# the rest are width-capped so the layout stays aligned across queries. On narrow terminals
 # the least important columns drop first (priority; lower = dropped sooner):
 # people, then disc/track, then duration, then album, then artist. Title never
 # drops (no priority = essential).
@@ -63,7 +62,7 @@ def _hl_segments(value: str, tokens: list, base_style: str) -> list:
 
 
 def _people_cell(song: dict, tokens: list):
-    """People column: the matched person(s), highlighted — empty when no person
+    """People column: the matched person(s), highlighted; empty when no person
     in this track's cast matched (so the column reads as 'who matched')."""
     if not tokens:
         return ""
@@ -92,7 +91,7 @@ def _search_result_cells(result, tokens: list) -> list:
     # Composer, lyricist and genre have no column of their own. When one of them
     # is why the row matched, and nothing visible in the row is highlighted to
     # show it, tag it onto the album so the row still explains itself. Order is
-    # most specific first — a writing credit says more than a genre.
+    # most specific first: a writing credit says more than a genre.
     if not people and not any(
             _search.highlight_spans(str(s.get(f, '') or ''), tokens)
             for f in ('title', 'artist', 'album')):
@@ -132,11 +131,12 @@ def _entity_cells(ent, tokens: list) -> list:
 
 
 def handle_search(library: list) -> str | None:
-    """Run the live fuzzy search screen; on selecting a track, offer play/edit
-    actions (or play immediately if autoplay is on or there's only one option).
+    """Run the live fuzzy search screen; on selecting a track, offer Play plus
+    the queue actions (or play immediately if autoplay is on or there's only
+    one option). Editing is ^e (one track) or ^a (every result).
 
-    Results are grouped by what they are — artists, albums, genres, then the
-    tracks themselves — rather than listed as one flat run. A query like "john"
+    Results are grouped by what they are (artists, albums, genres, then the
+    tracks themselves) rather than listed as one flat run. A query like "john"
     matches every episode of a series; collapsed, that is one artist row saying
     42 tracks instead of 42 rows saying the same thing in different words.
     """
@@ -211,7 +211,7 @@ def handle_search(library: list) -> str | None:
                                              cells=_entity_cells(e, tokens)))
 
         # Discs sit under albums: a subdivision of one, not a peer of artist/
-        # genre/etc. — only surfaced for albums that actually have more than one.
+        # genre/etc. Only surfaced for albums that actually have more than one.
         _section('disc', 'DISCS', 'disc', [e for e in disc_ents if e is not best],
                  lambda e: prompt.Choice(title=e.name, value=("__entity__", e),
                                          cells=_entity_cells(e, tokens)))
@@ -237,8 +237,8 @@ def handle_search(library: list) -> str | None:
         return _menu_header("Search", f"{sub}    scope: {label}")()
 
     def _edit_highlighted(value) -> None:
-        """^E: edit the highlighted track directly, without leaving the
-        search results — only a plain track row is editable, not an entity
+        """^e: edit the highlighted track directly, without leaving the
+        search results. Only a plain track row is editable, not an entity
         or a structural row like "show all"."""
         if not isinstance(value, str) or value.startswith("__"):
             return
@@ -278,8 +278,8 @@ def handle_search(library: list) -> str | None:
             continue
         expanded['kind'] = None
 
-        # A track: play it (or queue it), then back to these results — the
-        # query is kept (initial_query) — as entities and every browse level do.
+        # A track: play it (or queue it), then back to these results with the
+        # query kept (initial_query), as entities and every browse level do.
         # Editing is ^e / ^a from the results: `live_select` types every other
         # key into the query.
         song_meta = next((s for s in library if s['path'] == selected), None)

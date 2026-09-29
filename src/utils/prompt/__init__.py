@@ -1,16 +1,6 @@
-"""
-Terminal prompt widgets — resize-aware replacements for questionary.
-
-API:
-    prompt.select(message, choices)               -> value | None
-    prompt.select(message, choices, multi=True)   -> [value, ...] | None
-    prompt.confirm(message)                       -> bool
-    prompt.text(message, default="")     -> str | None
-    prompt.path(message)                 -> str | None
-
-choices can be plain strings, dicts with 'name'/'value'/'checked',
-or objects with .title / .value attributes.
-"""
+"""The prompt widgets, one import: lists (select, live_select, confirm,
+ListPlace), text (text, path, system_editor_edit), list_edit, dates, values,
+audio, and the shared chrome."""
 from src.utils.prompt_core import (  # noqa: F401
     Choice, Column, separator, HINTS_CLICK, add_help_corner, add_hint_click_cells,
     help_corner_text, hints_visible, rounded_header, toggle_hints,

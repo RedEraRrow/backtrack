@@ -62,7 +62,7 @@ def _detail_view(path, derived, plan: dict, present: dict, apply_fields: set,
         elif f in plan:
             action = 'write'
         else:
-            action = 'kept' if present.get(f) else '—'
+            action = 'kept' if present.get(f) else '-'
         rows.append(prompt.Choice(title=_DERIVE_LABELS[f], value=f, disabled=True,
                                   cells=[_DERIVE_LABELS[f], str(val), action]))
     if derived.compilation and 'album_artist' in apply_fields:
@@ -97,7 +97,7 @@ def _derive_regex_base(paths: list) -> str:
     except Exception:
         roots = []
     # With several library roots, the deepest one containing every selected file
-    # wins — that's the folder path the user thinks in.
+    # wins: that's the folder path the user thinks in.
     for music_dir in sorted(roots, key=len, reverse=True):
         if all(p.startswith(music_dir + os.sep) for p in abspaths):
             return music_dir
@@ -148,16 +148,16 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         ui_utils.show_status("No MP3/MP4 files here to derive from.")
         return
 
-    # 1) Which fields to write (Title on by default — the automatic baseline).
-    _FIELDS = [("title", "Title  — from file name"),
+    # 1) Which fields to write (Title on by default: the automatic baseline).
+    _FIELDS = [("title", "Title: from file name"),
                ("track", "Track number (+ total)"),
                ("disc", "Disc number (+ total)"),
-               ("disc_subtitle", "Disc subtitle — from folder (MP3 only)"),
-               ("album", "Album — from folder"),
-               ("album_artist", "Album artist — from parent folder"),
-               ("artist", "Track artist — from file name / folder"),
-               ("year", "Year / date — from folder or file name"),
-               ("sort", "Sort-order tags — for the fields ticked above")]
+               ("disc_subtitle", "Disc subtitle: from folder (MP3 only)"),
+               ("album", "Album: from folder"),
+               ("album_artist", "Album artist: from parent folder"),
+               ("artist", "Track artist: from file name / folder"),
+               ("year", "Year / date: from folder or file name"),
+               ("sort", "Sort-order tags: for the fields ticked above")]
     _MODES = ["Fill blanks only", "Overwrite existing"]
     _DETECTS = ["Auto-detect", "Use a naming template", "Use a regex"]
     _TARGETS = ["File name", "Folder path"]
@@ -197,7 +197,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         return True
 
     def _ask_template():
-        """The naming template — only for that detection mode."""
+        """The naming template; only asked in that detection mode."""
         if state['detect'] != "Use a naming template":
             return _SKIP
         while True:
@@ -216,7 +216,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
             return True
 
     def _ask_regex_target():
-        """File name or folder path — only for regex detection."""
+        """File name or folder path; only asked for regex detection."""
         if state['detect'] != "Use a regex":
             return _SKIP
         # A vs B: match the file name, or the path from the library root so the
@@ -229,7 +229,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         return True
 
     def _ask_regex():
-        """The regex itself — only for regex detection."""
+        """The regex itself; only asked for regex detection."""
         if state['detect'] != "Use a regex":
             return _SKIP
         base = _derive_regex_base(writable) if state['target'] == "Folder path" else None
@@ -269,7 +269,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         to_write = [p for p in writable if plans[p]]
 
         if not to_write:
-            ui_utils.show_status("Nothing to write — selected fields are already set "
+            ui_utils.show_status("Nothing to write: selected fields are already set "
                                  "(try Overwrite).")
             return False                     # back to the questions, not out
 
@@ -327,7 +327,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
                          apply_fields, overwrite, header)
 
         selected = prompt.select(
-            "Preview — ↵ applies:",
+            "Preview (↵ applies):",
             choices=preview_choices, columns=prev_cols,
             header=header(sub), multi=True,
             extra_hints={'d': 'details'}, on_inspect=_show_detail)
@@ -417,7 +417,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
                 continue
             if sel == "__custom__":
                 raw = prompt.text(
-                    "Pattern (e.g. %disc%-%track% %title% — 'Show all tokens' lists them):",
+                    "Pattern (e.g. %disc%-%track% %title%; 'Show all tokens' lists them):",
                     default=_prev or default_pattern)
                 if not raw:
                     continue                 # back out of typing → the preset list
@@ -445,7 +445,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
                    for i, (p, o, n) in enumerate(changed)]
         sub = f"{len(changed)} to rename" + (
             f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
-        sel = prompt.select("Preview — ↵ renames:", choices=choices,
+        sel = prompt.select("Preview (↵ renames):", choices=choices,
                             columns=_RENAME_COLUMNS, header=header(sub), multi=True)
         if sel is None:
             return False

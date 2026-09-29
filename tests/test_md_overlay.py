@@ -225,7 +225,7 @@ class OverlayTest(unittest.TestCase):
 
 class PlacementTest(unittest.TestCase):
     """A word the transcript heard differently is still a word that was SAID at a
-    known moment, so it belongs to the segment it was heard in — including when it
+    known moment, so it belongs to the segment it was heard in, including when it
     opens one, where riding along with its neighbours would put it a segment early."""
 
     SCRIPT = "**SARGENT**: because 'e is relying on you to save 'im now\n"
@@ -245,7 +245,7 @@ class PlacementTest(unittest.TestCase):
                          ["because 'e", "is relying on you to save 'im now"])
 
     def test_opening_a_segment(self):
-        # "he" is the first word of segment 1, so "'e" belongs to segment 1 — not
+        # "he" is the first word of segment 1, so "'e" belongs to segment 1, not
         # backwards with "because" in segment 0.
         self.assertEqual(self._script_of("because", "he is relying on you to save him now"),
                          ["because", "'e is relying on you to save 'im now"])
@@ -257,7 +257,7 @@ class PlacementTest(unittest.TestCase):
 
 
 class SplitTest(unittest.TestCase):
-    """A segment is cut wherever the script says a new beat starts — a new speaker
+    """A segment is cut wherever the script says a new beat starts: a new speaker
     part way through, or an inline stage direction."""
 
     def _split(self, script, *seg_texts):
@@ -303,8 +303,8 @@ class SplitTest(unittest.TestCase):
         self.assertEqual(unplaced, [])
 
     def test_a_direction_the_transcript_cannot_place_is_reported(self):
-        # Whisper never heard "immediately" — the very word the direction stands
-        # against — so there is no boundary where the script puts it. Reported, not
+        # Whisper never heard "immediately" (the very word the direction stands
+        # against), so there is no boundary where the script puts it. Reported, not
         # guessed at by snapping to a neighbour.
         _segsout, unplaced, _p, _g = self._split(
             "**MARTIN**: We go to Bristol. *(he sighs)* Immediately, all right?\n",
@@ -320,7 +320,7 @@ class SplitTest(unittest.TestCase):
         self.assertEqual(again, [])
 
     def test_a_mid_sentence_direction_is_suggested_not_cut(self):
-        # "Captain *(he assumes a French accent)* Martin duCref" — the script has not
+        # "Captain *(he assumes a French accent)* Martin duCref": the script has not
         # finished a thought, so the bulk pass leaves it alone and says so.
         segs, _u, _p, suggested = self._split(
             "**DOUGLAS**: Captain *(he assumes a French accent)* Martin duCref here.\n",

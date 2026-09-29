@@ -1,23 +1,23 @@
-"""Interactive single-track trim editor — a sibling of lyrics_editor.py: its
+"""Interactive single-track trim editor, a sibling of lyrics_editor.py: its
 own private VLC player (so scrubbing never disturbs SESSION or a joined
 window), the same raw-mode key loop and mouse-enable pattern, and EDIT mode's
-segmented MM:SS.mmm timestamp fields reused verbatim rather than a second
-parser.
+segmented MM:SS.mmm timestamp fields from lyrics.time_fields (`new_edit`,
+`edit_key`), shared with the lyrics editor rather than a second parser.
 
 Chrome matches the rest of the app: the same one-line rounded header as
 id3_browser's tag list (styled title left, dim facts right), and a full-width
-progress bar in playback's own style — the kept region filled like elapsed
+progress bar in playback's own style: the kept region filled like elapsed
 playback, a short accent tip at each cut point, brackets and blocks from
 `ui_utils.get_progress_bar`. Everything that touches a terminal or VLC lives
 in this module; the pure engine (snapping, the ffmpeg cut, backups, silence
 detection) is trim.py, imported and never duplicated.
 
 '[' / ']' jump the playhead between silence-detection candidates near the
-head and tail (section 4.3) — computed lazily on first press, since most
+head and tail, computed lazily on first press, since most
 tracks won't need it (a sting-seeded bulk track, or a mark set by ear).
 Nothing is marked automatically; i/o still accepts a candidate once it's
 been heard. Some material opens cold with no gap to find at all, which
-degrades gracefully to a status message, not a dead key.
+shows a status message instead, not a dead key.
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ from src import tuning as tune
 
 # Same shape as AUDITION's nudge scheme (editor_view's _AUD_* steps): a coarse step
 # on ',' and '.', and a fine step that here is one frame rather than a fixed
-# 0.05s — probed per file, since frame length varies with sample rate (2.3).
+# 0.05s, probed per file, since frame length varies with sample rate.
 _COARSE_STEP = 0.25
 _JOIN_LEAD = 1.0     # seconds of "about to be cut" heard before the in-point
 _JOIN_TAIL = 1.0     # seconds of "just cut" heard after the out-point
@@ -60,7 +60,7 @@ _TAIL_PREVIEW = 5.0  # window played by "up to the out-point"
 
 # ---------------------------------------------------------------------------
 # Pure state: marks, undo, audition windows, sibling context. No terminal or
-# VLC calls below this point — this half is what tests/test_trim_editor.py
+# VLC calls below this point: this half is what tests/test_trim_editor.py
 # exercises headlessly.
 # ---------------------------------------------------------------------------
 
@@ -83,7 +83,7 @@ def set_in(marks: Marks, pos_s: float, frame_dur: float) -> tuple:
 
 def set_out(marks: Marks, pos_s: float, frame_dur: float,
             track_length_s: float | None = None) -> tuple:
-    """Set the out-point. Returns an undo record. Rounding outward (2.3) can
+    """Set the out-point. Returns an undo record. Rounding outward can
     push the snapped value a frame past the file's own end; `track_length_s`
     clamps it back so the out-point never claims to be later than the track
     actually runs."""
@@ -153,8 +153,8 @@ def removed_tail(marks: Marks, track_length_s: float) -> float:
 def join_clips(marks: Marks, track_length_s: float | None,
                lead_s: float = _JOIN_LEAD, tail_s: float = _JOIN_TAIL) -> list[tuple[float, float, str]]:
     """Two clips straddling each cut point, queued back to back: the material
-    just before the in-point and just after the out-point — the edge of what
-    gets discarded at each end (section 4.2). Either mark being unset just
+    just before the in-point and just after the out-point, the edge of what
+    gets discarded at each end. Either mark being unset just
     drops that clip. `_aud_next()`-shaped: (lo, hi, label) tuples."""
     clips: list[tuple[float, float, str]] = []
     if marks.in_snapped is not None:
@@ -171,8 +171,8 @@ def join_clips(marks: Marks, track_length_s: float | None,
 
 def sibling_durations(library: list, path: str) -> list[float]:
     """Durations of every other track sharing this one's album+artist, from
-    the cached library list — the sanity check against a series' true length
-    (section 4.2). No file access: it's a pass over what's already cached."""
+    the cached library list: the sanity check against a series' true length.
+    No file access: it's a pass over what's already cached."""
     track = next((t for t in library if t.get('path') == path), None)
     if track is None:
         return []
@@ -206,7 +206,7 @@ _edit_field_key = edit_key     # the one segmented-editor key handler (time_fiel
 def _progress_bar(width: int, track_length: float, marks: Marks, play_pos: float) -> str:
     """A full-width track bar in playback's own style
     (`ui_utils.get_progress_bar`'s dim brackets and heavy-block fill): the kept
-    region — between the marks — filled like the elapsed portion of a normal
+    region (between the marks) filled like the elapsed portion of a normal
     playback bar, with a short accent tip at each cut point (`╺` in, `╸` out).
     The playhead inverts whatever cell it's over rather than adding a glyph."""
     if width <= 2:
@@ -259,7 +259,7 @@ def _track_title_artist(path: str) -> tuple[str, str]:
 
 
 def _silence_markers(path: str, track_length: float) -> list[float]:
-    """Head + tail silence-boundary candidates (section 4.3) — jump targets
+    """Head + tail silence-boundary candidates: jump targets
     for '[' / ']', not automatic marks. Empty when nothing is found; some
     material opens cold with no gap to detect at all, which is not a failure."""
     cfg = load_config()
@@ -287,8 +287,8 @@ _CHAPTER_PREVIEW_COLUMNS = [
 def resolve_chapters(path: str, snapped_in_s: float, snapped_out_s: float
                      ) -> tuple[list[tuple], list[str], int | None] | None:
     """Classify this track's chapters against the cut and ask about anything
-    destroyed or straddling (section 3.3); a chapter that survives intact is
-    rebased regardless — that part is never optional. Returns
+    destroyed or straddling; a chapter that survives intact is
+    rebased regardless, that part is never optional. Returns
     (chapters, child_order, flags) ready for `trim.commit_trim`'s `chapters`
     kwarg, or None when the file has no chapters at all (nothing to ask)."""
     orig_chapters, child_order, flags = trim.read_chapters(path)
@@ -325,7 +325,7 @@ def resolve_chapters(path: str, snapped_in_s: float, snapped_out_s: float
     all_destroyed = len(affected) == len(classified)
 
     overview = _promptmod.select(
-        f"{len(affected)} of {len(classified)} chapter(s) affected by this cut — ↵ to review each:",
+        f"{len(affected)} of {ui_utils.plural(len(classified), 'chapter')} affected by this cut, ↵ to review each:",
         choices=rows, columns=_CHAPTER_PREVIEW_COLUMNS,
         shortcuts={'D': '__discard_all__'},
         extra_hints={'D': 'discard all chapters'},
@@ -339,11 +339,11 @@ def resolve_chapters(path: str, snapped_in_s: float, snapped_out_s: float
             decisions[c[0]] = trim.rebase_chapter(c, cut_start_ms)
             continue
         action = _promptmod.select(
-            f"'{_label(c)}' {state_label[cls]} — what should happen to it?",
+            f"'{_label(c)}' {state_label[cls]}: what should happen to it?",
             choices=[
                 _promptmod.Choice(title="Delete this chapter", value='delete'),
                 _promptmod.Choice(title="Keep, clamped to the cut boundary", value='clamp'),
-                _promptmod.Choice(title="Reassign — type new start-end in seconds", value='reassign'),
+                _promptmod.Choice(title="Reassign: type new start-end in seconds", value='reassign'),
             ])
         if action == 'clamp':
             decisions[c[0]] = trim.clamp_chapter(c, cut_start_ms, cut_end_ms)
@@ -353,7 +353,7 @@ def resolve_chapters(path: str, snapped_in_s: float, snapped_out_s: float
                 new_start_s, new_end_s = (float(x) for x in (raw or '').split('-', 1))
                 decisions[c[0]] = (c[0], int(new_start_s * 1000), int(new_end_s * 1000), c[3])
             except (ValueError, AttributeError):
-                ui_utils.show_status("Could not parse that range — chapter deleted instead.")
+                ui_utils.show_status("Could not parse that range; chapter deleted instead.")
                 decisions[c[0]] = None
         else:   # 'delete', or backed out of the per-chapter choice
             decisions[c[0]] = None
@@ -387,18 +387,18 @@ def _run_marking_screen(
     strip_lines: list[str] | None = None,
     flags: dict | None = None,
 ) -> str:
-    """Interactive marking/audition/undo screen for one track — the shared
+    """Interactive marking/audition/undo screen for one track: the shared
     engine behind both single-track `trim_editor` and the bulk conveyor
     (trim_bulk.py). Mutates `marks`/`undo_stack` in place; never touches disk
-    or shows a confirmation — those are the caller's job, since a single track
+    or shows a confirmation: those are the caller's job, since a single track
     and a conveyor group mean different things by "done" (write now vs. record
-    and move to the next track, section 5.2).
+    and move to the next track).
 
     Returns `finish_key` once both marks are valid, `extra_key` if pressed
-    (the conveyor's skip), or 'ESC' — back one track, or leave, at the
+    (the conveyor's skip), or 'ESC': back one track, or leave, at the
     caller's discretion. `strip_lines` is the conveyor's group-state strip,
     prepended above the header. `flags` is a shared dict so the audition
-    "approximate" note (section 2.5) fires once across a whole group, not
+    "approximate" note fires once across a whole group, not
     once per track.
     """
     flags = flags if flags is not None else {}
@@ -471,21 +471,21 @@ def _run_marking_screen(
         nonlocal aud_queue
         clips = join_clips(marks, track_length)
         if not clips:
-            ui_utils.show_status("Could not audition the join — set both marks first.")
+            ui_utils.show_status("Could not audition the join: set both marks first.")
             return
         aud_queue = clips
         _aud_next()
         if not flags.get('join_warned'):
             flags['join_warned'] = True
             ui_utils.show_status(
-                "Approximate — a VLC seek isn't sample-accurate. Play back the "
+                "Approximate: a VLC seek isn't sample-accurate. Play back the "
                 "written file to check the real join.", duration=tune.STATUS_WARNING_S)
 
     def do_undo() -> None:
         if undo_stack:
             apply_undo(marks, undo_stack.pop())
 
-    _markers: list[float] | None = None   # computed lazily — most tracks won't need it
+    _markers: list[float] | None = None   # computed lazily, most tracks won't need it
 
     def _get_markers() -> list[float]:
         nonlocal _markers
@@ -495,7 +495,7 @@ def _run_marking_screen(
 
     def do_jump_marker(direction: int) -> None:
         """'[' / ']': jump the playhead to the previous/next silence-detection
-        candidate and play briefly there (section 4.3) — i/o still accepts it."""
+        candidate and play briefly there; i/o still accepts it."""
         markers = _get_markers()
         if not markers:
             ui_utils.show_status("No silence gaps found near the head or tail.")
@@ -508,7 +508,7 @@ def _run_marking_screen(
 
     def _footer_pairs() -> list[tuple[str, str]]:
         if edit is not None:
-            # EDIT sub-mode has its own key set — same shape as lyrics_editor's.
+            # EDIT sub-mode has its own key set, the same as lyrics_editor's.
             pairs = [('tab/⇧tab', 'field'), ('←→', 'cursor'), ('↑↓', 'adjust')]
             if mp is not None:
                 pairs.append(('p', 'grab playhead'))
@@ -716,10 +716,10 @@ def _run_marking_screen(
                 return extra_key
             elif key == finish_key:
                 if marks.in_snapped is None or marks.out_snapped is None:
-                    ui_utils.show_status(f"Could not {finish_verb} — set both an in-point and an out-point first.")
+                    ui_utils.show_status(f"Could not {finish_verb}: set both an in-point and an out-point first.")
                     continue
                 if resulting_duration(marks) is None:
-                    ui_utils.show_status(f"Could not {finish_verb} — the out-point is not after the in-point.")
+                    ui_utils.show_status(f"Could not {finish_verb}: the out-point is not after the in-point.")
                     continue
                 do_stop()
                 return finish_key
@@ -734,9 +734,9 @@ def _run_marking_screen(
 
 
 def _sting_suggestion(path: str, region: str, window_s: float, min_score: float) -> tuple[float, float] | None:
-    """A learned-sting suggestion for `path`'s head or tail — single-track
-    parity with the bulk conveyor's "learn from an earlier trim" (section
-    4.4): an already-correctly-trimmed sibling elsewhere in this folder is
+    """A learned-sting suggestion for `path`'s head or tail: the single-track
+    version of the bulk conveyor's "learn from an earlier trim". An
+    already-correctly-trimmed sibling elsewhere in this folder is
     ground truth for the same shared opening/closing, so a lone edit doesn't
     have to rediscover or mark it by hand every time. None if there's no
     usable history in this folder, or the match isn't confident enough."""
@@ -753,11 +753,11 @@ def _sting_suggestion(path: str, region: str, window_s: float, min_score: float)
 def trim_editor(path: str, library: list | None = None) -> None:
     """Run the interactive trimmer on `path` until the user backs out or
     commits. Marking, auditioning and undo are all in-session; nothing is
-    written to disk until 's' (section 4.2's safety requirement)."""
+    written to disk until 's'."""
     if not drop_moved([path]):
         return
     if not trim.HAS_FFMPEG:
-        ui_utils.show_status("Could not open the trimmer — ffmpeg isn't installed. See README.md.")
+        ui_utils.show_status("Could not open the trimmer: ffmpeg isn't installed. See README.md.")
         return
     try:
         frame_dur = trim.probe_frame_duration(path)
@@ -768,7 +768,7 @@ def trim_editor(path: str, library: list | None = None) -> None:
     from mutagen.mp3 import MP3
     track_length = MP3(path).info.length
     track_name, track_artist = _track_title_artist(path)
-    # `library` itself is passed on as given — None means "not tracking one",
+    # `library` itself is passed on as given: None means "not tracking one",
     # and a stand-in [] would be saved as the whole library cache on commit.
     siblings = sibling_durations(library or [], path)
 
@@ -780,12 +780,12 @@ def trim_editor(path: str, library: list | None = None) -> None:
     min_score = float(setting(cfg, "trim_sting_min_score"))
     head = _sting_suggestion(path, 'head', window_s, min_score)
     if head is not None and _confirm(
-            f"Found a matching opening sting from an earlier trim in this folder (in-point {timefmt.clock(head[0])}) — use it?",
+            f"Found a matching opening sting from an earlier trim in this folder (in-point {timefmt.clock(head[0])}). Use it?",
             default=True):
         set_in(marks, head[0], frame_dur)
     tail = _sting_suggestion(path, 'tail', window_s, min_score)
     if tail is not None and _confirm(
-            f"Found a matching closing sting from an earlier trim in this folder (out-point {timefmt.clock(tail[0])}) — use it?",
+            f"Found a matching closing sting from an earlier trim in this folder (out-point {timefmt.clock(tail[0])}). Use it?",
             default=True):
         set_out(marks, tail[0], frame_dur, track_length)
 

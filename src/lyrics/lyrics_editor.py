@@ -1,30 +1,34 @@
 """
-Lyrics editor — unified sync and fine-tune tool.
+Lyrics editor: one tool to sync and fine-tune.
 
 Data sources (auto-detected in order):
-  1. Transcript JSON  (Transcript/ .json)  — word-level timing; saves JSON + SRT
-  2. SYLT ID3 tag                          — line-level timing; saves SYLT
-  3. USLT ID3 tag                          — untimed lyrics; saves SYLT after tap
+  1. Transcript JSON  (`<stem>.json`, `transcript.json`, or a subfolder):
+                      word-level timing; saves JSON + SRT
+  2. SYLT ID3 tag:    line-level timing; saves SYLT
+  3. USLT ID3 tag:    untimed lyrics; saves SYLT after tap
 
 Modes:
-  SEG    browse list; ↑↓ navigate, ←→/,./[] adjust timestamps
-  WORD   per-word editing (transcript source only)
-  TAP    real-time tap — audio plays, SPACE marks current line's start
-  EDIT   type exact timestamp
+  SEG       browse list; ↑↓ navigate, ←→/,./[] adjust timestamps
+  WORD      per-word editing (transcript source only)
+  TAP       real-time tap: audio plays, SPACE marks current line's start
+  AUDITION  hear a line's start and end and move it by ear (b)
+  EDIT      type exact timestamp
+
+Esc goes back (to the tag editor from the line list); q quits the app.
 
 Review walkthroughs (walk each item so it gets fixed without scrolling; Tab/⇧tab
 step next/prev, recomputed live so fixed items drop out, Esc leaves, save (s) and
 re-enter later to resume on whatever is outstanding):
-  R  issues     — MD mismatches, then word-timing errors, then overlaps
-  D  directions — uncategorised stage directions (x), then untimed ones (e / t)
-  L  long lines — over-long spoken lines; / splits at the best semantic break
+  R  issues:     MD mismatches, then word-timing errors, then overlaps
+  D  directions: uncategorised stage directions (x), then untimed ones (e / t)
+  L  long lines: over-long spoken lines; / splits at the best semantic break
 
 / (in SEG): split the current spoken line at its strongest punctuation break
   nearest the middle (or the middle if none), redistributing words and timing.
 
-Stage directions (on a stage-direction row in SEG) — press x to cycle the kind:
+Stage directions (on a stage-direction row in SEG): press x to cycle the kind:
   inline    ✦ indented under the words (a mid-phrase beat)
-  tone      ~ same indent — tonal / pronunciation note (e.g. drawn-out speech)
+  tone      ~ same indent, a tonal / pronunciation note (e.g. drawn-out speech)
   external  a framed section (scene/sound, or another person's aside); who and
             when are left to be read from the text and context.
 """
@@ -66,7 +70,7 @@ class _Session(_KeyHandlers):
         self.track_name = track_title(self.mp3_path, read_tags=True)
         if self.aux.get('drift'):
             ui_utils.show_status(
-                "⚠ transcript.json changed since this working copy — W will overwrite it.", duration=tune.STATUS_WARNING_S)
+                "⚠ transcript.json changed since this working copy: W will overwrite it.", duration=tune.STATUS_WARNING_S)
 
         # Lead-in offset for tap sync (compensates for reaction time)
         try:
@@ -85,7 +89,7 @@ class _Session(_KeyHandlers):
         self.dirty      = False
         self.show_hints = False
         self.review_phase: str | None = None          # current phase, or None when not reviewing
-        self.review_program: str | None = None        # 'issues' (R) or 'dirs' (D)
+        self.review_program: str | None = None        # 'issues' (R), 'dirs' (D) or 'long' (L)
         self.md_overlay: list | None = None
         self.md_quality: dict | None = None
         self.md_path:    str  | None = None
@@ -125,11 +129,9 @@ class _Session(_KeyHandlers):
     def _sources_label(self) -> str:
         """The documents this session is actually reading, named as they are on disk.
 
-        `working copy` matters more than the rest: resuming from the `.sync.json`
-        sidecar means edits are going there and not to the transcript until W, and
-        a `diverged` copy means the transcript has changed underneath it since. Both
-        were previously announced once at load and then invisible for the rest of
-        the session.
+        `working copy` matters more than the rest: resuming from the working copy
+        (.sync.json) means edits are going there and not to the transcript until W,
+        and a `diverged` copy means the transcript has changed underneath it since.
         """
         parts: list[str] = []
         if self.aux.get('jpath'):
@@ -205,7 +207,7 @@ class _Session(_KeyHandlers):
         self._aud_next()
 
     def _aud_shift(self, delta: float) -> None:
-        """Move the whole line — both timestamps and its words — by delta, keeping
+        """Move the whole line (both timestamps and its words) by delta, keeping
         its duration, then play the start so the new position can be judged by ear.
         (The duration itself is changed by typing in the editor: press e.)"""
         if not self.segs or self.cursor >= len(self.segs):
@@ -219,7 +221,7 @@ class _Session(_KeyHandlers):
         """Re-derive the MD overlay from the current segs.  Call after ANY
         structural change to segs.  The overlay is a pure projection of
         (segs, MD): rebuilding is always safe and never duplicates, because
-        committed stage_dir segs are reconciled inside _build_md_overlay."""
+        committed stage_dir segs are reconciled inside build_md_overlay."""
         if self.md_path:
             self.md_overlay, self.md_quality, _links = _build_md_overlay(self.segs, self.md_path)
             for _si, _lid in _links.items():   # record durable alignment on segs
@@ -239,12 +241,12 @@ class _Session(_KeyHandlers):
                 self.cursor = issues[0]
                 self.viewport = 0
                 ui_utils.show_status(
-                    f"Review · {_REVIEW_PHASE_NAME[ph]}: {len(issues)} to fix — "
+                    f"Review · {_REVIEW_PHASE_NAME[ph]}: {len(issues)} to fix: "
                     f"Tab/⇧Tab next/prev, fix in place, Esc to leave.")
                 return
         _none = {'dirs': "stage directions need categorising or timing",
                  'long': "lines are too long"}.get(program, "MD mismatches, word or overlap errors")
-        ui_utils.show_status(f"Nothing to review — no {_none}.")
+        ui_utils.show_status(f"Nothing to review: no {_none}.")
 
     def _review_advance(self, direction: int) -> None:
         """Move to the next/prev outstanding item, recomputed live so fixed ones
@@ -262,7 +264,7 @@ class _Session(_KeyHandlers):
                 self.cursor = nxt
                 self.viewport = 0
                 return
-            # exhausted this phase in this direction — step to the adjacent phase
+            # exhausted this phase in this direction: step to the adjacent phase
             i = phases.index(ph) + (1 if direction > 0 else -1)
             if not (0 <= i < len(phases)):
                 break
@@ -276,7 +278,7 @@ class _Session(_KeyHandlers):
                 return
         self.review_phase = None
         self.review_program = None
-        ui_utils.show_status("Review complete — all resolved. (Save with s.)")
+        ui_utils.show_status("Review complete, all resolved. (Save with s.)")
 
     def do_smart_split(self) -> None:
         """Split the current spoken line at its strongest semantic break nearest the
@@ -379,23 +381,23 @@ class _Session(_KeyHandlers):
         # no undo entry, so an empty undo stack doesn't mean nothing changed.
         # Only a save clears this.
         self.dirty = True
-        # segs may have changed structurally — keep the overlay in sync so
+        # segs may have changed structurally: keep the overlay in sync so
         # nothing is left pointing at stale indices.
         if op[0] in ('split', 'join', 'delete', 'snapshot'):
             self.refresh_overlay()
 
     def do_save(self) -> None:
-        """Persist current edits: transcript source writes the working sidecar JSON;
+        """Persist current edits: transcript source writes the working copy (.sync.json);
         SYLT/USLT sources write the SYLT tag directly."""
         if self.source == SOURCE_TRANSCRIPT:
-            # Save to the WORKING document (sidecar) — never touches the original
+            # Save to the working copy (.sync.json); never touches the original
             # transcript.json until the user commits with 'W'.
             _ensure_ids(self.segs, self.aux['meta'])
             sdata = {'version': 1, 'source_json': os.path.basename(self.aux['jpath']),
                      'meta': self.aux['meta'], 'segments': self.segs}
             write_text_atomic(self.aux['sidecar'], json.dumps(sdata, indent=2, ensure_ascii=False))
             ui_utils.show_status(
-                f"Saved to {os.path.basename(self.aux['sidecar'])} — press W to write transcript.json")
+                f"Saved to {os.path.basename(self.aux['sidecar'])}: press W to write transcript.json")
             self.dirty = False; self.undo_stack.clear()
             return
         else:
@@ -425,14 +427,14 @@ class _Session(_KeyHandlers):
             elif op[0] == 'split':    changed.update([op[1], op[1] + 1])
             elif op[0] == 'join':     changed.add(op[1])
             elif op[0] == 'tap':      changed.add(op[1])
-        ui_utils.show_status(f"Saved — {len(changed)} line{'s' if len(changed) != 1 else ''} changed.")
+        ui_utils.show_status(f"Saved, {len(changed)} line{'s' if len(changed) != 1 else ''} changed.")
         self.dirty = False; self.undo_stack.clear()
 
     def do_commit(self) -> bool:
         """Write timings back to transcript.json (+ .srt) in the ORIGINAL Whisper
         schema: spoken segments only.  The editor's stage-direction / dead-air
-        beats and all bookkeeping fields (ids, alignment, kind) are dropped — they
-        live on in the sidecar and the .md — so transcript.json stays a plain
+        beats and all bookkeeping fields (ids, alignment, kind) are dropped (they
+        live on in the working copy and the .md), so transcript.json stays a plain
         Whisper transcript of just the spoken words."""
         jpath = self.aux['jpath']
         try:
@@ -458,9 +460,9 @@ class _Session(_KeyHandlers):
         write_text_atomic(jpath, json.dumps(container, indent=2, ensure_ascii=False))
         write_text_atomic(jpath[:-5] + '.srt', _rebuild_srt(self.segs))
         self.aux['meta']['source_fp'] = _file_fp(jpath)   # we now match the original
-        # Also write an enriched sidecar (.sync.json) that preserves the
-        # editor's stage-direction / dead-air beats so the player and editor
-        # render the same segments when loading this track.
+        # Rewrite the working copy (.sync.json) so the editor resumes with its
+        # stage directions and dead air intact; playback ignores it and
+        # re-derives them from the .md.
         try:
             _ensure_ids(self.segs, self.aux['meta'])
             sdata = {'version': 1, 'source_json': os.path.basename(jpath),
@@ -538,8 +540,8 @@ class _Session(_KeyHandlers):
         self.w.anchor_reset()
 
     def do_speaker_split(self) -> None:
-        """Cut every segment the script says is more than one beat — a new speaker
-        part way through, or an inline stage direction — pinning each piece to its
+        """Cut every segment the script says is more than one beat (a new speaker
+        part way through, or an inline stage direction), pinning each piece to its
         MD line, then re-verify.  One beat per segment is the clean baseline to
         word-split from, and it is what gives each direction a boundary of its own:
         four *(Ding)*s on one line stop collapsing into one.
@@ -552,7 +554,7 @@ class _Session(_KeyHandlers):
             ui_utils.show_status("No transcript.md found to verify against."); return
         cands, _unplaced, _suggested = _split_candidates(self.segs, _mdp)
         if not cands:
-            ui_utils.show_status("✔ Every segment is a single script beat — nothing to split.")
+            ui_utils.show_status("✔ Every segment is a single script beat, nothing to split.")
             return
         _restore_term_attrs(self.fd, self.old)
         sys.stdout.write("\033[?1000l\033[?1006l")
@@ -565,7 +567,7 @@ class _Session(_KeyHandlers):
         _skip = (f"  {ui_utils.plural(len(_suggested), 'mid-sentence cut')} left alone."
                  if _suggested else "")
         _ans = _prompt_text(
-            f"Split {len(cands)} segment(s) — {_what}?{_skip} (y/N)")
+            f"Split {ui_utils.plural(len(cands), 'segment')}: {_what}?{_skip} (y/N)")
         _set_raw(self.fd)
         sys.stdout.write("\033[?1000h\033[?1006h")
         self.w.anchor_reset()
@@ -582,7 +584,7 @@ class _Session(_KeyHandlers):
         self.refresh_overlay()
         remain = len(_split_candidates(self.segs, _mdp)[0])   # verification
         ui_utils.show_status(
-            f"Split {n} segment(s) to one script beat each — {remain} remaining.")
+            f"Split {ui_utils.plural(n, 'segment')} to one script beat each, {remain} remaining.")
 
     def do_recategorise(self, si: int) -> None:
         """Flip the beat at `si` between dead air (◌) and a stage direction (✦),
@@ -607,7 +609,7 @@ class _Session(_KeyHandlers):
             sys.stdout.write("\033[?1000h\033[?1006h")
             self.w.anchor_reset()
             if _lbl is None or not _lbl.strip():
-                ui_utils.show_status("Recategorise cancelled — a stage direction needs text.")
+                ui_utils.show_status("Recategorise cancelled: a stage direction needs text.")
                 return
             _text = _lbl.strip()
         # Replace with a fresh dict (never mutate in place) so the snapshot keeps
@@ -678,7 +680,7 @@ class _Session(_KeyHandlers):
             if end_v is None:
                 if item.get('kind') == 'stage_dir' and _sd_scope(item) == 'tone':
                     # A tonal note starts at the end of the line above and runs a
-                    # sensible reading time — free to overlap whatever comes next.
+                    # sensible reading time, free to overlap whatever comes next.
                     end_v = round(start_v + _reading_time(item.get('text', '')), 3)
                 else:
                     end_v = next_t if next_t is not None else round(start_v + 1.0, 3)
@@ -702,7 +704,7 @@ class _Session(_KeyHandlers):
             self.commit_field('end', edit_seconds(self.edit, _EDIT_END))
 
     def _tick(self) -> None:
-        """Once per loop: the track length, and the playback clock — ending a clip,
+        """Once per loop: the track length, and the playback clock: ending a clip,
         moving to the next queued one, and keeping the cursor with the audio."""
         self.total_s: float = 0.0
         if self.mp and self.mp.get_length() > 0:
@@ -717,7 +719,7 @@ class _Session(_KeyHandlers):
                 else: self.playing = False; self.aud_now = None
                 self.need_redraw = True
             elif time.time() > self.play_until:
-                # this clip's window elapsed — play the next queued one, or stop
+                # this clip's window elapsed: play the next queued one, or stop
                 if self.aud_queue: self._aud_next()
                 else: self.do_stop(); self.aud_now = None
                 self.need_redraw = True
@@ -725,7 +727,7 @@ class _Session(_KeyHandlers):
                 pos = self.mp.get_time() / 1000.0
                 if abs(pos - self.play_pos) > 0.05:
                     self.play_pos = pos; self.need_redraw = True
-                # auto-scroll cursor in SEG/WORD/TAP (never in AUDITION — the
+                # auto-scroll cursor in SEG/WORD/TAP (never in AUDITION: the
                 # boundary being auditioned must stay put while it plays)
                 if self.mode in (SEG, WORD, TAP):
                     scroll_items = self.segs if self.mode in (SEG, TAP) else self.cur_words()
@@ -743,7 +745,7 @@ class _Session(_KeyHandlers):
         review_info = None
         if self.review_phase:
             _riss = _review_phase_issues(self.segs, self.review_phase, self.md_quality)
-            _ridx = (_riss.index(self.cursor) + 1) if self.cursor in _riss else '–'
+            _ridx = (_riss.index(self.cursor) + 1) if self.cursor in _riss else '-'
             review_info = (_REVIEW_PHASE_NAME[self.review_phase], _ridx, len(_riss))
         lines, self.viewport, self.hit_map, footer_rows, self.prog_geo = _draw(
             self.segs, self.cursor, self.seg_cursor, self.mode, self.prev_mode, self.selected,
@@ -760,7 +762,7 @@ class _Session(_KeyHandlers):
         self.w.render(lines)
         self.need_redraw = False
         # Map the clickable footer-hint glyphs. `_draw` reports how many
-        # trailing lines are the hint footer, so only those are scanned —
+        # trailing lines are the hint footer, so only those are scanned;
         # that keeps lyric text with brackets (e.g. "[Chorus]") from being
         # mistaken for a key, without depending on the divider glyph. Cells
         # are keyed by out-index row (col is absolute), matching the

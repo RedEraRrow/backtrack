@@ -1,6 +1,6 @@
-"""Tests for bulk candidate detection (src/trim/trim_bulk.py, section 5.1)
-and sting seeding (section 5.2.1/5.2.2). Candidate detection is pure — no
-file access, no ffmpeg; sting seeding needs real fixtures and is skipped
+"""Tests for bulk candidate detection (src/trim/trim_bulk.py)
+and sting seeding. Candidate detection is pure (no
+file access, no ffmpeg); sting seeding needs real fixtures and is skipped
 when ffmpeg is absent."""
 import os
 import shutil
@@ -18,12 +18,12 @@ def _track(path, artist, album, duration):
 
 class RoundDurationClusterTest(unittest.TestCase):
     def test_uniform_group_flagged_when_sibling_series_varies(self):
-        # Series A: three episodes padded to exactly 32:00 (the spec's example).
+        # Series A: three episodes padded to exactly 32:00.
         library = [
             _track('/a/1.mp3', 'Show', 'Series A', 32 * 60),
             _track('/a/2.mp3', 'Show', 'Series A', 32 * 60),
             _track('/a/3.mp3', 'Show', 'Series A', 32 * 60),
-            # Series B by the same show, varying naturally — proves Series A's
+            # Series B by the same show, varying naturally: proves Series A's
             # uniformity isn't just "that's how long the show runs".
             _track('/b/1.mp3', 'Show', 'Series B', 27 * 60 + 24),
             _track('/b/2.mp3', 'Show', 'Series B', 28 * 60 + 12),
@@ -38,8 +38,8 @@ class RoundDurationClusterTest(unittest.TestCase):
         self.assertEqual(set(series_a['paths']), {'/a/1.mp3', '/a/2.mp3', '/a/3.mp3'})
 
     def test_genuinely_consistent_show_is_not_a_false_positive(self):
-        # Every series this show has ever made is uniformly 28:00 — that's
-        # just the format, not padding (section 5.1's stated false positive).
+        # Every series this show has ever made is uniformly 28:00. That's
+        # just the format, not padding.
         library = [
             _track('/a/1.mp3', 'Consistent Show', 'Series A', 28 * 60),
             _track('/a/2.mp3', 'Consistent Show', 'Series A', 28 * 60),
@@ -51,7 +51,7 @@ class RoundDurationClusterTest(unittest.TestCase):
 
     def test_subset_cluster_within_a_varying_group(self):
         # Two episodes share an exact round duration while the rest of the
-        # SAME group varies — a cluster inside one group, no cross-group check needed.
+        # SAME group varies: a cluster inside one group, no cross-group check needed.
         library = [
             _track('/a/1.mp3', 'Show', 'Series A', 30 * 60),
             _track('/a/2.mp3', 'Show', 'Series A', 30 * 60),
@@ -210,7 +210,7 @@ class SeedBySting(unittest.TestCase):
 
     def test_each_track_gets_its_own_offset_in_one_batch_call(self):
         """The sting is the same-ish sound on every episode, but its position
-        varies episode to episode (different continuity, different padding) —
+        varies episode to episode (different continuity, different padding):
         one call over the whole group must find each track's own position
         independently, not reuse one offset across all of them."""
         eps = {}
@@ -249,7 +249,7 @@ def _make_closing_episode(path: str, tail_pad_s: float, programme_freq: int = 30
 
 @unittest.skipUnless(trim.HAS_FFMPEG, "ffmpeg not installed")
 class SeedBySting_Tail(unittest.TestCase):
-    """Closing-sting seeding (section 5.2.2's tail case): the out-point
+    """Closing-sting seeding (the tail case): the out-point
     anchors to the sting's end when it's wanted, or its start when it's not."""
 
     def setUp(self):
@@ -294,12 +294,12 @@ class SeedBySting_Tail(unittest.TestCase):
 
 
 def _make_history_episode(path: str, lead_in_s: float, programme_tremolo_f: float) -> None:
-    """lead-in + the shared 3-tone sting + a programme tail — lead-in and
+    """lead-in + the shared 3-tone sting + a programme tail. Lead-in and
     programme are both tremolo-modulated (not flat) so they carry a genuine,
     non-degenerate envelope shape of their own: a *stationary* tone's log-RMS
     envelope is flat, and two flat regions correlate as a false "perfect
     match" regardless of content (an mp3-quantization-noise artifact, not a
-    real one) — exactly the failure mode `trim.learn_sting_from_history`'s margin
+    real one): exactly the failure mode `trim.learn_sting_from_history`'s margin
     check guards against, so the fixture must not manufacture it by accident.
     `programme_tremolo_f` differs between episodes so their programme tails
     don't coincidentally resemble each other either."""
@@ -321,9 +321,9 @@ def _make_history_episode(path: str, lead_in_s: float, programme_tremolo_f: floa
 
 @unittest.skipUnless(trim.HAS_FFMPEG, "ffmpeg not installed")
 class LearnStingFromHistoryTest(unittest.TestCase):
-    """`trim.learn_sting_from_history` (section 4.4): a shared sting learned from
+    """`trim.learn_sting_from_history`: a shared sting learned from
     an already-committed trim in the same folder, direction (kept vs
-    dropped) discovered by correlating each way against a fresh track —
+    dropped) discovered by correlating each way against a fresh track,
     never assumed from which mark field the old commit happened to set."""
 
     def setUp(self):

@@ -1,5 +1,5 @@
 """The player's album art: the text (half-block) art sized to fit, and on an
-image-capable terminal (iTerm2, opt-in) the real image drawn over those cells —
+image-capable terminal (iTerm2, opt-in) the real image drawn over those cells:
 average colour, then a quick preview, then full quality."""
 from __future__ import annotations
 import os
@@ -16,7 +16,7 @@ ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
 
 # When fitting art to the terminal height would only shave off a few columns, the
 # art lands in a "dead band": too narrow to fill edge-to-edge, too wide to leave a
-# clean volume-bar gutter — so the centred art shows thin, lopsided side margins.
+# clean volume-bar gutter, so the centred art shows thin, lopsided side margins.
 # Within this many columns of the full width, snap UP to full width and clip the
 # extra bottom pixel-row(s) instead, so the art is always either edge-to-edge or
 # has a comfortable gutter.
@@ -29,7 +29,7 @@ _art_cache: dict = {}
 def _get_art_cached(file_path: str, width: int) -> str:
     """Return the rendered album art for file_path at width, cached by (path, width, mtime)."""
     # Key on the file's mtime so editing the file (e.g. adding album art)
-    # invalidates the cached render — otherwise a "No album art found." result
+    # invalidates the cached render; otherwise a "No album art found." result
     # would stick until the program restarts.
     try:
         mtime = os.path.getmtime(file_path)
@@ -46,11 +46,10 @@ def _get_art_cached(file_path: str, width: int) -> str:
 
 
 # --- Real-image album art (iTerm2 inline images), opt-in -----------------------
-# The half-block art is still rendered — it sizes the layout exactly as before —
-# but in image mode its cells show the cover's average colour, then a small
-# quick-to-decode image, then the full-quality one, all at those same cells.
-# The text art itself is only the fallback for when there's no image to show. Every position the layout records (clicks, the volume bar,
-# the lyric pane) is unchanged. Off unless the `art_inline_images` setting is on
+# The half-block art still sizes the layout; in image mode its cells show the
+# cover's average colour, then a preview, then the full image. The text art is
+# only the fallback when there's no image. Every position the layout records
+# (clicks, the volume bar, the lyric pane) is the same in both modes. Off unless the `art_inline_images` setting is on
 # AND the terminal is iTerm2 (not inside tmux, which would swallow the image).
 _inline_art: dict = {'path': None,       # set when this frame's art is an image
                'resizing': False,        # mid-resize: the preview only (see set_resizing)
@@ -65,7 +64,7 @@ def set_resizing(on: bool) -> None:
 
 
 def redraw_art_image() -> None:
-    """Send the full-quality image again without repainting any rows — after a
+    """Send the full-quality image again without repainting any rows: after a
     resize settles, when the rows are right and the preview is already showing,
     or after a resize cut the last send short."""
     _draw_inline_art(full_only=True)
@@ -96,7 +95,7 @@ _inline_cfg: dict = {}                   # the setting, cached on config.json's 
 
 def inline_art_enabled() -> bool:
     """Whether art should be drawn as a real image here. Cheap to ask often
-    (the miniplayer asks every second): the setting is re-read only when the
+    (the now-playing box asks every second): the setting is re-read only when the
     config file changes."""
     if os.environ.get('TMUX'):
         return False
@@ -121,7 +120,7 @@ _WORKING_PX = 1400                       # decoded covers are kept at most this 
 
 def _cover_decoded(file_path: str) -> tuple | None:
     """The cover's raw bytes and decoded pixels, read and decoded once per file
-    (a large cover takes a noticeable moment to decode — do it once, not per
+    (a large cover takes a noticeable moment to decode, so do it once, not per
     colour, preview and full image). None when the file has no cover."""
     import cv2
     import numpy as np
@@ -136,7 +135,7 @@ def _cover_decoded(file_path: str) -> tuple | None:
         img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR) if raw else None
         if img is not None and max(img.shape[:2]) > _WORKING_PX:
             # A 4000-pixel cover is shrunk once, here, to a working size still
-            # above anything the player shows — every later step works on that.
+            # above anything the player shows; every later step works on that.
             f = _WORKING_PX / max(img.shape[:2])
             img = cv2.resize(img, (round(img.shape[1] * f), round(img.shape[0] * f)),
                              interpolation=cv2.INTER_AREA)
@@ -147,7 +146,7 @@ def _cover_decoded(file_path: str) -> tuple | None:
 def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
                      px: int = _INLINE_PX_PER_COL) -> tuple[str, int] | None:
     """The cover as base64 for the image escape, scaled to the cells it fills
-    (cols × rows at `px` pixels per column) and cached per file and size — so a
+    (cols × rows at `px` pixels per column) and cached per file and size, so a
     resize back to a size already seen costs nothing. The preview size is also
     saved at a lower quality: it's only on screen for a moment."""
     import base64
@@ -180,7 +179,7 @@ _mean_cache: dict = {}                   # (path, mtime) → the cover's average
 
 
 def _cover_mean(file_path: str) -> tuple[int, int, int] | None:
-    """The cover's average colour (r, g, b), or None when it can't be decoded —
+    """The cover's average colour (r, g, b), or None when it can't be decoded,
     in which case the text art is the fallback."""
     try:
         key = (file_path, os.path.getmtime(file_path))
@@ -200,8 +199,8 @@ def _cover_mean(file_path: str) -> tuple[int, int, int] | None:
 def _draw_inline_art(full_only: bool = False) -> None:
     """Draw this frame's image over its cells: the small preview, then the
     full-quality image, which replaces it once the terminal has decoded it
-    (mid-resize, only the preview; at a settle, only the full one — the preview
-    is already there). Called after every frame's rows are written — a
+    (mid-resize, only the preview; at a settle, only the full one, as the preview
+    is already there). Called after every frame's rows are written: a
     repainted row erases whatever image was under it."""
     path = _inline_art['path']
     if not (path and geom.art_top and geom.art_width and geom.art_height):
@@ -217,7 +216,7 @@ def _send_image(path: str, px: int, chunked: bool = False) -> bool:
 
     `chunked`: the full image is big enough that writing it blocks for a
     noticeable time while the terminal takes it in, and a resize arriving then
-    had to wait — the window showed the old frame rewrapped until it finished.
+    would have to wait, with the window showing the old frame rewrapped until it finished.
     So it goes out in pieces, and if the terminal reports a resize in between,
     the rest is dropped: the escape is closed early (the terminal discards a
     truncated image) and False returned, for the image to be sent again later.
@@ -255,7 +254,7 @@ def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
                           pre_art: str | None) -> tuple[str, list[str]]:
     """The art for the layout (see _art_fit). In image mode its cells become the
     cover's average colour, to be drawn over by the image (_draw_inline_art);
-    the text art stays only when there's no image to show — no cover, one that
+    the text art stays only when there's no image to show: no cover, one that
     won't decode, or a group cover, which is a composite of several."""
     art_str, lines = _art_fit(file_path, max_w, avail_h, pre_art)
     _inline_art['path'] = None

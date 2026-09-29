@@ -45,7 +45,7 @@ def roman(num: int) -> str:
 def in_words(num: int) -> str:
     """Integer → English words, lower case ('twenty-one', 'one hundred and five').
 
-    Covers 0–999,999; anything outside that falls back to the digits, since a
+    Covers 0-999,999; anything outside that falls back to the digits, since a
     pattern is better off showing a number than nothing.
     """
     try:
@@ -105,7 +105,7 @@ def from_roman(text: str) -> int | None:
         # A smaller symbol before a larger one is subtractive (IV, IX, XL…).
         total += -v if (i + 1 < len(t) and v < _ROMAN_VALUES[t[i + 1]]) else v
     if total < 1 or roman(total) != t:
-        return None            # not canonical ('IIII', 'VX') — treat as text
+        return None            # not canonical ('IIII', 'VX'): treat as text
     return total
 
 
@@ -144,7 +144,7 @@ def apply_case(text: str, case: str) -> str:
     """Apply a case modifier: 'l' lower, 'u' upper, 't' Title Case.
 
     Anything else (including an empty modifier) capitalises the first letter
-    only — 'Twenty-one' rather than 'Twenty-One', which reads better mid-title.
+    only: 'Twenty-one' rather than 'Twenty-One', which reads better mid-title.
     """
     if not text:
         return text

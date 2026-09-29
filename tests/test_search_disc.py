@@ -13,7 +13,7 @@ def _track(path, title, artist, album, disc='1', total_discs='1', disc_subtitle=
 
 class DiscLabelTest(unittest.TestCase):
     def test_subtitle_wins_over_number_for_fuzzy_matching(self):
-        # Deliberately just the subtitle, not both — see _disc_label's
+        # Deliberately just the subtitle, not both. See _disc_label's
         # docstring: combining them let a bare digit cross-match whichever
         # number happens to contain it when the two disagree.
         song = _track('/a', 't', 'ar', 'al', disc='1', total_discs='2', disc_subtitle='Series 1')

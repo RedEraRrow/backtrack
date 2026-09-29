@@ -32,7 +32,7 @@ class CrossFieldMatchTest(unittest.TestCase):
         self.assertEqual(self._paths("Hungry Like The Wolf by Duran Duran"), ['/1'])
 
     def test_connector_word_that_is_also_real_content_still_matches_normally(self):
-        # "by" is a genuine substring of "Stand By Me" — it should still
+        # "by" is a genuine substring of "Stand By Me"; it should still
         # contribute to the match rather than being silently dropped.
         self.assertEqual(self._paths("stand by me"), ['/3'])
 

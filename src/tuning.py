@@ -1,12 +1,11 @@
-"""Tunable constants — every timing, threshold and weight the app is dialled in on.
+"""Tunable constants: every timing, threshold and weight the app is dialled in on.
 
 These are the numbers you would reach for to change how the app *feels* rather
 than what it does: how often the player loop wakes, how long a toast stays up,
-how much a play count is worth when ranking a search. They were spread through
-the modules as bare literals, which made them impossible to find, compare, or
-change with any confidence that a related value elsewhere didn't also need
-moving — a tick interval in one file and the broadcast interval it feeds in
-another, with nothing to say they were related.
+how much a play count is worth when ranking a search. Kept together so they
+can be found and compared, and so it shows when a related value elsewhere also
+needs moving: a tick interval in one file and the broadcast interval it feeds in
+another.
 
 Structural constants stay where they are used: an ANSI escape's length, the
 number of border columns in a box, the width of a rating byte. Those aren't
@@ -72,7 +71,7 @@ TOAST_LONG_S = 2.5
 # Status-bar messages: an ordinary one, and a warning or error worth reading.
 STATUS_S = 3.0
 STATUS_WARNING_S = 5.0
-# The 'e' key's jump to near the end of a track.
+# The 'e' key's jump to near the end of a track (Diagnostics only).
 NEAR_END_JUMP_S = 35
 
 # --- search ranking ---------------------------------------------------------
@@ -95,28 +94,23 @@ SEARCH_RECENCY_BOOST = 1.15
 
 # --- lyrics timing ----------------------------------------------------------
 
-# Speaking rate assumed when a line has no measured word timings.
+# Speaking rate assumed when the track's length isn't known yet.
 LYRIC_FALLBACK_WPS = 2.2
 # No line is shown for less than this, however the arithmetic works out.
 LYRIC_MIN_LINE_S = 0.5
 # How far ahead in the transcript a sentence may look for its next word.
 LYRIC_MATCH_WINDOW_WORDS = 80
-# A silence longer than this gets a visible gap indicator between lines.
+# A silence longer than this becomes a dead-air beat (the pane shows nothing).
 LYRIC_AIR_THRESHOLD_S = 2.0
 # How early a line may appear, at most, in the silence before its first word. On
 # time is too late: the eye needs a moment to land and start reading before the
-# words are said. Giving a line the WHOLE preceding pause is the other error — it
+# words are said. Giving a line the WHOLE preceding pause is the other error: it
 # then sits on screen through a two-second silence looking like it has already been
 # spoken. A short fixed anticipation reads as punctual either side of it.
 LYRIC_LEAD_IN_S = 0.35
 # Assumed reading rate for a stage direction shown as its own beat, in words per
 # second, and the floor below which even a one-word note is too quick to register.
-# Reading is about twice as fast as speech, not the same speed — this was set level
-# with LYRIC_FALLBACK_WPS above, which made every direction ask for roughly double
-# the screen time it needs. Once the transcript came from forced alignment the gaps
-# between lines became short and accurate, and almost every direction failed the
-# test and got demoted to riding on a neighbouring line instead of sitting in the
-# pause where its sound actually happens. 4 w/s is 240 wpm, ordinary silent reading.
+# Reading is about twice as fast as speech; 4 w/s is 240 wpm, ordinary silent reading.
 LYRIC_READ_WPS = 4.0
 LYRIC_READ_MIN_S = 0.8
 # How much of a direction's reading time the silence has to cover before the

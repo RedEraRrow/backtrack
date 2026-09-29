@@ -17,7 +17,10 @@ from src.utils.prompt_core import edit_line
 
 
 def text(message: str, default: str = "") -> str | None:
-    """Free-text line editor with cursor movement and wrapping; Enter returns the buffer, Ctrl-C cancels."""
+    """Free-text line editor with cursor movement and wrapping.
+
+    Enter returns the buffer; Esc or Ctrl-C cancels (None); ^t returns
+    MODE_TOGGLE when the toggle is live."""
     buf    = list(default)
     pos    = len(buf)
     fd     = sys.stdin.fileno()
@@ -43,8 +46,8 @@ def text(message: str, default: str = "") -> str | None:
 
         # This prompt owns the screen (it full-clears on entry), so it is laid
         # out absolutely like every other widget: message, input frame, then the
-        # hint bar pinned above the miniplayer. The caret is drawn as a block on
-        # the character, like every other field — a real terminal caret is at the
+        # hint bar pinned above the now-playing box. The caret is drawn as a block on
+        # the character, like every other field: a real terminal caret is at the
         # mercy of the terminal's own cursor style, and could be a thin bar or
         # invisible where the block always reads.
         # No "(^t widget)" suffix on the message: ^t is in the hint bar below,
@@ -127,8 +130,7 @@ def path(message: str, default: str = "") -> str | None:
     _tab_matches : list = []
     _tab_index   = 0
 
-    # Tracks the exact number of rows written in the previous render cycle
-    # to roll back cleanly without scrolling or flickering the viewport.
+    # Rows the previous frame used, so leftover tooltip rows are blanked.
     _last_rendered_lines = 1
     _hint_cells: dict = {}   # clickable hint keys, filled by append_chrome
 
@@ -228,12 +230,12 @@ def path(message: str, default: str = "") -> str | None:
 
         # Laid out absolutely, like every other screen: the completion tooltip
         # still rides just under the frame, but the hint bar is pinned above the
-        # miniplayer instead of trailing whatever the tooltip left behind.
+        # now-playing box instead of trailing whatever the tooltip left behind.
         out = "".join(render_stream).split("\r\n")
         pairs = [("↵", "save"), ("tab/⇧tab", "complete"), ("esc", "back")]
         append_chrome(out, pairs, _hint_cells)
 
-        # One diffed frame — see text() above.
+        # One diffed frame; see text() above.
         frame = {i + 1: line for i, line in enumerate([""] * ui_utils.MARGIN_V + out)}
         for r in range(len(frame) + 1, _prev_rendered + ui_utils.MARGIN_V + 2):
             frame[r] = ""

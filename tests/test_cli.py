@@ -2,13 +2,13 @@
 
 Every command is exercised in both output modes, every exit code is produced by
 a real invocation rather than asserted about in the abstract, and the two rules
-that are easy to regress — dry-run writes nothing, colour never reaches a pipe —
+that are easy to regress (dry-run writes nothing, colour never reaches a pipe)
 get their own cases.
 
 `cli.main` is called in process with stdout/stderr captured, so a test sees
 exactly the bytes a shell would.
 
-**Isolation.** Several modules bind their paths at import — `config.CONFIG_FILE`,
+**Isolation.** Several modules bind their paths at import: `config.CONFIG_FILE`,
 `music_library.CACHE_PATH` and, the one that bites, `history.HISTORY_FILE`,
 which captures `config.CONFIG_DIR` the moment it is imported and so ignores a
 later patch of it. Every such constant is redirected in `setUp`, and
@@ -98,7 +98,7 @@ class CliTest(unittest.TestCase):
                            ('history.HISTORY_FILE', hist.HISTORY_FILE)):
             self.assertTrue(
                 str(path).startswith(self.tmp),
-                f"{name} is {path}, outside the test directory — refusing to run")
+                f"{name} is {path}, outside the test directory, refusing to run")
 
     def tearDown(self):
         from src import config as cfg
@@ -126,7 +126,7 @@ class CliTest(unittest.TestCase):
         return code, stdout.getvalue(), stderr.getvalue()
 
     def scan(self):
-        """Populate the library — most tests need one."""
+        """Populate the library; most tests need one."""
         return self.run_cli('library', 'dirs', '--add', self.music)[0], \
             self.run_cli('library', 'scan')[0]
 
@@ -971,7 +971,7 @@ class ChapterPolicyTest(unittest.TestCase):
 
 
 class FeedCommandsTest(CliTest):
-    """Feeds are served from local files over file:// URLs — no network."""
+    """Feeds are served from local files over file:// URLs, no network."""
 
     def setUp(self):
         super().setUp()

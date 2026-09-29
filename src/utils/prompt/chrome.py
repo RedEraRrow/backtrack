@@ -17,7 +17,7 @@ MOVE_UP_KEY, MOVE_DOWN_KEY = 'J', 'K'
 MOVE_HINT = (f"{MOVE_UP_KEY}/{MOVE_DOWN_KEY}", "move up/down")
 
 
-# Per-edit "raw text ↔ smart widget" toggle (#62). prompt_for_value enables the
+# Per-edit "raw text ↔ smart widget" toggle. prompt_for_value enables the
 # flag around a value edit; the value widgets then treat Ctrl-T as a request to
 # switch modes by returning MODE_TOGGLE, and advertise it in their hint bar.
 MODE_TOGGLE = object()
@@ -46,19 +46,19 @@ _toggle_hint_label = 'widget'      # what text()'s ^t hint calls the alternate m
 _toggle_carry: str | None = None   # in-progress text buffer handed across a Ctrl-T toggle
 
 
-# Global playback hotkeys, live from any list/menu while background audio plays
-# (#14). Ctrl-O reopens the full player; Ctrl-P/N/B are transport. Routed through
+# Global playback hotkeys, live from any list/menu while background audio plays.
+# Ctrl-O reopens the full player; Ctrl-P/N/B are transport. Routed through
 # registered callbacks so prompt need not import the playback layer.
-_PLAYER_KEY    = '\x0f'            # Ctrl-O — open the full player view
+_PLAYER_KEY    = '\x0f'            # Ctrl-O: open the full player view
 
 
-_PLAYPAUSE_KEY = '\x10'           # Ctrl-P — play / pause
+_PLAYPAUSE_KEY = '\x10'           # Ctrl-P: play / pause
 
 
-_NEXT_KEY      = '\x0e'           # Ctrl-N — next track
+_NEXT_KEY      = '\x0e'           # Ctrl-N: next track
 
 
-_PREV_KEY      = '\x02'           # Ctrl-B — previous track
+_PREV_KEY      = '\x02'           # Ctrl-B: previous track
 
 
 _player_opener = None
@@ -75,11 +75,10 @@ def set_player_opener(fn) -> None:
 
 # --- shared widget chrome -------------------------------------------------
 # Every screen owes the user the same four things: a hint bar pinned above the
-# miniplayer and status bar so its keys never move, those keys clickable, the
-# background-audio transport keys listed whenever the miniplayer is up, and
-# clicks on the miniplayer box itself doing something. These two helpers are
-# that contract in one place — `select` grew all of it first and the rest of the
-# app had drifted, each widget missing a different subset.
+# now-playing box and status bar so its keys never move, those keys clickable, the
+# background-audio transport keys listed whenever the now-playing box is up, and
+# clicks on the now-playing box itself doing something. These two helpers are
+# that contract in one place.
 
 CHROME_HANDLED = object()      # the key was consumed; carry on with the loop
 CHROME_REDRAW = object()       # consumed, and the caller should repaint fully
@@ -90,7 +89,7 @@ def chrome_hint_pairs(pairs) -> list:
 
     Only keys that will actually do something are advertised: the transport trio
     needs a handler installed and ^O needs a player to reopen. `unboxed` covers
-    a terminal too narrow to draw the now-playing box — the keys are still live,
+    a terminal too narrow to draw the now-playing box: the keys are still live,
     so they are still listed.
     """
     items = list(pairs.items()) if isinstance(pairs, dict) else [tuple(p) for p in pairs]
@@ -103,7 +102,7 @@ def chrome_hint_pairs(pairs) -> list:
 
 
 def chrome_hint_lines(pairs, *, extra: str = "") -> list:
-    """The hint bar as rendered lines — widgets that size a viewport need the
+    """The hint bar as rendered lines: widgets that size a viewport need the
     row count before they lay their content out."""
     return _hint(*chrome_hint_pairs(pairs), extra=extra).splitlines()
 
@@ -113,8 +112,8 @@ def append_chrome(out: list, pairs, cells: dict, *, extra: str = "",
     """Append the hint bar to a widget's rendered `out` lines, in place.
 
     Pads down to :func:`_hint_pin_target` so the bar sits just above the
-    miniplayer + status bar and its keys keep the same screen position across
-    redraws — otherwise a repeated click chases the bar as the content changes
+    now-playing box and status bar and its keys keep the same screen position across
+    redraws; otherwise a repeated click chases the bar as the content changes
     height. Records each bright key's screen cell in `cells` for
     :func:`consume_chrome` to look up.
 
@@ -142,7 +141,7 @@ def append_chrome(out: list, pairs, cells: dict, *, extra: str = "",
 
 
 def consume_chrome(key: str, cells: dict):
-    """Handle a transport key, a miniplayer click, or a click on a hint key.
+    """Handle a transport key, a now-playing box click, or a click on a hint key.
 
     Returns :data:`CHROME_HANDLED` when the key is fully dealt with,
     :data:`CHROME_REDRAW` when the caller should also repaint, the synthesised
@@ -224,7 +223,7 @@ _activity_opener = None
 
 
 def set_activity_opener(fn) -> None:
-    """Register a ``callable()`` that opens the activity centre —
+    """Register a ``callable()`` that opens the activity centre,
     invoked when the status-bar ● beacon is clicked."""
     global _activity_opener
     _activity_opener = fn
@@ -234,7 +233,7 @@ def _plain(s: str) -> str:
     """The row's printed characters, one entry per *terminal column*.
 
     A two-cell glyph is repeated so that an index into the result is the
-    column it sits in — which is what a click hit-test assumes when it asks
+    column it sits in, which is what a click hit-test assumes when it asks
     whether column `col` holds a character or blank padding. Shared by
     `select` and `live_select`, so the two widgets' click behaviour can't drift.
     """

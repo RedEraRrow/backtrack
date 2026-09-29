@@ -1,4 +1,4 @@
-"""Which keyboard the typist is using — only as far as search needs it.
+"""Which keyboard the typist is using, only as far as search needs it.
 
 `search._lev` scores a spelling mistake by whether the wrong letter sits next to
 the right one, so the only thing that matters here is where the *letters* are.
@@ -7,8 +7,7 @@ Canadian, Irish, Australian and ABC differ solely in punctuation and dead keys,
 and are all one QWERTY as far as a typo is concerned.
 
 Detection is best-effort by design. Every branch is wrapped, and anything
-unreadable, unrecognised or unknown falls back to QWERTY — the assumption the
-matcher made before this module existed. `BACKTRACK_KEYBOARD` overrides it
+unreadable, unrecognised or unknown falls back to QWERTY. `BACKTRACK_KEYBOARD` overrides it
 outright, which is the only thing that can be right over SSH: the layout lives
 on the machine in front of the typist, not the one running the process.
 """
@@ -32,7 +31,7 @@ DEFAULT = 'qwerty'
 
 # Layout names (macOS), XKB codes (Linux) and language ids (Windows) that move
 # letters around. Matched as substrings against a lowercased name, so "Swiss
-# German" and "German — Standard" both land on QWERTZ.
+# German" and "German - Standard" both land on QWERTZ.
 _NAME_FAMILIES: tuple[tuple[str, str], ...] = (
     ('dvorak', 'dvorak'), ('colemak', 'colemak'),
     ('azerty', 'azerty'), ('french', 'azerty'), ('belgian', 'azerty'),
@@ -52,14 +51,14 @@ _XKB_FAMILIES: dict[str, str] = {
 # Windows primary language ids (the low byte of the low word of the HKL).
 _WIN_FAMILIES: dict[int, str] = {
     0x0c: 'azerty',                                     # French (incl. Belgian)
-    0x13: 'azerty',                                     # Dutch — Belgian is AZERTY
+    0x13: 'azerty',                                     # Dutch; Belgian is AZERTY
     0x07: 'qwertz', 0x05: 'qwertz', 0x0e: 'qwertz',     # German, Czech, Hungarian
     0x1b: 'qwertz', 0x24: 'qwertz', 0x1a: 'qwertz',     # Slovak, Slovenian, Croatian
 }
 
 
 def _family_from_name(name: str) -> str | None:
-    """Map a human layout name ("ABC — AZERTY", "Swiss German") to a family."""
+    """Map a human layout name ("ABC - AZERTY", "Swiss German") to a family."""
     low = name.lower()
     for needle, family in _NAME_FAMILIES:
         if needle in low:
@@ -80,7 +79,7 @@ def _detect_macos() -> str | None:
     for source in prefs.get('AppleSelectedInputSources', []):
         if source.get('InputSourceKind') != 'Keyboard Layout':
             continue
-        # A selected source can be one with no letter arrangement of its own —
+        # A selected source can be one with no letter arrangement of its own:
         # "Unicode Hex Input" is US letters with hex entry bolted on. Unnamed
         # families fall through to QWERTY rather than guessing from whatever
         # else the user happens to have enabled.
@@ -101,7 +100,7 @@ def _detect_linux() -> str | None:
         for line in out.splitlines():
             low = line.strip().lower()
             if low.startswith(key):
-                # "layout: gb,fr" — the first is the active one.
+                # "layout: gb,fr": the first is the active one.
                 code = low[len(key):].strip().split(',')[0].strip()
                 if code:
                     return _XKB_FAMILIES.get(code, DEFAULT)

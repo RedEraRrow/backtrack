@@ -1,5 +1,5 @@
 """Lossless MP3 trim engine: frame probing, the ffmpeg stream copy, tag copy,
-provenance. No terminal output — see trim_editor.py / trim_bulk.py for the UI.
+provenance. No terminal output: see trim_editor.py / trim_bulk.py for the UI.
 """
 from __future__ import annotations
 
@@ -41,11 +41,11 @@ HAS_FFMPEG = bool(FFMPEG_PATH)
 
 
 def probe_frame_duration(path: str) -> float:
-    """Seconds per MPEG audio frame — the engine's snap/nudge granularity.
+    """Seconds per MPEG audio frame: the engine's snap/nudge granularity.
 
     Layer III is 1152 samples/frame at MPEG-1 rates, 576 at MPEG-2 LSF rates
-    (mutagen's ``version`` is 1 or 2). Read from the file rather than assumed,
-    since the target material spans four sample rates (section 2.2).
+    (mutagen's ``version`` is 1 or 2). Read from the file, since the target
+    material spans four sample rates.
     """
     try:
         info = MP3(path).info
@@ -56,16 +56,16 @@ def probe_frame_duration(path: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Sting matching (section 4.4): locate a shared opening/closing sting across
-# a series by shape, not samples — off-air captures of the same sting are
+# Sting matching: locate a shared opening/closing sting across a series by
+# shape, not samples. Off-air captures of the same sting are
 # never byte- or even level-similar (different broadcast chain, per-episode
 # level differences, compression, noise). A normalised RMS-envelope
-# correlation is the spec's own "legitimate first implementation"; swapping
-# it for a spectral match later is a one-line change behind `find_sting`.
+# correlation is a legitimate first implementation; swapping it for a
+# spectral match later is a one-line change behind `find_sting`.
 # ---------------------------------------------------------------------------
 
 def decode_mono_pcm(path: str, start_s: float, dur_s: float, rate: int = 8000) -> np.ndarray:
-    """Decode a window of `path` to mono float32 PCM at `rate` Hz — low
+    """Decode a window of `path` to mono float32 PCM at `rate` Hz: low
     enough that a sting's identity (in the low/mid bands) survives, cheap
     enough to run per candidate track. Empty array on failure."""
     if not HAS_FFMPEG or FFMPEG_PATH is None:
@@ -81,7 +81,7 @@ def decode_mono_pcm(path: str, start_s: float, dur_s: float, rate: int = 8000) -
 
 def _envelope(pcm: np.ndarray, hop: int) -> np.ndarray:
     """Log-RMS envelope, one value per `hop` samples, normalised by median and
-    MAD (not mean/std) so level differences between recordings cancel — a
+    MAD (not mean/std) so level differences between recordings cancel: a
     quiet copy and a loud copy of the same sting produce nearly the same
     envelope after this. Median/MAD rather than mean/std specifically because
     a target window often isn't all programme material: a stretch of near-
@@ -102,8 +102,8 @@ def find_sting(reference_pcm: np.ndarray, target_pcm: np.ndarray,
     """Locate `reference_pcm` (the sting clip) inside `target_pcm` (a
     candidate track's head or tail window). Returns (offset_s, score): where
     in the target the sting starts, and how much the best match beats the
-    runner-up — a peak that barely beats second place is not a match, so the
-    caller should not seed from a low score (section 4.4)."""
+    runner-up. A peak that barely beats second place is not a match, so the
+    caller should not seed from a low score."""
     hop = max(1, int(rate * hop_ms / 1000))
     ref = _envelope(reference_pcm, hop)
     tgt = _envelope(target_pcm, hop)
@@ -132,9 +132,9 @@ def find_candidate_stings(pcm_a: np.ndarray, pcm_b: np.ndarray, *, rate: int = 8
                           top_n: int = 4, min_score: float = 0.15) -> list[dict]:
     """Slide a `candidate_len_s` window across `pcm_a` and score how well each
     position matches somewhere in `pcm_b` (`find_sting`). A high score marks
-    a segment the two tracks share — a continuity announcement, the theme, a
-    trailer — which is what a sting actually is, so this is how 5.2.1's
-    candidate list is built rather than the user hunting blind. Returns up to
+    a segment the two tracks share (a continuity announcement, the theme, a
+    trailer), which is what a sting actually is, so this is how the bulk
+    conveyor's candidate list is built rather than the user hunting blind. Returns up to
     `top_n` non-overlapping candidates as {'start', 'end', 'score'}, best
     first. `min_score` is deliberately lower than `find_sting`'s own seeding
     threshold: this scan searches many more positions, so the true match's
@@ -162,7 +162,7 @@ def find_candidate_stings(pcm_a: np.ndarray, pcm_b: np.ndarray, *, rate: int = 8
 
 
 def window_bounds(path: str, window_s: float, region: str) -> tuple[float, float]:
-    """(start_s, dur_s) for the head or tail scan window of `path` — the tail
+    """(start_s, dur_s) for the head or tail scan window of `path`; the tail
     window is measured back from the file's own end."""
     if region == 'head':
         return 0.0, window_s
@@ -186,12 +186,12 @@ def seed_by_sting(
     window (`region`) and compute the seeded mark from the chosen anchor:
     `anchor_edge` ('start' or 'end' of the matched sting) plus a signed
     `anchor_offset_s` from that edge, default zero. The caller decides
-    whether the result is an in-point or an out-point (section 5.2.2) — this
-    function only locates the sting and applies the anchor.
+    whether the result is an in-point or an out-point; this function
+    only locates the sting and applies the anchor.
 
     Returns path -> (mark_s, score), or path -> None when the match scored
-    below `min_score` — section 4.4 is explicit that a low-scoring match must
-    be left unseeded, never seeded wrongly."""
+    below `min_score`: a low-scoring match is left unseeded, never seeded
+    wrongly."""
     results: dict[str, tuple[float, float] | None] = {}
     for path in target_paths:
         start_s, dur_s = window_bounds(path, window_s, region)
@@ -211,13 +211,12 @@ _LEARN_CANDIDATE_LEN_S = 3.0  # matches find_candidate_stings' own default clip 
 def learn_sting_from_history(paths: list[str], region: str, window_s: float, min_score: float
                              ) -> tuple[str, float, float, str] | None:
     """Auto-detect a shared sting from an earlier, already-committed trim in
-    the same folder (section 4.4's "learn from correctly trimmed tracks"),
-    instead of marking or discovering one fresh for every new batch of
-    episodes — usable for a bulk group or a lone single-track edit alike,
-    since it only needs one track (`paths[0]`) to correlate against. The
+    the same folder (learning from correctly trimmed tracks), instead of
+    marking or discovering one fresh for every new batch of episodes. Usable for a bulk group or a lone single-track edit
+    alike, since it only needs one track (`paths[0]`) to correlate against. The
     backup still holds the removed audio at its original position, but not
     which side of that boundary the sting itself falls on (kept, just after
-    the cut, or dropped, just before it) — resolved here by correlating a
+    the cut, or dropped, just before it); that's resolved here by correlating a
     probe window each way against `paths[0]` and keeping whichever direction
     actually matches. None if there's no usable history, or neither direction
     scores well enough to trust."""
@@ -246,17 +245,17 @@ def learn_sting_from_history(paths: list[str], region: str, window_s: float, min
     best_score, start, end, side = candidates[0]
     runner_up = candidates[1][0] if len(candidates) > 1 else 0.0
     # Both directions scoring near-equally usually means neither is the real
-    # sting — plain lead-in/tail padding can self-match trivially against its
-    # own kind elsewhere in the probe. A genuine sting stands out clearly over
-    # the wrong-direction guess, not just barely (section 4.4: never seed
-    # wrongly — the same reasoning as find_sting's own peak-over-runner-up).
+    # sting: plain lead-in/tail padding can self-match trivially against its
+    # own kind elsewhere in the probe. A real sting stands out clearly over
+    # the wrong-direction guess, not just barely (never seed wrongly: the
+    # same reasoning as find_sting's own peak-over-runner-up).
     if best_score < min_score or best_score - runner_up < 0.2:
         return None
     return backup_path, start, end, side
 
 
 # ---------------------------------------------------------------------------
-# Silence detection (section 4.3) — the baseline cut-point suggestion when
+# Silence detection: the baseline cut-point suggestion when
 # there's no sting to match against. Some material has no silent gap at the
 # boundary at all (opens cold on a downbeat); that's not a failure, it just
 # means nothing is returned and the caller falls back to manual marking.
@@ -265,7 +264,7 @@ def learn_sting_from_history(paths: list[str], region: str, window_s: float, min
 def detect_silence(path: str, start_s: float, dur_s: float,
                    noise_db: float = -32.0, min_s: float = 0.4) -> list[tuple[float, float]]:
     """Silent stretches within [start_s, start_s + dur_s) of `path`, as
-    absolute (silence_start, silence_end) pairs in the file's own timeline —
+    absolute (silence_start, silence_end) pairs in the file's own timeline,
     run over the head or tail window only, never the whole file. A stretch
     still silent at the window's edge is closed there rather than dropped.
     Empty on failure or when ffmpeg is absent."""
@@ -317,13 +316,13 @@ def snap_out_point(requested_s: float, frame_duration: float) -> float:
 
 def build_cut_command(ffmpeg_path: str, src_path: str, out_path: str,
                        in_s: float, duration_s: float) -> list[str]:
-    """The exact stream-copy invocation (section 2.1). ``-ss`` is an input
-    option (before ``-i``) paired with ``-t`` for duration — never ``-to``,
-    which is measured from a different origin once ``-ss`` precedes ``-i`` and
-    silently produces the wrong length (section 2.4). ``-write_xing 1``
-    rewrites the VBR header for the new length (section 3.4); ``-map_metadata
+    """The exact stream-copy invocation. ``-ss`` is an input option (before
+    ``-i``) paired with ``-t`` for duration, never ``-to``, which is measured
+    from a different origin once ``-ss`` precedes ``-i`` and silently produces
+    the wrong length. ``-write_xing 1`` rewrites the VBR header for the new
+    length; ``-map_metadata
     -1`` leaves the output with no tags at all, since mutagen owns tagging.
-    ``-map 0:a:0`` takes the audio stream only — an embedded cover is its own
+    ``-map 0:a:0`` takes the audio stream only: an embedded cover is its own
     (video) stream in ffmpeg's model, and mutagen re-adds it from the source
     tags afterwards, so it must not be copied here too."""
     return [
@@ -337,10 +336,10 @@ def build_cut_command(ffmpeg_path: str, src_path: str, out_path: str,
 
 def copy_tags(src_path: str, dst_path: str, orig_length_s: float,
               snapped_in_s: float, snapped_out_s: float) -> None:
-    """Copy every ID3 frame from src to dst except TLEN and a non-zero TDLY —
-    both go stale the instant the file is cut (section 3.2) — plus a
-    provenance ``TXXX:BACKTRACK_TRIM`` recording the original length and the
-    snapped cut points (section 3.5). ffmpeg leaves the output with no tags at
+    """Copy every ID3 frame from src to dst except TLEN and a non-zero TDLY
+    (both go stale the instant the file is cut), plus a provenance
+    ``TXXX:BACKTRACK_TRIM`` recording the original length and the snapped cut
+    points. ffmpeg leaves the output with no tags at
     all (``-map_metadata -1``); this is what puts them back, saved through
     ``save_id3`` so the v2.3/v2.4 rule holds."""
     src_tags = ID3(src_path)
@@ -363,9 +362,9 @@ def copy_tags(src_path: str, dst_path: str, orig_length_s: float,
 
 
 # ---------------------------------------------------------------------------
-# Chapters (section 3.3). Classification, re-basing and clamping are pure
+# Chapters. Classification, re-basing and clamping are pure
 # list-in/list-out functions over (element_id, start_ms, end_ms, title)
-# tuples — no mutagen objects in these signatures, no terminal output, so
+# tuples: no mutagen objects in these signatures, no terminal output, so
 # they're testable without a TUI. Reading/writing the CHAP/CTOC frames
 # themselves is the only part that touches mutagen.
 # ---------------------------------------------------------------------------
@@ -392,7 +391,7 @@ def classify_chapters(chapters: list[tuple], cut_start_ms: int, cut_end_ms: int)
 
 def rebase_chapter(chapter: tuple, cut_start_ms: int) -> tuple:
     """Shift a surviving chapter's start/end by the snapped in-point. Not
-    optional (section 3.3): a surviving chapter with unshifted offsets is
+    optional: a surviving chapter with unshifted offsets is
     worse than no chapter at all."""
     element_id, start_ms, end_ms, title = chapter
     return (element_id, start_ms - cut_start_ms, end_ms - cut_start_ms, title)
@@ -410,7 +409,7 @@ def clamp_chapter(chapter: tuple, cut_start_ms: int, cut_end_ms: int) -> tuple:
 def rebuild_ctoc_children(child_order: list[str], surviving_ids) -> list[str]:
     """The CTOC's child_element_ids filtered to survivors, preserving order
     and the top-level/ordered flags (those live on the CTOC frame itself,
-    untouched by this). Empty means the CTOC should be dropped entirely — a
+    untouched by this). Empty means the CTOC should be dropped entirely: a
     kept CTOC with no children is malformed."""
     return [cid for cid in child_order if cid in surviving_ids]
 
@@ -423,9 +422,9 @@ def apply_chapter_policy(path: str, cut_start_s: float, cut_end_s: float,
     The editor asks about every chapter the cut disturbs, which needs a person.
     This is the same resolution driven by one decision instead:
 
-    * ``clamp``  — keep a straddling chapter, pulled to the cut boundary
-    * ``drop``   — delete anything the cut disturbs
-    * ``keep``   — rebase everything, even a chapter the cut has emptied
+    * ``clamp``: keep a straddling chapter, pulled to the cut boundary
+    * ``drop``: delete anything the cut disturbs
+    * ``keep``: rebase everything, even a chapter the cut has emptied
 
     Returns ``(chapters, ctoc_order, flags)``, or None when the file has none.
     `trim_editor.resolve_chapters` delegates here when nothing is affected, so
@@ -457,7 +456,7 @@ def apply_chapter_policy(path: str, cut_start_s: float, cut_end_s: float,
 def read_chapters(path: str) -> tuple[list[tuple], list[str] | None, int | None]:
     """Every CHAP frame as (element_id, start_ms, end_ms, title) tuples, in
     file order, plus the CTOC's child order and flags (None, None if there's
-    no CTOC at all). No classification here — that's `classify_chapters`."""
+    no CTOC at all). No classification here; that's `classify_chapters`."""
     try:
         audio = ID3(path)
     except ID3NoHeaderError:
@@ -477,8 +476,8 @@ def read_chapters(path: str) -> tuple[list[tuple], list[str] | None, int | None]
 
 def write_chapters(path: str, chapters: list[tuple],
                    child_order: list[str] | None, flags: int | None) -> None:
-    """Replace every CHAP/CTOC frame on `path` with the given set — the write
-    side of section 3.3's decisions. Every existing CHAP/CTOC is removed
+    """Replace every CHAP/CTOC frame on `path` with the given set: the write
+    side of the chapter decisions. Every existing CHAP/CTOC is removed
     first, so an empty `chapters` (the "discard all" choice) or an empty
     `child_order` (nothing survived to reference) just leaves the file with
     no chapters at all, rather than a malformed CTOC pointing at nothing."""
@@ -513,14 +512,14 @@ class TrimResult:
 def cut_stream(src_path: str, out_path: str, in_s: float, out_s: float) -> TrimResult:
     """Frame-accurate lossless cut: snap in/out to frame boundaries, ffmpeg
     stream-copies the audio between them, then the tags are copied across
-    (minus TLEN/TDLY, plus provenance). Writes to ``out_path`` directly —
+    (minus TLEN/TDLY, plus provenance). Writes to ``out_path`` directly;
     staging to a temp name and swapping it over the source is the caller's
-    job (the backup/commit sequence, section 6), not the engine's."""
+    job (the backup/commit sequence), not the engine's."""
     if not HAS_FFMPEG or FFMPEG_PATH is None:
         return TrimResult(ok=False, error="ffmpeg is not installed")
     if tw.format_kind(src_path) != 'mp3':
         ext = os.path.splitext(src_path)[1] or 'no extension'
-        return TrimResult(ok=False, error=f"Not an MP3 ({ext}) — trimming is MP3 only")
+        return TrimResult(ok=False, error=f"Not an MP3 ({ext}): trimming is MP3 only")
 
     try:
         frame_dur = probe_frame_duration(src_path)
@@ -549,7 +548,7 @@ def cut_stream(src_path: str, out_path: str, in_s: float, out_s: float) -> TrimR
 
 
 # ---------------------------------------------------------------------------
-# Backups and undo (section 6). Never destroy a source file: the original is
+# Backups and undo. Never destroy a source file: the original is
 # copied into the store and fsynced before the trimmed file replaces it.
 # ---------------------------------------------------------------------------
 
@@ -634,10 +633,10 @@ def commit_trim(path: str, in_s: float, out_s: float, library: list | None = Non
                 chapters: tuple[list[tuple], list[str] | None, int | None] | None = None) -> TrimResult:
     """Trim `path` in place: cut to a temp file beside the source, verify it,
     back up the original, then swap the temp over the source. Nothing is
-    destroyed until the backup copy is confirmed on disk (section 6).
+    destroyed until the backup copy is confirmed on disk.
 
     `chapters`, when given, is the already-resolved (chapters, child_order,
-    flags) to write (section 3.3) — the caller has already classified them
+    flags) to write. The caller has already classified them
     against this cut and asked the user about anything destroyed or
     straddling; this just applies the decision. Without it, chapters pass
     through `cut_stream`'s tag copy unmodified (and unshifted), which is only
@@ -726,7 +725,7 @@ def restore_backup(entry_id: str, library: list | None = None) -> TrimResult:
 
 def list_backups() -> list[dict]:
     """Every backup entry with its on-disk size, for a prune confirmation
-    screen (never pruned automatically — section 6)."""
+    screen (never pruned automatically)."""
     bdir = _backup_dir()
     out = []
     for entry in _load_manifest():
@@ -737,7 +736,7 @@ def list_backups() -> list[dict]:
 
 def learned_sting_source(directory: str, region: str, exclude_paths: set[str] | None = None) -> dict | None:
     """The most recent backup manifest entry for a file in `directory` that
-    actually had material cut on `region`'s ('head' or 'tail') side — a real
+    actually had material cut on `region`'s ('head' or 'tail') side: a real
     prior trim to learn a shared sting from, rather than marking or
     discovering one fresh for every new batch of episodes. The backup still
     holds the removed audio at its original position, so it's a source clip,
@@ -765,7 +764,7 @@ def learned_sting_source(directory: str, region: str, exclude_paths: set[str] | 
 
 def prune_backups(entry_ids: set[str]) -> int:
     """Delete the chosen backup files and their manifest entries. Returns the
-    count removed. An explicit, user-driven action only — never automatic."""
+    count removed. An explicit, user-driven action only, never automatic."""
     bdir = _backup_dir()
     entries = _load_manifest()
     keep, removed = [], 0
@@ -783,8 +782,8 @@ def prune_backups(entry_ids: set[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Loudness / ReplayGain (section 5.4). A separate operation from the trim
-# itself — it runs after, never before (a pre-trim measurement would include
+# Loudness / ReplayGain. A separate operation from the trim itself: it
+# runs after, never before (a pre-trim measurement would include
 # the continuity announcement or trailer being cut, which is exactly the loud
 # material that would skew it). No audio bytes change: this only measures,
 # for a caller to turn into gain tags.
@@ -821,10 +820,10 @@ def measure_loudness(path: str) -> tuple[float, float] | None:
 
 
 def measure_track_gain(path: str, target_lufs: float = -18.0) -> dict | None:
-    """Measurement and proposed gain for one track (section 5.4.2): a
+    """Measurement and proposed gain for one track: a
     speech-led radio target sits lower than a music one, hence -18 LUFS
     rather than the usual -14/-23 defaults elsewhere. None on measurement
-    failure — the caller shows nothing rather than a wrong number."""
+    failure; the caller shows nothing rather than a wrong number."""
     measured = measure_loudness(path)
     if measured is None:
         return None

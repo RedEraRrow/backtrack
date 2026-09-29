@@ -1,6 +1,6 @@
 """The lyrics editor's screen: its modes, and how the list, the word view, the
-audition strip and the inline editors are drawn. Pure rendering — no input, no
-state of its own."""
+audition strip and the inline editors are drawn. Rendering only, with no input
+and no state of its own (it also holds the optional vlc import the editor uses)."""
 from __future__ import annotations
 from src.utils import ui_utils
 from src.utils.ui_utils import Colors as C
@@ -17,7 +17,7 @@ from src.utils import timefmt
 # Audio is optional: without python-vlc the editor still edits, it just can't play.
 _vlc = None
 try:
-    import vlc as _vlc  # type: ignore[import-untyped]  # noqa: F401 — used by the editor
+    import vlc as _vlc  # type: ignore[import-untyped]  # noqa: F401  (used by the editor)
     _HAS_VLC = True
 except ImportError:
     _HAS_VLC = False
@@ -48,8 +48,8 @@ def _clip(s: str, width: int, ell: str = "…") -> str:
     """Truncate an ANSI-coloured string to `width` VISIBLE columns.
 
     Escape sequences are copied through without counting toward the width, so a
-    truncation never lands mid-escape and never leaves colour bleeding.  This is
-    the hard guarantee that no rendered line can exceed the terminal and wrap.
+    truncation never lands mid-escape and never leaves colour bleeding.  So no
+    rendered line can wrap.
     """
     if width <= 0:
         return ""
@@ -61,9 +61,9 @@ def _clip(s: str, width: int, ell: str = "…") -> str:
 
 def _fit_body_footer(out: list, footer: list, avail: int) -> list:
     """Assemble the scrolling body + the pinned hint footer into at most `avail`
-    rows, footer flush to the bottom. The footer (hints) always survives — the
-    body is trimmed to make room — so hints never overflow past the mini-player or
-    off the bottom of the screen (that was them 'disappearing' on short screens)."""
+    rows, footer flush to the bottom. The footer (hints) always survives (the
+    body is trimmed to make room), so hints never overflow past the now-playing box
+    or off the bottom of the screen."""
     if avail <= 0:
         return []
     if len(footer) > avail:
@@ -83,7 +83,7 @@ def _footer_rows(footer: list, avail: int) -> int:
 
 def _prog_geo_if_visible(geo, footer: list, avail: int):
     """Pass through the progress bar's click geometry `(line_idx, col, width)` only
-    while that row survives `_fit_body_footer` — the body is trimmed from the end,
+    while that row survives `_fit_body_footer`: the body is trimmed from the end,
     so surviving rows keep their index, but a very short terminal drops the bar
     entirely and clicks there must not seek."""
     if geo is None:
@@ -103,8 +103,8 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     mode draws no bar)."""
     cols = _cols()
     # Refresh the now-playing box height, then budget the body with the same
-    # helper the list menus use — it reserves the status bar, the mini-player box,
-    # and the vertical margins — so the editor never paints under the player.
+    # helper the list menus use (it reserves the status bar, the now-playing box
+    # and the vertical margins), so the editor never paints under the player.
     ui_utils.now_playing_lines(ui_utils.get_terminal_width())
     avail = _visible_rows()
     n    = len(segs)
@@ -143,7 +143,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
 
     # Right-aligned status cluster: dirty dot · playhead · position.
     # In review, show the issue counter (i / N) instead of the seg position.
-    pos_str    = f"{review[1]} / {review[2]}" if review else (f"{cursor + 1} / {n}" if n else "–")
+    pos_str    = f"{review[1]} / {review[2]}" if review else (f"{cursor + 1} / {n}" if n else "-")
     right_plain, right_disp = "", ""
     if dirty:
         right_disp += f"{C.ACCENT}●{C.RESET}   "; right_plain += "●   "
@@ -258,7 +258,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             pairs += [('/', 'split'), ('R', 'review'), ('D', 'dirs'), ('L', 'long'), ('s', 'save'), ('?', 'more')]
             if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
             pairs += [('esc', 'back'), ('q', 'quit')]
-            # (W = write to transcript.json — shown in full hints via ?)
+            # (W = write to transcript.json, shown in full hints via ?)
         if selected: pairs.append(('', f'{len(selected)} marked'))
         footer.extend(_promptmod.chrome_hint_lines(pairs))
 
@@ -268,7 +268,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
 
     # Compact grid (visible widths after the 2-col indent):
     #   ptr(1) sp(1) chk(1) sp(1)  start(9)  sp(2)  →  TEXT column (offset 15)
-    # The words now begin at ~col 15 (was 37) so the transcript reads like a
+    # The words begin at ~col 15 so the transcript reads like a
     # script; duration / end-time / flags live in a dim right gutter.
     PREFIX_W = 1 + 1 + 1 + 1 + 9 + 2   # == 15
 
@@ -292,16 +292,14 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         budget = max(1, B - PREFIX_W - (rhs_w + 2 if rhs_w else 0))
         t      = ui_utils.truncate_text(text_raw, budget)
         if fmt:
-            # Emphasised words are underlined (strong ones also bold) so they stand
-            # out even on the bold current row, and every span restores `base` —
-            # the row's own colour — so the highlight continues past the emphasis
-            # instead of the span's reset blanking the rest of the line.
-            # Emphasis reads as type style, not underlines: *word* → italic,
-            # **word** → bold. Cleaner than the old underline on already-bright rows.
+            # Emphasis reads as type style: *word* → italic, **word** → bold.
+            # Every span restores `base` (the row's own colour), so the highlight
+            # continues past the emphasis instead of the span's reset blanking the
+            # rest of the line.
             t_disp = _apply_markdown_formatting(
                 t, base=text_color, strong=C.BOLD, em=C.ITALIC)
             # A music note is accent on the current row (text_color set) and dim
-            # elsewhere — accent is reserved for the current line.  Either way it
+            # elsewhere: accent is reserved for the current line.  Either way it
             # renders in a fixed style rather than inheriting the row's bold, so
             # its glyph stays consistent; the span restores `base` afterwards.
             if '♪' in t_disp:
@@ -312,7 +310,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         if text_color:
             t_disp = f"{text_color}{t_disp}{C.RESET}"
         if rhs_w:
-            # Pad off the VISIBLE width of what we actually print — markdown
+            # Pad off the VISIBLE width of what we actually print: markdown
             # formatting strips the * markers, so len(t) over-counts and the
             # gutter (and the duration pinned to its right edge) would drift left.
             vis = ui_utils.visual_len(t_disp)
@@ -323,7 +321,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     if show_words:
         vp = _draw_words(_compose, _rhs, cursor, hit_map, indent, out, seg_cursor, segs, vis, vp)
 
-    else:  # SEG — build flat display_items interleaving segs with MD overlay
+    else:  # SEG: build flat display_items interleaving segs with MD overlay
         vp = _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_map, indent, md_overlay, md_quality, out, segs, selected, vp)
 
     _cap = ui_utils.get_terminal_width()   # allow full-width rules; content self-limits to the margin
@@ -541,7 +539,7 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
     cursor_di = next((i for i, it in enumerate(display_items)
                       if it['type'] == 'seg' and it['si'] == cursor), 0)
 
-    # Items aren't all one row — an external (framed) direction draws up to 3.
+    # Items aren't all one row: an external (framed) direction draws up to 3.
     # Window by ROWS, not slots, so a run of tall items can't push the last
     # line under the footer.
     def _ov_spk(x):
@@ -597,7 +595,7 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
         elif it['type'] == 'overlay':
             ov = it['data']
             if ov['kind'] == 'speaker':
-                # Speaker banner — plain white name (no colour), then a dim rule.
+                # Speaker banner: plain white name (no colour), then a dim rule.
                 name  = ov['text']
                 stg   = ov.get('stage', '')
                 head  = f"{C.RESET}{name}"
@@ -605,12 +603,12 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
                 if stg:
                     head  += f" {C.DIM}({stg}){C.RESET}"
                     hplain += f" ({stg})"
-                # Dotted rule runs to the right edge of the body — i.e. where
-                # the duration column ends on the rows below — not full window.
+                # Dotted rule runs to the right edge of the body (where the
+                # duration column ends on the rows below), not the full window.
                 rule = '┈' * max(1, B - len(hplain) - 1)
                 out.append(f"{indent}{head} {C.DIM}{rule}{C.RESET}")
             else:
-                # Isolated stage direction (uncommitted overlay) — left-aligned
+                # Isolated stage direction (uncommitted overlay): left-aligned
                 # with a single ✦ and italic text, blank-fenced above and below
                 # so it still reads as its own beat.  Its ✦ sits in the same
                 # column as a committed cue's, so floating and committed cues line up.
@@ -666,7 +664,7 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
                 disp0 = f"({_lbl})" if _lbl else ("(…)" if is_sdir else "silence")
                 sym_c = C.ACCENT if is_cur else C.DIM
                 if is_sdir and s_t is not None:
-                    # A *timed* stage direction is a placed beat — the italic
+                    # A *timed* stage direction is a placed beat; the italic
                     # label sets it apart from plain silence (◌) and from an
                     # untimed cue still awaiting its moment.
                     lbl_c = f"{C.PRIMARY if is_cur else C.DIM}{C.ITALIC}"
@@ -683,7 +681,7 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
                     pad  = max(1, B - PREFIX_W - 2 - len(sd_pad) - len(disp) - rhs_w)
                     body += " " * pad + rhs_disp
                 if is_air or (is_sdir and scope == 'external'):
-                    # Framed section (dead air / external direction — belongs to
+                    # Framed section (dead air / external direction, belongs to
                     # nobody). Never double up dotted lines: a neighbouring
                     # speaker banner (NAME ┈┈) already draws a rule, so let it
                     # serve as the border; a rule between two stacked framed

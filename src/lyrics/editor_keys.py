@@ -20,7 +20,7 @@ from src.state import QuitToTerminal
 from src import tuning as tune
 
 def _np_transport(action: str) -> None:
-    """Drive the shared session behind the mini-player box (play/pause · next ·
+    """Drive the shared session behind the now-playing box (play/pause · next ·
     prev) from within the editor, then repaint the box."""
     from src.playback import session as sess
     a = sess.active_session()
@@ -36,8 +36,8 @@ _QUIT = object()     # a key handler's "leave the editor" (Esc; q quits the app)
 class _KeyHandlers:
     """Key handling for `lyrics_editor._Session`."""
 
-    # Mini-player (shared session) transport from the editor: Ctrl-P/N/B,
-    # and Ctrl-O to open the full player over the editor — typed, or
+    # Now-playing box (shared session) transport from the editor: Ctrl-P/N/B,
+    # and Ctrl-O to open the full player over the editor, typed or
     # clicked in the hint bar (replayed below).
     def _transport(self, key) -> bool:
         if key in ('\x10', '\x0e', '\x02'):
@@ -86,8 +86,8 @@ class _KeyHandlers:
             # physical click is one logical action.  A click on a footer-hint
             # glyph replays that key through the switch below; otherwise
             # `hit_map` (from the last _draw) maps a rendered line index to its
-            # item — the widget draws line[i] at row w.row + MARGIN_V + i, so
-            # invert that. Clicking the ALREADY-current line opens its word
+            # item (the widget draws line[i] at row w.row + MARGIN_V + i, so
+            # invert that). Clicking the ALREADY-current line opens its word
             # view; a not-yet-current line is made current first (double-click).
             _hk = None
             if key.startswith('MOUSE_CLICK:') and self.w.row is not None:
@@ -202,7 +202,7 @@ class _KeyHandlers:
             if self.cursor < n - 1:
                 self.cursor += 1
             else:
-                self.mode = SEG; self.do_stop()  # reached end — done
+                self.mode = SEG; self.do_stop()  # reached end: done
         elif key == 'LEFT' and self.cursor > 0:
             self.apply_segs([self.cursor - 1], -0.25)
         elif key == 'RIGHT' and self.cursor > 0:
@@ -357,7 +357,7 @@ class _KeyHandlers:
                 key_deltas = {'LEFT': -0.25, 'RIGHT': 0.25, ',': -0.1, '.': 0.1, '[': -1.0, ']': 1.0}
                 if key in key_deltas:
                     if self.segs[self.cursor].get("start") is None:
-                        ui_utils.show_status("No timestamp set — press e to enter one.")
+                        ui_utils.show_status("No timestamp set: press e to enter one.")
                     else:
                         self.apply_segs(tgts, key_deltas[key])
             else:
@@ -386,7 +386,7 @@ class _KeyHandlers:
         sys.stdout.write("\033[?1000h\033[?1006h")
         self.w.anchor_reset()
         if not (_ans or "").strip().lower().startswith("y"):
-            ui_utils.show_status("Commit cancelled — working file untouched.")
+            ui_utils.show_status("Commit cancelled, working copy untouched.")
         elif self.do_commit():  # writes transcript.json + refreshes fingerprint;
             self.do_save()      # False (with its reason shown) if it couldn't
             ui_utils.show_status(f"Written to {os.path.basename(self.aux['jpath'])} + .srt.")
@@ -410,7 +410,7 @@ class _KeyHandlers:
                     self.segs.append({"text": _cl, "kind": "credit"})
                 self.cursor = len(self.segs) - 1
                 self.dirty = True
-                self.refresh_overlay()  # seg count changed — re-derive before_si
+                self.refresh_overlay()  # seg count changed: re-derive before_si
             else:
                 ui_utils.show_status("No composer or lyricist tags found.")
         except Exception as _ce:
@@ -421,7 +421,7 @@ class _KeyHandlers:
         _restore_term_attrs(self.fd, self.old)
         sys.stdout.write("\033[?1000l\033[?1006l")
         # At position 0 offer inserting before the first item (track intro)
-        # whenever it starts after 0:00 — including before an initial stage
+        # whenever it starts after 0:00, including before an initial stage
         # direction, so you can place silence ahead of it.
         _insert_before = (self.cursor == 0 and self.segs
                           and (self.segs[0].get("start") or 0) > 0)
@@ -480,7 +480,7 @@ class _KeyHandlers:
             if _new_lbl is not None:
                 self.segs[self.cursor]["text"] = _new_lbl.strip()
                 self.dirty = True
-                self.refresh_overlay()  # text changed — re-reconcile the overlay
+                self.refresh_overlay()  # text changed: re-reconcile the overlay
         else:
             ui_utils.show_status("Cursor is not on a dead air or stage direction segment.")
 
@@ -535,7 +535,7 @@ class _KeyHandlers:
                     if not self.mp.is_playing():
                         self.mp.play(); time.sleep(0.15)
                 _lbl = _prompt_text(
-                    f"Gap of {_gap}s — stage direction? (blank = silence, skip = ignore):")
+                    f"Gap of {_gap}s: stage direction? (blank = silence, skip = ignore):")
                 if self.mp is not None and self.mp.is_playing():
                     self.mp.pause()
                 if _lbl is not None and _lbl.strip().lower() != 'skip':
@@ -584,15 +584,15 @@ class _KeyHandlers:
 
     def _commit_directions(self) -> object:
         """M: make the overlay's stage directions real lines of the document."""
-        # Materialize the overlay's stage directions as real (untimed)
+        # Materialise the overlay's stage directions as real (untimed)
         # segs so they can be timed and saved.  Speakers are display-only
-        # and are never committed — they stay derived from the overlay, so
+        # and are never committed: they stay derived from the overlay, so
         # there is only ever one source for a speaker header and nothing
         # can duplicate.  After inserting, refresh_overlay() re-derives:
-        # the new stage_dir segs are now "materialized" and drop out of the
+        # the new stage_dir segs are now "materialised" and drop out of the
         # overlay, making a second M a no-op (idempotent).
         if not self.md_overlay:
-            ui_utils.show_status("No stage directions to commit — press m first.")
+            ui_utils.show_status("No stage directions to commit: press m first.")
         else:
             _sdir_items = [ov for ov in self.md_overlay if ov['kind'] == 'stage_dir']
             if not _sdir_items:

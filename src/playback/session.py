@@ -1,19 +1,6 @@
-"""Shared playback session — one self-driving VLC player that persists across
-screens (feature #14, Phase 1: single-window background audio).
-
-The problem the old design had: ``music_player`` created the VLC player as a
-local variable and stopped it in its ``finally``, so audio could not outlive the
-player view. This module promotes the player to a process-wide **session**: it
-owns the VLC instance/player, the current track, and the queue, and a background
-tick advances the queue on track-end and logs history — independent of whichever
-screen is foregrounded. The full player view (``playback.music_player``) attaches
-to render and control it; *leaving the view no longer stops the audio*, only an
-explicit stop does.
-
-Only audio + queue + lifecycle live here. Lyric parsing and the rich rendering
-stay in the view, which reads ``session.audio`` and reloads when the track
-changes. Phase 2 (multi-window) will make this session the thing an IPC layer
-shares, so it is deliberately the single source of truth.
+"""One process-wide VLC player, current track and queue that outlive any screen.
+A background tick advances the queue and logs history. Joined windows drive it
+over ipc via RemoteSession.
 """
 from __future__ import annotations
 
@@ -32,7 +19,7 @@ from src.history import log_listening_history
 from src.music_library import drop_moved, get_song_duration, track_title, first_text
 from src.utils.log import quietly
 
-# vlc.State attributes are dynamic; expose safe aliases (mirrors playback.py).
+# vlc.State attributes are dynamic; expose safe aliases.
 _VLC_STATE_PAUSED = getattr(vlc.State, 'Paused', None)
 _VLC_STATE_ERROR = getattr(vlc.State, 'Error', None)
 _VLC_STATE_ENDED = getattr(vlc.State, 'Ended', None)
@@ -52,8 +39,7 @@ REPEAT_ALL = 'all'
 
 
 # ---------------------------------------------------------------------------
-# Low-level audio primitives (moved here so the session is the lowest layer;
-# the view imports them from here).
+# Low-level audio primitives.
 # ---------------------------------------------------------------------------
 
 def _new_instance() -> vlc.Instance:
@@ -72,10 +58,10 @@ def _handle_seek(mp, elapsed: float, duration: float, seek_amount: float) -> Non
 
 def _apply_equalizer(mp, audio) -> bool:
     """Apply the file's EQU2 bands and RVA2 master-channel gain to playback
-    via libvlc's equaliser — bands shape tone, the RVA2 gain becomes the
+    via libvlc's equaliser: bands shape tone, the RVA2 gain becomes the
     equaliser's preamp, and they combine rather than either replacing the
     other. Without this, an RVA2 frame (the gain tag the trimmer's
-    ReplayGain operation writes, section 5.4) has no audible effect in
+    ReplayGain operation writes) has no audible effect in
     backtrack's own player, which is the one place it's most obviously
     supposed to show. Each EQU2 (frequency, gain) point is snapped to the
     nearest libvlc band, so absent bands stay flat. Returns True if an
@@ -150,7 +136,7 @@ def _load_stored_volume() -> int | None:
 
 
 def clamp_volume(value) -> int:
-    """Any reported volume → a sane 0–100 int.
+    """Any reported volume → a sane 0-100 int.
 
     Guards every display path against VLC's -1 sentinel (and against a snapshot
     from another window carrying one), so a volume can never render as "-1".
@@ -209,7 +195,7 @@ class PlaybackSession:
         self._lock = threading.RLock()
         self._tick_thread: threading.Thread | None = None
         self._tick_stop = threading.Event()
-        self._server = None                  # ipc.SessionServer once advertised (#14 Phase 2)
+        self._server = None                  # ipc.SessionServer once advertised (#14)
         self._session_id: str | None = None  # reused across a hand-off to keep the socket
 
     # -- lifecycle ----------------------------------------------------------
@@ -237,9 +223,9 @@ class PlaybackSession:
                 index = 0
             self.queue = list(queue)
             # Display titles for the queue view: use what the caller supplied
-            # (e.g. play_queue's library titles), else read each file's own title
-            # — NOT the bare filename (which made a single-track play show its
-            # file name in the queue, #14).
+            # (e.g. play_queue's library titles), else read each file's own title,
+            # not the bare filename, so a single-track play doesn't show its file
+            # name in the queue (#14).
             self.titles = list(titles) if titles else [self._title_for(p) for p in self.queue]
             self.index = max(0, min(index, len(self.queue) - 1))
             if mode is not None:
@@ -303,7 +289,7 @@ class PlaybackSession:
                     self.duration = d
         return True
 
-    # -- multi-window advertising (#14 Phase 2) ---------------------------
+    # -- multi-window advertising (#14) ---------------------------
 
     def _session_label(self) -> str:
         """A short human label for the session registry / join chooser."""
@@ -313,7 +299,7 @@ class PlaybackSession:
         return np.get('album') or np.get('artist') or np.get('title') or "Session"
 
     def _ensure_advertised(self) -> None:
-        """Start advertising this session over IPC so other windows can join —
+        """Start advertising this session over IPC so other windows can join,
         unless this process has itself joined someone else's session."""
         if self._server is not None or is_client():
             return
@@ -432,7 +418,7 @@ class PlaybackSession:
             config['volume'] = self._volume
 
     def _persist_volume(self, vol: int) -> None:
-        """Save the volume for the next launch — best effort: an unwritable config
+        """Save the volume for the next launch, best effort: an unwritable config
         must never interrupt playback."""
         if self._config is not None:
             self._config['volume'] = vol
@@ -445,7 +431,7 @@ class PlaybackSession:
         with self._lock:
             vol = clamp_volume(vol)
             # Remembered even with no player yet, so a level chosen before
-            # playback isn't silently lost — `play` re-applies it.
+            # playback isn't silently lost: `play` re-applies it.
             changed = vol != self._volume
             self._volume = vol
             self._volume_explicit = True
@@ -456,7 +442,7 @@ class PlaybackSession:
         return vol
 
     def get_volume(self) -> int:
-        """The current volume, always 0–100.
+        """The current volume, always 0-100.
 
         Once the user has set a level, that is the truth: re-reading VLC would
         report -1 whenever its audio output isn't open, and would also lose the
@@ -477,7 +463,7 @@ class PlaybackSession:
         return ms / 1000.0 if ms >= 0 else 0.0
 
     def latest_at(self) -> float:
-        """When the current state was sampled — 'now' for the live local player.
+        """When the current state was sampled: 'now' for the live local player.
         Present so the local session and the remote proxy share one interface."""
         return time.time()
 
@@ -577,7 +563,7 @@ class PlaybackSession:
             result = self.next(manual=False)
             if result is None:
                 return 'stopped'
-            # next() advanced, repeated, or wrapped — in every case the track
+            # next() advanced, repeated, or wrapped: in every case the track
             # (re)loaded, so the view must refresh.
             return 'changed'
 
@@ -676,7 +662,7 @@ class PlaybackSession:
 # The process-wide singleton. Import and use `SESSION` everywhere.
 SESSION = PlaybackSession()
 
-# A stable per-window identity for the player-view lock (#14 Phase 2c).
+# A stable per-window identity for the player-view lock (#14).
 _PROCESS_TOKEN = uuid.uuid4().hex[:tune.ID_SLICE_LEN]
 
 
@@ -686,7 +672,7 @@ def my_token() -> str:
 
 
 class RemoteSession:
-    """Client-side proxy (#14 Phase 2b): presents the same control surface as
+    """Client-side proxy (#14): presents the same control surface as
     :class:`PlaybackSession`, but forwards each action to the host over the IPC
     link and reads now-playing from the link's mirrored snapshots. Commands are
     fire-and-forget; the resulting state comes back via the next snapshot."""
@@ -728,9 +714,11 @@ class RemoteSession:
         return None
 
     def seek(self, seconds: float) -> None:
+        """Ask the host to seek by ``seconds``; the new position arrives in a snapshot."""
         self._link.send('seek', {'delta': seconds})
 
     def set_volume(self, vol: int) -> int:
+        """Ask the host to set the volume; returns the clamped level asked for."""
         vol = clamp_volume(vol)
         self._link.send('set_volume', {'vol': vol})
         return vol            # the host confirms via the next snapshot
@@ -745,10 +733,11 @@ class RemoteSession:
         self._link.send('release_view', {'token': token})
 
     def latest_at(self) -> float:
+        """When the last mirrored snapshot arrived (for elapsed interpolation)."""
         return self._link.latest_at()
 
 
-# When this window has JOINED another window's session (#14 Phase 2), the local
+# When this window has JOINED another window's session (#14), the local
 # SESSION stays idle; now-playing mirrors the host and control routes through a
 # RemoteSession proxy. Set by the launch chooser.
 _client_link = None                          # ipc.SessionClient | None
@@ -768,7 +757,7 @@ def is_client() -> bool:
 
 
 def has_other_windows() -> bool:
-    """True when another Backtrack window is part of this session right now —
+    """True when another Backtrack window is part of this session right now:
     either we're a joined client (the host is another window) or we host and a
     client is connected. Used to pin the player view open while a separate browse
     window exists: you can't leave the player back to browse until the other
@@ -797,7 +786,7 @@ def current_now_playing() -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Host hand-off (#14 Phase 2d): when a joined window's host disappears, the
+# Host hand-off (#14): when a joined window's host disappears, the
 # surviving windows elect one to take over and resume near the same spot.
 # ---------------------------------------------------------------------------
 

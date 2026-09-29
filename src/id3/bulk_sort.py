@@ -38,13 +38,13 @@ class _SortPlan:
     decision made once covers all of them. Decisions are held per *person*
     rather than per value: settling "Somebody Else" as "Else, Somebody" in one
     collaboration settles it in every other value that person appears in, and on
-    their solo tracks — which is the copying-down that makes reviewing a library
+    their solo tracks, which is the copying-down that makes reviewing a library
     of repeats bearable.
     """
 
     def __init__(self, entries: dict, delim: str) -> None:
         from src.id3 import id3_browser
-        self._nb = id3_browser                 # lazy: id3_browser is the caller
+        self._nb = id3_browser                 # lazy: pulls in cv2, numpy and the editors
         self.entries = entries                 # (sort_tag, raw) → [paths]
         self.delim = delim
         self.chosen: dict[str, str] = {}       # person → the sort text they were given
@@ -59,7 +59,7 @@ class _SortPlan:
         return self._nb.split_options(raw)
 
     def people(self, sort_tag: str, raw: str) -> list:
-        """The individuals in one value — as verified, else as the engine reads it."""
+        """The individuals in one value: as verified, else as the engine reads it."""
         options = self.split_options(sort_tag, raw)
         if not options:
             return []
@@ -106,7 +106,7 @@ class _SortPlan:
 
 
 def _split_keys(plan: _SortPlan) -> list:
-    """Values that could be read more than one way — the only ones worth checking."""
+    """Values that could be read more than one way: the only ones worth checking."""
     keys = [k for k in plan.entries if len(plan.split_options(*k)) > 1]
     keys.sort(key=lambda k: k[1].lower())
     return keys
@@ -115,8 +115,8 @@ def _split_keys(plan: _SortPlan) -> list:
 def _verify_splits(plan: _SortPlan, header, note: str = "") -> bool:
     """Confirm how each value divides into names, before any of them is sorted.
 
-    Splitting is guesswork — an ampersand joins two artists in one credit and is
-    part of one act's name in the next, and a comma does three different jobs —
+    Splitting is guesswork: an ampersand joins two artists in one credit and is
+    part of one act's name in the next, and a comma does three different jobs,
     and every sort order downstream is built on the answer. So the guesses come
     first, one row per value that could be read more than one way, and `e` cycles
     the readings: the engine's, the value whole as a single name, the maximal
@@ -151,7 +151,7 @@ def _verify_splits(plan: _SortPlan, header, note: str = "") -> bool:
             rows[key].cells = _cells(key)
 
     sub = f"{ui_utils.plural(len(keys), 'value')} to check{note}"
-    sel = prompt.select("Do these divide correctly? — ↵ continues:",
+    sel = prompt.select("Do these divide correctly? (↵ continues)",
                         choices=[rows[k] for k in keys], columns=_SPLIT_COLUMNS,
                         header=header(sub), row_edit=_options,
                         row_edit_commit=_commit, row_edit_col=1)
@@ -168,7 +168,7 @@ def _review_sort_people(plan: _SortPlan, header, note: str = "") -> set | None:
     in the split-verification step before this one.
 
     `e` cycles a row's sort order through its candidates in place, one press per
-    option, with one step past the last being a text field to type your own — no
+    option, with one step past the last being a text field to type your own; no
     second screen for any of it. ↵ writes the checked rows; unchecking a person
     leaves every value they appear in alone.
     """
@@ -225,7 +225,7 @@ def _review_sort_people(plan: _SortPlan, header, note: str = "") -> set | None:
         return [plan.value(*payload)] + list(plan._nb._sort_candidates(*payload))
 
     def _commit(rid: tuple, text: str) -> None:
-        """Record one row's choice, then refresh them all — a person reaches many."""
+        """Record one row's choice, then refresh them all (a person reaches many)."""
         kind, payload = rid
         if kind == 'person':
             plan.chosen[payload] = text
@@ -238,7 +238,7 @@ def _review_sort_people(plan: _SortPlan, header, note: str = "") -> set | None:
     choices = _choices()
     files = len({p for ps in plan.entries.values() for p in ps})
     sub = f"{ui_utils.plural(len(choices), 'name')} · {ui_utils.plural(files, 'file')}{note}"
-    sel = prompt.select("Preview — ↵ applies:", choices=choices,
+    sel = prompt.select("Preview (↵ applies):", choices=choices,
                         columns=_SORT_VALUE_COLUMNS, header=header(sub), multi=True,
                         row_edit=_options, row_edit_commit=_commit, row_edit_col=1)
     return None if sel is None else set(sel)
@@ -246,7 +246,7 @@ def _review_sort_people(plan: _SortPlan, header, note: str = "") -> set | None:
 
 def apply_sort_orders(paths: list, library: list, header) -> None:
     """Generate smart sort-order tags (TSOP/TSO2/TSOC/TSOA) from each file's
-    existing artist/album-artist/composer/album, via the #42 engine. MP3/ID3 only.
+    existing artist/album-artist/composer/album, via the sort-order engine in id3_browser. MP3/ID3 only.
 
     Runs as a sequence of screens you can walk backwards through: back on the
     first one leaves, and back on any other returns to the one before it with
@@ -285,8 +285,8 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
                 if field not in chosen:
                     continue
                 fr = audio.get(src)
-                # A source frame can hold several values — TCOM takes one
-                # composer each — while the sort frame is single, so they join on
+                # A source frame can hold several values (TCOM takes one
+                # composer each) while the sort frame is single, so they join on
                 # the delimiter and the engine reads them straight back as a list.
                 vals = [str(t).strip() for t in fr.text if str(t).strip()] if (
                     fr and getattr(fr, 'text', None)) else []
@@ -331,8 +331,8 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
     def _read_files():
         """Not a screen: re-read the files when an answer above has changed.
 
-        Transparent to the walk in both directions — it steps aside once the plan
-        matches the answers — but reports a back when the selection turns up
+        Transparent to the walk in both directions (it steps aside once the plan
+        matches the answers) but reports a back when the selection turns up
         nothing, so the walk lands on the question worth changing.
         """
         nonlocal plan, scanned_for
@@ -341,7 +341,7 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
             return _SKIP
         entries = _scan(overwrite)
         if not entries:
-            ui_utils.show_status("No sort orders to write — already set, or none needed.")
+            ui_utils.show_status("No sort orders to write: already set, or none needed.")
             return False
         # Carry every decision across the rescan: they are keyed by person and by
         # value, so they outlive the entries they were made against.
@@ -355,7 +355,7 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
         return _SKIP
 
     def _ask_verify():
-        """Confirm who the people are — skipped when nothing reads two ways."""
+        """Confirm who the people are; skipped when nothing reads two ways."""
         assert plan is not None
         if not _split_keys(plan):
             return _SKIP
@@ -380,7 +380,7 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
     assert plan is not None
 
     # Rows are people; values are what gets written. A value goes out when
-    # everyone in it is checked — unchecking one person leaves every value they
+    # everyone in it is checked; unchecking one person leaves every value they
     # appear in untouched rather than half-sorted.
     per_path: dict = {}
     for key in plan.entries:

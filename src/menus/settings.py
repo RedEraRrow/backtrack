@@ -31,7 +31,7 @@ def _handle_tag_name_preferences() -> None:
         return info.name if info else []
 
     result = prompt.list_edit(
-        "Tag name preferences — TAG · PREFERRED NAME (blank name = use default):",
+        "Tag name preferences: TAG · PREFERRED NAME (blank name = use default):",
         initial_items=initial,
         headers=("TAG", "PREFERRED NAME"),
         col_ratios=(1, 4),
@@ -115,12 +115,12 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
             set_music_dirs(config, dirs + [full])
             _commit(config, "music_directories", "music_directory")
             n = _rescan_library(config, library_ref)
-            ui_utils.show_status(f"Added — {n} tracks.")
+            ui_utils.show_status(f"Added: {n} tracks.")
             continue
 
         if choice == "__rescan__":
             n = _rescan_library(config, library_ref)
-            ui_utils.show_status(f"Done — {n} tracks.")
+            ui_utils.show_status(f"Done: {n} tracks.")
             continue
 
         # An existing directory row: rename it, give it its own sort order, or
@@ -152,7 +152,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
             if act != "remove":
                 continue
             if len(dirs) == 1 and not prompt.confirm(
-                    "That's the only directory — remove it and empty the library?"):
+                    "That's the only directory. Remove it and empty the library?"):
                 continue
             if len(dirs) > 1 and not prompt.confirm(f"Remove {os.path.basename(choice) or choice}?"):
                 continue
@@ -166,7 +166,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
             _commit(config, "music_directories", "music_directory",
                     "library_names", "library_sort_levels")
             n = _rescan_library(config, library_ref)
-            ui_utils.show_status(f"Removed — {n} tracks.")
+            ui_utils.show_status(f"Removed: {n} tracks.")
 
 
 # Settings rows that are on/off switches: space flips them, like ↵ does.
@@ -228,7 +228,7 @@ def _pick_accent(config: dict) -> None:
                 continue
             rgb = ui_utils.parse_hex_colour(typed)
             if rgb is None:
-                ui_utils.show_status("That isn't a colour — use #RRGGBB, like #4FC3F7.")
+                ui_utils.show_status("That isn't a colour. Use #RRGGBB, like #4FC3F7.")
                 continue
             choice = "#%02X%02X%02X" % rgb
         config['accent_colour'] = choice
@@ -243,7 +243,7 @@ def handle_settings(library_ref: list) -> None:
 
     while True:
         # A fresh copy each time round, and only what this action changed is
-        # saved (update_config) — never the whole dict back over newer changes.
+        # saved (update_config), never the whole dict back over newer changes.
         config = load_config()
         _before = copy.deepcopy(config)
 
@@ -257,7 +257,7 @@ def handle_settings(library_ref: list) -> None:
         _accent = (config.get("accent_colour") if ui_utils.accent_code(config.get("accent_colour"))
                    else ui_utils.DEFAULT_ACCENT)
 
-        # (value, label, current state) — separators are plain strings.
+        # (value, label, current state); separators are plain strings.
         _rows: list = [
             prompt.separator("Playback"),
             ("lead_in",      "Lyric lead-in…",       f"{float(config['lyric_lead_in']):g}s"),
@@ -334,7 +334,7 @@ def handle_settings(library_ref: list) -> None:
 
         elif choice == "debug":
             from src.utils.log import configure, log_path
-            _toggled("debug", f" — writing to {log_path()}" if not config.get("debug") else "")
+            _toggled("debug", f", writing to {log_path()}" if not config.get("debug") else "")
             configure(bool(config.get("debug")))
 
         elif choice == "inline_art":
@@ -410,7 +410,7 @@ def handle_settings(library_ref: list) -> None:
 
         elif choice == "hidden":
             # Both states need a re-scan before the library reflects the change.
-            _toggled("ignore_hidden_files", " — re-scan to apply.")
+            _toggled("ignore_hidden_files", ", re-scan to apply.")
 
         if changed_keys(_before, config):
             update_config(changed_keys(_before, config))

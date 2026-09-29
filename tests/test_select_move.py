@@ -1,5 +1,6 @@
 """select()'s J/K row moves: the caller is asked, the row swaps on screen only
-when it agrees, and a move never crosses a separator or the ends of the list."""
+when it agrees, and a move never crosses a separator or the ends of the list. Also: a ListPlace
+finds the same item after a re-sort, and greyed rows can't be ticked."""
 import unittest
 from unittest.mock import patch
 

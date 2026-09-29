@@ -379,12 +379,8 @@ def get_preferred_tag_name(tag_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Sort-order tags — the canonical mapping.
-#
-# The TSOP/TSO2/TSOC/TSOA relationship used to be spelled out in five places
-# (the writer, two tables in the bulk manager, two in the browser) and they had
-# already drifted apart. Everything that needs any part of it derives it from
-# this one table.
+# Sort-order tags: the canonical TSOP/TSO2/TSOC/TSOA mapping; everything that
+# needs part of it derives it from here.
 #
 # There is deliberately no title row: a title sorts on itself, and a stored TSOT
 # is one more value to keep in step for no gain.
@@ -405,7 +401,7 @@ SORT_TAGS: tuple[SortTag, ...] = (
     SortTag('artist',       'TPE1', 'TSOP', 'soar', 'artist',       True,  True),
     SortTag('album_artist', 'TPE2', 'TSO2', 'soaa', 'album artist', True,  True),
     # Composer is never derived from a filename and is not written alongside a
-    # base field — it is offered only by the standalone "apply sort orders" op.
+    # base field: it is offered only by the standalone "apply sort orders" op.
     SortTag('composer',     'TCOM', 'TSOC', 'soco', 'composer',     True,  False),
     SortTag('album',        'TALB', 'TSOA', 'soal', 'album',        False, True),
 )

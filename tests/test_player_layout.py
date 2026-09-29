@@ -1,6 +1,8 @@
 """The full player: queue rows fit their pane, the queue keeps the current
 track in view, a long queue isn't re-read from disk on every track change,
-and the shared painter repaints everything after a terminal resize."""
+hint bars stay empty until switched on while the i help toggle still shows,
+a boxed header keeps the toggle inside its corners, and the shared painter
+repaints everything after a terminal resize."""
 import unittest
 from unittest.mock import patch
 

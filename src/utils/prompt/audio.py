@@ -79,8 +79,8 @@ def _eq_render_lines(bands: list, cursor: int, message: str, status: str,
     plot_w = max(10, cols - 5)              # 4 cols for the dB label + 1 gap
     avail = rows - 9
     # Three rows either side of the baseline is the comfortable minimum, but on a
-    # very short terminal — especially with the miniplayer taking rows — holding
-    # that floor pushed the plot over its budget and into the miniplayer. Give
+    # very short terminal (especially with the now-playing box taking rows), holding
+    # that floor pushed the plot over its budget and into the now-playing box. Give
     # ground to 1 row per side rather than overrun: coarse, but still readable,
     # and the numbers beside it stay exact.
     half_h = max(3, min(8, avail // 2)) if avail > 6 else max(1, min(3, avail // 2))
@@ -196,7 +196,7 @@ def _rva2_render_lines(gain: float, message: str, avail: int | None = None) -> l
     ]
 
     # One row per dB is the ideal, but the meter must still fit above the hint
-    # bar and the miniplayer — on a short terminal it would otherwise run off the
+    # bar and the now-playing box: on a short terminal it would otherwise run off the
     # bottom and take its own hints with it. Widen the dB-per-row step until the
     # scale fits, keeping it symmetric so 0 dB always lands on a row.
     peak = int(_RVA2_GAIN_MAX)
@@ -252,8 +252,8 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
 
     def _render():
         # Budget the meter against the rows left once this widget's own chrome
-        # (message, rule, readout, trailing blank) and the hint bar — which grows
-        # by two lines when the transport keys join it — are accounted for.
+        # (message, rule, readout, trailing blank) and the hint bar (which grows
+        # by two lines when the transport keys join it) are accounted for.
         _pairs = [("↑↓", "adjust"), ("⇞⇟", "±3 dB"), ("0", "zero"),
                   ("↵", "save"), ("esc", "back"), ("q", "quit app")]
         _avail = _hint_pin_target() - 4 - len(chrome_hint_lines(_pairs))
@@ -279,8 +279,8 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
                 continue
 
             key = _read_key(fd)
-            # A transport key, a click on the miniplayer, or a click on one of our
-            # own hint keys — handled the same way on every screen.
+            # A transport key, a click on the now-playing box, or a click on one of our
+            # own hint keys, handled the same way on every screen.
             _ch = consume_chrome(key, _hint_cells)
             if _ch is CHROME_HANDLED:
                 continue
@@ -315,7 +315,7 @@ def rva2_edit(message: str = "Volume adjustment:", gain: float = 0.0) -> float |
 
 
 def _eq_band_x(n: int, plot_w: int) -> list[int]:
-    """Plot column of each of `n` bands — for drawing them and for clicks."""
+    """Plot column of each of `n` bands, for drawing them and for clicks."""
     return [min(plot_w - 1, int((i + 0.5) * plot_w / n)) for i in range(n)] if n else []
 
 
@@ -357,9 +357,9 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
             if note:
                 status += f"   {C.DIM}· {note}{C.RESET}"
         else:
-            status = f"{C.DIM}no bands — [a] add one{C.RESET}"
+            status = f"{C.DIM}no bands: [a] add one{C.RESET}"
         # Size the plot to the rows left above the pinned hint bar and the
-        # miniplayer, not to the whole terminal — it used to draw over both.
+        # now-playing box, not to the whole terminal.
         _pairs = [("↑↓", "gain"), ("←→", "band"), ("⇞⇟", "±3"), ("a", "add"),
                   ("d", "delete"), ("0", "zero"), ("f", "flat"), ("p", "preset"),
                   ("↵", "save"), ("esc", "back"), ("q", "quit app")]
@@ -385,8 +385,8 @@ def equaliser_edit(message: str = "Equalisation:", adjustments: list | None = No
                 continue
 
             key = _read_key(fd)
-            # A transport key, a click on the miniplayer, or a click on one of our
-            # own hint keys — handled the same way on every screen.
+            # A transport key, a click on the now-playing box, or a click on one of our
+            # own hint keys, handled the same way on every screen.
             _ch = consume_chrome(key, _hint_cells)
             if _ch is CHROME_HANDLED:
                 continue

@@ -54,7 +54,7 @@ _lt = lt
 from src.lyrics.lyrics import _find_markdown_for_audio, _parse_markdown_dialogue
 
 # MFA aligns a whole file as ONE utterance, and a 28-minute one does not align at
-# all — the Viterbi search finds no path at the default beam, and widening it hits
+# all: the Viterbi search finds no path at the default beam, and widening it hits
 # a database error instead. So the file is walked in windows.
 #
 # The window size is set by QUALITY, not by what merely completes. Measured on this
@@ -84,7 +84,7 @@ _EDGE = r'[*_`~"“”‘’\'()\[\]{}.,!?;:…]'
 
 
 def lab_tokens(word: str) -> list[str]:
-    """The aligner's tokens for one script word — usually one, sometimes none.
+    """The aligner's tokens for one script word: usually one, sometimes none.
 
     A hyphenated word becomes two tokens because that is two spoken words and
     the dictionary has no hyphenated entries; "..." and "♪" become none, being
@@ -94,7 +94,7 @@ def lab_tokens(word: str) -> list[str]:
     w = re.sub(r'^' + _EDGE + r'+|' + _EDGE + r'+$', '', (word or "").strip())
     w = w.replace('’', "'")
     out = []
-    for part in re.split(r'[-–—/]', w):
+    for part in re.split(r'[-\u2013\u2014/]', w):
         part = re.sub(r'^' + _EDGE + r'+|' + _EDGE + r'+$', '', part)
         if re.search(r'[^\W\d_]|\d', part):
             out.append(part)
@@ -106,8 +106,8 @@ def script_stream(md_path: str):
 
     words is [(raw, line_id)] in order, lines is line_id -> speaker, and dirs is
     [(line_id_it_precedes, text)] for the stage directions that stand on their own
-    line. Those are beats of the script in their own right — the bing bong, the
-    door, the pause — not notes about a neighbouring line, so they are carried
+    line. Those are beats of the script in their own right (the bing bong, the
+    door, the pause), not notes about a neighbouring line, so they are carried
     through and given their own segment rather than dropped here and reconstructed
     later from whatever silence happens to be spare.
     """
@@ -122,7 +122,7 @@ def script_stream(md_path: str):
             continue
         lines[lid] = " & ".join(s.strip() for s in item.speakers) if item.speakers else ""
         spoken = lt.spoken_text(item.text).split()
-        # A direction inside a line is a beat too — the yawn happens between two
+        # A direction inside a line is a beat too: the yawn happens between two
         # sentences, not after the whole speech. Where the script has punctuated its
         # way out of the word before it, the line is cut there and the direction
         # sits in the silence the aligner measured between them. Mid-sentence ones
@@ -140,7 +140,7 @@ def script_stream(md_path: str):
 def build_corpus(mp3: Path, md: Path, corpus: Path):
     """Write the one-file MFA corpus: 16k mono wav plus its .lab transcript.
 
-    Returns (words, lines, dirs, tok2word) — tok2word maps each .lab token back to the
+    Returns (words, lines, dirs, tok2word); tok2word maps each .lab token back to the
     script word it came from, which is what lets a hyphenated word split for the
     aligner and still be reassembled afterwards.
     """
@@ -182,7 +182,7 @@ def to_segments_direct(words, lines, dirs, inline, times) -> tuple[list[dict], d
     """Zip the aligner's word times back onto the script, one segment per line.
 
     The two streams are the same words in the same order, so this is a walk, not
-    an alignment — which is the whole point of aligning the script rather than a
+    an alignment, which is the whole point of aligning the script rather than a
     transcription of it.
     """
     stats = {'script_words': len(words), 'words_timed': len(times)}
@@ -201,7 +201,7 @@ def to_segments_direct(words, lines, dirs, inline, times) -> tuple[list[dict], d
     # "..." and "--" are punctuation: they carry no token, so the aligner is never
     # asked about them and can never answer. Leaving them timeless would strand any
     # segment that happens to start with one, so each is pinned to the moment its
-    # neighbours leave for it — a real position, zero width, in the right place.
+    # neighbours leave for it: a real position, zero width, in the right place.
     filled = dict(times)
     run: list[int] = []
     prev_end = 0.0
@@ -302,7 +302,7 @@ _TS_RE = re.compile(r'(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)\s*-\s*(?:(\d+):)?(\d+):(\
 def load_anchors(path: Path) -> list[dict]:
     """Read a transcription's segment boundaries, whichever tool wrote them.
 
-    Only start, end and text are wanted — the words come from the script, so a
+    Only start, end and text are wanted: the words come from the script, so a
     transcript without word-level timings does the job exactly as well as one with.
 
     Two shapes are understood: {"segments": [{start, end, text}]} as WhisperX and
@@ -346,7 +346,7 @@ def _one_place(a_toks, md_toks, i1, i2, j1, j2) -> bool:
     Token for token it does: one heard word against one written one is the same
     instant whichever was right, and the script already owns the word.
 
-    Unequal runs usually do not — two heard words against four written ones say
+    Unequal runs usually do not: two heard words against four written ones say
     nothing about which of the four was said when. But some are one stretch of
     speech divided differently by two writers rather than a real disagreement, and
     those read as one moment too. Joining each side up tells them apart: `alright`
@@ -364,13 +364,13 @@ def map_words_to_anchors(words, anchors, positional: bool) -> dict[int, int]:
 
     The script and the transcription are the same speech written down twice: the
     script correctly and the transcription approximately.  Matching them word by
-    word says nothing useful about WHICH word was said — the script already knows
-    that — but it does say WHEN, because the transcription carries a clock and the
+    word says nothing useful about WHICH word was said (the script already knows
+    that), but it does say WHEN, because the transcription carries a clock and the
     script does not.
 
     A pairing is only worth a time if it stands token for token. Where the two
-    streams disagree over a RUN of unequal length — two heard words against four
-    written ones — nothing says which of the four was said when, and parking them
+    streams disagree over a RUN of unequal length (two heard words against four
+    written ones), nothing says which of the four was said when, and parking them
     all on the nearest segment is how twenty-five words come to share one
     two-second measurement and land half a minute of speech in the wrong place.
 
@@ -378,7 +378,7 @@ def map_words_to_anchors(words, anchors, positional: bool) -> dict[int, int]:
     this works: we never need to know WHICH word, only WHEN. The script already
     owns the word. So when the transcription heard one token where the script has
     one token, that is the same instant of audio whether it heard it correctly or
-    not — `creef` for Crieff, `dews` for Douz, `uh` for er, `liters` for litres.
+    not: `creef` for Crieff, `dews` for Douz, `uh` for er, `liters` for litres.
     Discarding those costs real measurements and buys nothing: on this episode they
     are 23 more lines, out of 414, whose start is read off a clock instead of
     guessed.
@@ -387,8 +387,8 @@ def map_words_to_anchors(words, anchors, positional: bool) -> dict[int, int]:
     `group_by_anchor` wants, because every word must land in some utterance and a
     rough bin is better than none. It is never what a timeline wants.
 
-    Returns a SPARSE {script word index: anchor index}, strictly increasing in both
-    — a word can never be placed before one the script puts ahead of it, whatever
+    Returns a SPARSE {script word index: anchor index}, strictly increasing in both:
+    a word can never be placed before one the script puts ahead of it, whatever
     the matcher says.
     """
     a_toks, a_seg = [], []
@@ -414,7 +414,7 @@ def map_words_to_anchors(words, anchors, positional: bool) -> dict[int, int]:
     # a repeated phrase ("No. No. No.") lets the matcher pair a later script word
     # with an earlier segment, and one such pairing would drag a whole passage back
     # through the audio. Any word that would move time backwards is dropped, not
-    # corrected — it is one missing pin among hundreds, and the words either side
+    # corrected: it is one missing pin among hundreds, and the words either side
     # already say where it is.
     out, high = {}, -1
     for wi in sorted(pairs):
@@ -432,7 +432,7 @@ def times_from_anchors(words, anchors):
     Each transcription segment is its own small timeline: it measured when a run of
     speech started and stopped, and the script words belonging to that run are laid
     out inside it in proportion to their length.  Between two segments there is
-    silence, which belongs to neither — the pause before a line is part of the
+    silence, which belongs to neither: the pause before a line is part of the
     performance, and a model that lets the next line start where the last one
     finished loses every pause in the episode and pulls every line early.
 
@@ -443,7 +443,7 @@ def times_from_anchors(words, anchors):
     once every one and a half seconds. Word placement inside a segment is an
     estimate, but the estimate is discarded at the segment's end, where the clock
     is read again. Error is bounded by the length of one segment and CANNOT
-    ACCUMULATE — which is the whole difference between this and pacing a script
+    ACCUMULATE, which is the whole difference between this and pacing a script
     evenly across a duration, a method with one measurement at each end of half an
     hour whose error therefore grows all the way to the middle.
 
@@ -516,7 +516,7 @@ def times_from_anchors(words, anchors):
     rate = heard_c / heard_t if heard_t > 0 else 16.0
 
     # Segments the script never claimed. The transcription misheard them, so they
-    # name no word — but a segment exists because something was SAID then, and that
+    # name no word, but a segment exists because something was SAID then, and that
     # is exactly what is missing inside a gap.
     claimed = set(word_seg.values())
     heard_elsewhere = sorted((a["start"], a["end"])
@@ -535,12 +535,12 @@ def times_from_anchors(words, anchors):
         second or six.
 
         Where the script's own line breaks fall. A gap that spans one holds two
-        separate pieces of speech, not one run — the tail of a line that ran on
+        separate pieces of speech, not one run: the tail of a line that ran on
         past what was heard, then a pause, then the head of the next. Placed as one
         run they drag each other; split, each goes where its own line says.
 
         And where speech actually happened. A segment the script never claimed is
-        still a measurement that SOMETHING was said at that moment — "He" and "was"
+        still a measurement that SOMETHING was said at that moment: "He" and "was"
         for a misheard "Here you are". Filling a gap uniformly ignores that and
         spreads words across theme music; the words belong where the sound is.
 
@@ -557,7 +557,7 @@ def times_from_anchors(words, anchors):
         # A run carrying on the line before it is not adrift at all: that speech
         # was measured, and this is the rest of it, so it starts where the
         # measurement stopped. It is placed first and takes no part in the guessing
-        # below — otherwise "This week, Douz!" gets dragged forward to the sound of
+        # below; otherwise "This week, Douz!" gets dragged forward to the sound of
         # the line after it, six seconds into the theme music.
         at = t0
         if runs[0][0] > 0 and words[runs[0][0]][1] == words[runs[0][0] - 1][1]:
@@ -569,7 +569,7 @@ def times_from_anchors(words, anchors):
             return
 
         # What is left goes in a window: normally the rest of the gap, but where
-        # the transcription heard something it could not name, the sound itself —
+        # the transcription heard something it could not name, the sound itself:
         # a segment nobody claimed still says speech happened at that moment.
         w0, w1 = at, t1
         spoken = [(x, y) for x, y in heard_elsewhere if x >= at - 0.01 and y <= t1 + 0.01]
@@ -579,7 +579,7 @@ def times_from_anchors(words, anchors):
                        max(y for _, y in spoken) - min(x for x, _ in spoken)) / 2
             w0, w1 = max(at, mid - half), min(t1, mid + half)
 
-        # Slack is shared out ONCE across every junction that could hold a pause —
+        # Slack is shared out ONCE across every junction that could hold a pause:
         # before the first run, between runs, and after the last unless the line
         # runs straight on into speech that WAS heard. Centring each run in the
         # whole gap separately is what pushed a radio call two seconds late while
@@ -615,7 +615,7 @@ def group_by_anchor(words, anchors, tok2word, toks):
     it is given across whatever audio it is given, so nothing in the result reveals
     that a window advanced further through the audio than through the script, and
     the two drift apart until the audio runs out.  A transcription is wrong about
-    plenty of WORDS but roughly right about WHEN, and that is all that is needed —
+    plenty of WORDS but roughly right about WHEN, and that is all that is needed:
     the words come from the script, only the boundaries come from here.
 
     Returns [(start, end, [word indices]), ...] covering every script word.
@@ -623,7 +623,7 @@ def group_by_anchor(words, anchors, tok2word, toks):
     word_seg = map_words_to_anchors(words, anchors, positional=True)
 
     # Merge anchor segments into utterances long enough to align well and short
-    # enough to align reliably — the aligner is accurate on a sentence and drifts
+    # enough to align reliably: the aligner is accurate on a sentence and drifts
     # over a paragraph.
     groups, cur = [], []
     for si, a in enumerate(anchors):
@@ -651,7 +651,7 @@ def group_by_anchor(words, anchors, tok2word, toks):
 def align_anchored(mp3: Path, words, anchors, work: Path, verbose: bool) -> dict:
     """Align each utterance's own words inside its own slice of audio.
 
-    Every utterance is independent, so a bad one spoils only itself — there is no
+    Every utterance is independent, so a bad one spoils only itself; there is no
     cursor to lose and nothing downstream of it to drag out of step.  MFA aligns
     the whole set in one pass, in parallel.
     """
@@ -725,7 +725,7 @@ def align_anchored(mp3: Path, words, anchors, work: Path, verbose: bool) -> dict
     missed = harvest(idx, align_corpus("u"))
 
     # An utterance that refuses is usually one that is too densely packed for its
-    # audio — singing, or two people at once. Halving it gives the aligner a shorter
+    # audio: singing, or two people at once. Halving it gives the aligner a shorter
     # run to find a path through, and costs one extra pass over a handful of files.
     for depth in range(RETRY_SPLITS):
         if not missed:
@@ -755,8 +755,8 @@ def mfa_refine(mp3: Path, words, anchors, keep: bool, validate_only: bool):
     """Run MFA over the anchored utterances; returns its word times, or {}.
 
     This is a REFINEMENT and is allowed to fail. Every word already has a time from
-    the transcription's clock, so an utterance MFA refuses — singing, or two voices
-    at once, which it has never aligned on this corpus — simply keeps the time it
+    the transcription's clock, so an utterance MFA refuses (singing, or two voices
+    at once, which it has never aligned on this corpus) simply keeps the time it
     already had instead of leaving a hole. That is the difference between the
     aligner being an improvement and the aligner being a dependency.
     """
@@ -768,7 +768,7 @@ def mfa_refine(mp3: Path, words, anchors, keep: bool, validate_only: bool):
         # --ignore_acoustics: validate otherwise TRAINS a throwaway model to prove
         # the corpus is alignable, and a single 28-minute utterance gives it nothing
         # to count (it divides by zero). The dictionary check is the part worth
-        # having here — it is what produces the out-of-dictionary list.
+        # having here: it is what produces the out-of-dictionary list.
         v = subprocess.run(["mfa", "validate", str(corpus), DICTIONARY, ACOUSTIC,
                             "--g2p_model_path", G2P, "--single_speaker", "--clean",
                             "--ignore_acoustics"],
@@ -812,7 +812,7 @@ def run(mp3_path: str, anchor_path: str, validate_only: bool, keep: bool,
     # A block is a stretch the transcription measured and the script matched: its
     # two ends are known, the words inside are estimated, and the estimate is
     # thrown away at the far end. So the longest block bounds the error and nothing
-    # accumulates past it. The gaps are the honest weak spot — speech the
+    # accumulates past it. The gaps are the honest weak spot: speech the
     # transcription never heard, which no amount of arithmetic can place exactly.
     heard = sum(b - a + 1 for a, b, _t0, _t1 in blocks)
     lens = sorted(t1 - t0 for _a, _b, t0, t1 in blocks)
@@ -873,7 +873,7 @@ def main() -> int:
         anchors = next((str(c) for c in cand if c.exists()), None)
         if not anchors:
             print(f"  no anchor transcript found (looked for "
-                  f"{', '.join(str(c.name) for c in cand)}) — see --anchors", flush=True)
+                  f"{', '.join(str(c.name) for c in cand)}); see --anchors", flush=True)
             rc |= 1
             continue
         rc |= run(a, anchors, args.validate_only, args.keep, args.mfa)

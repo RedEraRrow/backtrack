@@ -1,5 +1,5 @@
 """The tidy operations' shared preview: rows that wouldn't change are greyed out
-and can't be ticked, and only rows that change are ever written — so a
+and can't be ticked, and only rows that change are ever written, so a
 "keeps disc 2" row can't have its disc number stripped."""
 import unittest
 from unittest.mock import patch
@@ -9,7 +9,7 @@ from src.id3 import bulk_common, bulk_ops as bo
 
 class PreviewAndApplyTest(unittest.TestCase):
     def _run(self, ticked, changes=None):
-        plan = bo.Plan(changes=changes or [bo.Change('/m/a.mp3', why='disc 1/1 → —'),
+        plan = bo.Plan(changes=changes or [bo.Change('/m/a.mp3', why='disc 1/1 → -'),
                                            bo.Change('/m/b.mp3')])
         written, status = [], []
         self.shown = []

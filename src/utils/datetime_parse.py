@@ -1,12 +1,7 @@
-"""One date/time parser for the whole project.
+"""One parser for every hand-typed date: the calendar, the date/time editor,
+the schedule table, filename values.
 
-Backtrack reads dates typed by hand in several places — the calendar widget's
-manual entry, the combined date/time editor, the per-range schedule table, tag
-values arriving from a filename — and each had grown its own rules.  They
-disagreed: one accepted ``2008-7-2`` and another rejected it, one kept a time and
-another silently truncated it, and the two resolved ``02/07/2008`` differently.
-
-Everything now goes through :func:`parse_datetime`.  It accepts what a person
+Everything goes through :func:`parse_datetime`.  It accepts what a person
 plausibly types, keeps whatever precision was given, and says *why* when it can't
 read something so the caller can show that rather than a bare failure.
 
@@ -18,10 +13,10 @@ optional::
     2008-07-02 18:30  2008-07-02T18:30  2008-07-02 18:30:45
 
 A time may follow the date after a ``T`` (either case) or a space, as ``HH:MM``
-or ``HH:MM:SS``.  A trailing timezone (``Z`` or ``±HH:MM``) is stripped — the
+or ``HH:MM:SS``.  A trailing timezone (``Z`` or ``±HH:MM``) is stripped: the
 tags Backtrack writes are local wall-clock timestamps.
 
-Day-first vs month-first (``02/07/2008``) is genuinely ambiguous and is resolved
+Day-first vs month-first (``02/07/2008``) is ambiguous and is resolved
 only when the caller says how, via ``dayfirst``.  Left unset, an ambiguous date
 is refused rather than guessed, because guessing wrong writes a plausible-looking
 wrong date that nobody notices.
@@ -43,7 +38,7 @@ PRECISIONS = ('year', 'month', 'day', 'minute', 'second')
 _YEAR_FIRST_RE = re.compile(r'^(\d{4})(?:[-/.\s](\d{1,2})(?:[-/.\s](\d{1,2}))?)?$')
 # ISO basic form, 20080702.
 _COMPACT_RE = re.compile(r'^(\d{4})(\d{2})(\d{2})$')
-# Day- or month-first, e.g. 02/07/2008 — order decided by `dayfirst`.
+# Day- or month-first, e.g. 02/07/2008, order decided by `dayfirst`.
 _YEAR_LAST_RE = re.compile(r'^(\d{1,2})[-/.\s](\d{1,2})[-/.\s](\d{4})$')
 # A trailing timezone we drop rather than try to honour.
 _TZ_RE = re.compile(r'(Z|[+-]\d{2}:?\d{2})$', re.IGNORECASE)
@@ -52,9 +47,9 @@ _TZ_RE = re.compile(r'(Z|[+-]\d{2}:?\d{2})$', re.IGNORECASE)
 class ParsedDateTime(NamedTuple):
     """The result of reading a date/time a user typed.
 
-    ``date`` is always a real ``datetime.date`` on success — a year- or
+    ``date`` is always a real ``datetime.date`` on success (a year- or
     month-only input is completed to the 1st so callers that just need *a* date
-    have one — and ``precision`` records how much was actually given, so a caller
+    have one), and ``precision`` records how much was actually given, so a caller
     that needs a real day (a schedule counting in days, say) can insist on it
     instead of silently scheduling from an invented 1 January.
 
@@ -101,7 +96,7 @@ def _split_date_time(s: str) -> tuple:
     """Split a stamp into its date and time halves.
 
     A ``T`` always separates them.  A space only does when what follows it looks
-    like a clock time — it carries a ``:`` — because a space is *also* a legal
+    like a clock time (it carries a ``:``) because a space is *also* a legal
     separator inside the date itself: ``2008 07 02`` is a date, while
     ``2008-07-02 18:30`` is a date and a time.
     """
@@ -149,7 +144,7 @@ def _read_date(part: str, dayfirst: Optional[bool]) -> tuple:
             # on where you live. Honour an explicit choice, else refuse rather
             # than pick one and be silently wrong.
             if dayfirst is None:
-                return None, '', (f"{part!r} could be day-first or month-first — "
+                return None, '', (f"{part!r} could be day-first or month-first: "
                                   "write it year-first (2008-07-02)")
             day, month = (a, b) if dayfirst else (b, a)
         elif day_first_ok:
@@ -222,7 +217,7 @@ def format_datetime(parsed: ParsedDateTime) -> str:
 
 
 def parse_date_parts(raw, *, dayfirst: Optional[bool] = None) -> Optional[tuple]:
-    """``(year, month, day)`` for a typed date, or None — the shape the calendar
+    """``(year, month, day)`` for a typed date, or None: the shape the calendar
     and date/time widgets work in.  A year- or month-only input completes to the
     1st, as those widgets have always done."""
     d = parse_datetime(raw, dayfirst=dayfirst).date

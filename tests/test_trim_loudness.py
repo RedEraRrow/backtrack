@@ -1,4 +1,4 @@
-"""Tests for loudness measurement (src/trim/trim.py, section 5.4). Synthetic
+"""Tests for loudness measurement (src/trim/trim.py). Synthetic
 fixtures generated at test time; skipped when ffmpeg is absent."""
 import os
 import shutil

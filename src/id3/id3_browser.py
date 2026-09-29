@@ -1,4 +1,5 @@
-"""Per-file ID3 tag browser and editor UI."""
+"""Per-file ID3 tag browser and editor UI, plus the sort-order name engine
+(name splitting and sort suggestions) that bulk sort uses."""
 from __future__ import annotations
 import os
 import re
@@ -41,7 +42,7 @@ from src.id3.id3_tag_handler import picture_type_name
 # name as two styled segments (TAG bright + friendly dim) in a single column.
 _TAG_COLUMNS = [
     prompt.Column(style='primary'),                       # TAG (friendly)
-    prompt.Column(style='dynamic-dim', priority=1),       # type / category — drops first when narrow
+    prompt.Column(style='dynamic-dim', priority=1),       # type / category, drops first when narrow
     prompt.Column(style='normal', flex=True),             # value (takes the rest, kept)
 ]
 
@@ -84,7 +85,7 @@ _SPACING_PREFIXES: frozenset[str] = frozenset({
 _JOINING_PREFIXES: frozenset[str] = frozenset({"o'", "ó'", 'mc', 'mac', "m'"})
 
 # Leading honorifics/titles moved to the end of the sort name ("Dr. Dre" → "Dre,
-# Dr.", "MC Solaar" → "Solaar, MC"). A small fixed pattern set — no data corpus.
+# Dr.", "MC Solaar" → "Solaar, MC"). A small fixed pattern set, no data corpus.
 _HONORIFICS: frozenset[str] = frozenset({
     'dr', 'prof', 'sir', 'dame', 'mr', 'mrs', 'ms', 'miss', 'mx', 'rev', 'fr',
     'st', 'maestro', 'dj', 'mc', 'lady', 'lord', 'master', 'madam', 'madame',
@@ -119,7 +120,7 @@ _ENSEMBLE_WORDS: frozenset[str] = frozenset({
 _INITIAL_RE = re.compile(r'^[A-Za-zÀ-ÖØ-öø-ÿ]\.$')
 
 # Delimiters that separate multiple artists in a single tag value.
-# NOTE: "and his/her/their" is NOT a delimiter — a *possessive* names a backing
+# NOTE: "and his/her/their" is NOT a delimiter: a *possessive* names a backing
 # ensemble belonging to the lead artist ("Paul Tremaine And His Aristocrats").
 # "& The …" IS split, though: "The Mildred Snitzer Orchestra" is a named act in
 # its own right, so "Jeff Goldblum & The Mildred Snitzer Orchestra" sorts as
@@ -143,17 +144,17 @@ _LIST_SPLIT_RE  = re.compile(rf'\s*(?:{_AMP_ALTS}|{_OTHER_ALTS})\s*', re.IGNOREC
 _AMP_SPLIT_RE   = re.compile(rf'\s*(?:{_AMP_ALTS})\s*', re.IGNORECASE)
 _OTHER_SPLIT_RE = re.compile(rf'\s*(?:{_OTHER_ALTS})\s*', re.IGNORECASE)
 
-# "Blank & Jones", "Hall & Oates", "Above & Beyond" — an ampersand between two
+# "Blank & Jones", "Hall & Oates", "Above & Beyond": an ampersand between two
 # single words is the name of one act, and it sorts under its own first word.
 # Two artists collaborating are credited by their full names either side
 # ("Ariana Grande & Justin Bieber"), which is what tells them apart. Two mononyms
-# who really are collaborating are read as an act and so get no sort tag at all —
+# who really are collaborating are read as an act and so get no sort tag at all:
 # the safe way to be wrong, since nothing incorrect is written.
 
 _DUO_RE = re.compile(r'^[^\s&/]+\s*(?:&|\band\b)\s*[^\s&/]+$', re.IGNORECASE)
 
 
-# Integers (1–99) that benefit from zero-padding when used as ordinals.
+# Integers (1-99) that benefit from zero-padding when used as ordinals.
 _ORDINAL_RE = re.compile(r'(?<!\d)([1-9]\d?)(?!\d)')
 
 
@@ -190,7 +191,7 @@ def _merge_joining_prefixes(words: list[str]) -> list[str]:
     ['Sinéad', "O'", 'Connor'] → ['Sinéad', "O'Connor"]
     ['Ewan', 'Mc', 'Gregor'] → ['Ewan', 'McGregor']
 
-    Does NOT merge all-uppercase 'MC' (hip-hop prefix) — that is an honorific,
+    Does NOT merge all-uppercase 'MC' (hip-hop prefix): that is an honorific,
     handled separately by the honorific-stripping step.
     """
     result: list[str] = []
@@ -215,7 +216,7 @@ def _merge_joining_prefixes(words: list[str]) -> list[str]:
 # a name already written in sort order ("Ahlert, Fred E.").
 _COMMA_SPLIT_RE = re.compile(r'\s*,\s*')
 _STRAY_LEAD_RE  = re.compile(r'^[^\w\s]+')
-# "E." / "J.S." — a forename side made only of these is a strong sign the comma
+# "E." / "J.S.": a forename side made only of these is a strong sign the comma
 # before it inverted a name rather than separated two people.
 _INITIALS_RE = re.compile(r'^[A-Za-zÀ-ÖØ-öø-ÿ](?:\.[A-Za-zÀ-ÖØ-öø-ÿ])*\.?$')
 
@@ -233,7 +234,7 @@ def _clean_part(part: str) -> str:
     return part
 
 
-# "Al Jackson, Jr." — this comma is punctuation inside one name, neither a list
+# "Al Jackson, Jr.": this comma is punctuation inside one name, neither a list
 # separator nor an inversion, so it goes before either question is asked.
 _SUFFIX_COMMA_RE = re.compile(
     r',\s*(?=(?:' + '|'.join(sorted(_NAME_SUFFIXES, key=len, reverse=True)) + r')\b\.?)',
@@ -251,8 +252,8 @@ def _looks_inverted(part: str) -> bool:
     """Whether one part reads as a single name already in "Surname, Forename" order.
 
     One comma, and a forename side short enough to *be* a forename: "Ahlert,
-    Fred E." inverts, but "Miles Davis, John Coltrane" — two full names either
-    side — is two people who happen to be separated by a comma.
+    Fred E." inverts, but "Miles Davis, John Coltrane" (two full names either
+    side) is two people who happen to be separated by a comma.
     """
     left, sep, right = part.partition(',')
     if not sep or ',' in right:
@@ -269,12 +270,12 @@ def _name_readings(raw: str) -> list[list[str]]:
     Splitting on "&"/"and"/"feat." is unambiguous; the comma is not, so it is
     read from context:
 
-    * "Somebody, Somebody Else & A Third Person" — one part has a comma and
+    * "Somebody, Somebody Else & A Third Person": one part has a comma and
       another does not, which is how English writes a list. Three people.
-    * "Bach, Johann Sebastian & Mozart, Wolfgang Amadeus" — *every* part carries
+    * "Bach, Johann Sebastian & Mozart, Wolfgang Amadeus": *every* part carries
       one comma and each reads as inverted. Two people, already sorted.
-    * "Lennon, John" on its own — one inverted name, left exactly as it is.
-    * "Miles Davis, John Coltrane" — a full name either side of the comma, so a
+    * "Lennon, John" on its own: one inverted name, left exactly as it is.
+    * "Miles Davis, John Coltrane": a full name either side of the comma, so a
       list of two despite there being no other delimiter.
 
     Where a value reads both ways ("Bach, J.S. & Handel" is a list of three under
@@ -293,7 +294,7 @@ def _name_readings(raw: str) -> list[list[str]]:
         else:
             split.extend(_AMP_SPLIT_RE.split(piece))
     if len(split) == 1 and ',' not in raw:
-        # Nothing was tokenised, so there is no delimiter debris to tidy — and a
+        # Nothing was tokenised, so there is no delimiter debris to tidy, and a
         # value that is all punctuation ("!!!") keeps every bit of it.
         return [[raw.strip()]] if raw.strip() else []
     parts = [p for p in (_clean_part(x) for x in split) if p]
@@ -318,7 +319,7 @@ def _name_readings(raw: str) -> list[list[str]]:
     if len(parts) > 1:
         if all_inverted:
             return [parts]                       # a list of already-sorted names
-        # A comma beside a comma-less part is a list — that is what the mix
+        # A comma beside a comma-less part is a list: that is what the mix
         # means, and second-guessing it flags half a library as ambiguous.
         # Initials are the one thing that outweighs it: "J.S." is a forename and
         # never a person in a list, so "Bach, J.S. & Handel" really is a pair,
@@ -339,8 +340,8 @@ def split_options(raw: str) -> list[list[str]]:
     """Every plausible way to read one tag value as a list of names, best first.
 
     The engine's own reading leads; then the value whole, as a single name; then
-    the maximal split, every delimiter honoured — duos, backing bands and commas
-    included. A heuristic that guessed wrong is then overruled by picking one of
+    the maximal split, every delimiter honoured (duos, backing bands and commas
+    included). A heuristic that guessed wrong is then overruled by picking one of
     these rather than by retyping the names, which is what the split-verification
     step in bulk cycles through.
     """
@@ -364,10 +365,10 @@ def _sort_single_name(name: str) -> list[str]:
     """
     Return sort-order candidates for a single name string, ordered by confidence.
 
-    Pure heuristics — no name corpus. A simple name (one/two words, or a leading
+    Pure heuristics, no name corpus. A simple name (one/two words, or a leading
     article) resolves to a single candidate; an ambiguous multi-word name yields
     several (the positional "last word = surname" split first) that the user
-    picks from — or overrides with "type custom".
+    picks from, or overrides with "type custom".
 
     Pipeline:
     1. Merge space-separated initials ('J. S.' → 'J.S.')
@@ -389,7 +390,7 @@ def _sort_single_name(name: str) -> list[str]:
         return [f"{rest}, {art}"]
 
     # ── Ensemble / duo ─────────────────────────────────────────────────────
-    # A group sorts as itself — no surname to bring to the front. (Any leading
+    # A group sorts as itself: no surname to bring to the front. (Any leading
     # article was already moved above, so "The E Street Band" got there first.)
     if _is_ensemble(words) or _DUO_RE.match(name.strip()):
         return [name]
@@ -514,15 +515,15 @@ def _prompt_sort_order(base_id: str, audio: ID3) -> str | None:
 
     cands = _sort_candidates(base_id, raw)
     if not cands:
-        return raw  # nothing to suggest — just prefill with the raw value
+        return raw  # nothing to suggest: just prefill with the raw value
 
     if len(cands) == 1:
         return cands[0]
 
     # Multiple suggestions: let the user pick, or type their own.
-    _CUSTOM = "— type custom"
+    _CUSTOM = "Type custom…"
     picked = prompt.select(
-        f'Sort order for “{raw}” — pick a suggestion:',
+        f'Sort order for “{raw}”: pick a suggestion:',
         choices=cands + [prompt.separator(), _CUSTOM],
     )
     if picked is None or picked == _CUSTOM:
@@ -587,7 +588,7 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
 
 
 def _import_from_lrc(file_path: str, tag_id: str) -> None:
-    """Ask for an LRC file and import it — the writing itself is `lyrics.import_lrc`."""
+    """Ask for an LRC file and import it; the writing itself is `lyrics.import_lrc`."""
     default_lrc = os.path.splitext(file_path)[0] + ".lrc"
     # prompt.path, not prompt.text: this is a filesystem location, so it gets
     # Tab-completion against the directory listing like every other path field.
@@ -605,16 +606,13 @@ def _import_from_lrc(file_path: str, tag_id: str) -> None:
         ui_utils.show_status(f"Imported {count} lines to {written}.")
 
 
-# Rendered art, cached by (image bytes, width): it used to be decoded and
-# re-rendered from the JPEG on every keystroke of the art screens.
+# Rendered art, cached by (image bytes, width), so the art screens don't decode
+# and re-render the JPEG on every keystroke.
 _ART_CACHE: dict[tuple[int, int], str] = {}
 _ART_CACHE_MAX = 8
 
-# Cover-art actions: (value, label, dim note). Glyph + two spaces + sentence
-# case, "…" when the row opens a further prompt.
-# Plain sentence-case labels: the app's only established row glyphs are "▸" for
-# play and "＋" for add, and most action rows (Copy / Paste / Edit / Rename /
-# Delete on the tag screen) carry none at all.
+# Cover-art actions: (value, label, dim note). Plain sentence-case labels, "…"
+# when the row opens a further prompt.
 _APIC_ACTIONS = [
     ('open',    "Open in image viewer",  "the system default app"),
     ('replace', "Replace image…",        "pick a nearby file or type a path"),
@@ -648,9 +646,9 @@ def _art_width(reserved_rows: int = 0) -> int:
     """Art width in cells for the space left after `reserved_rows` of chrome.
 
     Half-block rendering packs two pixel rows into a cell, so a square image is
-    about half as many rows tall as it is wide — hence the doubling. Capped at
+    about half as many rows tall as it is wide, hence the doubling. Capped at
     `_ART_MAX_WIDTH` so a big window gets a comfortable thumbnail rather than
-    wallpaper (the old `height × 1.5` overflowed the screen entirely).
+    wallpaper.
     """
     art_rows = max(3, _art_rows_available(reserved_rows))
     cols = get_terminal_width() - 2 * ui_utils.MARGIN_H - 4     # box + margins
@@ -660,15 +658,14 @@ def _art_width(reserved_rows: int = 0) -> int:
 def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0) -> list[str]:
     """The art in a rounded box, centred, comfortably sized for what's left.
 
-    Rendered, measured, and re-rendered narrower if it still doesn't fit — the
+    Rendered, measured, and re-rendered narrower if it still doesn't fit: the
     same fit-to-height approach the player view uses.
     """
     avail_rows = _art_rows_available(reserved_rows)
     if avail_rows < _MIN_ART_ROWS:
-        # Not enough height left for art worth looking at — the facts line in the
-        # header carries the detail instead. (This is what the old manual "view
-        # info" mode was for; it now happens by itself.)
-        return [f"{' ' * ui_utils.MARGIN_H}{C.DIM}— art hidden (window too short) —{C.RESET}"]
+        # Not enough height left for art worth looking at: the facts line in the
+        # header carries the detail instead.
+        return [f"{' ' * ui_utils.MARGIN_H}{C.DIM}(art hidden: window too short){C.RESET}"]
 
     width = _art_width(reserved_rows)
     art = _apic_art(apic_frame, width).splitlines()
@@ -729,16 +726,13 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
                    file_path: str = "") -> bool:
     """View and edit one APIC (cover art) frame. Returns True if anything changed.
 
-    One screen: the art with a facts line above it and the actions below, rather
-    than the old pair of mutually exclusive "View Art" / "View Info" rows — the
-    facts are small enough to show alongside the picture. Saving is left to the
-    caller, which also refreshes the library entry.
+    One screen: the art with a facts line above it and the actions below. Saving
+    is left to the caller, which also refreshes the library entry.
     """
     changed = False
     # mutagen keys an APIC frame by its description ("APIC:Back sleeve"), so the
-    # key moves whenever the description changes. Track it: deleting by the key we
-    # were *called* with removed nothing on a second edit and left the earlier
-    # frame behind — you ended up with two near-identical images.
+    # key moves whenever the description changes. Track it, or a second edit
+    # deletes by a stale key and leaves the earlier frame behind.
     key = tag_name
 
     # Rows this screen spends on anything but the art: the boxed header (3 + a
@@ -802,8 +796,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
 
         elif action == 'replace':
             # The same ranked picker the tag editor's image field uses: nearby
-            # covers first, with a "type a path" escape — rather than demanding
-            # a full path typed from memory.
+            # covers first, with a "type a path" escape.
             img_path = pick_nearby_cover(file_path) if file_path else prompt.path("Image file:")
             if not isinstance(img_path, str) or not img_path:
                 continue
@@ -817,8 +810,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
                 ui_utils.show_status(f"Could not read the image: {e}")
                 continue
             mime = _EXT_TO_MIME.get(os.path.splitext(img_path)[1].lower(), 'image/jpeg')
-            # Keep the type and description — replacing the picture used to
-            # silently reset both (every image became "Cover (front)").
+            # Keep the type and description; only the picture changes.
             if _replace_frame(new_data, mime,
                               getattr(apic_frame, 'type', 3),
                               getattr(apic_frame, 'desc', '') or ''):
@@ -875,16 +867,15 @@ def inspect_tag_loop(
     """Interactive top-level loop for browsing and editing all ID3 tags on an MP3 file."""
     # Tag editing is ID3/MP3-only. Refuse other containers up front (including an
     # mp4/m4a that happens to carry a stray ID3 header, which would otherwise slip
-    # past the per-load check and crash downstream) — one clean, early message.
+    # past the per-load check and crash downstream): one clean, early message.
     if not file_path.lower().endswith('.mp3'):
         ui_utils.show_status("Tag editing is only supported for MP3 files.", duration=tune.STATUS_WARNING_S)
         return
     if not drop_moved([file_path]):
         return
 
-    # Duration is constant for the file — compute it ONCE here, not per render.
-    # (The header is redrawn on every keypress/resize; reading the file each
-    # time made resizing feel sluggish.)
+    # Duration is constant for the file: compute it ONCE here, not per render
+    # (the header is redrawn on every keypress/resize).
     _cached_dur = 0.0
     try:
         _cached_dur = float((library_metadata or {}).get("duration") or 0.0)
@@ -968,8 +959,8 @@ def inspect_tag_loop(
             val = summarize_tag_value(tag_id, audio[tag_id], display=True)
             return [[(display_tag_id(tag_id), 'primary'), (friendly, 'dynamic-dim')], category, val]
 
-        # Read-only filesystem path row — "File path" white (bold when active),
-        # "(filesystem)" dimmed, both in column 1 (#36).
+        # Read-only filesystem path row: "File path" white (bold when active),
+        # "(filesystem)" dimmed, both in column 1.
         filepath_row = prompt.Choice(
             title="File path", value="__filepath__",
             cells=[[("File path", 'primary'), (" (filesystem)", 'dynamic-dim')], "", ""],
@@ -977,7 +968,7 @@ def inspect_tag_loop(
         non_id3_rows = [filepath_row]
         if _has_lyrics:
             # Same shape as the file-path row: a non-ID3 thing that lives with
-            # this one track, not a tag — lyrics/transcript sync has its own
+            # this one track, not a tag: lyrics/transcript sync has its own
             # editor (lyrics_editor), reached here rather than as a separate
             # top-level track action.
             non_id3_rows.append(prompt.Choice(
@@ -1015,7 +1006,7 @@ def inspect_tag_loop(
             ui_utils.clear_screen()
             trim_editor(file_path, library)
             ui_utils.clear_screen()
-            # A commit changes the file's duration — refresh the cached value
+            # A commit changes the file's duration: refresh the cached value
             # this screen's header reads, same as `_save` does after a tag write.
             if library is not None:
                 with quietly():
@@ -1027,7 +1018,7 @@ def inspect_tag_loop(
 
         if choice == "__filepath__":
             _fp_header = [
-                f"  {C.BOLD}File path{C.RESET}  {C.DIM}(filesystem location — not stored in ID3){C.RESET}",
+                f"  {C.BOLD}File path{C.RESET}  {C.DIM}(filesystem location, not stored in ID3){C.RESET}",
                 f"{C.DIM}{'─' * cols}{C.RESET}",
                 f"  {file_path}",
                 f"{C.DIM}{'─' * cols}{C.RESET}",
@@ -1047,7 +1038,7 @@ def inspect_tag_loop(
             if not tag_id:
                 continue
 
-            # Check if it's a known category base via our new parser
+            # Resolve the base frame of a composite id
             base_id, _, _ = parse_composite_tag_id(tag_id)
             info = get_tag_info(base_id)
 
@@ -1070,7 +1061,6 @@ def inspect_tag_loop(
         if not choice:
             break
 
-        # Edit tag
         while True:
             audio = ID3(file_path)
             if choice not in audio:
@@ -1111,7 +1101,6 @@ def inspect_tag_loop(
 
                 return lines
 
-            # Action selection
             actions = ["Copy", "Paste", "Edit", "Rename", "Delete"]
             if category in ('lyrics',) and choice.startswith(('USLT', 'SYLT')):
                 actions.insert(0, "Import LRC")
@@ -1152,7 +1141,7 @@ def inspect_tag_loop(
                         _save(audio)
                         ui_utils.show_status("Updated.")
                     else:
-                        ui_utils.show_status("Could not create frame — wrong data type for this tag.")
+                        ui_utils.show_status("Could not create frame: wrong data type for this tag.")
 
             elif action == "Rename":
                 new_id = prompt.text("New tag ID:")
@@ -1179,7 +1168,7 @@ def inspect_tag_loop(
                         _save(audio)
                         ui_utils.show_status("Updated.")
                     else:
-                        ui_utils.show_status("Could not create frame — check data format.")
+                        ui_utils.show_status("Could not create frame: check data format.")
                     break
 
             elif action == "Delete":

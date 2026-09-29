@@ -1,4 +1,4 @@
-"""Tests for silence detection (src/trim/trim.py, section 4.3) — the
+"""Tests for silence detection (src/trim/trim.py): the
 baseline cut-point suggestion when there's no sting to match against."""
 import os
 import shutil

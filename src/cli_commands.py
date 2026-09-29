@@ -3,7 +3,7 @@
 Every handler is thin by design: resolve the arguments, call the function the
 menus already call, hand the result to `utils.output`. If a handler starts
 deciding *what an operation does*, that decision belongs in a shared module
-instead — see `id3.bulk_ops` for the pattern.
+instead (see `id3.bulk_ops` for the pattern).
 
 Handlers return an exit code (see `utils.output`); returning None means OK.
 """
@@ -448,7 +448,7 @@ def _targets_or_filter(ctx: Ctx) -> list[str]:
 
     In order: explicit paths, then the --artist / --album / --genre filters
     against the library, then whatever is piped in. Stdin is consulted **last**
-    and only when nothing else said what to act on — reading it whenever the
+    and only when nothing else said what to act on: reading it whenever the
     positionals were empty hung `backtrack bulk stripdisc --album Rio` on any
     stdin that stays open, which is most of them.
 
@@ -649,7 +649,7 @@ def _tag_copy(ctx: Ctx) -> int:
 def _run_plan(ctx: Ctx, plan, writer, verb: str, **summary) -> int:
     """Preview, confirm, apply and report one `bulk_ops` plan.
 
-    The whole of Phase 3 for every bulk command in one place: `--dry-run` emits
+    Every bulk command's preview, confirm and apply, in one place: `--dry-run` emits
     the plan as the same `event` shape a real run emits, a terminal gets a
     confirmation before anything is written, and each file reports as it happens
     so `--json` streams rather than buffering.
@@ -686,7 +686,7 @@ def _run_plan(ctx: Ctx, plan, writer, verb: str, **summary) -> int:
 def _reporter(ctx: Ctx, total: int):
     """An `on_event` that reports each file and, on a terminal, draws progress.
 
-    The progress bar is `ui_utils.print_inline_progress` — the same one the
+    The progress bar is `ui_utils.print_inline_progress`, the same one the
     trimmer's ffmpeg passes use, so a long CLI run looks like a long in-app run.
     It is drawn only when stdout is a terminal, so a pipe and `--json` stay
     clean.
@@ -825,7 +825,7 @@ def _bulk_sortorders(ctx: Ctx) -> int:
 
     The menu asks how each name divides and applies the answer everywhere that
     person appears. With no human to ask, this takes the engine's top candidate
-    for every value — the same one the menu offers first.
+    for every value: the same one the menu offers first.
     """
     from mutagen.id3 import ID3
 
@@ -865,7 +865,7 @@ def _bulk_sortorders(ctx: Ctx) -> int:
 
     plan = bo.Plan(changes=changes, skipped=skipped)
     if not changes:
-        plan.message = "No sort orders to write — every one is already set."
+        plan.message = "No sort orders to write: every one is already set."
     # apply_frame_writes does its own loop, so the plan here drives the preview,
     # the dry run and the confirmation; the write goes through in one call.
     if plan.message or ctx.dry_run():
@@ -957,7 +957,7 @@ def _bulk_art(ctx: Ctx) -> int:
         planner = {'auto': cm.plan_auto, 'basename': cm.plan_basename,
                    'positional': cm.plan_positional, 'best': cm.plan_best}[strategy]
     # Covers live beside their tracks, so each directory is planned against its
-    # own images — the same per-directory grouping the menu's preview uses.
+    # own images: the same per-directory grouping the menu's preview uses.
     by_dir: dict = {}
     for path in writable:
         by_dir.setdefault(os.path.dirname(os.path.abspath(path)), []).append(path)
@@ -1215,7 +1215,7 @@ def _resolve_queue(ctx: Ctx) -> list:
 
 
 def _play(ctx: Ctx) -> int:
-    """Play tracks — through a running session if there is one, else here.
+    """Play tracks, through a running session if there is one, else here.
 
     Handing a running session the queue is instant and leaves the audio with the
     process that owns it. With no session, this process becomes the host and
@@ -1274,7 +1274,7 @@ def _play_here(ctx: Ctx, paths: list, titles: list) -> int:
                 total = float(snap.get('duration') or 0)
                 done = float(snap.get('elapsed') or 0)
                 ui_utils.print_inline_progress(
-                    f"{snap.get('title', '')} — {ui_utils.format_time(done)}"
+                    f"{snap.get('title', '')} · {ui_utils.format_time(done)}"
                     f" / {ui_utils.format_time(total)}",
                     (done / total) if total else 0.0)
             time.sleep(0.25)
@@ -1354,7 +1354,7 @@ def _queue_show(ctx: Ctx) -> int:
 # so they stay in the app. Everything that is a file transformation is here.
 
 def _one_target(ctx: Ctx, what: str = "track"):
-    """Exactly one file, or a failure code — for the single-subject commands."""
+    """Exactly one file, or a failure code, for the single-subject commands."""
     paths = _targets_or_filter(ctx)
     if not paths:
         return None, out.fail(out.USAGE, f"No {what} given.",
@@ -1365,7 +1365,7 @@ def _one_target(ctx: Ctx, what: str = "track"):
 
 
 def _lyric_lines(path: str) -> tuple[list, str]:
-    """A track's lyrics as `(rows, source)` — timed SYLT first, else USLT; no
+    """A track's lyrics as `(rows, source)`: timed SYLT first, else USLT; no
     rows for a file without an ID3 tag (untagged, or not an MP3)."""
     from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[reportPrivateImportUsage]
 
@@ -1498,7 +1498,7 @@ def _lyrics_verify(ctx: Ctx) -> int:
     if path is None:
         return code
     # The script is the .md; _find_timing_files_for_audio returns (srt, json),
-    # and its SRT used to be checked as if it were the script.
+    # and the SRT is not the script.
     md_path = ly._find_markdown_for_audio(path)
     json_path = ly._find_timing_files_for_audio(path)[1]
     body = {'path': path, 'script': md_path or '', 'transcript': json_path or ''}
@@ -1509,7 +1509,7 @@ def _lyrics_verify(ctx: Ctx) -> int:
     if not (md_path and json_path):
         out.record('lyrics', {**body, 'status': 'partial'},
                    human=f"  Only the {'script' if md_path else 'transcript'} "
-                         "is present — nothing to check it against.")
+                         "is present, so there is nothing to check it against.")
         return out.FAIL
 
     from src.lyrics.md_overlay import build_md_overlay
@@ -1693,7 +1693,7 @@ def _trim_restore(ctx: Ctx) -> int:
 # deliberately no second route in.
 
 def _feed_root(ctx: Ctx) -> str | None:
-    """Where downloaded episodes should land — --output, else the first music
+    """Where downloaded episodes should land: --output, else the first music
     directory."""
     from src.config import music_dirs
 
@@ -1727,7 +1727,7 @@ def _feed_add(ctx: Ctx) -> int:
     matched = fd.matching(parsed.items, entry['filter_title'])
     if ctx.dry_run():
         out.event('plan', action='feed-add', name=name,
-                  detail=f"{parsed.title} — {len(matched)} matching episodes")
+                  detail=f"{parsed.title}: {len(matched)} matching episodes")
         return out.OK
 
     feeds[name] = entry
@@ -1735,7 +1735,7 @@ def _feed_add(ctx: Ctx) -> int:
     out.record('feed', {'name': name, 'url': url, 'title': parsed.title,
                         'filter_title': entry['filter_title'],
                         'episodes': len(matched)},
-               human=f"  Added {name} — {parsed.title}, "
+               human=f"  Added {name} ({parsed.title}), "
                      f"{len(matched)} episodes waiting.")
     return out.OK
 
@@ -1811,7 +1811,7 @@ def _feed_sync(ctx: Ctx) -> int:
 
     feeds = fd.load_feeds()
     # A named feed that does not exist is not found, whether or not any others
-    # do — "there are no feeds" answers a different question from the one asked.
+    # do: "there are no feeds" answers a different question from the one asked.
     if ctx.args.name and ctx.args.name not in feeds:
         return out.fail(out.NOT_FOUND, "No feed by that name.",
                         name=ctx.args.name,
@@ -2071,7 +2071,7 @@ TREE = [
             example='backtrack bulk assign -t TIT1 --every 6 -v "Series {n}"'),
     ]),
 
-    Cmd('play', 'Play tracks — through a running session, or here', run=_play,
+    Cmd('play', 'Play tracks through a running session, or here', run=_play,
         emits='session', args=[Arg('target', 'Track files', nargs='*')],
         flags=[Flag('--repeat', 'Repeat mode', short='-r', default='linear',
                     choices=('linear', 'one', 'all'))] + list(_FILTERS[:3]),

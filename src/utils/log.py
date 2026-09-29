@@ -38,13 +38,13 @@ def configure(enabled: bool) -> None:
 
 
 def enabled() -> bool:
-    """Whether anything is being logged — for callers whose message is costly to build."""
+    """Whether anything is being logged, for callers whose message is costly to build."""
     return log.isEnabledFor(logging.DEBUG)
 
 
 class quietly:
     """`with quietly():` carries on past a failure that mustn't stop anything
-    (best-effort cleanup, a cosmetic redraw) — but notes it in the diagnostics
+    (best-effort cleanup, a cosmetic redraw), but notes it in the diagnostics
     log, so a swallowed error still leaves a trace when Diagnostics is on."""
 
     def __enter__(self):

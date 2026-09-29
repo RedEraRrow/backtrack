@@ -1,4 +1,4 @@
-"""Ranged / periodic bulk tag assignment — pure logic (UI in id3/bulk_assign).
+"""Ranged / periodic bulk tag assignment: pure logic (UI in id3/bulk_assign).
 
 Given a set of tracks ordered by (disc, track, filename), assign a tag value to
 each by position: explicit ranges, an every-N grouping, or a date schedule that
@@ -33,7 +33,7 @@ def _fnum(v) -> float:
     Disc numbers are the one place a non-integer is meaningful: numbering a disc
     ``1.5`` is how you park a disc between two others before reflowing.  Parsing
     those with :func:`_num` yielded 0, which sorted the new disc *before* disc 1
-    and made the ordering — and so every position-based operation — wrong.
+    and made the ordering (and so every position-based operation) wrong.
     """
     try:
         return float(str(v).split('/')[0].strip())
@@ -63,7 +63,7 @@ def disc_ranges(ordered: list) -> list:
     """Contiguous (from, to, disc_label) runs of the same disc in `ordered`.
 
     Positions are 1-based inclusive, matching the range editors.  `ordered` is
-    already disc-sorted, so each disc forms one run — this is what seeds the
+    already disc-sorted, so each disc forms one run; this is what seeds the
     per-range schedule editor with a row per disc.
     """
     runs: list = []
@@ -77,7 +77,7 @@ def disc_ranges(ordered: list) -> list:
 
 
 # Group-counter placeholders: {n} arabic, {r} roman, {en} written out, each
-# with an optional ':spec' — a case modifier for {r}/{en} ("l", "u", "t") or a
+# with an optional ':spec': a case modifier for {r}/{en} ("l", "u", "t") or a
 # format spec for {n} ("{n:02d}").
 _COUNTER_RE = re.compile(r'\{(n|r|en)(?::([^}]*))?\}')
 
@@ -167,7 +167,7 @@ def norm_time(t) -> str | None:
 
 
 def date_groups(ordered: list, granularity: str = 'track', group_size: int = 1) -> list:
-    """Distinct group indices (sorted) for the given date-stepping granularity —
+    """Distinct group indices (sorted) for the given date-stepping granularity,
     used to prompt a time per group."""
     return sorted(set(_date_group_indices(ordered, granularity, group_size)))
 
@@ -199,7 +199,7 @@ def parse_start(raw) -> tuple:
     Reads whatever :func:`src.utils.datetime_parse.parse_datetime` accepts and
     keeps any time given.  A schedule steps in whole days, so a year- or
     month-only start is rejected here rather than being completed to the 1st
-    behind your back — that is this caller's rule, not the parser's.
+    behind your back; that is this caller's rule, not the parser's.
 
     ``error`` is '' on success, otherwise a short reason naming what was wrong.
     """
@@ -207,7 +207,7 @@ def parse_start(raw) -> tuple:
     if parsed.error:
         return None, None, parsed.error
     if parsed.precision in ('year', 'month'):
-        return None, None, (f"{str(raw).strip()!r} has no day — a schedule counts in "
+        return None, None, (f"{str(raw).strip()!r} has no day: a schedule counts in "
                             "days, so it needs a full year-month-day")
     return parsed.date, parsed.time, ''
 
@@ -228,7 +228,7 @@ def validate_schedule_rows(rows: list, n_tracks: int) -> tuple:
         cells += [''] * (5 - len(cells))
         raw_lo, raw_hi, raw_start, raw_every, raw_step = cells[:5]
         if not any(str(c).strip() for c in cells[:4]):
-            continue                                    # blank row — ignore
+            continue                                    # blank row, ignore
         try:
             lo, hi = int(str(raw_lo).strip()), int(str(raw_hi).strip())
         except (TypeError, ValueError):
@@ -263,7 +263,7 @@ def validate_schedule_rows(rows: list, n_tracks: int) -> tuple:
 def assign_range_schedules(ordered: list, specs: list) -> dict:
     """Per-range date schedules: every range carries its own start and interval.
 
-    ``specs`` come from :func:`validate_schedule_rows` —
+    ``specs`` come from :func:`validate_schedule_rows`:
     ``(from, to, start_date, time_or_None, interval_days, step)`` with 1-based
     inclusive positions.  Within a range the date advances by ``interval_days``
     once per track, or once per disc when ``step`` is ``'disc'``.  That is what
