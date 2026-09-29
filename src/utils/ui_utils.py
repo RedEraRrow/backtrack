@@ -132,8 +132,73 @@ def set_colour(enabled: bool) -> None:
     every screen already read their codes from here, so a pipe gets plain text
     without any of them knowing about it.
     """
+    global _colour_on
+    _colour_on = enabled
     for name, code in _STYLE_CODES.items():
         setattr(Colors, name, code if enabled else "")
+
+
+_colour_on = True
+
+# The accent: terminal-palette colours first (they follow the terminal's own
+# theme), then fixed ones. Stored in `accent_colour` as a key or as "#RRGGBB".
+ACCENT_PRESETS = [
+    ('green', 'Green', 32), ('red', 'Red', 31), ('yellow', 'Yellow', 33),
+    ('blue', 'Blue', 34), ('magenta', 'Magenta', 35), ('cyan', 'Cyan', 36),
+    ('amber', 'Amber', '#FFB000'), ('coral', 'Coral', '#FF7F66'), ('rose', 'Rose', '#F06292'),
+    ('lavender', 'Lavender', '#B39DDB'), ('sky', 'Sky', '#4FC3F7'), ('mint', 'Mint', '#6FDFA8'),
+]
+DEFAULT_ACCENT = 'green'
+
+
+def parse_hex_colour(text: str) -> tuple[int, int, int] | None:
+    """(r, g, b) from "#RRGGBB", "RRGGBB" or "#RGB", or None."""
+    h = (text or '').strip().lstrip('#')
+    if len(h) == 3:
+        h = ''.join(c * 2 for c in h)
+    if len(h) != 6:
+        return None
+    try:
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return None
+
+
+def _rgb_code(r: int, g: int, b: int) -> str:
+    """Bold foreground in exactly this colour on a 24-bit terminal, else the
+    nearest of the 256-colour palette's 6×6×6 cube or grey ramp."""
+    if os.environ.get('COLORTERM', '').lower() in ('truecolor', '24bit'):
+        return f"\033[1;38;2;{r};{g};{b}m"
+    if max(r, g, b) - min(r, g, b) < 12:                       # a grey
+        n = 232 + min(23, max(0, round((r - 8) / 10)))
+    else:
+        n = 16 + sum(round(v / 255 * 5) * m for v, m in ((r, 36), (g, 6), (b, 1)))
+    return f"\033[1;38;5;{n}m"
+
+
+def accent_code(value) -> str | None:
+    """The escape code for an `accent_colour` value (a preset key or a hex
+    colour), or None when it is neither."""
+    for key, _name, colour in ACCENT_PRESETS:
+        if value == key:
+            return f"\033[1;{colour}m" if isinstance(colour, int) else _rgb_code(*parse_hex_colour(colour))
+    rgb = parse_hex_colour(value) if isinstance(value, str) and value.startswith('#') else None
+    return _rgb_code(*rgb) if rgb else None
+
+
+def accent_label(value) -> str:
+    """What Settings calls an `accent_colour` value."""
+    return next((name for key, name, _ in ACCENT_PRESETS if key == value),
+                str(value).upper() if accent_code(value) else 'Green')
+
+
+def set_accent(value) -> None:
+    """Use `value` (an `accent_colour` setting) as the accent from now on; an
+    unknown value falls back to the default."""
+    code = accent_code(value) or accent_code(DEFAULT_ACCENT)
+    _STYLE_CODES['ACCENT'] = code
+    if _colour_on:
+        Colors.ACCENT = code
 
 
 _screen_invalidator = None

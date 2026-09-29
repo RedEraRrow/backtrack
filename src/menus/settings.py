@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from src.utils import prompt
 from src.utils import ui_utils
+from src.utils.ui_utils import Colors as C
 from src.music_library import (
     build_library, save_library_cache, start_background_sync, sort_options,
 )
@@ -169,7 +170,69 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
 
 # Settings rows that are on/off switches: space flips them, like ↵ does.
 _SETTINGS_TOGGLES = {"history", "autoplay", "meta_editor", "lyrics_editor",
-                     "plain_text", "sort_tags", "hidden", "key_hints", "inline_art", "debug"}
+                     "plain_text", "sort_tags", "hidden", "key_hints", "inline_art", "debug",
+                     "player_meta"}
+
+
+def _accent_swatch(value) -> list:
+    """A block of the colour itself, or a hatched gap when there is none."""
+    code = ui_utils.accent_code(value)
+    return [(f"{code}████{C.RESET}", 'normal')] if code else [("░░░░", 'dim')]
+
+
+def _accent_name(value, name: str):
+    """The colour's name, written in that colour."""
+    code = ui_utils.accent_code(value)
+    return [(f"{code}{name}{C.RESET}", 'normal')] if code else name
+
+
+_ACCENT_COLUMNS = [
+    prompt.Column(style='normal'),                  # swatch
+    prompt.Column(style='normal'),                  # name, in its own colour
+    prompt.Column(style='dynamic-dim', flex=True),  # ● on the one in use
+]
+
+
+def _pick_accent(config: dict) -> None:
+    """Settings → Accent colour. Every colour is shown in itself, and picking one
+    applies it at once, so the screen around the list is the preview; esc when
+    it looks right. The terminal-theme colours follow the terminal's palette."""
+    place = prompt.ListPlace()
+    current = config.get('accent_colour') or ui_utils.DEFAULT_ACCENT
+    place.value = '__custom__' if current.startswith('#') else current
+    while True:
+        current = config.get('accent_colour') or ui_utils.DEFAULT_ACCENT
+        custom = current if current.startswith('#') else None
+
+        def _row(value, name: str, colour) -> prompt.Choice:
+            in_use = value == current or (value == '__custom__' and custom)
+            return prompt.Choice(title=name, value=value,
+                                 cells=[_accent_swatch(colour), _accent_name(colour, name),
+                                        ON_GLYPH if in_use else ""])
+
+        choices: list = [prompt.separator("Your terminal's colours")]
+        for i, (key, name, _colour) in enumerate(ui_utils.ACCENT_PRESETS):
+            if i == 6:
+                choices.append(prompt.separator("Fixed colours"))
+            choices.append(_row(key, name, key))
+        choices += [prompt.separator(), _row('__custom__', 'Custom colour…', custom)]
+
+        choice = prompt.select("", choices=choices, columns=_ACCENT_COLUMNS, place=place,
+                               header=_menu_header("Accent colour", ui_utils.accent_label(current)))
+        if not choice:
+            return
+        if choice == '__custom__':
+            typed = prompt.text("Hex colour (e.g. #4FC3F7):", default=custom or "#")
+            if typed is None:
+                continue
+            rgb = ui_utils.parse_hex_colour(typed)
+            if rgb is None:
+                ui_utils.show_status("That isn't a colour — use #RRGGBB, like #4FC3F7.")
+                continue
+            choice = "#%02X%02X%02X" % rgb
+        config['accent_colour'] = choice
+        ui_utils.set_accent(choice)
+        ui_utils.show_status(f"Accent colour: {ui_utils.accent_label(choice)}")
 
 
 def handle_settings(library_ref: list) -> None:
@@ -190,6 +253,8 @@ def handle_settings(library_ref: list) -> None:
         _tasks = len(ui_utils.BACKGROUND_TASKS)
         _prefs = len(config.get("tag_name_preferences") or {})
         _hist = len(get_history(limit=10 ** 9))
+        _accent = (config.get("accent_colour") if ui_utils.accent_code(config.get("accent_colour"))
+                   else ui_utils.DEFAULT_ACCENT)
 
         # (value, label, current state) — separators are plain strings.
         _rows: list = [
@@ -198,6 +263,10 @@ def handle_settings(library_ref: list) -> None:
             ("autoplay",     "Auto-play on select",  _bool("autoplay_on_select", False)),
             ("key_hints",    "Key hints",            _state_glyph(prompt.hints_visible())),
             ("inline_art",   "Image album art (iTerm2)", _bool("art_inline_images", False)),
+            ("player_meta",  "Track details in player", _bool("player_show_metadata", True)),
+            prompt.separator("Appearance"),
+            ("accent",       "Accent colour…",
+             _accent_swatch(_accent) + ["  " + ui_utils.accent_label(_accent)]),
             prompt.separator("Library"),
             ("music_dirs",   "Music directories…",   ui_utils.plural(len(music_dirs(config)), "folder")),
             ("activity",     "Activity centre…",     f"{_tasks} running" if _tasks else "idle"),
@@ -278,6 +347,12 @@ def handle_settings(library_ref: list) -> None:
 
         elif choice == "autoplay":
             _toggled("autoplay_on_select", False)
+
+        elif choice == "player_meta":
+            _toggled("player_show_metadata", True)
+
+        elif choice == "accent":
+            _pick_accent(config)
 
         elif choice == "lead_in":
             val = prompt.text("Lead-in seconds:", default=str(config["lyric_lead_in"]))

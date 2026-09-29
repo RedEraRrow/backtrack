@@ -224,6 +224,7 @@ def _run_app() -> None:
 
     config = load_config()
     log_setup(bool(config.get("debug", False)))
+    ui_utils.set_accent(config.get("accent_colour"))
     _wire_keyboard()
     _wire_playback()
     ui_utils.enter_alt_screen()

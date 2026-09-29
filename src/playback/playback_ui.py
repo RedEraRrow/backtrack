@@ -13,6 +13,7 @@ from src.utils.prompt_core import _hint
 from src.utils.prompt_core import add_hint_click_cells
 from src.utils.ui_utils import Colors as C
 from src import tuning as tune
+from src.utils.log import log
 from src.playback.queue_pane import (  # noqa: F401 — re-exported
     _place_queue, _queue_click_rows, has_queue, queue_click_index, set_queue_context,
 )
@@ -104,7 +105,7 @@ PLAYER_CREDITS_ROLES = [
 _CREW_ORDER = ['creator', 'writer', 'producer', 'director', 'script editor', 'composer']
 
 _ui_state = {
-    'show_metadata': False,
+    'show_metadata': True,      # from player_show_metadata; `m` flips and saves it
     'debug': False,
     'show_credits': False,
     'show_lyrics': False,
@@ -259,9 +260,14 @@ def draw_volume_bar(volume: int) -> None:
 
 
 def toggle_metadata() -> None:
-    """Toggle display of the extended metadata details line."""
+    """Show or hide the track details line, and remember the choice."""
     _ui_state['show_metadata'] = not _ui_state['show_metadata']
-    refresh_debug_flag()
+    try:
+        from src.config import update_config
+        update_config({'player_show_metadata': _ui_state['show_metadata']})
+    except Exception as exc:
+        log.warning("couldn't save player_show_metadata: %s", exc)
+    refresh_player_settings()
 def toggle_help() -> None:
     """Show or hide the hint bar — the app-wide switch, so every screen follows."""
     pc.toggle_hints()
@@ -301,8 +307,9 @@ def cycle_right_pane(has_lyrics: bool = True, has_credits: bool = True,
 _lyric_src: dict = {'track': '', 'files': [], 'estimated': False}
 
 
-def refresh_debug_flag() -> None:
-    """Re-read the `debug` config key into `_ui_state`.
+def refresh_player_settings() -> None:
+    """Re-read the player's settings (`debug`, `player_show_metadata`) into
+    `_ui_state`.
 
     Called when a track loads and when the metadata panel is toggled — both rare,
     both moments where the answer could have changed — rather than on every draw,
@@ -310,7 +317,9 @@ def refresh_debug_flag() -> None:
     """
     try:
         from src.config import load_config
-        _ui_state['debug'] = bool(load_config().get('debug', False))
+        cfg = load_config()
+        _ui_state['debug'] = bool(cfg.get('debug', False))
+        _ui_state['show_metadata'] = bool(cfg.get('player_show_metadata', True))
     except Exception:
         _ui_state['debug'] = False
 
@@ -327,7 +336,7 @@ def set_lyric_sources(track: str, files: list[str], estimated: bool = False) -> 
     track. Naming another episode's files would be worse than naming none, and a
     module-level record outlives the track that set it.
     """
-    refresh_debug_flag()
+    refresh_player_settings()
     _lyric_src['track'] = track or ''
     _lyric_src['files'] = [f for f in (files or []) if f]
     _lyric_src['estimated'] = estimated

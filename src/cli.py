@@ -474,6 +474,8 @@ def main(argv: list) -> int:
                   colour=False if args.no_colour else None)
 
     ctx = Ctx(args)
+    from src.utils import ui_utils
+    ui_utils.set_accent(ctx.config.get('accent_colour'))
     _resolve_defaults(args, getattr(args, '_cmd', None), ctx.config
                       if getattr(args, '_cmd', None) else {})
 

@@ -201,7 +201,7 @@ def open_client_player_view() -> dict:
     toast_expiry = 0.0
     width = ui_utils.get_terminal_size()[0]
     playback_ui._ui_state['lyrics_pane'] = False
-    playback_ui.refresh_debug_flag()
+    playback_ui.refresh_player_settings()
     try:
         with raw_mode(sys.stdin):
             sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
