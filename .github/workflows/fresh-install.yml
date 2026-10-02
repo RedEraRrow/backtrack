@@ -1,0 +1,53 @@
+name: fresh install
+
+# The README's install steps, word for word, on machines with nothing else on
+# them: bare Ubuntu containers, and a macOS runner (which comes with Homebrew,
+# so it starts at `brew install pipx`). Installs the published package from
+# PyPI, then `backtrack doctor` must find VLC. Runs after each release, weekly
+# (a dependency moving underneath), and when the instructions change.
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [README.md, .github/workflows/fresh-install.yml]
+
+jobs:
+  ubuntu:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04"]
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: sudo apt install vlc pipx (as root here, so no sudo)
+        run: apt-get update && apt-get install -y vlc pipx
+      - name: pipx ensurepath, and a new shell
+        run: |
+          pipx ensurepath
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: pipx install backpack-backtrack
+      - name: backtrack doctor finds VLC
+        run: backtrack doctor
+
+  macos:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: macos-latest
+    steps:
+      - run: brew install pipx
+      - run: brew install --cask vlc
+      - name: pipx ensurepath, and a new shell
+        run: |
+          pipx ensurepath
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: pipx install backpack-backtrack
+      - name: backtrack doctor finds VLC
+        run: backtrack doctor

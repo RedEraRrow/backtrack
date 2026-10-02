@@ -59,9 +59,15 @@ and has an ID3/MP4 tag editor with bulk operations for whole albums.
 
 ## Installation
 
-macOS:
+macOS, starting from nothing:
 ```bash
+# Homebrew, if you don't have it yet (it asks for your password, and on Apple
+# Silicon prints two lines to run afterwards: run them)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+brew install pipx
 brew install --cask vlc
+pipx ensurepath             # then open a new terminal window
 pipx install backpack-backtrack
 backtrack
 ```
@@ -69,15 +75,20 @@ backtrack
 Ubuntu / Debian:
 ```bash
 sudo apt install vlc pipx
+pipx ensurepath             # then open a new terminal window
 pipx install backpack-backtrack
 backtrack
 ```
 
-That's all it needs: Python 3.10 or later and VLC. The first run asks for your music folder.
+It needs Python 3.10 or later and VLC. macOS's own `python3` is too old (3.9), but pipx from
+Homebrew brings a current one, so there's nothing to do about it. `pipx ensurepath` puts the
+`backtrack` command on your PATH, which a new terminal window picks up. The first run asks for
+your music folder.
+
 `backtrack doctor` lists what it uses and how to install anything missing, including the optional
 tools: **ffmpeg** for trimming and ReplayGain (without it those options are hidden), and on Linux
-**wl-clipboard** or **xclip** for copying paths and tags. (`pipx` keeps it in its own environment;
-`pip install backpack-backtrack` works too.)
+**wl-clipboard** or **xclip** for copying paths and tags. Upgrade later with
+`pipx upgrade backpack-backtrack`.
 
 ### From a checkout, to work on it
 
