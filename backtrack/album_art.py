@@ -1,51 +1,55 @@
 """Album-art extraction and terminal rendering."""
 import os
+from io import BytesIO
+
 import mutagen.id3
 from mutagen.id3 import ID3
-
-import cv2
-import numpy as np
+from PIL import Image
 
 from backbone import ui
 
+
+def decode_image(img_bytes: bytes) -> "Image.Image | None":
+    """Image bytes as RGB pixels, any transparency laid over black (so a
+    transparent PNG isn't mangled), or None when they can't be decoded."""
+    try:
+        img = Image.open(BytesIO(img_bytes))
+        img.load()
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return None
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        rgba = img.convert("RGBA")
+        img = Image.alpha_composite(Image.new("RGBA", rgba.size, (0, 0, 0, 255)), rgba)
+    return img.convert("RGB")
+
+
 def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
     """Render image bytes as ANSI half-block characters for terminal display."""
-    # 1. Decode bytes to image (keep any alpha so transparent PNGs aren't mangled).
-    nparr = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+    # 1. Decode bytes to RGB pixels.
+    img = decode_image(img_bytes)
     if img is None: return "Error decoding image."
-
-    # Normalise to 3-channel BGR, compositing any alpha channel over black.
-    if img.ndim == 2:                                    # greyscale
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    elif img.shape[2] == 4:                              # BGRA
-        alpha = img[:, :, 3:4].astype(np.float32) / 255.0
-        img = (img[:, :, :3].astype(np.float32) * alpha).astype(np.uint8)
-    elif img.shape[2] == 2:                              # grey + alpha
-        alpha = img[:, :, 1:2].astype(np.float32) / 255.0
-        gray = (img[:, :, 0:1].astype(np.float32) * alpha).astype(np.uint8)
-        img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
     # 2. Resize keeping the image's proportions on screen. Each cell shows one
     # pixel column and two pixel rows, so a pixel row is half a cell tall:
     # `ui.cell_aspect()` (cell height over width) says how many rows square pixels need.
     width = max(1, width)
-    height = max(1, round(width * img.shape[0] / img.shape[1] * 2 / ui.cell_aspect()))
-    img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+    height = max(1, round(width * img.height / img.width * 2 / ui.cell_aspect()))
+    img = img.resize((width, height), Image.Resampling.BOX)   # area average, as shrinking wants
+    px = img.load()
 
     # 3. Convert to ANSI half-blocks (U+2580): top pixel as foreground, bottom as
     # background. An odd height leaves the last row's bottom half the terminal's
     # own background, rather than repeating a pixel row.
     output = []
-    for y in range(0, img.shape[0], 2):
-        for x in range(img.shape[1]):
-            top = img[y, x]
-            if y + 1 < img.shape[0]:
-                bottom = img[y + 1, x]
-                bg = f"\033[48;2;{bottom[2]};{bottom[1]};{bottom[0]}m"
+    for y in range(0, height, 2):
+        for x in range(width):
+            r, g, b = px[x, y]
+            if y + 1 < height:
+                br, bg_, bb = px[x, y + 1]
+                bg = f"\033[48;2;{br};{bg_};{bb}m"
             else:
                 bg = "\033[49m"
-            output.append(f"\033[38;2;{top[2]};{top[1]};{top[0]}m{bg}\u2580")
+            output.append(f"\033[38;2;{r};{g};{b}m{bg}\u2580")
         output.append("\033[0m\n")
     return "".join(output)
 

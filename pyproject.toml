@@ -3,21 +3,34 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "backtrack"
-version = "0.1.0"
+name = "backpack-backtrack"
+version = "0.2.0"
 description = "Terminal music player with VLC playback, lyrics sync, and metadata editing."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "opencv-python>=4.13.0.92",
+    "Pillow>=10.0",
     "mutagen>=1.47.0",
-    "numpy>=2.2.6",
+    "numpy>=1.24",
     "pyperclip>=1.11.0",
     "python-vlc>=3.0.21203",
     "colorama>=0.4.6",
-    "backbone @ git+https://github.com/RedEraRrow/backbone.git",
+    "backpack-backbone>=0.2,<0.3",
 ]
+classifiers = [
+    "Environment :: Console :: Curses",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+[project.urls]
+Homepage = "https://github.com/RedEraRrow/backtrack"
+Issues = "https://github.com/RedEraRrow/backtrack/issues"
 
 [project.scripts]
 backtrack = "backtrack.main:main"

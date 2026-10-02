@@ -7,8 +7,6 @@ import sys
 import tempfile
 import pyperclip
 import subprocess
-import numpy as np
-import cv2
 
 from backbone import prompt
 from backtrack.lyrics.editor import lyrics_editor
@@ -23,7 +21,7 @@ from mutagen.id3._frames import APIC
 from backbone import ui
 from backbone.prompt.core import _visible_rows
 from backbone.ui import Colors as C, get_terminal_width
-from backtrack.album_art import fit_art, render_album_art
+from backtrack.album_art import decode_image, fit_art, render_album_art
 from backtrack.music_library import drop_moved, refresh_library_entry, track_title, first_text
 
 from backtrack.id3.tag_handler import (
@@ -532,17 +530,12 @@ def _prompt_sort_order(base_id: str, audio: ID3) -> str | None:
 
 
 def _get_image_from_apic(apic_frame: APIC) -> tuple:
-    """Decode an APIC frame's embedded image data via cv2; returns (image, mime, raw_bytes)."""
-    try:
-        img_data = getattr(apic_frame, 'data', b"")
-        mime_type = getattr(apic_frame, 'mime', "image/jpeg")
-        if not img_data:
-            return None, mime_type, b""
-        nparr = np.frombuffer(img_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        return image, mime_type, img_data
-    except (ValueError, cv2.error):
-        return None, "unknown", b""
+    """Decode an APIC frame's embedded image data; returns (image, mime, raw_bytes)."""
+    img_data = getattr(apic_frame, 'data', b"")
+    mime_type = getattr(apic_frame, 'mime', "image/jpeg")
+    if not img_data:
+        return None, mime_type, b""
+    return decode_image(img_data), mime_type, img_data
 
 
 def _convert_apic_to_viu(apic_frame: APIC, width: int = 80) -> str:
@@ -699,7 +692,7 @@ def _apic_facts(apic_frame: APIC, budget: int = 999) -> str:
     image, mime, img_data = _get_image_from_apic(apic_frame)
     dims = ""
     if image is not None:
-        h, w = image.shape[:2]
+        w, h = image.size
         dims = f"{w}×{h} px"
     kb = f"{len(img_data) / 1024:.0f} KB"
     fmt = (mime or "").removeprefix("image/").upper() or "?"

@@ -12,7 +12,7 @@ import time
 import uuid
 from types import SimpleNamespace
 
-import vlc
+from backtrack.playback.libvlc import LOAD_ERROR as _VLC_LOAD_ERROR, vlc
 from backtrack import tuning as tune
 from mutagen.id3 import ID3
 import mutagen.id3
@@ -22,11 +22,11 @@ from backtrack.music_library import drop_moved, get_song_duration, library_entry
 from backbone.files import write_text_atomic
 from backbone.log import log, quietly
 
-# vlc.State attributes are dynamic; expose safe aliases.
-_VLC_STATE_PAUSED = getattr(vlc.State, 'Paused', None)
-_VLC_STATE_ERROR = getattr(vlc.State, 'Error', None)
-_VLC_STATE_ENDED = getattr(vlc.State, 'Ended', None)
-_VLC_STATE_STOPPED = getattr(vlc.State, 'Stopped', None)
+# vlc.State attributes are dynamic; expose safe aliases (None without libvlc).
+_VLC_STATE_PAUSED = getattr(getattr(vlc, 'State', None), 'Paused', None)
+_VLC_STATE_ERROR = getattr(getattr(vlc, 'State', None), 'Error', None)
+_VLC_STATE_ENDED = getattr(getattr(vlc, 'State', None), 'Ended', None)
+_VLC_STATE_STOPPED = getattr(getattr(vlc, 'State', None), 'Stopped', None)
 
 _VLC_PLAY_SETTLE_S = tune.VLC_PLAY_SETTLE_S
 _TICK_INTERVAL_S = tune.TICK_INTERVAL_S
@@ -94,6 +94,8 @@ def forget_saved_queue() -> None:
 
 def _new_instance() -> vlc.Instance:
     """Create the single reusable libvlc instance for the process."""
+    if vlc is None:
+        raise RuntimeError(f"VLC couldn't be loaded ({_VLC_LOAD_ERROR}); see `backtrack doctor`")
     inst = vlc.Instance('--no-video', '--quiet')
     assert inst is not None
     return inst

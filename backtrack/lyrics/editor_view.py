@@ -15,12 +15,8 @@ from backbone import timefmt
 
 
 # Audio is optional: without python-vlc the editor still edits, it just can't play.
-_vlc = None
-try:
-    import vlc as _vlc  # type: ignore[import-untyped]  # noqa: F401  (used by the editor)
-    _HAS_VLC = True
-except ImportError:
-    _HAS_VLC = False
+from backtrack.playback.libvlc import vlc as _vlc  # noqa: E402,F401 (None without libvlc)
+_HAS_VLC = _vlc is not None
 
 SEG, WORD, EDIT, TAP, AUDITION = 'seg', 'word', 'edit', 'tap', 'audition'
 

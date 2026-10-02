@@ -15,15 +15,16 @@ ART = "\n".join("\033[38;2;1;2;3m\033[48;2;4;5;6m▀" * 8 + "\033[0m" for _ in r
 
 class InlineArtTest(unittest.TestCase):
     def test_a_heavy_cover_is_sent_at_display_size(self):
-        import cv2
-        import numpy as np
-        big = cv2.imencode('.png', np.random.randint(0, 255, (1600, 1600, 3), np.uint8))[1].tobytes()
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.frombytes("RGB", (1600, 1600), os.urandom(1600 * 1600 * 3)).save(buf, "PNG")
+        big = buf.getvalue()
         art._inline_art_cache.clear(); art._decoded_cache.clear()
         with patch.object(art, "get_art_bytes", lambda p: big), \
              patch.object(art.os.path, "getmtime", lambda p: 1.0):
             b64, n = art._inline_art_data("/m/big.mp3", 20, 10)
-        img = cv2.imdecode(np.frombuffer(__import__('base64').b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
-        self.assertEqual(img.shape[:2], (10 * 2 * art._INLINE_PX_PER_COL, 20 * art._INLINE_PX_PER_COL))
+        img = Image.open(io.BytesIO(__import__('base64').b64decode(b64)))
+        self.assertEqual(img.size, (20 * art._INLINE_PX_PER_COL, 10 * 2 * art._INLINE_PX_PER_COL))
         self.assertLess(n, len(big))
 
     def _env(self, term="iTerm.app", tmux=None, on=True):

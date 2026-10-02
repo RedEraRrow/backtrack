@@ -1912,9 +1912,26 @@ def _download_one(ctx: Ctx, item, target: str, feed_title: str) -> None:
         refresh_library_entry(ctx.library, target)
 
 
+def _doctor(ctx: Ctx) -> int:
+    """What backtrack needs besides Python: found, or how to install it."""
+    from backbone import deps
+    from backtrack.deps import DEPS
+    rows = [{'name': d.name, 'needed_for': d.needed_for, 'required': d.required,
+             'found': found or '', 'install': '' if found else deps.hint(d)}
+            for d, found in deps.check(DEPS)]
+    out.table('dependency', rows,
+              [pc.Column(style='primary'), pc.Column(style='dynamic-dim'), pc.Column(flex=True)],
+              cells=lambda r: [r['name'], r['needed_for'],
+                               r['found'] or f"missing: {r['install']}"],
+              pipe_key='name')
+    return out.OK if all(r['found'] or not r['required'] for r in rows) else out.NOT_FOUND
+
+
 # --- the tree ---------------------------------------------------------------
 
 TREE = [
+    Cmd('doctor', 'Check what backtrack needs besides Python', run=_doctor,
+        emits='dependency', example='backtrack doctor'),
     Cmd('library', 'Scan, list and check the library', children=[
         Cmd('scan', 'Rebuild the library cache from disk', run=_library_scan,
             emits='library',

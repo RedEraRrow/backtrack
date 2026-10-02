@@ -4,16 +4,18 @@ the terminal's cell shape."""
 import unittest
 from unittest.mock import patch
 
-import cv2
-import numpy as np
+from io import BytesIO
+
+from PIL import Image
 
 from backbone import ui
 from backtrack.album_art import fit_art, render_native_half_block
 
 
 def _image(w, h):
-    ok, png = cv2.imencode('.png', np.full((h, w, 3), 128, np.uint8))
-    return png.tobytes()
+    buf = BytesIO()
+    Image.new("RGB", (w, h), (128, 128, 128)).save(buf, "PNG")
+    return buf.getvalue()
 
 
 class ArtFitTest(unittest.TestCase):

@@ -68,7 +68,7 @@ backtrack/
 │   ├── search.py                 # PURE fuzzy matcher/ranker (tiered exact→prefix→word→substring→typo)
 │   ├── bulk_pattern.py           # PURE range/every-N/date-schedule assignment + track renumbering
 │   ├── tuning.py                 # Every timing, threshold and weight the app is tuned on
-│   ├── album_art.py              # Half-block art rendering (OpenCV → ANSI); APIC extraction
+│   ├── album_art.py              # Half-block art rendering (Pillow → ANSI); APIC extraction
 │   ├── menus/
 │   │   ├── __init__.py           # Main menu
 │   │   ├── common.py             # Headers, list columns, settings-row glyphs, Browse categories
@@ -449,7 +449,7 @@ that stays fixed. A screen whose module isn't imported at startup is listed in
 
 ### Album art: `album_art.py`, `playback/player_art.py`
 
-Rendered in-project: `render_native_half_block` downsamples an image with OpenCV/NumPy into ANSI
+Rendered in-project: `render_native_half_block` downsamples an image with Pillow into ANSI
 half-block (`▀`) cells, keeping the image's proportions for the terminal's real cell shape
 (`ui.cell_aspect()`). Art is only ever sized through `album_art.fit_art`, which narrows it to fit and
 never crops or stretches. `player_art.py` sizes it for the player and, on iTerm2 with Settings → Image
@@ -475,7 +475,8 @@ are legacy from the old `viu` dependency; the binary is gone.)
 ## Testing
 
 ```bash
-python3 -m unittest discover -s tests -t tests   # the suite
+BACKTRACK_CONFIG_DIR=$(mktemp -d) BACKTRACK_CACHE_DIR=$(mktemp -d) \
+    python3 -m unittest discover -s tests -t tests   # the suite, away from your real settings
 pyright backtrack                                # type check
 python3 -m compileall -q backtrack               # syntax/import sanity
 BACKTRACK_CONFIG_DIR=/tmp/bt BACKTRACK_CACHE_DIR=/tmp/bt python3 -m backtrack   # isolated live run
@@ -490,6 +491,27 @@ delete a real log.
 
 Prefer a small headless script for pure logic and tag writes (build fixtures with `mutagen`,
 round-trip create→save→read). Reserve live runs for the interactive widgets and playback rendering.
+
+## Releasing
+
+GitHub Actions runs the suite on macOS and Ubuntu, Python 3.10 to 3.14, on every push
+(`.github/workflows/test.yml`, against backbone's main). A release is a tag: set `version` in
+`pyproject.toml`, commit, and push `v<version>` (`git tag v0.2.1 && git push origin v0.2.1`);
+`release.yml` checks the tag matches, builds, and publishes `backpack-backtrack` to PyPI.
+
+backbone goes first whenever a release needs a newer one: both tools depend on
+`backpack-backbone` within a minor version (`>=0.2,<0.3`), so a backbone release that breaks them
+is a minor bump and a matching change to that range here.
+
+One-time setup, per package (backpack-backbone, backpack-backtrack, backpack-backcrack):
+1. A PyPI account (pypi.org), with two-factor auth.
+2. pypi.org → your projects → *Publishing* → add a pending **trusted publisher**: owner
+   `RedEraRrow`, repository (e.g. `backtrack`), workflow `release.yml`, environment `pypi`.
+3. On GitHub, the repository's Settings → Environments → add one named `pypi` (optionally
+   requiring your approval before each release runs).
+
+No token is stored anywhere: PyPI trusts that workflow, in that repository, to publish that one
+package.
 
 ## Debugging
 

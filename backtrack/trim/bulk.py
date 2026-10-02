@@ -43,12 +43,8 @@ import time
 from dataclasses import dataclass, field
 
 
-_vlc = None
-try:
-    import vlc as _vlc  # type: ignore[import-untyped]
-    _HAS_VLC = True
-except ImportError:
-    _HAS_VLC = False
+from backtrack.playback.libvlc import vlc as _vlc  # noqa: E402,F401 (None without libvlc)
+_HAS_VLC = _vlc is not None
 
 from mutagen.id3 import ID3, ID3NoHeaderError, TXXX  # type: ignore[reportPrivateImportUsage]
 

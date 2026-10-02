@@ -6,6 +6,9 @@ import functools
 import math
 import os
 import sys
+from io import BytesIO
+
+from PIL import Image, ImageStat
 from backbone import ui
 from backtrack.playback.player_geom import geom
 from backbone.log import log
@@ -121,8 +124,7 @@ def _cover_decoded(file_path: str) -> tuple | None:
     """The cover's raw bytes and decoded pixels, read and decoded once per file
     (a large cover takes a noticeable moment to decode, so do it once, not per
     colour, preview and full image). None when the file has no cover."""
-    import cv2
-    import numpy as np
+    from backtrack.album_art import decode_image
     try:
         key = (file_path, os.path.getmtime(file_path))
     except OSError:
@@ -131,13 +133,11 @@ def _cover_decoded(file_path: str) -> tuple | None:
         if len(_decoded_cache) > 4:            # decoded covers are large: keep a few
             _decoded_cache.clear()
         raw = get_art_bytes(file_path)
-        img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR) if raw else None
-        if img is not None and max(img.shape[:2]) > _WORKING_PX:
+        img = decode_image(raw) if raw else None
+        if img is not None:
             # A 4000-pixel cover is shrunk once, here, to a working size still
             # above anything the player shows; every later step works on that.
-            f = _WORKING_PX / max(img.shape[:2])
-            img = cv2.resize(img, (round(img.shape[1] * f), round(img.shape[0] * f)),
-                             interpolation=cv2.INTER_AREA)
+            img.thumbnail((_WORKING_PX, _WORKING_PX), Image.Resampling.BOX)
         _decoded_cache[key] = (raw, img) if raw else None
     return _decoded_cache[key]
 
@@ -149,7 +149,6 @@ def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
     resize back to a size already seen costs nothing. The preview size is also
     saved at a lower quality: it's only on screen for a moment."""
     import base64
-    import cv2
     try:
         key = (file_path, os.path.getmtime(file_path), cols, rows, px, ui.cell_aspect())
     except OSError:
@@ -165,14 +164,15 @@ def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
             if img is not None and cols and rows:
                 # One factor for both sides, so the image keeps its proportions;
                 # the terminal fits it to the cells (preserveAspectRatio=1).
-                f = min(cols * px / img.shape[1], rows * ui.cell_aspect() * px / img.shape[0])
+                f = min(cols * px / img.width, rows * ui.cell_aspect() * px / img.height)
                 if f < 1:                                   # only ever scale down
-                    img = cv2.resize(img, (max(1, round(img.shape[1] * f)), max(1, round(img.shape[0] * f))),
-                                     interpolation=cv2.INTER_AREA)
+                    img = img.resize((max(1, round(img.width * f)), max(1, round(img.height * f))),
+                                     Image.Resampling.BOX)
                 quality = 70 if px == _INLINE_PREVIEW_PX else 85
-                ok, jpg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, quality])
-                if ok and len(jpg) < len(raw):              # a heavy original still shrinks
-                    data = jpg.tobytes()
+                buf = BytesIO()
+                img.save(buf, "JPEG", quality=quality)
+                if buf.tell() < len(raw):                   # a heavy original still shrinks
+                    data = buf.getvalue()
         _inline_art_cache[key] = (base64.b64encode(data).decode('ascii'), len(data)) if data else None
     return _inline_art_cache[key]
 
@@ -192,9 +192,8 @@ def _cover_mean(file_path: str) -> tuple[int, int, int] | None:
             _mean_cache.clear()
         dec = _cover_decoded(file_path)
         img = dec[1] if dec else None
-        import cv2
         _mean_cache[key] = (None if img is None else
-                            tuple(int(v) for v in cv2.mean(img)[2::-1]))    # BGR → RGB
+                            tuple(int(v) for v in ImageStat.Stat(img).mean[:3]))
     return _mean_cache[key]
 
 

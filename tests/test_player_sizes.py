@@ -8,8 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import cv2
-import numpy as np
+from PIL import Image
 
 from backbone import ui
 from backbone.prompt import core as pc
@@ -27,7 +26,7 @@ class PlayerSizesTest(unittest.TestCase):
     def setUpClass(cls):
         cls.dir = tempfile.TemporaryDirectory()
         cls.cover = os.path.join(cls.dir.name, "cover.png")
-        cv2.imwrite(cls.cover, np.full((500, 500, 3), 90, np.uint8))
+        Image.new("RGB", (500, 500), (90, 90, 90)).save(cls.cover)
         from backtrack.playback import queue_pane
         queue_pane.set_queue_context([f"Track {i}" for i in range(12)], 2,
                                      [f"/m/{i}.mp3" for i in range(12)])

@@ -57,50 +57,35 @@ and has an ID3/MP4 tag editor with bulk operations for whole albums.
 
 ---
 
-## Requirements
-
-- **Python 3.10+** (developed against 3.13/3.14).
-- **VLC / libvlc** installed on your system (provides audio playback).
-- **ffmpeg** on your `PATH` (or set `trim_ffmpeg_path` in config): only needed for trimming and
-  ReplayGain. Without it those options are hidden and everything else works as normal.
-- Python packages, which pip installs with it: `mutagen`, `python-vlc`, `opencv-python`, `numpy`,
-  `pyperclip`, `colorama`, and `backbone` (the back* tools' shared terminal library, fetched from
-  GitHub). Album art is rendered in-project with OpenCV and NumPy, so no external
-  image viewer is needed.
-
 ## Installation
 
-**1. Install VLC / libvlc**
-
-macOS (Homebrew):
+macOS:
 ```bash
-brew install vlc
+brew install --cask vlc
+pipx install backpack-backtrack
+backtrack
 ```
 
 Ubuntu / Debian:
 ```bash
-sudo apt update && sudo apt install vlc
+sudo apt install vlc pipx
+pipx install backpack-backtrack
+backtrack
 ```
 
-**1a. (Optional) install ffmpeg, for trimming and ReplayGain**
+That's all it needs: Python 3.10 or later and VLC. The first run asks for your music folder.
+`backtrack doctor` lists what it uses and how to install anything missing, including the optional
+tools: **ffmpeg** for trimming and ReplayGain (without it those options are hidden), and on Linux
+**wl-clipboard** or **xclip** for copying paths and tags. (`pipx` keeps it in its own environment;
+`pip install backpack-backtrack` works too.)
 
-macOS (Homebrew):
+### From a checkout, to work on it
+
+Clone backbone beside backtrack and install both editable, backbone first, so edits to either take
+effect with no reinstall:
 ```bash
-brew install ffmpeg
+python3 -m pip install -e ../backbone -e .
 ```
-
-Ubuntu / Debian:
-```bash
-sudo apt install ffmpeg
-```
-
-**2. Install Backtrack**
-```bash
-python3 -m pip install -e .
-```
-
-That puts `backtrack` on your PATH. It's a live link back to this checkout, so edits take effect
-with no reinstall.
 
 ## Running
 

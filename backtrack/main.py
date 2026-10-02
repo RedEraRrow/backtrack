@@ -241,6 +241,10 @@ def main() -> int | None:
 
 def _run_app() -> None:
     """Set up the terminal, load config, and run the interactive app."""
+    # What it can't run without (VLC), said plainly before the UI starts.
+    from backbone import deps
+    from backtrack.deps import DEPS
+    deps.require(DEPS, "backtrack")
     # Enable ANSI escape processing on Windows consoles (no-op elsewhere).
     with quietly():
         import colorama
