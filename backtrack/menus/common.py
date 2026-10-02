@@ -3,10 +3,22 @@ glyphs, the Browse categories, and small helpers for cursors and saving."""
 from __future__ import annotations
 from backbone.ui import Colors as C
 from backbone import prompt
-from backbone import ui
-from backtrack.music_library import derive_album_credit
+from backbone import keys, ui
 from backtrack.config import load_config, update_config
 from backtrack.config import setting
+
+
+# Keys of the library's lists (browse, search results, history), passed to
+# prompt.select by action id so they follow the Key bindings page.
+keys.define("library", "Library lists", [
+    ("play_all", ("p",), "play everything listed"),
+    ("shuffle", ("x",), "shuffle everything listed"),
+    ("album_shuffle", ("X",), "shuffle by album"),
+    ("edit", ("e",), "edit the tags"),
+    ("edit_all", ("E",), "edit the tags of everything listed"),
+    ("sort", ("s",), "sort"),
+    ("letters", ("/",), "jump by letter, or the full list"),
+], within=("list", "global"))
 
 
 # Structured column layouts for browse lists (no string parsing: each Choice
@@ -57,24 +69,6 @@ def _menu_header(title: str, subtitle: str | None = None):
     return _build
 
 
-def _album_artist_of(songs: list) -> str:
-    """First non-empty album artist among a group's songs.
-
-    With no album artist, fall back to the credit derived from the track casts,
-    the same anchor rule the artist grouping uses, so the displayed credit and
-    the group a track is filed under can never disagree.
-    """
-    album_artists = [
-        (s.get('album_artist') or '').strip()
-        for s in songs
-        if s.get('album_artist')
-    ]
-    if album_artists:
-        return album_artists[0]
-
-    return derive_album_credit(songs)
-
-
 def _commit(cfg: dict, *keys: str) -> None:
     """Save these keys of a screen's working config (update_config: into the
     config as it is on disk now), and bring the working copy up to date with
@@ -94,11 +88,6 @@ def _disc_track_cell(song: dict) -> str:
     trk = trk.zfill(2)
     multi = (disc and disc not in ('0', '1')) or (total_discs and total_discs not in ('0', '1'))
     return f"{disc}·{trk}" if multi and disc else trk
-
-
-def _autoplay() -> bool:
-    """Whether selecting a track should play immediately, skipping the action menu."""
-    return bool(setting(load_config(), 'autoplay_on_select'))
 
 
 # Settings rows carry their current state in a right-hand column, so every
@@ -126,7 +115,7 @@ def _space_toggles(values) -> dict:
     ones): select() returns ("__space__", row), and space does nothing on any
     other row."""
     return {"on_inspect": lambda v: ("__space__", v) if v in values else None,
-            "inspect_key": "SPACE"}
+            "inspect_key": "list.toggle"}
 
 
 # Browse categories: key → (label, field grouped by, drills into an album list

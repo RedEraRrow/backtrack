@@ -2,7 +2,7 @@
 audition strip and the inline editors are drawn. Rendering only, with no input
 and no state of its own (it also holds the optional vlc import the editor uses)."""
 from __future__ import annotations
-from backbone import ui
+from backbone import keys, ui
 from backbone.ui import Colors as C
 from backbone.prompt.core import _cols
 from backbone.prompt.core import _visible_rows
@@ -23,6 +23,111 @@ except ImportError:
     _HAS_VLC = False
 
 SEG, WORD, EDIT, TAP, AUDITION = 'seg', 'word', 'edit', 'tap', 'audition'
+
+
+# The editor's keys, by mode: the line and word lists share "lyrics"; each list
+# has its own too, so a key can mean one thing on lines and another on words.
+keys.define("lyrics", "Lyrics editor", [
+    ("up", ("UP",), "previous line"),
+    ("down", ("DOWN",), "next line"),
+    ("back_025", ("LEFT",), "earlier 0.25s"),
+    ("fwd_025", ("RIGHT",), "later 0.25s"),
+    ("back_01", (",",), "earlier 0.1s"),
+    ("fwd_01", (".",), "later 0.1s"),
+    ("back_1", ("[",), "earlier 1s"),
+    ("fwd_1", ("]",), "later 1s"),
+    ("edit", ("e",), "edit the timestamps"),
+    ("play", ("p",), "play / stop"),
+    ("save", ("s",), "save the working copy"),
+    ("undo", ("u",), "undo"),
+    ("verify", ("V",), "verify against the markdown (transcripts)"),
+    ("write", ("W",), "write the transcript file (transcripts)"),
+    ("back", ("ESC",), "back"),
+    ("quit", ("q",), "quit the app"),
+])
+keys.define("lyrics_lines", "Lyrics editor: lines", [
+    ("more", ("+",), "more or fewer keys in the hints"),
+    ("mark", ("SPACE",), "mark the line"),
+    ("join", ("j",), "join with the next line"),
+    ("move_up", ("J",), "move the line up"),
+    ("move_down", ("K",), "move the line down"),
+    ("split", ("/",), "split the line"),
+    ("words", ("w",), "open the line's words (transcripts)"),
+    ("tap", ("t",), "tap sync"),
+    ("audition", ("b",), "audition"),
+    ("dead_air", ("a",), "add dead air"),
+    ("delete", ("d",), "delete an added line"),
+    ("label", ("l",), "label"),
+    ("air_dir", ("k",), "dead air ↔ direction"),
+    ("kind", ("x",), "direction kind"),
+    ("fill_gaps", ("r",), "fill gaps"),
+    ("overlay", ("m",), "import or remove the markdown"),
+    ("commit_dirs", ("M",), "commit stage directions"),
+    ("credits", ("c",), "add credits"),
+    ("speaker_split", ("S",), "split by speaker (transcripts)"),
+    ("review", ("R",), "review issues"),
+    ("review_dirs", ("D",), "review directions"),
+    ("review_long", ("L",), "review long lines"),
+    ("review_next", ("TAB",), "next in review"),
+    ("review_prev", ("BACKTAB",), "previous in review"),
+], within=("lyrics", "global"))
+keys.define("lyrics_words", "Lyrics editor: words", [
+    ("split", ("x",), "split at the word"),
+], within=("lyrics", "global"))
+keys.define("lyrics_tap", "Lyrics editor: tap sync", [
+    ("stamp", ("SPACE", "ENTER"), "stamp the line"),
+    ("back_025", ("LEFT",), "earlier 0.25s"),
+    ("fwd_025", ("RIGHT",), "later 0.25s"),
+    ("back_01", (",",), "earlier 0.1s"),
+    ("fwd_01", (".",), "later 0.1s"),
+    ("play", ("p",), "play / pause"),
+    ("save", ("s",), "save"),
+    ("undo", ("u",), "undo"),
+    ("back", ("ESC",), "done"),
+    ("quit", ("q",), "quit the app"),
+])
+keys.define("lyrics_audition", "Lyrics editor: audition", [
+    ("up", ("UP",), "previous line"),
+    ("down", ("DOWN",), "next line"),
+    ("whole", ("SPACE", "ENTER"), "hear the whole line"),
+    ("back_step", ("LEFT",), "move the line 50ms earlier"),
+    ("fwd_step", ("RIGHT",), "move the line 50ms later"),
+    ("back_coarse", (",",), "move the line ¼s earlier"),
+    ("fwd_coarse", (".",), "move the line ¼s later"),
+    ("hear_start", ("[",), "hear the start"),
+    ("hear_end", ("]",), "hear the end"),
+    ("edit", ("e",), "edit the timestamps"),
+    ("play", ("p",), "play / pause"),
+    ("undo", ("u",), "undo"),
+    ("back", ("ESC",), "back"),
+    ("quit", ("q",), "quit the app"),
+])
+keys.define("lyrics_report", "Lyrics editor: reports", [
+    ("up", ("UP", "k"), "scroll up"),
+    ("down", ("DOWN", "j", "SPACE"), "scroll down"),
+    ("page_up", ("PGUP",), "page up"),
+    ("page_down", ("PGDN",), "page down"),
+    ("top", ("HOME",), "to the top"),
+    ("bottom", ("END",), "to the end"),
+    ("back", ("q", "ESC"), "back"),
+])
+keys.define("lyrics_edit", "Lyrics editor: timestamps", [
+    ("playhead", ("p", "P"), "take the playhead"),
+])
+K = keys.label
+
+_shown_pairs: list = []      # the hint pairs of the last footer drawn, for its clicks
+
+
+def _hint_lines(pairs) -> list[str]:
+    """The footer's hint lines, remembering their pairs so a click on one
+    replays the bound key (shown_hint_pairs)."""
+    _shown_pairs[:] = _promptmod.chrome_hint_pairs(pairs)
+    return _promptmod.chrome_hint_lines(pairs)
+
+
+def shown_hint_pairs() -> list:
+    return list(_shown_pairs)
 
 
 _AUD_CLIP   = 1.0    # audition: seconds played at a line's start, and at its end
@@ -195,13 +300,15 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         _edit_footer(cursor, edit, footer, md_overlay, mode, review, segs, selected, show_hints, source, undo_depth)
 
     elif mode == WORD:
-        pairs: list[tuple[str, str]] = [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
-        pairs += [('x', 'split'), ('e', 'edit')]
-        if _HAS_VLC: pairs.append(('p', 'preview'))
-        pairs.append(('s', 'save'))
-        if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
-        pairs += [('esc', 'back'), ('q', 'quit')]
-        footer.extend(_promptmod.chrome_hint_lines(pairs))
+        pairs: list[tuple[str, str]] = [
+            (K('lyrics.up', 'lyrics.down'), 'navigate'), (K('lyrics.back_025', 'lyrics.fwd_025'), '±0.25s'),
+            (K('lyrics.back_01', 'lyrics.fwd_01'), '±0.1s'), (K('lyrics.back_1', 'lyrics.fwd_1'), '±1s')]
+        pairs += [(K('lyrics_words.split'), 'split'), (K('lyrics.edit'), 'edit')]
+        if _HAS_VLC: pairs.append((K('lyrics.play'), 'preview'))
+        pairs.append((K('lyrics.save'), 'save'))
+        if undo_depth: pairs.append((K('lyrics.undo'), f'undo ×{undo_depth}'))
+        pairs += [(K('lyrics.back'), 'back'), (K('lyrics.quit'), 'quit')]
+        footer.extend(_hint_lines(pairs))
 
     else:  # SEG
         cur_item  = segs[cursor] if (segs and cursor < len(segs)) else None
@@ -211,56 +318,63 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         _md_label = 'remove md' if md_overlay is not None else 'import md'
         _has_sdir = bool(md_overlay) and any(ov['kind'] == 'stage_dir' for ov in md_overlay)
         if review:
-            pairs = [('tab/⇧tab', 'next/prev')]
+            pairs = [(K('lyrics_lines.review_next', 'lyrics_lines.review_prev'), 'next/prev')]
             if is_sdir:
-                pairs += [('x', 'kind'), ('e', 'timing'), ('l', 'label')]
-                if _HAS_VLC: pairs.append(('t', 'tap'))
+                pairs += [(K('lyrics_lines.kind'), 'kind'), (K('lyrics.edit'), 'timing'), (K('lyrics_lines.label'), 'label')]
+                if _HAS_VLC: pairs.append((K('lyrics_lines.tap'), 'tap'))
             elif is_air:
-                pairs += [('e', 'timing'), ('l', 'label'), ('k', 'make dir')]
+                pairs += [(K('lyrics.edit'), 'timing'), (K('lyrics_lines.label'), 'label'), (K('lyrics_lines.air_dir'), 'make dir')]
             else:
-                pairs += [('/', 'split'), ('e', 'edit')]
-                if source == SOURCE_TRANSCRIPT: pairs.append(('w', 'words'))
-                pairs.append(('←→', '±0.25s'))
-            pairs += [('s', 'save'), ('esc', 'leave review'), ('q', 'quit')]
+                pairs += [(K('lyrics_lines.split'), 'split'), (K('lyrics.edit'), 'edit')]
+                if source == SOURCE_TRANSCRIPT: pairs.append((K('lyrics_lines.words'), 'words'))
+                pairs.append((K('lyrics.back_025', 'lyrics.fwd_025'), '±0.25s'))
+            pairs += [(K('lyrics.save'), 'save'), (K('lyrics.back'), 'leave review'), (K('lyrics.quit'), 'quit')]
         elif show_hints:
-            pairs = [('↑↓', 'navigate'), ('←→', '±0.25s'), (',/.', '±0.1s'), ('[/]', '±1s')]
-            if source == SOURCE_TRANSCRIPT: pairs.append(('w', 'words'))
-            if _HAS_VLC:                    pairs.append(('t', 'tap sync'))
-            if _HAS_VLC:                    pairs.append(('b', 'audition'))
-            pairs += [('e', 'edit'), ('j', 'join↓'), ('J/K', 'move↑/↓'),
-                      ('a', 'dead air'), ('d', 'del'), ('l', 'label'),
-                      ('k', 'air↔dir'), ('r', 'fill gaps'), ('m', _md_label)]
+            pairs = [(K('lyrics.up', 'lyrics.down'), 'navigate'), (K('lyrics.back_025', 'lyrics.fwd_025'), '±0.25s'),
+                     (K('lyrics.back_01', 'lyrics.fwd_01'), '±0.1s'), (K('lyrics.back_1', 'lyrics.fwd_1'), '±1s')]
+            if source == SOURCE_TRANSCRIPT: pairs.append((K('lyrics_lines.words'), 'words'))
+            if _HAS_VLC:                    pairs.append((K('lyrics_lines.tap'), 'tap sync'))
+            if _HAS_VLC:                    pairs.append((K('lyrics_lines.audition'), 'audition'))
+            pairs += [(K('lyrics.edit'), 'edit'), (K('lyrics_lines.join'), 'join↓'),
+                      (K('lyrics_lines.move_up', 'lyrics_lines.move_down'), 'move↑/↓'),
+                      (K('lyrics_lines.dead_air'), 'dead air'), (K('lyrics_lines.delete'), 'del'),
+                      (K('lyrics_lines.label'), 'label'), (K('lyrics_lines.air_dir'), 'air↔dir'),
+                      (K('lyrics_lines.fill_gaps'), 'fill gaps'), (K('lyrics_lines.overlay'), _md_label)]
             if is_sdir:
-                pairs.append(('x', 'kind (inline/tone/external)'))
-            if _has_sdir: pairs.append(('M', 'commit stage dirs'))
-            pairs += [('c', 'credits'), ('spc', 'mark')]
-            if _HAS_VLC: pairs.append(('p', 'preview'))
-            pairs.append(('s', 'save working'))
+                pairs.append((K('lyrics_lines.kind'), 'kind (inline/tone/external)'))
+            if _has_sdir: pairs.append((K('lyrics_lines.commit_dirs'), 'commit stage dirs'))
+            pairs += [(K('lyrics_lines.credits'), 'credits'), (K('lyrics_lines.mark'), 'mark')]
+            if _HAS_VLC: pairs.append((K('lyrics.play'), 'preview'))
+            pairs.append((K('lyrics.save'), 'save working'))
             if source == SOURCE_TRANSCRIPT:
-                pairs += [('V', 'verify md'), ('S', 'split by line'), ('W', 'write file')]
-            pairs += [('/', 'split line'),
-                      ('R', 'review issues'), ('D', 'review directions'), ('L', 'long lines')]
-            if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
-            pairs += [('?', 'hide hints'), ('esc', 'back'), ('q', 'quit')]
+                pairs += [(K('lyrics.verify'), 'verify md'), (K('lyrics_lines.speaker_split'), 'split by line'),
+                          (K('lyrics.write'), 'write file')]
+            pairs += [(K('lyrics_lines.split'), 'split line'), (K('lyrics_lines.review'), 'review issues'),
+                      (K('lyrics_lines.review_dirs'), 'review directions'), (K('lyrics_lines.review_long'), 'long lines')]
+            if undo_depth: pairs.append((K('lyrics.undo'), f'undo ×{undo_depth}'))
+            pairs += [(K('lyrics_lines.more'), 'fewer keys'), (K('lyrics.back'), 'back'), (K('lyrics.quit'), 'quit')]
         else:
-            pairs = [('↑↓', 'navigate'), ('←→', '±0.25s')]
+            pairs = [(K('lyrics.up', 'lyrics.down'), 'navigate'), (K('lyrics.back_025', 'lyrics.fwd_025'), '±0.25s')]
+            _move = (K('lyrics_lines.move_up', 'lyrics_lines.move_down'), 'move')
             if is_air or is_sdir:
-                pairs += [('d', 'del'), ('l', 'label'),
-                          ('k', 'make dir' if is_air else 'make air'),
-                          ('e', 'timing')]
+                pairs += [(K('lyrics_lines.delete'), 'del'), (K('lyrics_lines.label'), 'label'),
+                          (K('lyrics_lines.air_dir'), 'make dir' if is_air else 'make air'),
+                          (K('lyrics.edit'), 'timing')]
                 if is_sdir:
-                    pairs.append(('x', 'kind'))
-                pairs.append(('J/K', 'move'))
+                    pairs.append((K('lyrics_lines.kind'), 'kind'))
+                pairs.append(_move)
             else:
-                pairs += [('e', 'edit'), ('j', 'join'), ('J/K', 'move')]
-                if source == SOURCE_TRANSCRIPT: pairs.append(('w', 'words'))
-            if _has_sdir: pairs.append(('M', 'commit stage dirs'))
-            pairs += [('/', 'split'), ('R', 'review'), ('D', 'dirs'), ('L', 'long'), ('s', 'save'), ('?', 'more')]
-            if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
-            pairs += [('esc', 'back'), ('q', 'quit')]
-            # (W = write to transcript.json, shown in full hints via ?)
+                pairs += [(K('lyrics.edit'), 'edit'), (K('lyrics_lines.join'), 'join'), _move]
+                if source == SOURCE_TRANSCRIPT: pairs.append((K('lyrics_lines.words'), 'words'))
+            if _has_sdir: pairs.append((K('lyrics_lines.commit_dirs'), 'commit stage dirs'))
+            pairs += [(K('lyrics_lines.split'), 'split'), (K('lyrics_lines.review'), 'review'),
+                      (K('lyrics_lines.review_dirs'), 'dirs'), (K('lyrics_lines.review_long'), 'long'),
+                      (K('lyrics.save'), 'save'), (K('lyrics_lines.more'), 'more keys')]
+            if undo_depth: pairs.append((K('lyrics.undo'), f'undo ×{undo_depth}'))
+            pairs += [(K('lyrics.back'), 'back'), (K('lyrics.quit'), 'quit')]
+            # (the write-to-transcript key is shown in the full hints)
         if selected: pairs.append(('', f'{len(selected)} marked'))
-        footer.extend(_promptmod.chrome_hint_lines(pairs))
+        footer.extend(_hint_lines(pairs))
 
     HEADER    = 2   # title + rule (no leading blank; render adds the MARGIN_V top row)
     available = avail - HEADER - 2 - len(footer)
@@ -351,13 +465,14 @@ def _draw_tap(B, avail, cursor, hit_map, indent, mode, n, out, play_pos, playing
     # through the shared chrome so the transport keys the editor already
     # handles (^P/^N/^B/^O) are actually advertised while audio is playing.
     footer: list[str] = [sep]
-    pairs: list[tuple[str, str]] = [('spc/↵', 'mark')]
-    if cursor > 0: pairs += [('←→', '±0.25s'), (',/.', '±0.1s')]
-    pairs.append(('p', 'pause' if playing else 'play'))
-    pairs.append(('s', 'save'))
-    if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
-    pairs += [('esc', 'done'), ('q', 'quit')]
-    footer.extend(_promptmod.chrome_hint_lines(pairs))
+    pairs: list[tuple[str, str]] = [(K('lyrics_tap.stamp'), 'mark')]
+    if cursor > 0: pairs += [(K('lyrics_tap.back_025', 'lyrics_tap.fwd_025'), '±0.25s'),
+                             (K('lyrics_tap.back_01', 'lyrics_tap.fwd_01'), '±0.1s')]
+    pairs.append((K('lyrics_tap.play'), 'pause' if playing else 'play'))
+    pairs.append((K('lyrics_tap.save'), 'save'))
+    if undo_depth: pairs.append((K('lyrics_tap.undo'), f'undo ×{undo_depth}'))
+    pairs += [(K('lyrics_tap.back'), 'done'), (K('lyrics_tap.quit'), 'quit')]
+    footer.extend(_hint_lines(pairs))
 
     TAP_ROWS = 9  # 3 content lines + 4 blank spacers + progress + blank
     n_body   = max(0, avail - 2 - len(footer))   # 2 header rows (title + rule)
@@ -420,12 +535,13 @@ def _draw_audition(B, aud_editing, aud_now, avail, cursor, edit, hit_map, indent
         pairs = [('tab/⇧tab', 'field'), ('←→', 'cursor'), ('↑↓', 'adjust'),
                  ('↵', 'apply'), ('esc', 'cancel')]
     else:
-        pairs = [('↑↓', 'line'), ('spc', 'whole line'),
-                 ('←→', 'move 50ms'), (',/.', 'move ¼s'),
-                 ('[/]', 'hear s/e'), ('e', 'edit dur')]
-        if undo_depth: pairs.append(('u', f'undo ×{undo_depth}'))
-        pairs += [('p', 'pause' if playing else 'play'), ('esc', 'back'), ('q', 'quit')]
-    footer.extend(_promptmod.chrome_hint_lines(pairs))
+        A = lambda *n: K(*(f'lyrics_audition.{x}' for x in n))  # noqa: E731
+        pairs = [(A('up', 'down'), 'line'), (A('whole'), 'whole line'),
+                 (A('back_step', 'fwd_step'), 'move 50ms'), (A('back_coarse', 'fwd_coarse'), 'move ¼s'),
+                 (A('hear_start', 'hear_end'), 'hear s/e'), (A('edit'), 'edit dur')]
+        if undo_depth: pairs.append((A('undo'), f'undo ×{undo_depth}'))
+        pairs += [(A('play'), 'pause' if playing else 'play'), (A('back'), 'back'), (A('quit'), 'quit')]
+    footer.extend(_hint_lines(pairs))
 
     AUD_ROWS = 8
     n_body   = max(0, avail - 2 - len(footer))   # 2 header rows (title + rule)
@@ -463,9 +579,9 @@ def _edit_footer(cursor, edit, footer, md_overlay, mode, review, segs, selected,
     """The timestamp editor and its hints, added to the footer while EDIT is open."""
     s_d, e_d = _render_edit_fields(edit)
     footer.append(f"  {C.ACCENT}✎{C.RESET}  start  {s_d}    end  {e_d}")
-    footer.extend(_promptmod.chrome_hint_lines(
+    footer.extend(_hint_lines(
         [('tab/⇧tab', 'field'), ('←→', 'cursor'), ('↑↓', 'adjust'),
-         ('p', 'playhead'), ('↵', 'apply'), ('esc', 'cancel')]))
+         (K('lyrics_edit.playhead'), 'playhead'), ('↵', 'apply'), ('esc', 'cancel')]))
 
 
 def _draw_words(_compose, _rhs, cursor, hit_map, indent, out, seg_cursor, segs, vis, vp):

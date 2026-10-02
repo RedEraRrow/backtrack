@@ -330,7 +330,8 @@ def derive_from_filename(paths: list, library: list, header) -> None:
             "Preview (↵ applies):",
             choices=preview_choices, columns=prev_cols,
             header=header(sub), multi=True,
-            extra_hints={'d': 'details'}, on_inspect=_show_detail)
+            extra_hints={'tags.details': 'details'}, on_inspect=_show_detail,
+            inspect_key='tags.details')
         if selected is None:
             return False
         state.update(derived=derived, plans=plans, to_write=to_write,

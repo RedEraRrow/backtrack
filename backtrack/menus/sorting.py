@@ -2,7 +2,7 @@
 presets, the s picker, and the level editor."""
 from __future__ import annotations
 from backbone import prompt
-from backbone import ui
+from backbone import keys, ui
 from backtrack.music_library import (
     get_group_sort_key, sort_options, valid_levels, SORT_FIELDS, DEFAULT_SORT_LEVELS,
 )
@@ -27,6 +27,12 @@ _CHAIN_PRESETS = [
     ("Album artist, then oldest", [['album_artist', 'asc'], ['album_year', 'asc'], ['album', 'asc']] + _BY_TRACK),
     ("Broadcast order", [['date', 'asc'], ['album', 'asc'], ['disc', 'asc'], ['track', 'asc'], ['title', 'asc']]),
 ]
+
+
+keys.define("sort_levels", "Sort order", [
+    ("flip", ("SPACE",), "flip the level's direction"),
+    ("remove", ("d", "DELETE", "BACKSPACE"), "remove the level"),
+], within=("list", "global"))
 
 
 def _sort_groups(names: list, grouped: dict, cat_key: str, mode: str) -> list:
@@ -151,9 +157,9 @@ def _edit_chain(levels: list, header) -> list | None:
         choices.append(prompt.Choice(title="Save changes", value="__save__"))
         sel = prompt.select("Sort levels (first wins; ties go to the next):",
                             choices=choices, header=header, index=cursor, on_move=_move,
-                            row_actions={'SPACE': _row("flip"), 'd': _row("remove"),
-                                         'DELETE': _row("remove"), 'BACKSPACE': _row("remove")},
-                            row_action_hints={"space": "flip direction", "d": "remove"})
+                            row_actions={'sort_levels.flip': _row("flip"), 'sort_levels.remove': _row("remove")},
+                            row_action_hints={'sort_levels.flip': "flip direction",
+                                              keys.label('sort_levels.remove', most=1): "remove"})
         if sel is None:
             return None
         if isinstance(sel, tuple):

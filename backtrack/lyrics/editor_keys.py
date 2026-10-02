@@ -5,7 +5,7 @@ whose state and actions these read and call."""
 from __future__ import annotations
 import sys, os, time
 from backtrack.music_library import format_value_list
-from backbone import ui
+from backbone import keys, ui
 from backbone.prompt.core import _set_raw, _restore_term_attrs
 from backbone.prompt import text as _prompt_text
 from backbone.prompt.core import footer_click_action
@@ -32,6 +32,15 @@ def _np_transport(action: str) -> None:
 
 _QUIT = object()     # a key handler's "leave the editor" (Esc; q quits the app)
 
+# Seconds each nudge moves a timestamp: the line and word lists, and TAP (which
+# moves the line before the cursor). AUDITION moves the whole line by ear.
+_LIST_NUDGES = {'lyrics.back_025': -0.25, 'lyrics.fwd_025': 0.25, 'lyrics.back_01': -0.1,
+                'lyrics.fwd_01': 0.1, 'lyrics.back_1': -1.0, 'lyrics.fwd_1': 1.0}
+_TAP_NUDGES = {'lyrics_tap.back_025': -0.25, 'lyrics_tap.fwd_025': 0.25,
+               'lyrics_tap.back_01': -0.1, 'lyrics_tap.fwd_01': 0.1}
+_AUD_SHIFTS = {'lyrics_audition.back_step': -_AUD_STEP, 'lyrics_audition.fwd_step': _AUD_STEP,
+               'lyrics_audition.back_coarse': -_AUD_COARSE, 'lyrics_audition.fwd_coarse': _AUD_COARSE}
+
 
 class _KeyHandlers:
     """Key handling for `lyrics_editor._Session`."""
@@ -40,10 +49,11 @@ class _KeyHandlers:
     # and Ctrl-O to open the full player over the editor, typed or
     # clicked in the hint bar (replayed below).
     def _transport(self, key) -> bool:
-        if key in ('\x10', '\x0e', '\x02'):
-            _np_transport({'\x10': 'playpause', '\x0e': 'next', '\x02': 'prev'}[key])
+        act = keys.action(key, 'global')
+        if act in ('global.playpause', 'global.next', 'global.prev'):
+            _np_transport(act.split('.')[1])
             return True
-        if key == '\x0f' and _prompt_chrome._player_opener is not None:
+        if act == 'global.player' and _prompt_chrome._player_opener is not None:
             _prompt_chrome._player_opener()
             sys.stdout.write("\033[?1000h\033[?1006h"); sys.stdout.flush()
             self.w.anchor_reset()
@@ -56,16 +66,18 @@ class _KeyHandlers:
         to leave the editor."""
         if self._transport(key):
             return
-        if key == _promptmod.HINTS_CLICK or (key == 'i' and self.mode != EDIT):
+        if _promptmod.is_hints_key(key, key_free=self.mode != EDIT):
             _promptmod.toggle_hints()
             self.w.anchor_reset()
             return
 
         # Mouse: scroll navigates; a click positions the cursor on a row.
-        if key == 'SCROLL_UP':
-            key = 'UP'
-        elif key == 'SCROLL_DOWN':
-            key = 'DOWN'
+        if key in ('SCROLL_UP', 'SCROLL_DOWN'):
+            scope = 'lyrics_audition' if self.mode == AUDITION else 'lyrics'
+            bound = keys.of(f"{scope}.{'up' if key == 'SCROLL_UP' else 'down'}")
+            if not bound:
+                return
+            key = bound[0]
         elif key.startswith(('MOUSE_CLICK:', 'MOUSE_RELEASE:')):
             # A click on the now-playing box drives the shared session: the
             # ⏯/⏭ icons play-pause/skip, elsewhere opens the full player.
@@ -128,7 +140,7 @@ class _KeyHandlers:
             key = _hk           # replay the clicked hint's key through the switch
             if self._transport(key):
                 return
-            if key == _promptmod.HINTS_CLICK:
+            if _promptmod.is_hints_key(key, key_free=False):
                 _promptmod.toggle_hints()
                 self.w.anchor_reset()
                 return
@@ -137,11 +149,12 @@ class _KeyHandlers:
         # lines, Esc leaves review; every other key falls through so you fix
         # the current line in place with the normal editing keys.
         if self.review_phase and self.mode == SEG:
-            if key == 'TAB':
+            act = keys.action(key, 'lyrics_lines')
+            if act == 'lyrics_lines.review_next':
                 self._review_advance(1); return
-            if key == 'BACKTAB':
+            if act == 'lyrics_lines.review_prev':
                 self._review_advance(-1); return
-            if key == 'ESC':
+            if act == 'lyrics.back':
                 self.review_phase = None
                 self.review_program = None
                 ui.show_status("Left review.")
@@ -162,7 +175,7 @@ class _KeyHandlers:
         elif key == 'ENTER':
             self._edit_apply()
             self.mode = self.prev_mode
-        elif key in ('p', 'P'):
+        elif keys.pressed(key, 'lyrics_edit.playhead'):
             # Grab the live audio playhead into the focused start/end bound.
             _pm, _ps, _pms = _ts_parts(round(self.play_pos, 3))
             _bound = _EDIT_START if self.edit['fi'] < 3 else _EDIT_END
@@ -176,21 +189,22 @@ class _KeyHandlers:
     def _keys_tap(self, key: str) -> object:
         """Keys in TAP mode: space/↵ stamps the current line as the audio reaches it."""
         n = len(self.segs)
-        if key in ('q', 'CTRL_C'):
+        act = keys.action(key, 'lyrics_tap')
+        if key == 'CTRL_C' or act == 'lyrics_tap.quit':
             if not self._may_quit(): return
             self.do_stop(); raise QuitToTerminal()
-        elif key == 's':
+        elif act == 'lyrics_tap.save':
             self.do_save()
-        elif key == 'u':
+        elif act == 'lyrics_tap.undo':
             self.do_undo()
-        elif key == 'ESC':
+        elif act == 'lyrics_tap.back':
             self.mode = SEG; self.do_stop()
-        elif key == 'p':
+        elif act == 'lyrics_tap.play':
             if self.playing:
                 self.do_stop()
             else:
                 self.do_preview(self.play_pos)  # resume from where we paused
-        elif key in ('SPACE', 'ENTER') and self.cursor < n:
+        elif act == 'lyrics_tap.stamp' and self.cursor < n:
             old_start    = self.segs[self.cursor].get("start")
             old_prev_end = self.segs[self.cursor - 1].get("end") if self.cursor > 0 else None
             corrected    = round(self.play_pos + self.tap_offset_s, 3)
@@ -203,14 +217,8 @@ class _KeyHandlers:
                 self.cursor += 1
             else:
                 self.mode = SEG; self.do_stop()  # reached end: done
-        elif key == 'LEFT' and self.cursor > 0:
-            self.apply_segs([self.cursor - 1], -0.25)
-        elif key == 'RIGHT' and self.cursor > 0:
-            self.apply_segs([self.cursor - 1],  0.25)
-        elif key == ',':
-            if self.cursor > 0: self.apply_segs([self.cursor - 1], -0.1)
-        elif key == '.':
-            if self.cursor > 0: self.apply_segs([self.cursor - 1],  0.1)
+        elif act in _TAP_NUDGES and self.cursor > 0:
+            self.apply_segs([self.cursor - 1], _TAP_NUDGES[act])
         return
 
     def _keys_audition(self, key: str) -> object:
@@ -229,40 +237,35 @@ class _KeyHandlers:
             else:
                 self._edit_field_key(key)
             return
-        if key in ('q', 'CTRL_C'):
+        act = keys.action(key, 'lyrics_audition')
+        if key == 'CTRL_C' or act == 'lyrics_audition.quit':
             if not self._may_quit(): return
             self.do_stop(); raise QuitToTerminal()
-        elif key == 'ESC':
+        elif act == 'lyrics_audition.back':
             self.mode = SEG; self.do_stop(); self.aud_now = None
-        elif key == 'UP':
+        elif act == 'lyrics_audition.up':
             self.cursor = max(0, self.cursor - 1); self._aud_clips('line')
-        elif key == 'DOWN':
+        elif act == 'lyrics_audition.down':
             self.cursor = min(n - 1, self.cursor + 1); self._aud_clips('line')
-        elif key in ('SPACE', 'ENTER'):
+        elif act == 'lyrics_audition.whole':
             self._aud_clips('line')          # play the whole line
         # move the whole line by ear (both timestamps together):
-        elif key == 'LEFT':
-            self._aud_shift(-_AUD_STEP)
-        elif key == 'RIGHT':
-            self._aud_shift( _AUD_STEP)
-        elif key == ',':
-            self._aud_shift(-_AUD_COARSE)
-        elif key == '.':
-            self._aud_shift( _AUD_COARSE)
-        elif key == '[':
+        elif act in _AUD_SHIFTS:
+            self._aud_shift(_AUD_SHIFTS[act])
+        elif act == 'lyrics_audition.hear_start':
             self._aud_clips('start')         # hear the start boundary (no change)
-        elif key == ']':
+        elif act == 'lyrics_audition.hear_end':
             self._aud_clips('end')           # hear the end boundary (no change)
-        elif key == 'u':
+        elif act == 'lyrics_audition.undo':
             self.do_undo(); self._aud_clips('line')
-        elif key == 'e':
+        elif act == 'lyrics_audition.edit':
             # open the inline timestamp editor for this line
             if self.segs and self.cursor < len(self.segs):
                 self.do_stop(); self.aud_now = None
                 self.prev_mode   = SEG       # audition edits the line (a seg)
                 self.aud_editing = True
                 self._edit_prefill()
-        elif key == 'p':
+        elif act == 'lyrics_audition.play':
             if self.playing: self.do_stop(); self.aud_now = None
             else:       self._aud_clips('line')
         return
@@ -272,98 +275,94 @@ class _KeyHandlers:
         items = self.segs if self.mode == SEG else self.cur_words()
         n_i   = len(items)
 
-        if key in ('q', 'CTRL_C'):
+        act = keys.action(key, 'lyrics_lines' if self.mode == SEG else 'lyrics_words')
+        name = act.split('.', 1)[1] if act and act.startswith(('lyrics.', 'lyrics_lines.', 'lyrics_words.')) else None
+        line = act.startswith('lyrics_lines.') if act else False
+
+        if key == 'CTRL_C' or act == 'lyrics.quit':
             if not self._may_quit(): return
             if self.playing: self.do_stop()
             raise QuitToTerminal()
-        elif key == 'ESC' and self.mode == SEG:      # back to the tag editor
+        elif act == 'lyrics.back' and self.mode == SEG:      # back to the tag editor
             if not self._may_quit(): return
             if self.playing: self.do_stop()
             return _QUIT
-        elif key == '?' and self.mode == SEG:
+        elif act == 'lyrics.back':                           # words: back to the lines
+            self.mode = SEG; self.cursor = self.seg_cursor; self.viewport = max(0, self.seg_cursor - 2)
+        elif line and name == 'more':      # the full key list, or back to the short one
             self.show_hints = not self.show_hints
-        elif key == 's':
+        elif act == 'lyrics.save':
             self.do_save()
-        elif key == 'W' and self.source == SOURCE_TRANSCRIPT:
+        elif act == 'lyrics.write' and self.source == SOURCE_TRANSCRIPT:
             return self._commit_to_transcript()
-        elif key == 'V' and self.source == SOURCE_TRANSCRIPT:
+        elif act == 'lyrics.verify' and self.source == SOURCE_TRANSCRIPT:
             self.do_verify()
-        elif key == 'S' and self.mode == SEG and self.source == SOURCE_TRANSCRIPT:
+        elif line and name == 'speaker_split' and self.source == SOURCE_TRANSCRIPT:
             self.do_speaker_split()
-        elif key == 'u':
+        elif act == 'lyrics.undo':
             self.do_undo()
-        elif key == 'UP':
+        elif act == 'lyrics.up':
             self.cursor = max(0, self.cursor - 1)
-        elif key == 'DOWN':
+        elif act == 'lyrics.down':
             self.cursor = min(n_i - 1, max(0, self.cursor + 1))
-        elif key == 'SPACE' and self.mode == SEG:
+        elif line and name == 'mark':
             self.selected.symmetric_difference_update({self.cursor})
-        elif key == 'c' and self.mode == SEG:
+        elif line and name == 'credits':
             return self._add_credits()
-        elif key == 'a' and self.mode == SEG:
+        elif line and name == 'dead_air':
             return self._add_gap()
-        elif key == 'd' and self.mode == SEG:
+        elif line and name == 'delete':
             return self._delete_inserted()
-        elif key == 'l' and self.mode == SEG:
+        elif line and name == 'label':
             return self._relabel()
-        elif key == 'k' and self.mode == SEG:
+        elif line and name == 'air_dir':
             self.do_recategorise(self.cursor)
-        elif key == 'R' and self.mode == SEG:
-            self._review_enter('issues')
-        elif key == 'D' and self.mode == SEG:
-            self._review_enter('dirs')
-        elif key == 'L' and self.mode == SEG:
-            self._review_enter('long')
-        elif key == '/' and self.mode == SEG:
+        elif line and name in ('review', 'review_dirs', 'review_long'):
+            self._review_enter({'review': 'issues', 'review_dirs': 'dirs', 'review_long': 'long'}[name])
+        elif line and name == 'split':
             self.do_smart_split()
-        elif key == 'x' and self.mode == SEG:
+        elif line and name == 'kind':
             return self._cycle_direction()
-        elif key == 'r' and self.mode == SEG:
+        elif line and name == 'fill_gaps':
             return self._fill_gaps()
-        elif key == 'm' and self.mode == SEG:
+        elif line and name == 'overlay':
             return self._toggle_overlay()
-        elif key == 'M' and self.mode == SEG:
+        elif line and name == 'commit_dirs':
             return self._commit_directions()
-        elif key == 't' and self.mode == SEG:
+        elif line and name == 'tap':
             if _HAS_VLC:
                 self.mode = TAP
                 start_s = self.segs[self.cursor].get("start") or self.play_pos
                 self.do_preview(start_s)
-        elif key == 'b' and self.mode == SEG:
+        elif line and name == 'audition':
             if _HAS_VLC and self.mp is not None and self.segs:
                 self.mode = AUDITION
                 self._aud_clips('line')   # landing on a line plays it whole
             elif not _HAS_VLC:
                 ui.show_status("Audition needs VLC (not available).")
-        elif key == 'w' and self.mode == SEG and self.source == SOURCE_TRANSCRIPT:
+        elif line and name == 'words' and self.source == SOURCE_TRANSCRIPT:
             if self.segs and self.cursor < len(self.segs) and self.segs[self.cursor].get("words"):
                 self.seg_cursor = self.cursor
                 self.mode = WORD; self.cursor = 0; self.viewport = 0
-        elif key == 'ESC' and self.mode == WORD:
-            self.mode = SEG; self.cursor = self.seg_cursor; self.viewport = max(0, self.seg_cursor - 2)
-        elif key == 'e':
+        elif act == 'lyrics.edit':
             return self._open_editor()
-        elif key == 'p':
+        elif act == 'lyrics.play':
             return self._play_toggle()
-        elif key in ('J', 'K') and self.mode == SEG:
-            self._move_line(-1 if key == 'J' else 1)
-        elif key == 'j' and self.mode == SEG:
+        elif line and name in ('move_up', 'move_down'):
+            self._move_line(-1 if name == 'move_up' else 1)
+        elif line and name == 'join':
             return self._join_next()
-        elif key == 'x' and self.mode == WORD:
+        elif act == 'lyrics_words.split':
             return self._split_at_word()
-        else:
+        elif act in _LIST_NUDGES:
             if self.mode == SEG:
                 tgts = sorted(self.selected) if self.selected else [self.cursor]
-                key_deltas = {'LEFT': -0.25, 'RIGHT': 0.25, ',': -0.1, '.': 0.1, '[': -1.0, ']': 1.0}
-                if key in key_deltas:
-                    if self.segs[self.cursor].get("start") is None:
-                        ui.show_status("No timestamp set: press e to enter one.")
-                    else:
-                        self.apply_segs(tgts, key_deltas[key])
+                if self.segs[self.cursor].get("start") is None:
+                    ui.show_status(f"No timestamp set: press {keys.label('lyrics.edit', first=True)} to enter one.")
+                else:
+                    self.apply_segs(tgts, _LIST_NUDGES[act])
             else:
-                key_deltas = {'LEFT': -0.25, 'RIGHT': 0.25, ',': -0.1, '.': 0.1, '[': -1.0, ']': 1.0}
-                if key in key_deltas:
-                    self.apply_word(self.seg_cursor, self.cursor, key_deltas[key])
+                self.apply_word(self.seg_cursor, self.cursor, _LIST_NUDGES[act])
 
     def _move_line(self, delta: int) -> None:
         """J/K: swap the line under the cursor with the one above (-1) or below (+1)."""

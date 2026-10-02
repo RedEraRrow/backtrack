@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 from backbone import prompt
-from backbone import ui
+from backbone import keys, ui
 from backbone.ui import Colors as C
 from backtrack.music_library import (
     build_library, save_library_cache, start_background_sync, sort_options,
@@ -170,7 +170,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
 
 
 # Settings rows that are on/off switches: space flips them, like ↵ does.
-_SETTINGS_TOGGLES = {"history", "autoplay", "meta_editor", "lyrics_editor",
+_SETTINGS_TOGGLES = {"history", "meta_editor", "lyrics_editor",
                      "plain_text", "sort_tags", "hidden", "key_hints", "inline_art", "debug",
                      "player_meta", "nerd_icons"}
 
@@ -236,6 +236,37 @@ def _pick_accent(config: dict) -> None:
         ui.show_status(f"Accent colour: {ui.accent_label(choice)}")
 
 
+_AFTER_PICK = {
+    "stop":  "Stop: it plays alone",
+    "list":  "Play the rest of its list",
+    "queue": "Carry on with the queue",
+}
+
+
+def _after_pick(config: dict) -> str:
+    value = setting(config, "after_pick")
+    return value if value in _AFTER_PICK else "list"
+
+
+def _load_key_screens() -> None:
+    """Import every screen that defines keys, so the Key bindings page lists
+    them all, not just the ones opened so far this run."""
+    import backtrack.playback.player_ui    # noqa: F401
+    import backtrack.lyrics.editor_view    # noqa: F401
+    import backtrack.trim.editor           # noqa: F401
+    import backtrack.menus.common          # noqa: F401
+    import backtrack.menus.play            # noqa: F401
+    import backtrack.menus.search          # noqa: F401
+    import backtrack.menus.sorting         # noqa: F401
+    import backtrack.id3.tag_handler       # noqa: F401
+
+
+def _key_bindings_state() -> str:
+    _load_key_screens()
+    n = sum(keys.changed(a.id) for a in keys.actions())
+    return f"{n} changed" if n else "default"
+
+
 def handle_settings(library_ref: list) -> None:
     """Run the interactive settings menu loop, applying and persisting each toggled option."""
     import copy
@@ -261,8 +292,9 @@ def handle_settings(library_ref: list) -> None:
         _rows: list = [
             prompt.separator("Playback"),
             ("lead_in",      "Lyric lead-in…",       f"{float(config['lyric_lead_in']):g}s"),
-            ("autoplay",     "Auto-play on select",  _bool("autoplay_on_select")),
+            ("after_pick",   "After a picked track…", _AFTER_PICK[_after_pick(config)]),
             ("key_hints",    "Key hints",            _state_glyph(prompt.hints_visible())),
+            ("key_bindings", "Key bindings…",        _key_bindings_state()),
             ("inline_art",   "Image album art (iTerm2)", _bool("art_inline_images")),
             ("player_meta",  "Track details in player", _bool("player_show_metadata")),
             ("nerd_icons",   "Nerd Font player icons", _bool("player_nerd_font_icons")),
@@ -302,7 +334,7 @@ def handle_settings(library_ref: list) -> None:
             columns=_SETTINGS_COLUMNS,
             header=_menu_header("Settings"),
             index=_cursor,
-            extra_hints={"space": "toggle"},
+            extra_hints={"list.toggle": "toggle"},
             **_space_toggles(_SETTINGS_TOGGLES),
         )
 
@@ -345,10 +377,23 @@ def handle_settings(library_ref: list) -> None:
                 ui.show_status("On, but this isn't iTerm2, so the player keeps the text art.")
 
         elif choice == "key_hints":
-            prompt.toggle_hints()          # the same switch as `i` / the corner
+            prompt.toggle_hints()          # the same switch as `?` / the corner
 
-        elif choice == "autoplay":
-            _toggled("autoplay_on_select")
+        elif choice == "key_bindings":
+            _load_key_screens()
+            prompt.keys_editor()
+
+        elif choice == "after_pick":
+            current = _after_pick(config)
+            picked = prompt.select(
+                "After a track picked from a list:",
+                choices=[prompt.Choice(title=label, value=value,
+                                       cells=[label, ON_GLYPH if value == current else ""])
+                         for value, label in _AFTER_PICK.items()],
+                columns=_SETTINGS_COLUMNS, index=list(_AFTER_PICK).index(current),
+                header=_menu_header("After a picked track"))
+            if picked:
+                config["after_pick"] = picked
 
         elif choice == "player_meta":
             _toggled("player_show_metadata")
@@ -454,7 +499,7 @@ def _edit_browse_menu(config: dict) -> None:
             cursor, follow = _idx_of(choices, follow, cursor), None
         sel = prompt.select("", choices=choices, columns=_SETTINGS_COLUMNS,
                             header=_menu_header("Browse menu", f"{len(shown)} of {len(BROWSE_CATEGORIES)} shown"),
-                            index=cursor, extra_hints={"space": "show/hide"}, on_move=_move,
+                            index=cursor, extra_hints={"list.toggle": "show/hide"}, on_move=_move,
                             **_space_toggles(set(BROWSE_CATEGORIES)))
         if not sel:
             return

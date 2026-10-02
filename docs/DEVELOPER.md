@@ -140,6 +140,8 @@ backtrack/
 | Feeds | `CONFIG_DIR/feeds.json` (url, filter, seen keys) | (follows `CONFIG_DIR`) |
 | Diagnostics log | `CONFIG_DIR/backtrack.log` (rotated at 1 MB, two kept) | (follows `CONFIG_DIR`) |
 | Key hints shown | `CONFIG_DIR/hints_on` (present = on) | (follows `CONFIG_DIR`) |
+| Key bindings (changes from the defaults) | `CONFIG_DIR/keys.json` | (follows `CONFIG_DIR`) |
+| The queue, for Resume | `CONFIG_DIR/queue.json` | (follows `CONFIG_DIR`) |
 | Trim backups | `CONFIG_DIR/trim-backups/` | `trim_backup_dir` in config |
 | Sessions | `CONFIG_DIR/sessions/` (one registry entry and socket per running session) | (follows `CONFIG_DIR`) |
 
@@ -425,11 +427,33 @@ script-vs-transcript report behind `V`, `backtrack lyrics verify` and `tools/che
 The script format, and the rules a script has to follow to be matchable, are
 **[script-etiquette.md](script-etiquette.md)**.
 
-### Album art: `art/album_art.py`, `playback/player_art.py`
+### The queue: `PlaybackSession.edit`
+
+Every change to the queue goes through `PlaybackSession.edit(op, ...)` (`playback/session.py`):
+add (next, at the end, after the current album; shuffled or not), play a picked track, jump, move,
+remove, clear or shuffle what's coming, and undo. A joined window sends the same edit over ipc
+(`queue_edit`, through `RemoteSession.edit`); edits aimed at a position carry its path and are
+ignored if the queue has moved on. The menus' queue actions are one table, `_QUEUE_ACTIONS` in
+`menus/play.py`, behind the `o` options menu and the `queue_actions` key scope.
+
+### Keys: `backbone.keys`
+
+Every key is rebindable (Settings → Key bindings), so no screen compares a literal key. A screen
+defines its actions where it uses them, `keys.define("player", "Player", [("next", ("]",), "next
+track"), ...])`, then asks `keys.action(key, "player")` and builds each hint with
+`keys.label("player.prev", "player.next")`, whose clicks replay the bound key. `prompt.select` and
+`live_select` take an action id wherever they take a key (`shortcuts`, `row_actions`,
+`inspect_key`, `cycle_key`, `actions`, `extra_hints`). Typing inside a text field is the one thing
+that stays fixed. A screen whose module isn't imported at startup is listed in
+`menus/settings._load_key_screens`, so the page shows its keys before it has been opened.
+
+### Album art: `album_art.py`, `playback/player_art.py`
 
 Rendered in-project: `render_native_half_block` downsamples an image with OpenCV/NumPy into ANSI
-half-block (`▀`) cells. `player_art.py` sizes it for the player and, on iTerm2 with Settings → Image
-album art on, draws the real image over those cells. (Some helper names like `_convert_apic_to_viu`
+half-block (`▀`) cells, keeping the image's proportions for the terminal's real cell shape
+(`ui.cell_aspect()`). Art is only ever sized through `album_art.fit_art`, which narrows it to fit and
+never crops or stretches. `player_art.py` sizes it for the player and, on iTerm2 with Settings → Image
+album art on, draws the real image over those cells at the same proportions. (Some helper names like `_convert_apic_to_viu`
 are legacy from the old `viu` dependency; the binary is gone.)
 
 ## Adding features

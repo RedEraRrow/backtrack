@@ -2,15 +2,17 @@
 and the rows a click can play."""
 from __future__ import annotations
 import re
-from backtrack.music_library import get_metadata, format_tag_values, live_library
+from backtrack.music_library import format_tag_values, library_entry, live_library
 from backbone import ui
 from backbone.prompt.core import Column, _table_widths
 from backbone.ui import Colors as C
 from backbone.log import quietly
 
 
-# Up-next context for the queue view: list of display titles + current index.
-_queue_ctx: dict = {'titles': [], 'paths': [], 'index': 0, 'meta': [], 'visible': []}
+# Up-next context for the queue view: list of display titles + current index,
+# and the queue keys' cursor (a queue position, or None to follow the current).
+_queue_ctx: dict = {'titles': [], 'paths': [], 'index': 0, 'meta': [], 'visible': [],
+                    'cursor': None}
 
 
 def set_queue_context(titles: list[str], index: int, paths: list[str] | None = None) -> None:
@@ -23,6 +25,24 @@ def set_queue_context(titles: list[str], index: int, paths: list[str] | None = N
     _queue_ctx['titles'] = titles
     _queue_ctx['paths'] = paths
     _queue_ctx['index'] = index
+    if _queue_ctx['cursor'] is not None:            # the queue may have shrunk
+        _queue_ctx['cursor'] = min(_queue_ctx['cursor'], len(titles) - 1) if titles else None
+
+
+def queue_cursor() -> int | None:
+    """The queue position the queue keys act on; None follows the current track."""
+    return _queue_ctx['cursor']
+
+
+def set_queue_cursor(pos: int | None) -> None:
+    n = len(_queue_ctx['titles'])
+    _queue_ctx['cursor'] = None if pos is None or not n else max(0, min(n - 1, pos))
+
+
+def move_queue_cursor(delta: int) -> None:
+    """Move the cursor a row, starting from the current track."""
+    cur = _queue_ctx['cursor']
+    set_queue_cursor((_queue_ctx['index'] if cur is None else cur) + delta)
 
 
 def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
@@ -40,7 +60,7 @@ def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
         }
         if i < len(paths):
             with quietly():
-                data = by_path.get(paths[i]) or get_metadata(paths[i])
+                data = library_entry(paths[i], by_path)
                 item['title'] = data.get('title') or item['title']
                 item['artist'] = data.get('artist') or ''
                 item['album'] = data.get('album') or ''
@@ -54,7 +74,6 @@ def has_queue() -> bool:
     return len(_queue_ctx['titles']) > 1
 
 
-_QUEUE_PLAYED_ABOVE = 2     # played tracks kept above the current one, for context
 
 
 _QUEUE_RIGHT_MARGIN = 2 * ui.MARGIN_H   # breathing room before the screen edge
@@ -90,16 +109,16 @@ def _place_queue(log, top: int, left: int, width: int, rows: int) -> bool:
 
 
 def _queue_window(total: int, current: int | None, rows: int) -> list[int]:
-    """Which queue positions fit in `rows`: the current track near the top with
-    up to _QUEUE_PLAYED_ABOVE played ones above it, then what's next; when the
-    end of the queue leaves room, more of what was played fills it."""
+    """Which queue positions fit in `rows`, in priority order: the current
+    track; then what comes after it, as far as it goes; then what was played
+    before it, nearest first, only once everything after it is showing."""
     if rows <= 0 or total <= 0:
         return []
     if current is None:
         return list(range(min(rows, total)))
-    start = max(0, current - _QUEUE_PLAYED_ABOVE)
-    start = max(0, min(start, total - rows))   # use spare rows at the end for history
-    return list(range(start, min(total, start + rows)))
+    after = min(total - current - 1, rows - 1)
+    before = min(current, rows - 1 - after)
+    return list(range(current - before, current + after + 1))
 
 
 def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
@@ -118,7 +137,10 @@ def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
     body_rows = max(0, max_rows - len(out))
     if body_rows <= 0:
         return out
+    cursor = _queue_ctx['cursor']
     visible_indices = _queue_window(total, current, body_rows)
+    if cursor is not None and cursor not in visible_indices:     # follow the cursor out
+        visible_indices = _queue_window(total, cursor, body_rows)
     _queue_ctx['visible'] = visible_indices          # row i+1 ↔ queue position, for clicks
 
     show_artist = _queue_should_show_artist(meta)
@@ -133,7 +155,8 @@ def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
     prefixes = []
     for item_idx in visible_indices:
         item = meta[item_idx] if item_idx < len(meta) else {'title': titles[item_idx], 'artist': '', 'album': '', 'album_artist': ''}
-        prefix = f"{C.ACCENT}▶ {C.RESET}" if item_idx == current else "  "
+        prefix = (f"{C.ACCENT}▶ {C.RESET}" if item_idx == current
+                  else f"{C.ACCENT}› {C.RESET}" if item_idx == cursor else "  ")
         if current is None:
             row_kind = 'next'
         elif item_idx < current:
@@ -157,7 +180,8 @@ def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
     for item_idx, row_kind, prefix in zip(visible_indices, row_kinds, prefixes):
         item = meta[item_idx] if item_idx < len(meta) else {'title': titles[item_idx], 'artist': '', 'album': '', 'album_artist': ''}
         meta_text = _queue_meta_value(item, same_album, same_album_compilation)
-        line = _render_queue_row(item, cols, specs, widths, row_kind, prefix, meta_text)
+        line = _render_queue_row(item, cols, specs, widths, row_kind, prefix, meta_text,
+                                 highlight=item_idx == cursor)
         rows.append(line)
 
     out.extend(rows)
@@ -241,7 +265,8 @@ def _queue_column_specs(columns: list[str]) -> list[Column]:
     ]
 
 
-def _render_queue_row(item: dict, columns: list[str], specs: list[Column], widths: list[int], row_kind: str, prefix: str, meta_text: str = '') -> str:
+def _render_queue_row(item: dict, columns: list[str], specs: list[Column], widths: list[int], row_kind: str,
+                      prefix: str, meta_text: str = '', highlight: bool = False) -> str:
     title = item.get('title', '')
     values = [title, meta_text] if columns else [title]
 
@@ -254,6 +279,8 @@ def _render_queue_row(item: dict, columns: list[str], specs: list[Column], width
     else:
         title_style = C.WHITE
         other_style = C.DIM
+    if highlight:                                  # under the queue keys' cursor
+        title_style = f"{C.BOLD}{C.ACCENT}"
 
     row = prefix
     first = True
@@ -265,10 +292,9 @@ def _render_queue_row(item: dict, columns: list[str], specs: list[Column], width
             if width <= 1:
                 text = ui.clip_ansi(raw, width)
             else:
-                clipped = ui.clip_ansi(raw, max(0, width - 1))
-                if clipped.endswith(C.RESET):
-                    clipped = clipped[:-len(C.RESET)]
-                text = clipped + '…'
+                # removesuffix, not a slice: with colour off RESET is "", and
+                # [:-0] would empty the title.
+                text = ui.clip_ansi(raw, max(0, width - 1)).removesuffix(C.RESET) + '…'
         else:
             text = raw
         text = text + ' ' * max(0, width - ui.visual_len(text))

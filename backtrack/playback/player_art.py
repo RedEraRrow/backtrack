@@ -9,27 +9,25 @@ import sys
 from backbone import ui
 from backtrack.playback.player_geom import geom
 from backbone.log import log
-from backtrack.album_art import get_art, get_art_bytes
+from backtrack.album_art import fit_art, get_art, get_art_bytes, get_art_from_mp3
 from backtrack.config import setting
 
 
 ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
 
 
-# When fitting art to the terminal height would only shave off a few columns, the
-# art lands in a "dead band": too narrow to fill edge-to-edge, too wide to leave a
-# clean volume-bar gutter, so the centred art shows thin, lopsided side margins.
-# Within this many columns of the full width, snap UP to full width and clip the
-# extra bottom pixel-row(s) instead, so the art is always either edge-to-edge or
-# has a comfortable gutter.
+# The empty player's note fills the full width when a square box would only be
+# this many columns narrower, so it doesn't sit in thin, lopsided margins. Only
+# the note: a cover is never cropped to reach full width (see _art_fit).
 _ART_SNAP_TO_FULL = 4
 
 
 _art_cache: dict = {}
 
 
-def _get_art_cached(file_path: str, width: int) -> str:
-    """Return the rendered album art for file_path at width, cached by (path, width, mtime)."""
+def _get_art_cached(file_path: str, width: int, booklet: bool = False) -> str:
+    """Return the rendered album art for file_path at width, cached by (path, width, mtime).
+    `booklet`: a grouping file's booklet image rather than its cover."""
     # Key on the file's mtime so editing the file (e.g. adding album art)
     # invalidates the cached render; otherwise a "No album art found." result
     # would stick until the program restarts.
@@ -37,13 +35,12 @@ def _get_art_cached(file_path: str, width: int) -> str:
         mtime = os.path.getmtime(file_path)
     except OSError:
         mtime = 0.0
-    key = (file_path, width, mtime)
+    key = (file_path, width, mtime, booklet, ui.cell_aspect())
     if key not in _art_cache:
-        # Drop stale-mtime entries for this file+width so repeated edits don't
-        # grow the cache unbounded.
-        for k in [k for k in _art_cache if k[0] == file_path and k[1] == width and k[2] != mtime]:
-            del _art_cache[k]
-        _art_cache[key] = get_art(file_path, width=width)
+        if len(_art_cache) > 64:             # every width a drag passes through
+            _art_cache.clear()
+        _art_cache[key] = (get_art_from_mp3(file_path, width, preferred_desc='Booklet', preferred_type=6)
+                           if booklet else get_art(file_path, width=width))
     return _art_cache[key]
 
 
@@ -78,7 +75,7 @@ def art_image_incomplete() -> bool:
     return _inline_art['incomplete']
 
 
-_inline_art_cache: dict = {}             # (path, mtime, cols, rows) → (base64, byte count)
+_inline_art_cache: dict = {}             # (path, mtime, cols, rows, px, cell) → (base64, byte count)
 
 
 _INLINE_PX_PER_COL = 10                  # image pixels per cell column: sharp on a Retina
@@ -154,7 +151,7 @@ def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
     import base64
     import cv2
     try:
-        key = (file_path, os.path.getmtime(file_path), cols, rows, px)
+        key = (file_path, os.path.getmtime(file_path), cols, rows, px, ui.cell_aspect())
     except OSError:
         return None
     if key not in _inline_art_cache:
@@ -166,9 +163,12 @@ def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
             raw, img = dec
             data = raw
             if img is not None and cols and rows:
-                size = (cols * px, rows * 2 * px)           # cells are ~1:2
-                if size[0] < img.shape[1]:                  # only ever scale down
-                    img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
+                # One factor for both sides, so the image keeps its proportions;
+                # the terminal fits it to the cells (preserveAspectRatio=1).
+                f = min(cols * px / img.shape[1], rows * ui.cell_aspect() * px / img.shape[0])
+                if f < 1:                                   # only ever scale down
+                    img = cv2.resize(img, (max(1, round(img.shape[1] * f)), max(1, round(img.shape[0] * f))),
+                                     interpolation=cv2.INTER_AREA)
                 quality = 70 if px == _INLINE_PREVIEW_PX else 85
                 ok, jpg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, quality])
                 if ok and len(jpg) < len(raw):              # a heavy original still shrinks
@@ -229,7 +229,7 @@ def _send_image(path: str, px: int, chunked: bool = False) -> bool:
     b64, size = data
     head = (f"\0337\033[{geom.art_top};{(geom.art_left or 0) + 1}H"
             f"\033]1337;File=inline=1;size={size};width={geom.art_width};"
-            f"height={geom.art_height};preserveAspectRatio=0;doNotMoveCursor=1:")
+            f"height={geom.art_height};preserveAspectRatio=1;doNotMoveCursor=1:")
     if not chunked:
         sys.stdout.write(head + b64 + "\a\0338")
         return True
@@ -256,6 +256,8 @@ def _send_image(path: str, px: int, chunked: bool = False) -> bool:
 # the box a square cover takes, so it scales with the window. The layout swaps
 # this marker for the drawing (see _art_fit).
 IDLE_ART = "♫"
+# A grouping (audiobook-style) file shows its booklet image instead of its cover.
+GROUP_COVER = "booklet"
 _NOTE_W, _NOTE_H = 56, 64                # the note's design grid, in braille dots
 _NOTE_FILL = 0.6                         # share of the cover box the note spans
 _BRAILLE_DOTS = ((0, 0, 0x01), (0, 1, 0x02), (0, 2, 0x04), (1, 0, 0x08),
@@ -307,7 +309,7 @@ def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
     won't decode, or a group cover, which is a composite of several."""
     art_str, lines = _art_fit(file_path, max_w, avail_h, pre_art)
     _inline_art['path'] = None
-    mean = _cover_mean(file_path) if (lines and not pre_art and inline_art_enabled()) else None
+    mean = _cover_mean(file_path) if (lines and pre_art is None and inline_art_enabled()) else None
     if mean:
         w = max(ui.visual_len(l) for l in lines)
         lines = [f"\033[48;2;{mean[0]};{mean[1]};{mean[2]}m{' ' * w}\033[0m" for _ in lines]
@@ -317,29 +319,13 @@ def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
 
 def _art_fit(file_path: str, max_w: int, avail_h: int,
              pre_art: str | None) -> tuple[str, list[str]]:
-    """Fetch art at max_w; if the rendered output exceeds avail_h rows,
-    compute a narrower width from the actual aspect ratio and re-fetch."""
+    """The art at the widest width up to max_w that fits avail_h rows, through
+    album_art.fit_art: narrowed to fit, never cropped or stretched. `pre_art` is
+    IDLE_ART for the empty player's note, GROUP_COVER for a grouping file's
+    booklet image, else None for the file's cover."""
     if pre_art is IDLE_ART:
         lines = _idle_art_lines(max_w, avail_h)
-        return "\n".join(lines), lines
-    art_str = pre_art if pre_art else _get_art_cached(file_path, width=max_w)
-    lines = art_str.splitlines()
-    if not lines or len(lines) <= avail_h:
-        return art_str, lines
-    if pre_art:                          # nothing to re-fetch it from: clip
-        return art_str, lines[:avail_h]
-
-    actual_h = len(lines)
-    actual_w = max((ui.visual_len(l) for l in lines), default=max_w)
-    ratio = actual_w / actual_h if actual_h > 0 else 2.0
-    fit_w = max(10, min(max_w - 1, int(avail_h * ratio)))
-
-    # Snap-to-full: if fitting to height only trims a handful of columns, keep the
-    # full width and clip the extra bottom row(s) rather than sit in the dead band
-    # (see _ART_SNAP_TO_FULL). Larger deficits fall through to a genuine re-fetch.
-    if max_w - fit_w <= _ART_SNAP_TO_FULL:
-        return art_str, lines[:avail_h]
-
-    art_str2 = _get_art_cached(file_path, width=fit_w)
-    lines2 = art_str2.splitlines()
-    return art_str2, lines2[:avail_h]  # safety cap in case ratio was off
+    else:
+        booklet = pre_art is GROUP_COVER
+        lines = fit_art(lambda w: _get_art_cached(file_path, w, booklet), max_w, avail_h)
+    return "\n".join(lines), lines

@@ -12,6 +12,9 @@ class _Geom:
         self.art_left: int | None = None
         self.art_top: int | None = None
         self.art_height: int | None = None
+        # Whether the blank row under the art is drawn: the layout gives it up
+        # to make the art a column wider (even sides); the volume label sits there.
+        self.art_gap: bool = True
         # Explicit 1-based column where the volume bar is drawn (None = no room).
         self.vol_bar_col: int | None = None
         # Right pane in the wide layout: 1-based start column and width.
@@ -33,9 +36,10 @@ class _Geom:
 
     def reset_frame(self) -> None:
         """Clear what each frame lays out afresh (all of it), so a layout that
-        doesn't set one (minimal has no side pane) can't inherit the last
+        doesn't set one (the single column has no side pane) can't inherit the last
         frame's. The progress bar keeps its own, set by update_progress_ui."""
         self.art_width = self.art_left = self.art_top = self.art_height = None
+        self.art_gap = True
         self.vol_bar_col = self.right_left = self.right_width = None
         self.lyric_centre = None
         self.lyric_left = self.lyric_width = None

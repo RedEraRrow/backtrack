@@ -6,6 +6,8 @@ from mutagen.id3 import ID3
 import cv2
 import numpy as np
 
+from backbone import ui
+
 def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
     """Render image bytes as ANSI half-block characters for terminal display."""
     # 1. Decode bytes to image (keep any alpha so transparent PNGs aren't mangled).
@@ -24,28 +26,26 @@ def render_native_half_block(img_bytes: bytes, width: int = 100) -> str:
         gray = (img[:, :, 0:1].astype(np.float32) * alpha).astype(np.uint8)
         img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-    # 2. Resize maintaining aspect ratio
-    # Terminal cells are ~2:1 (tall:wide); half-blocks give 2 pixel rows per char row,
-    # so those factors cancel: resize to full pixel height, step-by-2 does the rest.
+    # 2. Resize keeping the image's proportions on screen. Each cell shows one
+    # pixel column and two pixel rows, so a pixel row is half a cell tall:
+    # `ui.cell_aspect()` (cell height over width) says how many rows square pixels need.
     width = max(1, width)
-    aspect_ratio = img.shape[0] / img.shape[1]
-    # Round to an even height >= 2 so the final char row always has both pixels
-    # (no black sliver on odd-height art) and resize never gets a zero dimension.
-    height = int(width * aspect_ratio)
-    height = max(2, height - (height % 2))
+    height = max(1, round(width * img.shape[0] / img.shape[1] * 2 / ui.cell_aspect()))
     img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
 
-    # 3. Convert to ANSI half-blocks (U+2580): top pixel as foreground, bottom as background
+    # 3. Convert to ANSI half-blocks (U+2580): top pixel as foreground, bottom as
+    # background. An odd height leaves the last row's bottom half the terminal's
+    # own background, rather than repeating a pixel row.
     output = []
     for y in range(0, img.shape[0], 2):
         for x in range(img.shape[1]):
             top = img[y, x]
-            bottom = img[y+1, x] if y + 1 < img.shape[0] else top
-            
-            # ANSI escape sequence for Foreground (top) and Background (bottom)
-            output.append(f"\033[38;2;{top[2]};{top[1]};{top[0]}m"
-                          f"\033[48;2;{bottom[2]};{bottom[1]};{bottom[0]}m"
-                          "\u2580")
+            if y + 1 < img.shape[0]:
+                bottom = img[y + 1, x]
+                bg = f"\033[48;2;{bottom[2]};{bottom[1]};{bottom[0]}m"
+            else:
+                bg = "\033[49m"
+            output.append(f"\033[38;2;{top[2]};{top[1]};{top[0]}m{bg}\u2580")
         output.append("\033[0m\n")
     return "".join(output)
 
@@ -145,3 +145,25 @@ def get_art(file_path: str, width: int = 100) -> str:
         raw = get_art_bytes(file_path)
         return render_album_art(raw, width=width, is_bytes=True) if raw else "No album art found."
     return get_art_from_image_file(file_path, width)
+
+
+def fit_art(render, max_w: int, avail_h: int) -> list[str]:
+    """`render(width)`'s lines at the widest width up to `max_w` that is at most
+    `avail_h` rows tall. Only ever narrows: never crops or stretches. Empty when
+    not even one column fits. Every place that shows art sizes it through here."""
+    w = max(1, max_w)
+    lines = render(w).splitlines()
+    while len(lines) > avail_h:
+        if w == 1:
+            return []
+        # Straight to the proportional width, then a column at a time for rounding.
+        w = max(1, min(w - 1, w * avail_h // len(lines)))
+        lines = render(w).splitlines()
+    # The proportional guess can land short: take every column that still fits,
+    # so a wider window never gets narrower art.
+    while w < max_w:
+        wider = render(w + 1).splitlines()
+        if len(wider) > avail_h:
+            break
+        w, lines = w + 1, wider
+    return lines

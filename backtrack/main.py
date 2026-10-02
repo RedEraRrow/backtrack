@@ -48,17 +48,18 @@ def _take_player_if_free(link, info: dict) -> None:
     open_client_player_view()
 
 
-def _maybe_join_session() -> None:
+def _maybe_join_session() -> bool:
     """If other Backtrack windows are already running, offer to join one of their
-    sessions (mirror + control it) or start a fresh one (#14)."""
+    sessions (mirror + control it) or start a fresh one (#14). Returns whether
+    any were running."""
     try:
         from backtrack.playback import ipc
         from backtrack.playback import session as sess
     except Exception:
-        return
+        return False
     sessions = ipc.list_sessions()
     if not sessions:
-        return
+        return False
     choices = [prompt.Choice(title="Start a new session (this window plays its own audio)",
                              value="__new__")]
     for s in sessions:
@@ -67,7 +68,7 @@ def _maybe_join_session() -> None:
         choices.append(prompt.Choice(title=f"Join: {s.get('label', 'Session')}{now}", value=s))
     pick = prompt.select("Another Backtrack session is running:", choices=choices)
     if not isinstance(pick, dict):           # None/back or "__new__" → host a new one
-        return
+        return True
     from typing import cast
     info = cast(dict, pick)
     sock = info["socket"]
@@ -83,12 +84,34 @@ def _maybe_join_session() -> None:
         _take_player_if_free(link, info)
     else:
         ui.show_status("Could not join that session, starting a new one.")
+    return True
+
+
+def _maybe_resume() -> None:
+    """If the last run left a queue, offer to pick it up where it stopped or
+    start fresh, as joining a session is offered. Esc decides later: the queue
+    is kept and offered again next time."""
+    from backtrack.playback.session import forget_saved_queue, saved_queue
+    from backtrack.menus.play import resume_queue
+    saved = saved_queue()
+    if not saved:
+        return
+    i, n = saved['index'], len(saved['queue'])
+    at = f" at {ui.format_time(int(saved['elapsed']))}" if saved['elapsed'] >= 1 else ""
+    pick = prompt.select("You were listening to:", choices=[
+        prompt.Choice(title=f"Resume  {saved['titles'][i]}{at} · {i + 1} of {n}", value="resume"),
+        prompt.Choice(title="Start fresh (forget it)", value="fresh"),
+    ])
+    if pick == "resume":
+        resume_queue()
+    elif pick == "fresh":
+        forget_saved_queue()
 
 
 def _run(config: dict) -> None:
     """Load or build the library and hand off to the main menu; first run prompts
     for a music directory and builds the cache from scratch."""
-    _maybe_join_session()
+    others = _maybe_join_session()
     # The player owns the volume: bind the live dict so the level it restores (and
     # any change made while playing) is what a later save writes.
     SESSION.bind_config(config)
@@ -103,6 +126,9 @@ def _run(config: dict) -> None:
         ui.show_status(f"Library: {ui.plural(len(library), 'track')}.")
         # Keep the cache fresh in the background (adds/removes/edits).
         start_background_sync(library)
+        # A running session's queue is its own, live: offered as a join above.
+        if not others:
+            _maybe_resume()
 
         library_ref = [library]
         # No save on the way out: everything that changes a setting saves it

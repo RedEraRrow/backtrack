@@ -62,7 +62,7 @@ from backtrack.trim.editor import (
     _run_marking_screen, _track_title_artist, resolve_chapters,
 )
 from backbone import prompt
-from backbone import ui
+from backbone import keys, ui
 from backbone.ui import Colors as C
 from backbone import timefmt
 from backtrack.config import setting
@@ -283,7 +283,7 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
 
             key = get_key_non_blocking()
             if key:
-                if key in ('\x1b', 'ESC', 'q', 'Q'):
+                if key == '\x1b' or keys.action(key, 'trim') in ('trim.back', 'trim.quit'):
                     interrupted = True
                     break
     ui.set_status(task_id, None)
@@ -380,8 +380,8 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
     picked = prompt.select(
         "Candidate stings found (shared with another track in the group):",
         choices=choices,
-        on_inspect=_audition if mp is not None else None, inspect_key='p',
-        extra_hints={'p': 'audition'} if mp is not None else None,
+        on_inspect=_audition if mp is not None else None, inspect_key='trim_lists.audition',
+        extra_hints={'trim_lists.audition': 'audition'} if mp is not None else None,
     )
     if mp:
         try: mp.stop()

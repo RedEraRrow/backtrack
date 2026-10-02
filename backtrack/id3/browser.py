@@ -23,7 +23,7 @@ from mutagen.id3._frames import APIC
 from backbone import ui
 from backbone.prompt.core import _visible_rows
 from backbone.ui import Colors as C, get_terminal_width
-from backtrack.album_art import render_album_art
+from backtrack.album_art import fit_art, render_album_art
 from backtrack.music_library import drop_moved, refresh_library_entry, track_title, first_text
 
 from backtrack.id3.tag_handler import (
@@ -645,21 +645,20 @@ def _art_rows_available(reserved_rows: int) -> int:
 def _art_width(reserved_rows: int = 0) -> int:
     """Art width in cells for the space left after `reserved_rows` of chrome.
 
-    Half-block rendering packs two pixel rows into a cell, so a square image is
-    about half as many rows tall as it is wide, hence the doubling. Capped at
-    `_ART_MAX_WIDTH` so a big window gets a comfortable thumbnail rather than
-    wallpaper.
+    A square image is `ui.cell_aspect()` (about 2) times as many cells wide as
+    rows tall. Capped at `_ART_MAX_WIDTH` so a big window gets a comfortable
+    thumbnail rather than wallpaper.
     """
     art_rows = max(3, _art_rows_available(reserved_rows))
     cols = get_terminal_width() - 2 * ui.MARGIN_H - 4     # box + margins
-    return max(12, min(cols, art_rows * 2, _ART_MAX_WIDTH))
+    return max(12, min(cols, int(art_rows * ui.cell_aspect()), _ART_MAX_WIDTH))
 
 
 def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0) -> list[str]:
     """The art in a rounded box, centred, comfortably sized for what's left.
 
-    Rendered, measured, and re-rendered narrower if it still doesn't fit: the
-    same fit-to-height approach the player view uses.
+    Narrowed to fit the height by album_art.fit_art, as the player does: never
+    cropped or stretched.
     """
     avail_rows = _art_rows_available(reserved_rows)
     if avail_rows < _MIN_ART_ROWS:
@@ -668,13 +667,7 @@ def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0) -> list[str]:
         return [f"{' ' * ui.MARGIN_H}{C.DIM}(art hidden: window too short){C.RESET}"]
 
     width = _art_width(reserved_rows)
-    art = _apic_art(apic_frame, width).splitlines()
-    if len(art) > avail_rows:
-        # Taller than the space at this width (a portrait image): shrink in
-        # proportion to how far over it is, then hard-clip as a backstop.
-        width = max(12, int(width * avail_rows / len(art)))
-        art = _apic_art(apic_frame, width).splitlines()[:avail_rows]
-
+    art = fit_art(lambda w: _apic_art(apic_frame, w), width, avail_rows)
     inner = max((ui.visual_len(l) for l in art), default=width)
     pad = " " * max(ui.MARGIN_H, (get_terminal_width() - inner - 4) // 2)   # centred
     return ([f"{pad}{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}"]
@@ -687,7 +680,7 @@ def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0) -> list[str]:
 def _apic_art(apic_frame: APIC, width: int) -> str:
     """Terminal art for an APIC frame, cached so a redraw costs nothing."""
     data = getattr(apic_frame, 'data', b"") or b""
-    key = (hash(data), width)
+    key = (hash(data), width, ui.cell_aspect())
     art = _ART_CACHE.get(key)
     if art is None:
         art = _convert_apic_to_viu(apic_frame, width=width)
@@ -752,7 +745,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
         left_plain = tag_txt + detail
 
         inner = max(12, get_terminal_width() - 2 * ui.MARGIN_H - 4)
-        toggle_w = prompt.help_corner_text()[1] + 2          # the hints toggle shares the row
+        toggle_w = prompt.help_toggle_width() + 2           # the room the header keeps for the toggle
         lines = prompt.rounded_header(
             tag_txt, detail,
             _apic_facts(apic_frame, max(0, inner - len(left_plain) - 2 - toggle_w)))
@@ -948,8 +941,6 @@ def inspect_tag_loop(
             break
         tags = sorted(audio.keys())
 
-        cols = ui.get_terminal_width()
-
         def _tag_cells(tag_id: str) -> list:
             """Build the [id+name, category, value] row cells for one tag in the list."""
             # Column 1 = TAG (bright) + friendly name (dim) as two segments.
@@ -979,13 +970,13 @@ def inspect_tag_loop(
             prompt.Choice(title=t, value=t, cells=_tag_cells(t)) for t in tags
         ]
         has_id3 = file_path.lower().endswith('.mp3')
-        _shortcuts = {'a': 'Add Tag'} if has_id3 else {}
-        _extra_hints = {'a': 'add tag'} if has_id3 else {}
+        _shortcuts = {'tags.add': 'Add Tag'} if has_id3 else {}
+        _extra_hints = {'tags.add': 'add tag'} if has_id3 else {}
         if _has_trim:
             # A keyboard shortcut rather than a row: "Trim" as a row here would
             # read like a tag, not an action, so the footer hint spells it out.
-            _shortcuts['t'] = '__trim__'
-            _extra_hints['t'] = 'trim audio'
+            _shortcuts['tags.trim'] = '__trim__'
+            _extra_hints['tags.trim'] = 'trim audio'
 
         choice = prompt.select(
             "Select tag to manage:",
@@ -1017,12 +1008,10 @@ def inspect_tag_loop(
             continue
 
         if choice == "__filepath__":
-            _fp_header = [
-                f"  {C.BOLD}File path{C.RESET}  {C.DIM}(filesystem location, not stored in ID3){C.RESET}",
-                f"{C.DIM}{'─' * cols}{C.RESET}",
-                f"  {file_path}",
-                f"{C.DIM}{'─' * cols}{C.RESET}",
-            ]
+            def _fp_header() -> list[str]:
+                rule = f"{C.DIM}{'─' * ui.get_terminal_width()}{C.RESET}"
+                return [f"  {C.BOLD}File path{C.RESET}  {C.DIM}(filesystem location, not stored in ID3){C.RESET}",
+                        rule, f"  {file_path}", rule]
             fp_action = prompt.select(
                 "Action:",
                 choices=["Copy path to clipboard"],

@@ -16,7 +16,7 @@ import mutagen.id3
 import os
 import re
 import time
-from backbone import prompt, ui
+from backbone import keys, prompt, ui
 from backbone.prompt import chrome as prompt_chrome
 from backtrack.config import setting
 from backbone.log import quietly
@@ -28,6 +28,13 @@ _EXT_TO_MIME: dict[str, str] = {
     '.png': 'image/png', '.gif': 'image/gif',
     '.bmp': 'image/bmp', '.webp': 'image/webp',
 }
+
+
+keys.define("tags", "Tag editor", [
+    ("add", ("a",), "add a tag, or a person"),
+    ("trim", ("t",), "trim the audio"),
+    ("details", ("d",), "the row's details (description, cover, preview)"),
+], within=("list", "global"))
 
 
 def _prompt_for_image_file() -> bytes | None:
@@ -213,16 +220,16 @@ def _prompt_for_image_metadata(*, initial_type: int = 3, initial_desc: str = '',
     sel = prompt.select("Picture type:",
                         choices=choices, columns=_IMAGE_META_COLUMNS, index=index,
                         header=header() if header else None,
-                        row_actions={'d': _edit_desc},
-                        row_action_hints={'d': 'description'})
+                        row_actions={'tags.details': _edit_desc},
+                        row_action_hints={'tags.details': 'description'})
     if not isinstance(sel, int):
         return None
     return sel, desc
 
 
 # "Various Artists" is *derived*, never stored: the app works it out from the
-# tracks (see music_library.derive_album_credit) and shows it wherever a
-# compilation has no single artist. Writing it into a tag turns an inference into
+# compilation flag and the tracks (see music_library.album_credit) and shows it
+# wherever a compilation has no single artist. Writing it into a tag turns an inference into
 # data that then has to be maintained, and it hides the real per-track artists.
 # The compilation flag (TCMP) is the thing worth storing.
 _PLACEHOLDER_NAMES = frozenset({

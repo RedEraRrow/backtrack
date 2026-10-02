@@ -5,12 +5,11 @@ from backbone import prompt
 from backbone import ui
 from backtrack.music_library import format_tag_values, track_title
 from backtrack.history import get_history
-from backtrack.playback.player import music_player
 from backtrack.config import load_config
 from backtrack.id3.browser import inspect_tag_loop
 from backtrack.id3.bulk_menu import bulk_id3_manager
 from backtrack.menus.common import _menu_header
-from backtrack.menus.play import _queue_shortcut_kwargs
+from backtrack.menus.play import _queue_shortcut_kwargs, play_picked
 from backtrack.config import setting
 
 
@@ -121,11 +120,12 @@ def _history_screen(library: list, place):
         columns=_HISTORY_COLUMNS,
         header=_menu_header("Listening History", f"{len(history_entries)} recent"),
         on_inspect=_inspect_history if _show_editor else None,
-        inspect_key='e',
+        inspect_key='library.edit',
+        choose_label="Play",
         place=place,
-        shortcuts={'E': '__bulk_edit__'} if _show_editor else None,
-        extra_hints={'e': 'edit', 'E': 'edit all'} if _show_editor else None,
-        **_queue_shortcut_kwargs(library),
+        shortcuts={'library.edit_all': '__bulk_edit__'} if _show_editor else None,
+        extra_hints={'library.edit': 'edit', 'library.edit_all': 'edit all'} if _show_editor else None,
+        **_queue_shortcut_kwargs(library, list_paths=[p for _, _, p in history_entries]),
     )
     if not selected:
         return None
@@ -135,7 +135,9 @@ def _history_screen(library: list, place):
         bulk_id3_manager(library, paths=list(dict.fromkeys(p for _, _, p in history_entries)))
         return "again"
 
-    ui.clear_screen()
-    music_player(selected)
-    ui.clear_screen()
+    # The same track can be in the history twice: the row picked is where the
+    # list was left, and older plays follow it as the after-pick setting says.
+    paths = [p for _, _, p in history_entries]
+    pick = place.pos if 0 <= place.pos < len(paths) and paths[place.pos] == selected else paths.index(selected)
+    play_picked(paths, pick, library)
     return "again"

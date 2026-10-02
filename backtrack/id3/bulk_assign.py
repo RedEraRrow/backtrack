@@ -104,7 +104,7 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
         sub = f"{ui.plural(total, 'file')} · Enter a row to edit/remove"
         sel = prompt.select(f"Bulk edit {label}:", choices=choices,
                             columns=_PEOPLE_COLUMNS, header=header(sub),
-                            shortcuts={'a': '__add__'}, extra_hints={'a': 'add'})
+                            shortcuts={'tags.add': '__add__'}, extra_hints={'tags.add': 'add'})
         if sel is None:
             return                                          # cancel: no writes
         if sel == '__add__':

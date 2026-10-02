@@ -6,16 +6,15 @@ from backbone import prompt
 from backbone import ui
 from backtrack.music_library import (
     get_grouped_data, get_group_sort_key, format_tag_values, to_num, sort_tracks, sort_albums,
-    resolve_levels, library_of,
+    resolve_levels, library_of, album_credit,
 )
-from backtrack.playback.player import music_player
 from backtrack.config import load_config, music_dirs, library_name
 from backbone.nav import NAV_STACK
 from backtrack.id3.browser import inspect_tag_loop
 from backtrack.id3.bulk_menu import bulk_id3_manager
-from backtrack.menus.common import BROWSE_CATEGORIES, _ALBUM_COLUMNS, _TRACK_COLUMNS, _album_artist_of, _commit, _idx_of, _menu_header, browse_menu_keys
+from backtrack.menus.common import BROWSE_CATEGORIES, _ALBUM_COLUMNS, _TRACK_COLUMNS, _commit, _idx_of, _menu_header, browse_menu_keys
 from backtrack.menus.play import (
-    _edit_paths, _list_actions, _list_result, _queue_shortcut_kwargs, _sorted_paths, play_queue,
+    _edit_paths, _list_actions, _list_result, _queue_shortcut_kwargs, _sorted_paths, play_picked, play_queue,
 )
 from backtrack.menus.sorting import _GROUP_SORTS, _pick_chain, _pick_sort, _sort_groups
 from backtrack.config import setting
@@ -82,10 +81,10 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
             # Play / shuffle / edit act on everything listed (scope is in the
             # header above); sort and the `/` view toggle sit beside them.
             _sc: dict = {}
-            _eh: dict = {"e": "edit"} if _show_editor else {}
+            _eh: dict = {"library.edit": "edit"} if _show_editor else {}
             if _can_letter:
-                _sc["/"] = "__toggle__"
-                _eh["/"] = "full list" if _letter_mode else "by letter"
+                _sc["library.letters"] = "__toggle__"
+                _eh["library.letters"] = "full list" if _letter_mode else "by letter"
 
             group_paths = None
             if _letter_mode:
@@ -103,8 +102,8 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     names = sort_albums(names, grouped, _cfg)
                 else:
                     names = _sort_groups(names, grouped, _cat_key, _group_sort)
-                _sc["s"] = "__sort__"
-                _eh["s"] = "sort"
+                _sc["library.sort"] = "__sort__"
+                _eh["library.sort"] = "sort"
                 _choices = []
                 group_paths = {name: [t['path'] for t in sort_tracks(grouped[name], _cfg)]
                                for name in names}
@@ -114,7 +113,7 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     for _a in names:
                         _choices.append(prompt.Choice(
                             title=_a, value=_a,
-                            cells=[_a, format_tag_values(_album_artist_of(grouped[_a]))]))
+                            cells=[_a, format_tag_values(album_credit(grouped[_a]))]))
                     _group_cols = _ALBUM_COLUMNS
                 else:
                     _choices += names
@@ -138,7 +137,8 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                 extra_hints=_eh,
                 actions=_list_actions(_show_editor),
                 on_inspect=_edit_group if _show_editor else None,
-                inspect_key='e',
+                inspect_key='library.edit',
+                choose_label="Open",
                 place=_group_place,
                 **_queue_shortcut_kwargs(library, group_paths=group_paths),
             )
@@ -199,16 +199,16 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     _single_album = len(album_list) <= 1
                     _alb_choices: list = []
                     _asc: dict = {}
-                    _aeh: dict = {"e": "edit"} if _show_editor else {}
+                    _aeh: dict = {"library.edit": "edit"} if _show_editor else {}
                     if not _single_album:
-                        _asc["s"] = "__sort__"; _aeh["s"] = "sort"
+                        _asc["library.sort"] = "__sort__"; _aeh["library.sort"] = "sort"
                     # Show the album artist (dimmed) when it differs from the
                     # artist/genre we're browsing under.
                     for _a in album_list:
                         # Compare the *displayed* credit with the group we're under:
                         # an artist group is now named after the whole billing, so
                         # "Ada Lark, Bo Vale" matches and the column stays empty.
-                        _aa = format_tag_values(_album_artist_of(albums[_a]))
+                        _aa = format_tag_values(album_credit(albums[_a]))
                         _aa = _aa if (_aa and _aa.lower() != selection.lower()) else ""
                         _alb_choices.append(prompt.Choice(
                             title=_a, value=_a, cells=[_a, _aa]))
@@ -225,7 +225,8 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         actions=None if _single_album else _list_actions(_show_editor),
                         on_inspect=((lambda a: _edit_paths(library, album_paths[a], a))
                                     if _show_editor else None),
-                        inspect_key='e',
+                        inspect_key='library.edit',
+                        choose_label="Open",
                         place=_album_place,
                         **_queue_shortcut_kwargs(library, group_paths=album_paths),
                     )
@@ -314,17 +315,17 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                     # Play / shuffle / edit-all hints; `e` edits the highlighted
                     # row. With a single track they're noise: the lone
                     # track row already does both jobs.
-                    _teh: dict = {"e": "edit"} if _show_editor else {}
+                    _teh: dict = {"library.edit": "edit"} if _show_editor else {}
                     _tsc: dict = {}
                     _track_actions = None
                     if len(final_tracks) > 1:
                         _track_actions = _list_actions(
                             _show_editor, albums=len({(t.get('album'), t.get('album_artist'))
                                                       for t in final_tracks}) > 1)
-                        _tsc["s"] = "__sort__"; _teh["s"] = "sort"
+                        _tsc["library.sort"] = "__sort__"; _teh["library.sort"] = "sort"
 
                     # Album artist shown in the header subtitle.
-                    _album_artist = format_tag_values(_album_artist_of(final_tracks))
+                    _album_artist = format_tag_values(album_credit(final_tracks))
                     _subtitle = _album_artist or (selection if _track_context != selection else cat_choice)
 
                     _all_track_choices = track_choices
@@ -352,10 +353,12 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                         actions=_track_actions,
                         place=_track_place,
                         on_inspect=_inspect_track if _show_editor else None,
-                        inspect_key='e',
+                        inspect_key='library.edit',
+                        choose_label="Play",
                         **_queue_shortcut_kwargs(library,
                                                  disc_track_map=disc_track_map,
-                                                 work_track_map=work_track_map),
+                                                 work_track_map=work_track_map,
+                                                 list_paths=[t['path'] for t in final_tracks]),
                     )
 
                     if not path_choice_obj:
@@ -399,11 +402,11 @@ def browse_menu(library_ref: list, cat: str, scope: str | None = None) -> str | 
                             bulk_id3_manager(library, paths=work_paths)
                         continue
 
-                    # A track plays directly; metadata editing is `e`/`E` on
-                    # the "Tracks:" list above, not a separate action page.
-                    ui.clear_screen()
-                    music_player(path_choice_obj)
-                    ui.clear_screen()
+                    # A track plays directly, with the list after it as the
+                    # after-a-picked-track setting says; metadata editing is
+                    # `e`/`E` on the "Tracks:" list above.
+                    _list_paths = [t['path'] for t in final_tracks]
+                    play_picked(_list_paths, _list_paths.index(path_choice_obj), library)
 
                 if _albums_level:
                     NAV_STACK.pop()

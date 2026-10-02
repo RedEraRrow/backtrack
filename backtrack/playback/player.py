@@ -13,16 +13,13 @@ import sys
 from backbone.nav import QuitToTerminal
 import time
 
-from backbone import ui
-from backtrack.album_art import get_art_from_mp3
+from backbone import keys, ui
 from backtrack.lyrics import lyric_pane
 from backtrack.lyrics.formats import (
     _parse_sylt, _parse_uslt, build_uslt_line_times, DialoguePlaybackState,
 )
 from backtrack.playback.player_ui import (
     _controls_line,
-    _layout_mode,
-    ART_MAX_WIDTH,
     draw_full_ui,
     update_progress_ui,
     _ui_state,
@@ -32,7 +29,7 @@ from backtrack.playback.player_ui import (
 )
 from backtrack.playback import player_ui
 from backtrack.playback.player_geom import geom
-from backtrack.playback.player_art import IDLE_ART
+from backtrack.playback.player_art import GROUP_COVER, IDLE_ART
 from backbone.log import log
 from backtrack.music_library import drop_moved
 from backbone.prompt import core as pc
@@ -49,18 +46,6 @@ _KEY_POLL_INTERVAL_S = tune.KEY_POLL_INTERVAL_S
 _LOOP_TICK_S = tune.LOOP_TICK_S
 
 
-def _render_grouping_cover(file_path: str, cols: int) -> str:
-    """Render the booklet/cover image for a grouping (audiobook-style) file, sized to the layout mode."""
-    mode = _layout_mode(cols)
-    if mode == 'wide':
-        art_w = min(cols // 2, ART_MAX_WIDTH)
-    elif mode == 'standard':
-        art_w = min(cols, ART_MAX_WIDTH)
-    else:
-        art_w = min(45, max(1, cols))
-    return get_art_from_mp3(file_path, art_w, preferred_desc='Booklet', preferred_type=6)
-
-
 def _show_load_error(file_path: str) -> None:
     """Show a 'could not load' screen and wait for a keypress."""
     ui.clear_screen()
@@ -75,9 +60,13 @@ def _show_load_error(file_path: str) -> None:
 
 def music_player(file_path: str, is_grouping: bool = False,
                  queue_titles: list[str] | None = None, queue_index: int = 0,
-                 queue_paths: list[str] | None = None, mode: str | None = None) -> dict:
+                 queue_paths: list[str] | None = None, mode: str | None = None,
+                 then: str | None = None, start_at: float = 0.0) -> dict:
     """Start the shared session on ``file_path`` (with its queue) and open the
     player view. Audio keeps playing after the view is left; only Stop ends it.
+    ``then``: a track picked from the list ``queue_paths``, played as the
+    after-a-picked-track setting says (session.AFTER_PICK), not as a new queue.
+    ``start_at``: seconds into the track to start from (Resume).
     Returns a status
     dict: ``DETACH`` (minimised, still playing), ``STOP``, ``OK`` (queue
     finished), or ``ERROR``; q raises QuitToTerminal."""
@@ -97,14 +86,23 @@ def music_player(file_path: str, is_grouping: bool = False,
     # In a joined (client) window the audio lives in the host process: send the
     # play there and stay in this window's menus (the host's now-playing box
     # updates via the mirror). Ctrl-O opens the client player view.
+    from backtrack.playback.session import active_session
+    session = active_session()
+
+    def _play() -> bool:
+        if then is not None:
+            return session.edit('play_picked', paths=paths, index=queue_index, then=then,
+                                titles=queue_titles)
+        ok = session.start(file_path, queue=paths, titles=queue_titles, index=queue_index,
+                           mode=mode, is_grouping=is_grouping)
+        if ok and start_at:
+            session.seek(start_at)              # from the track's start, just loaded
+        return ok
     if is_client():
-        from backtrack.playback.session import active_session
-        active_session().start(file_path, queue=paths, titles=queue_titles,
-                               index=queue_index, mode=mode, is_grouping=is_grouping)
+        _play()
         ui.show_status("▶ Sent to the session host.")
         return {"status": "OK"}
-    ok = SESSION.start(file_path, queue=paths, titles=queue_titles, index=queue_index,
-                       mode=mode, is_grouping=is_grouping)
+    ok = _play()
     if not ok:
         _show_load_error(file_path)
         return {"status": "ERROR"}
@@ -137,20 +135,51 @@ def open_player_view() -> dict:
         ui.clear_screen()
 
 
-# Seek keys shared by the host player and a joined window's: seconds to move.
-_SEEK_KEYS = {'RIGHT': 5, 'LEFT': -5, ',': -30, '.': 30, 'j': -1, 'J': -1, 'l': 1, 'L': 1}
+# Seek actions shared by the host player and a joined window's: seconds to move.
+_SEEKS = {'player.fwd_5': 5, 'player.back_5': -5, 'player.back_30': -30, 'player.fwd_30': 30,
+          'player.back_1': -1, 'player.fwd_1': 1}
 
 
 def _seek_step(key: str, duration: float, elapsed: float) -> tuple[float, str] | None:
     """The seek a player key asks for, as (seconds to move, toast), or None when
-    the key isn't a seek. `e`, with Diagnostics on, jumps to near the end."""
-    if key in ('e', 'E') and player_ui._ui_state['debug']:
+    the key isn't a seek. The near-end key, with Diagnostics on, jumps there."""
+    act = keys.action(key, 'player') if key else None
+    if act == 'player.near_end' and player_ui._ui_state['debug']:
         return (duration - tune.NEAR_END_JUMP_S) - elapsed, f'Skip to last {tune.NEAR_END_JUMP_S}s'
-    elif key in _SEEK_KEYS:
-        secs = _SEEK_KEYS[key]
+    elif act in _SEEKS:
+        secs = _SEEKS[act]
     else:
         return None
     return secs, f"Seek {'Forward +' if secs > 0 else 'Backward -'}{abs(secs)}s"
+
+
+def _queue_key(key: str, session, queue: list, index: int) -> bool:
+    """A queue-panel key (player_queue scope, live while the panel shows):
+    move the cursor, or edit the queue at it through `session.edit` (this
+    window's session, or the one joined). Returns whether it was one."""
+    act = keys.action(key, 'player_queue') if key else None
+    if not (act and act.startswith('player_queue.')):
+        return False
+    name = act.split('.', 1)[1]
+    if name in ('up', 'down'):
+        player_ui.move_queue_cursor(-1 if name == 'up' else 1)
+        return True
+    cur = player_ui.queue_cursor()
+    pos = index if cur is None else cur
+    if name in ('shuffle', 'clear', 'undo'):
+        session.edit({'shuffle': 'shuffle_upcoming', 'clear': 'clear_upcoming', 'undo': 'undo'}[name])
+    elif 0 <= pos < len(queue):
+        if name == 'play':
+            session.edit('jump', pos=pos, path=queue[pos])
+            player_ui.set_queue_cursor(None)
+        elif name in ('move_up', 'move_down'):
+            delta = -1 if name == 'move_up' else 1
+            if 0 <= pos + delta < len(queue):
+                session.edit('move', pos=pos, delta=delta, path=queue[pos])
+                player_ui.set_queue_cursor(pos + delta)
+        elif name == 'remove':
+            session.edit('remove', pos=pos, path=queue[pos])
+    return True
 
 
 def _idle_view(woken, volume: int) -> bool:
@@ -180,14 +209,15 @@ def _idle_view(woken, volume: int) -> bool:
                 update_progress_ui(prog_row, 0, 0, width)
                 last_sig = (size, toast)
             key = get_key_non_blocking() or ''
-            if key in ('b', 'B', 'ESC'):
+            act = keys.action(key, 'player') if key else None
+            if act == 'player.back':
                 toast = 'Close the other window to leave the player'
                 toast_expiry = time.time() + tune.TOAST_MEDIUM_S
             elif key == 'FOCUS_IN':
                 last_sig = None
-            elif key.lower() == 'q':
+            elif act == 'player.quit':
                 raise QuitToTerminal()
-            elif key.lower() == 'i':
+            elif pc.is_hints_key(key, key_free=True):
                 ui.clear_screen()
                 toggle_help()
                 last_sig = None
@@ -302,15 +332,16 @@ def open_client_player_view() -> dict:
 
                 key = get_key_non_blocking()
                 if key:
+                    act = None
                     if key.startswith('MOUSE_CLICK:'):
                         _mp = key.split(':'); _mr = int(_mp[2]); _mc = int(_mp[3])
                         _act = player_ui.transport_click_action(_mr, _mc, ctrl_row)
-                        if _act == 'prev':
-                            key = '['
-                        elif _act == 'next':
-                            key = ']'
-                        elif _act == 'playpause':
-                            key = 'SPACE'
+                        _qi = player_ui.queue_click_index(_mr, _mc)
+                        _q = np.get('queue') or []
+                        if _act in ('prev', 'next', 'playpause'):
+                            act, key = f'player.{_act}', ''
+                        elif _qi is not None and _qi < len(_q):
+                            remote.edit('jump', pos=_qi, path=_q[_qi]); key = ''
                         else:
                             _vol = player_ui.volume_from_click(_mr, _mc)
                             _frac = player_ui.progress_from_click(_mr, _mc)
@@ -323,21 +354,26 @@ def open_client_player_view() -> dict:
                             else:
                                 _hk = player_ui.hint_click_key(_mr, _mc)
                                 key = _hk or ''
+                    if _ui_state.get('show_queue') and _queue_key(
+                            key, remote, np.get('queue') or [], int(np.get('index') or 0)):
+                        last_sig = None                # the host's edit arrives in the next snapshot
+                        continue
+                    act = act or (keys.action(key, 'player') if key else None)
                     if key == 'FOCUS_IN':
                         last_sig = None                # force a full redraw
-                    elif key in ('SPACE', 'p', 'P'):
+                    elif act == 'player.playpause':
                         remote.pause_toggle()
                     elif (step := _seek_step(key, duration, elapsed)) is not None:
                         remote.seek(step[0])
-                    elif key == ']':
+                    elif act == 'player.next':
                         remote.next()
-                    elif key == '[':
+                    elif act == 'player.prev':
                         remote.prev()
-                    elif key in ('=', '+'):
+                    elif act == 'player.vol_up':
                         vol_target = _step_volume(remote, vol_target, +5)
-                    elif key in ('-', '_'):
+                    elif act == 'player.vol_down':
                         vol_target = _step_volume(remote, vol_target, -5)
-                    elif key in ('b', 'B') or key == 'ESC':
+                    elif act == 'player.back':
                         # Pinned open while another window browses this session
                         # (#14): the two windows stay specialised until one closes.
                         if has_other_windows():
@@ -346,17 +382,17 @@ def open_client_player_view() -> dict:
                             last_sig = None
                         else:
                             return {"status": "DETACH"}
-                    elif key.lower() == 's':
+                    elif act == 'player.stop':
                         remote.stop()
                         if not has_other_windows():
                             return {"status": "STOP"}  # else the next snapshot goes idle
-                    elif key.lower() == 'q':
+                    elif act == 'player.quit':
                         raise QuitToTerminal()
-                    elif key.lower() in ('i', 'm'):
+                    elif pc.is_hints_key(key, key_free=True) or act == 'player.meta':
                         ui.clear_screen()
-                        (toggle_help if key.lower() == 'i' else toggle_metadata)()
+                        (toggle_metadata if act == 'player.meta' else toggle_help)()
                         last_sig = None                # redraw with the new layout
-                    elif key.lower() == 'w' and audio is not None:
+                    elif act == 'player.panel' and audio is not None:
                         if cycle_right_pane(False, bool(audio.getall('TMCL') or audio.getall('TIPL')),
                                             player_ui.has_queue()):
                             ui.clear_screen()
@@ -410,7 +446,7 @@ def _player_view_loop() -> dict:
         duration = t.duration
         # Keep the in-player queue pane ('w' cycle) in sync with the session queue.
         player_ui.set_queue_context(t.titles, t.index, t.queue)
-        pre_art = _render_grouping_cover(fp, last_size[0]) if t.is_grouping else None
+        pre_art = GROUP_COVER if t.is_grouping else None
         dialogue_state = DialoguePlaybackState(fp, track_duration=duration)
         has_credits = bool(audio and (audio.getall('TMCL') or audio.getall('TIPL')))
 
@@ -527,9 +563,6 @@ def _player_view_loop() -> dict:
                 resize_pending = True
                 resize_timer = time.time()
                 player_ui.set_resizing(True)
-                # A group cover is drawn to the width, so render it again.
-                if SESSION.is_grouping:
-                    pre_art = _render_grouping_cover(track_path, last_size[0])
                 # The terminal reflowed the old frame. No separate clear: the
                 # painter sees the new size and wipes in the same write as the
                 # new rows, so a drag doesn't flash blank at every step.
@@ -584,24 +617,21 @@ def _player_view_loop() -> dict:
 
             key = get_key_non_blocking()
             if key:
-
+                act = None
                 if key.startswith('MOUSE_CLICK:'):
-                    # Map clicks on the transport icons, volume bar, or hint
-                    # glyphs to the equivalent key, then let the switch handle it.
+                    # Map clicks on the transport icons to their action, and on the
+                    # volume bar, progress bar or hint glyphs to what they do.
                     _mp = key.split(':'); _mr = int(_mp[2]); _mc = int(_mp[3])
                     _act = player_ui.transport_click_action(_mr, _mc, ctrl_row)
                     _qi = player_ui.queue_click_index(_mr, _mc)
-                    if _act == 'prev':
-                        key = '['
-                    elif _act == 'next':
-                        key = ']'
-                    elif _act == 'playpause':
-                        key = 'SPACE'
+                    if _act in ('prev', 'next', 'playpause'):
+                        act, key = f'player.{_act}', ''
                     elif _qi is not None:
                         # A track row in the queue pane: play it. The track
                         # change is picked up (and redrawn) at the top of the loop.
-                        if _qi != SESSION.index:
-                            SESSION.jump(_qi)
+                        _t = SESSION.track()
+                        if _qi != _t.index and _qi < len(_t.queue):
+                            SESSION.edit('jump', pos=_qi, path=_t.queue[_qi])
                         key = ''
                     else:
                         _vol = player_ui.volume_from_click(_mr, _mc)
@@ -624,11 +654,20 @@ def _player_view_loop() -> dict:
                             _hk = player_ui.hint_click_key(_mr, _mc)
                             key = _hk or ''
 
+                if _ui_state.get('show_queue'):
+                    _t = SESSION.track()
+                    if _queue_key(key, SESSION, _t.queue, _t.index):
+                        _t = SESSION.track()
+                        player_ui.set_queue_context(_t.titles, _t.index, _t.queue)
+                        last_q_sig = (tuple(_t.titles), _t.index)
+                        _redraw_full()
+                        continue
+                act = act or (keys.action(key, 'player') if key else None)
                 if key == 'FOCUS_OUT':
                     pass
                 elif key == 'FOCUS_IN':
                     _redraw_full()
-                elif key in ('SPACE', 'p', 'P'):
+                elif act == 'player.playpause':
                     SESSION.pause_toggle()
                     time.sleep(_KEY_POLL_INTERVAL_S)
                     update_ctrl_ui()
@@ -636,15 +675,15 @@ def _player_view_loop() -> dict:
                     SESSION.seek(step[0])
                     toast_text = step[1]; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     update_ctrl_ui()
-                elif key == ']':                  # NEXT track (skip), stay in the view
+                elif act == 'player.next':        # skip, stay in the view
                     if SESSION.next(manual=True) is None:
                         return {"status": "OK"}   # was the last track: queue finished
                     _prepare(); _redraw_full(); continue
-                elif key == '[':                  # PREVIOUS track (or restart current)
+                elif act == 'player.prev':        # previous track (or restart this one)
                     if SESSION.prev() is not None:
                         _prepare(); _redraw_full()
                     continue
-                elif key in ('b', 'B') or key == 'ESC':   # minimise, keep playing (#14)
+                elif act == 'player.back':        # minimise, keep playing (#14)
                     # Pinned open while another window is browsing this session:
                     # the two windows stay specialised until one closes (#14).
                     if has_other_windows():
@@ -652,30 +691,30 @@ def _player_view_loop() -> dict:
                         toast_expiry = time.time() + tune.TOAST_MEDIUM_S
                         update_ctrl_ui(); continue
                     return {"status": "DETACH"}
-                elif key.lower() == 's':          # STOP playback
+                elif act == 'player.stop':
                     SESSION.stop()
                     return {"status": "STOP"}
-                elif key.lower() == 'q':          # QUIT the app
+                elif act == 'player.quit':
                     raise QuitToTerminal()
-                elif key in ('=', '+'):
+                elif act == 'player.vol_up':
                     v = SESSION.set_volume(SESSION.get_volume() + 5)
                     toast_text = f'Volume: {v}%'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     player_ui.draw_volume_bar(v)
                     update_ctrl_ui()
-                elif key in ('-', '_'):
+                elif act == 'player.vol_down':
                     v = SESSION.set_volume(SESSION.get_volume() - 5)
                     toast_text = f'Volume: {v}%'; toast_expiry = time.time() + tune.TOAST_SHORT_S
                     player_ui.draw_volume_bar(v)
                     update_ctrl_ui()
-                elif key.lower() == 'i':
+                elif pc.is_hints_key(key, key_free=True):
                     ui.clear_screen()
                     toggle_help()
                     _redraw_full()
-                elif key.lower() == 'w':
+                elif act == 'player.panel':
                     if cycle_right_pane(has_lyrics, has_credits, player_ui.has_queue()):
                         ui.clear_screen()
                         _redraw_full()
-                elif key.lower() == 'm':
+                elif act == 'player.meta':
                     ui.clear_screen()
                     toggle_metadata()
                     _redraw_full()

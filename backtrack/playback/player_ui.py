@@ -6,7 +6,7 @@ import sys
 
 from backtrack.music_library import format_value_list, track_title, first_text
 from backbone.prompt import core as pc
-from backbone import ui
+from backbone import keys, ui
 from backtrack.playback.player_geom import geom
 from backbone import numbering
 from backbone.prompt.core import _hint
@@ -15,7 +15,8 @@ from backbone.ui import Colors as C
 from backtrack import tuning as tune
 from backbone.log import log
 from backtrack.playback.queue_pane import (  # noqa: F401 (re-exported)
-    _place_queue, _queue_click_rows, has_queue, queue_click_index, set_queue_context,
+    _place_queue, _queue_click_rows, has_queue, move_queue_cursor, queue_click_index, queue_cursor,
+    set_queue_context, set_queue_cursor,
 )
 from backtrack.playback.player_art import (  # noqa: F401 (re-exported)
     ART_MAX_WIDTH, _art_width_for_height, _draw_inline_art, _inline_art, art_image_incomplete, inline_art_enabled, redraw_art_image, set_resizing,
@@ -24,11 +25,45 @@ from backtrack.config import setting
 from backtrack.music_library import year_of
 
 
+# The player's keys, shared by the host player and a joined window's view.
+keys.define("player", "Player", [
+    ("playpause", ("SPACE", "p", "P"), "play / pause"),
+    ("back_5", ("LEFT",), "back 5s"),
+    ("fwd_5", ("RIGHT",), "forward 5s"),
+    ("back_1", ("j",), "back 1s"),
+    ("fwd_1", ("l",), "forward 1s"),
+    ("back_30", (",",), "back 30s"),
+    ("fwd_30", (".",), "forward 30s"),
+    ("near_end", ("e", "E"), "jump to near the end (Diagnostics)"),
+    ("prev", ("[",), "previous track"),
+    ("next", ("]",), "next track"),
+    ("vol_up", ("+", "="), "volume up"),
+    ("vol_down", ("-", "_"), "volume down"),
+    ("meta", ("m", "M"), "show or hide the details"),
+    ("panel", ("w", "W"), "cycle the side panel"),
+    ("back", ("b", "B", "ESC"), "back, keep playing"),
+    ("stop", ("s", "S"), "stop"),
+    ("quit", ("q", "Q"), "quit the app"),
+])
+# While the queue panel is showing (w): a cursor through the queue, and edits at it.
+keys.define("player_queue", "Player: queue panel", [
+    ("up", ("UP",), "cursor up the queue"),
+    ("down", ("DOWN",), "cursor down the queue"),
+    ("play", ("ENTER",), "play the track at the cursor"),
+    ("move_up", ("J",), "move it up"),
+    ("move_down", ("K",), "move it down"),
+    ("remove", ("d", "DELETE", "BACKSPACE"), "remove it"),
+    ("shuffle", ("x",), "shuffle what's coming"),
+    ("clear", ("c",), "clear what's coming"),
+    ("undo", ("u",), "undo the last queue change"),
+], within=("player", "global"))
+
+
 # Absolute cursor positioning (\033[<row>;<col>H): must require the trailing
 # 'H' so it does NOT also match a 24-bit colour prefix like \033[38;2;r;g;bm,
 # which every half-block art line starts with. Matching those made the renderer
 # treat art lines as absolute (row-less), so metadata flowed to the top and drew
-# ABOVE the art in standard/minimal layouts.
+# ABOVE the art in the single-column layout.
 _ABS_ROW_RE = re.compile(r'^\033\[\d+;\d+H')
 
 _WIDE_SPLIT_GUTTER = 3
@@ -136,13 +171,14 @@ _last_controls_hint_pairs: list = []
 _last_hint_cells: dict[tuple[int, int], str] = {}
 
 
+# Below this width the single column shows no art: too small to be worth it.
+_MIN_ART_COLS = 34
+
+
 def _layout_mode(cols: int) -> str:
-    """Classify terminal width into a layout mode: wide, standard, or minimal."""
-    if cols >= 120:
-        return 'wide'
-    if cols >= 60:
-        return 'standard'
-    return 'minimal'
+    """Classify terminal width into a layout mode: wide (art beside a pane) or
+    standard (one column)."""
+    return 'wide' if cols >= 120 else 'standard'
 
 
 
@@ -236,6 +272,8 @@ def _volume_bar_cells(volume: int) -> list[str]:
     visible = (rows - ui.MARGIN_V) - top + 1
     if visible < height:
         height = visible
+    if not geom.art_gap:
+        height -= 1             # no blank row under the art: the label takes its last
     if height < 3:
         return []
 
@@ -295,6 +333,8 @@ def _set_pane_mode(mode: str) -> None:
     _ui_state['show_lyrics'] = mode in ('lyrics', 'lyrics+credits')
     _ui_state['show_credits'] = mode in ('credits', 'lyrics+credits')
     _ui_state['show_queue'] = mode == 'queue'
+    if mode != 'queue':
+        set_queue_cursor(None)                   # a reopened panel starts on the current track
 
 
 def cycle_right_pane(has_lyrics: bool = True, has_credits: bool = True,
@@ -445,22 +485,29 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
 
     if not pc.hints_visible():
         # Hints are off app-wide, but the player keeps its way back to them.
-        pairs = [('i', 'help')]
+        pairs = [(keys.label('global.help'), 'help')]
         _set_controls_hint_pairs(pairs)
         return status, _hint(*pairs, always=True)
 
+    L = keys.label
     hint_args = [
-        ('space/p', 'play/pause'),
-        ('←→', '±5s'),
-        ('j/l', '±1s'),
-        (',/.', '±30s'),
+        (L('player.playpause'), 'play/pause'),
+        (L('player.back_5', 'player.fwd_5'), '±5s'),
+        (L('player.back_1', 'player.fwd_1'), '±1s'),
+        (L('player.back_30', 'player.fwd_30'), '±30s'),
     ]
     if _ui_state['debug']:                       # Diagnostics: checking end credits
-        hint_args.append(('e', f'last {tune.NEAR_END_JUMP_S}s'))
-    hint_args += [('+/-', 'volume'), ('m', 'meta')]
+        hint_args.append((L('player.near_end'), f'last {tune.NEAR_END_JUMP_S}s'))
+    hint_args += [(L('player.vol_up', 'player.vol_down', first=True), 'volume'), (L('player.meta'), 'meta')]
     if has_lyrics or has_credits or has_queue():
-        hint_args.append(('w', 'panel'))
-    hint_args += [('i', 'hide help'), ('[/]', 'prev/next'), ('s', 'stop'), ('b', 'back'), ('q', 'quit')]
+        hint_args.append((L('player.panel'), 'panel'))
+    if _ui_state.get('show_queue'):
+        Q = lambda *n, **kw: L(*(f'player_queue.{x}' for x in n), **kw)  # noqa: E731
+        hint_args += [(Q('up', 'down'), 'queue'), (Q('play'), 'play it'), (Q('move_up', 'move_down'), 'move'),
+                      (Q('remove', most=1), 'remove'), (Q('shuffle'), 'shuffle'), (Q('clear'), 'clear'),
+                      (Q('undo'), 'undo')]
+    hint_args += [(L('global.help'), 'hide help'), (L('player.prev', 'player.next'), 'prev/next'),
+                  (L('player.stop'), 'stop'), (L('player.back', first=True), 'back'), (L('player.quit'), 'quit')]
 
     _set_controls_hint_pairs(hint_args)
     return status, _hint(*hint_args)
@@ -490,7 +537,10 @@ def _place_controls(emit, ctrl_row: int, rows: int, is_uslt: bool, is_paused: bo
     status_ln, shortcuts_ln = _controls_line(is_uslt, is_paused, volume, toast,
                                              has_lyrics=has_lyrics, has_credits=has_credits)
     shortcut_lines = shortcuts_ln.splitlines() or [""]
-    ctrl_row = min(ctrl_row, rows - len(shortcut_lines) - 1)
+    # A window too short for all the help shows the lines that fit under the
+    # controls; only with no room for even one is the controls row pulled up.
+    shortcut_lines = shortcut_lines[:max(1, rows - ui.MARGIN_V - ctrl_row)]
+    ctrl_row = max(1, min(ctrl_row, rows - len(shortcut_lines) - ui.MARGIN_V))
     emit(f"\033[{ctrl_row};1H\033[K{status_ln}")
     for offset, line in enumerate(shortcut_lines, start=1):
         emit(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui.MARGIN_H}{line}")
@@ -710,12 +760,51 @@ def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     return _draw_default_ui(file_path, audio, pre_art, size, is_paused, volume, toast)
 
 
+_MIN_ART_ROWS = 3
+
+
+def _art_room(avail: int) -> int:
+    """The rows the art gets out of `avail`: all of them, or none when there's
+    too little for art worth showing, rather than art forced in over the controls."""
+    return avail if avail >= _MIN_ART_ROWS else 0
+
+
+def _single_column_room(rows: int, meta_rows: int, control_rows: int, pane_rows: int) -> int:
+    """Rows left for the art in the single-column layout. Counts exactly what is
+    drawn under it (a blank, the metadata, progress, controls and hints, any pane
+    below) plus the bottom margin, so at the window height that fits full-width
+    art the hints sit on the last row with nothing spare under them."""
+    return rows - (1 + meta_rows + control_rows + pane_rows) - ui.MARGIN_V
+
+
+def _art_w(lines: list[str]) -> int:
+    return max((ui.visual_len(l) for l in lines), default=0)
+
+
+def _centred_art(file_path: str, box_w: int, max_w: int, avail_h: int,
+                 pre_art: str | None) -> list[str]:
+    """Art for a box `box_w` wide with equal gaps either side: when the best fit
+    would leave an odd gap, one column wider if that still fits, else one narrower."""
+    lines = _art_width_for_height(file_path, max_w, avail_h, pre_art)[1]
+    w = _art_w(lines)
+    if not lines or w >= box_w or (box_w - w) % 2 == 0:
+        return lines
+    wider = _art_width_for_height(file_path, w + 1, avail_h, pre_art)[1]
+    if _art_w(wider) == w + 1:
+        return wider
+    return _art_width_for_height(file_path, w - 1, avail_h, pre_art)[1]
+
+
 def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
                      is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple[int, int, int, int, int]:
     """Render the full playback screen (art, metadata, controls, and any active pane)
     for the current layout mode, returning the progress/control/lyric row positions and art bottom row."""
     cols, rows = size
     mode = _layout_mode(cols)
+    # Wide is the split view; with nothing to put beside the art, a wide window
+    # is laid out like a standard one, so the art doesn't halve at 120 columns.
+    if mode == 'wide' and not (_ui_state['show_credits'] or _ui_state['show_lyrics'] or _ui_state['show_queue']):
+        mode = 'standard'
     # Reset art geometry each frame; only branches that draw art repopulate it.
     # Likewise the queue's click rows: only a frame that draws the queue has any,
     # and the inline image: only a frame that lays out art has one.
@@ -737,70 +826,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     row_cursor = 0
 
     if mode == 'wide':
-        show_pane = _ui_state['show_credits'] or _ui_state['show_lyrics'] or _ui_state['show_queue']
         is_uslt_track = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
-
-        if not show_pane:
-            # No right pane: centred single-column layout with breathing room on sides.
-            content_w_max = min(ART_MAX_WIDTH, max(54, cols // 2), cols - 2 * ui.MARGIN_H)
-            left_col = _meta_left_lines(audio, file_path, content_w_max - 4)
-            # Size the controls/hints FIRST so the art height reserves room for
-            # them. Otherwise toggling help (multi-line hints) draws over the
-            # transport controls instead of shrinking the art and shifting the
-            # controls up to make space.
-            status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
-            shortcut_lines = shortcuts_ln.splitlines() or [""]
-            avail_h = max(3, rows - len(left_col) - len(shortcut_lines) - 5 - 2 * ui.MARGIN_V)
-
-            art_str, art_lines = _art_width_for_height(file_path, content_w_max, avail_h, pre_art)
-            actual_art_w = max((ui.visual_len(l) for l in art_lines), default=content_w_max) if art_lines else content_w_max
-            left_margin = max(ui.MARGIN_H, (cols - actual_art_w) // 2)
-
-            geom.art_left = left_margin
-            geom.art_width = actual_art_w
-            geom.art_height = len(art_lines)
-            geom.vol_bar_col = left_margin + actual_art_w + 2
-            geom.right_left = None
-            geom.right_width = None
-
-            if art_lines:
-                top_pad = max(ui.MARGIN_V, (rows - len(art_lines) - 1 - len(left_col) - len(shortcut_lines) - 5) // 2)
-                for _ in range(top_pad):
-                    emit("")
-                row_cursor += top_pad
-            geom.art_top = row_cursor + 1
-
-            for line in art_lines:
-                emit(" " * left_margin + line)
-            row_cursor += len(art_lines)
-            emit("")
-            row_cursor += 1
-            # Volume bar/label are absolute-positioned; log them AFTER the spacing
-            # blank so the blank's erase-to-end can't wipe the label (which sits on
-            # the art-bottom+1 row). Otherwise the number vanishes on a full redraw.
-            for cell in _volume_bar_cells(volume):
-                emit(cell)
-
-            for line in _center_lines(left_col, cols):
-                emit(line)
-            row_cursor += len(left_col)
-
-            emit("")
-            prog_row = row_cursor + 2
-            ctrl_row = prog_row + 1
-
-            # Recompute now that the art geometry is set, so the transport line
-            # centres over the art. The hint-line count is unchanged from the
-            # early call that sized the art above.
-            ctrl_row, shortcut_lines = _place_controls(
-                emit, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
-
-            lyric_row = ctrl_row + len(shortcut_lines) + 2
-            art_bottom_row = max(row_cursor + 6, rows - ui.MARGIN_V)
-
-            _render_frame_buffer(frame_buffer, rows - ui.MARGIN_V)
-            sys.stdout.flush()
-            return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
 
         # Split view: left half = art + meta, right pane = credits/lyrics.
         art_w = min(cols // 2, ART_MAX_WIDTH)
@@ -808,15 +834,16 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         meta_val_w = right_w - 10
 
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
-        # Reserve the controls/hints height before sizing the art (see above).
+        # Size the controls/hints first so the art leaves room for them: showing
+        # help (several hint lines) shrinks the art instead of drawing over the controls.
         status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
-        avail_h = max(3, rows - len(left_col) - len(shortcut_lines) - 4 - 2 * ui.MARGIN_V)
+        avail_h = _art_room(rows - len(left_col) - len(shortcut_lines) - 4 - 2 * ui.MARGIN_V)
         # Art is inset from the panel edges so it floats with breathing room.
         art_inner_w = max(10, art_w * 3 // 4)
-        art_str, art_lines = _art_width_for_height(file_path, art_inner_w, avail_h, pre_art)
+        art_lines = _centred_art(file_path, art_w, art_inner_w, avail_h, pre_art)
 
-        art_vis_w = max((ui.visual_len(a) for a in art_lines), default=art_inner_w) if art_lines else art_inner_w
+        art_vis_w = _art_w(art_lines)
         left_margin = max(ui.MARGIN_H, (art_w - art_vis_w) // 2)
 
         geom.art_width = art_vis_w
@@ -827,13 +854,11 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         geom.vol_bar_col = left_margin + art_vis_w + 2
 
         if art_lines:
-            # Counting the hint rows too, as the no-pane layout does: otherwise
-            # showing help drew over the controls.
-            top_pad = max(ui.MARGIN_V,
-                          (rows - len(art_lines) - 1 - len(left_col) - len(shortcut_lines) - 5) // 2)
-            for _ in range(top_pad):
+            # The art sits at the top; a taller window only adds space at the
+            # bottom (and to the pane beside it).
+            for _ in range(ui.MARGIN_V):
                 emit("")
-            row_cursor += top_pad
+            row_cursor += ui.MARGIN_V
         geom.art_top = row_cursor + 1
 
         for line in art_lines:
@@ -841,7 +866,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         row_cursor += len(art_lines)
         emit("")
         row_cursor += 1
-        # Volume cells after the spacing blank (see the no-pane branch note).
+        # Volume cells after the spacing blank, so its erase can't wipe the label.
         for cell in _volume_bar_cells(volume):
             emit(cell)
 
@@ -855,7 +880,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         prog_row = row_cursor + 2
         ctrl_row = prog_row + 1
 
-        # Recompute now that the art geometry is set (see the no-pane branch).
+        # Recompute now that the art geometry is set, so the transport line centres over the art.
         ctrl_row, shortcut_lines = _place_controls(
             emit, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
 
@@ -908,7 +933,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         sys.stdout.flush()
         return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
 
-    elif mode == 'standard':
+    else:
         geom.right_left = None
         geom.right_width = None
 
@@ -921,11 +946,18 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         credits_est = tune.PANE_CREDITS_EST_ROWS if (has_cast and _ui_state['show_credits']) else 0
         lyrics_est = tune.PANE_LYRICS_EST_ROWS if _ui_state['show_lyrics'] else 0
-        reserved_rows = len(left_col) + control_rows + credits_est + lyrics_est + 2
-        max_art_h = max(3, rows - reserved_rows - 2 * ui.MARGIN_V)
+        queue_est = tune.PANE_QUEUE_MIN_ROWS if _ui_state['show_queue'] else 0
+        room = _single_column_room(rows, len(left_col), control_rows, credits_est + lyrics_est + queue_est)
+        max_art_h = _art_room(room) if cols >= _MIN_ART_COLS else 0
 
-        art_str, art_lines = _art_width_for_height(file_path, cols, max_art_h, pre_art)
-        actual_art_w = max((ui.visual_len(l) for l in art_lines), default=cols) if art_lines else cols
+        # Art the height holds back from full width gets the blank row above the
+        # title too: a row taller, wider, and with room to make its sides even.
+        art_lines = _art_width_for_height(file_path, cols, max_art_h, pre_art)[1]
+        gap_used = int(bool(art_lines) and _art_w(art_lines) < cols)
+        if gap_used:
+            art_lines = _centred_art(file_path, cols, cols, _art_room(room + 1), pre_art)
+        geom.art_gap = not gap_used
+        actual_art_w = _art_w(art_lines) or cols
         if actual_art_w < cols:
             # Art was narrowed to fit terminal height: centre it.
             art_lines = _align_art_lines(art_lines, cols)
@@ -938,18 +970,17 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         geom.art_height = len(art_lines)
         geom.vol_bar_col = (geom.art_left or 0) + (geom.art_width or 0) + 2
 
-        if art_lines and actual_art_w < cols:
-            top_pad = max(0, (rows - len(art_lines) - 1 - len(left_col) - control_rows - 1) // 2)
-            for _ in range(top_pad):
-                emit("")
-            row_cursor += top_pad
+        # The art sits at the top: any rows it doesn't use (height rounding, a
+        # window taller than full-width art needs, no art at all) are left at
+        # the bottom, or go to a panel under the controls.
         geom.art_top = row_cursor + 1
 
         for line in art_lines: emit(line)
         row_cursor += len(art_lines)
-        emit("")
-        row_cursor += 1
-        # Volume cells after the spacing blank (see the no-pane branch note).
+        if geom.art_gap:
+            emit("")
+            row_cursor += 1
+        # Volume cells after the spacing blank, so its erase can't wipe the label.
         for cell in _volume_bar_cells(volume):
             emit(cell)
 
@@ -971,7 +1002,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         if _ui_state['show_queue']:
             q_start = ctrl_row_end + 2
             _place_queue(emit, q_start, 1 + ui.MARGIN_H, cols - ui.MARGIN_H,
-                         rows - ui.MARGIN_V - q_start)
+                         rows - ui.MARGIN_V - q_start + 1)     # down to the last row, inclusive
             lyric_row = rows - ui.MARGIN_V
             art_bottom_row = rows - ui.MARGIN_V
             _render_frame_buffer(frame_buffer, rows - ui.MARGIN_V)
@@ -1002,58 +1033,6 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         inset = max(ui.MARGIN_H, int(cols * _LYRICS_INSET_FRAC))
         geom.lyric_left = inset + 1
         geom.lyric_width = cols - inset - ui.MARGIN_H
-        art_bottom_row = rows - ui.MARGIN_V
-        _render_frame_buffer(frame_buffer, rows - ui.MARGIN_V)
-        sys.stdout.flush()
-        return prog_row, ctrl_row, lyric_row, cols, art_bottom_row
-
-    else:
-        meta_val_w = max(1, cols - 12)
-        left_col = _meta_left_lines(audio, file_path, meta_val_w)
-        is_uslt_track = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
-        _, temp_shortcuts = _controls_line(is_uslt_track, is_paused, volume, toast, width=cols, has_lyrics=has_lyrics, has_credits=has_cast)
-        control_rows = 2 + len(temp_shortcuts.splitlines() or [""])
-        reserved_rows = len(left_col) + control_rows + 8
-
-        if cols >= 34:
-            art_w = cols
-            max_art_h = max(3, rows - reserved_rows - 2 * ui.MARGIN_V)
-            art_str, art_lines = _art_width_for_height(file_path, art_w, max_art_h, pre_art)
-            actual_art_w = max((ui.visual_len(l) for l in art_lines), default=art_w) if art_lines else art_w
-            geom.art_left = max(0, (cols - actual_art_w) // 2)
-            geom.art_width = actual_art_w
-            geom.art_height = len(art_lines)
-            if art_lines and actual_art_w < cols:
-                top_pad = max(0, (rows - len(art_lines) - 1 - len(left_col) - control_rows - 1) // 2)
-                for _ in range(top_pad):
-                    emit("")
-                row_cursor += top_pad
-            geom.art_top = row_cursor + 1
-            # Printed where geom.art_left says it is (centred), which is where
-            # the image, the volume bar and clicks all take it to be.
-            for line in art_lines: emit(" " * geom.art_left + line)
-            row_cursor += len(art_lines)
-            emit("")
-            row_cursor += 1
-            left_col = _center_lines(left_col, cols)
-            for line in left_col: emit(line)
-            row_cursor += len(left_col)
-        else:
-            available_rows = max(0, rows - row_cursor - 8)
-            top_padding = max(0, (available_rows - len(left_col)) // 2)
-            for _ in range(top_padding): emit("")
-            row_cursor += top_padding
-            for line in left_col: emit(line)
-            row_cursor += len(left_col)
-
-        # The progress row stays out of the frame: update_progress_ui owns it,
-        # and a frame that painted it blank made the bar flicker on each redraw.
-        row_cursor += 1
-        prog_row = row_cursor
-        ctrl_row = prog_row + 1
-        ctrl_row, shortcut_lines = _place_controls(
-            emit, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
-        lyric_row = ctrl_row + len(shortcut_lines) + 2
         art_bottom_row = rows - ui.MARGIN_V
         _render_frame_buffer(frame_buffer, rows - ui.MARGIN_V)
         sys.stdout.flush()

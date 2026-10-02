@@ -34,7 +34,9 @@ DEFAULT_CONFIG = {
     # Each non-album browse list's order (category → a menus.sorting._GROUP_SORTS mode), as last chosen with s.
     "group_sorts": {},
     "plain_text_editing": False,
-    "autoplay_on_select": False,
+    # After a track picked from a list: "stop" (it plays alone), "list" (the
+    # rest of the list follows) or "queue" (the queue playing carries on).
+    "after_pick": "list",
     # Album art in the player as a real image rather than text blocks. iTerm2
     # only (elsewhere the text art is used regardless). Experimental.
     "art_inline_images": False,

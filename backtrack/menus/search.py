@@ -1,24 +1,31 @@
 """Search from the menus: the query screen, the grouped results, and playing an entity from them."""
 from __future__ import annotations
 from backbone import prompt
-from backbone import ui
+from backbone import keys, ui
 from backtrack.music_library import format_tag_values
 from backtrack.history import get_recent_paths
 from backtrack import search as _search
-from backtrack.playback.player import music_player
 from backtrack.config import load_config
 from backtrack.id3.browser import inspect_tag_loop
 from backtrack.id3.bulk_menu import bulk_id3_manager
-from backtrack.menus.common import _autoplay, _disc_track_cell, _menu_header
-from backtrack.menus.play import _PLAY_ACTIONS, _handle_queue_action, _list_actions, _play_list, _queue_action_choices, _sorted_paths
+from backtrack.menus.common import _disc_track_cell, _menu_header
+from backtrack.menus.play import _PLAY_ACTIONS, _list_actions, _play_list, _queue_shortcut_kwargs, _sorted_paths, play_picked
 from backtrack.config import setting
-from backtrack.music_library import track_title
 
 
 # Search scope cycled with ^F in the live search screen (default: all fields).
 # 'disc_label' is a computed field (search._disc_label): a disc's subtitle
 # when tagged, else "Disc N" for any multi-disc album. It is not a scope of its
 # own (it rides along under "all fields", the same as "people" does).
+# The search screen's own keys: typing goes into the query, so they're Ctrl keys.
+keys.define("find", "Search", [
+    ("scope", ("\x06",), "change what's searched"),
+    ("edit", ("\x05",), "edit the highlighted track"),
+    ("edit_all", ("\x01",), "edit every result"),
+    ("options", ("\x0b",), "everything you can do with the result"),
+], within=("search", "global"))
+
+
 _ALL_SEARCH_FIELDS = ['title', 'artist', 'album', 'composer', 'lyricist', 'genre', 'people', 'disc_label']
 
 
@@ -131,9 +138,9 @@ def _entity_cells(ent, tokens: list) -> list:
 
 
 def handle_search(library: list) -> str | None:
-    """Run the live fuzzy search screen; on selecting a track, offer Play plus
-    the queue actions (or play immediately if autoplay is on or there's only
-    one option). Editing is ^e (one track) or ^a (every result).
+    """Run the live fuzzy search screen; a selected track plays, with the
+    results after it as Settings → After a picked track says. Editing is ^e
+    (one track) or ^a (every result).
 
     Results are grouped by what they are (artists, albums, genres, then the
     tracks themselves) rather than listed as one flat run. A query like "john"
@@ -247,6 +254,39 @@ def handle_search(library: list) -> str | None:
         inspect_tag_loop(value, library_metadata=song, library=library)
         ui.clear_screen()
 
+    def _options(value) -> None:
+        """^k: everything that can be done with the highlighted result, as o
+        does in a list: a track (play it, the track's queue options, edit) or
+        an artist, album or other group (its tracks' queue options, edit them
+        all). The typed query owns the letters, hence a Ctrl key."""
+        paths = [r['path'] for r in _last['results']]
+        entries: list = []
+        if isinstance(value, tuple) and value[0] == "__entity__":
+            ent = value[1]
+            title, row = ent.name, ent.name
+            kw = _queue_shortcut_kwargs(library, group_paths={row: [t['path'] for t in ent.tracks]})
+        elif isinstance(value, str) and not value.startswith("__"):
+            song = next((s for s in library if s['path'] == value), None)
+            title, row = (song or {}).get('title') or value, value
+            kw = _queue_shortcut_kwargs(library, list_paths=paths)
+            entries.append(("Play", keys.label("search.choose"),
+                            lambda: play_picked(paths, paths.index(value), library)))
+        else:
+            return
+        for spec, run in kw['row_actions'].items():
+            if kw['row_action_applies'](spec, row):
+                text = keys.describe(spec)
+                entries.append((text[:1].upper() + text[1:], keys.label(spec), lambda run=run: run(row)))
+        if _show_editor:
+            if isinstance(value, str):
+                entries.append(("Edit", keys.label("find.edit"), lambda: _edit_highlighted(value)))
+            else:
+                entries.append(("Edit them all", "",
+                                lambda: bulk_id3_manager(library, paths=[t['path'] for t in value[1].tracks])))
+        pick = prompt.options_menu(title, entries)
+        if pick:
+            pick()
+
     def _edit_all(_value) -> None:
         """^a: bulk-edit every track the search currently finds, without
         leaving the results (like ^e does for one)."""
@@ -258,10 +298,12 @@ def handle_search(library: list) -> str | None:
     while True:
         selected = prompt.live_select(
             "", _provider, columns=_SEARCH_COLUMNS,
-            header=_hdr, on_cycle=_cycle, cycle_key='\x06',   # ^F cycles scope
+            header=_hdr, on_cycle=_cycle, cycle_key='find.scope',
             section_nav=True,
-            row_actions={'\x05': _edit_highlighted, '\x01': _edit_all} if _show_editor else None,
-            extra_hints={'^f': 'scope', **({'^e': 'edit', '^a': 'edit all'} if _show_editor else {})},
+            row_actions={'find.options': _options,
+                         **({'find.edit': _edit_highlighted, 'find.edit_all': _edit_all} if _show_editor else {})},
+            extra_hints={'find.scope': 'scope', 'find.options': 'options',
+                         **({'find.edit': 'edit', 'find.edit_all': 'edit all'} if _show_editor else {})},
             count_of=lambda: len(_last['results']),
             initial_query=_last['query'])
         if not selected:
@@ -278,27 +320,13 @@ def handle_search(library: list) -> str | None:
             continue
         expanded['kind'] = None
 
-        # A track: play it (or queue it), then back to these results with the
-        # query kept (initial_query), as entities and every browse level do.
-        # Editing is ^e / ^a from the results: `live_select` types every other
-        # key into the query.
-        song_meta = next((s for s in library if s['path'] == selected), None)
-        title = track_title(selected, song_meta)
-        _action_choices = ["Play"] + _queue_action_choices()
-        if len(_action_choices) == 1 or _autoplay():
-            action = "Play"
-        else:
-            action = prompt.select(
-                "Action:",
-                choices=_action_choices,
-                header=_menu_header(title),
-            )
-        if action == "Play":
-            ui.clear_screen()
-            music_player(selected)
-            ui.clear_screen()
-        elif action:
-            _handle_queue_action(action, selected, title, library)
+        # A track: play it, with the results after it as the after-a-picked-
+        # track setting says, then back to these results with the query kept
+        # (initial_query), as entities and every browse level do. Editing is
+        # ^e / ^a from the results: `live_select` types every other key into
+        # the query.
+        paths = [s['path'] for s in _last['results']]
+        play_picked(paths, paths.index(selected) if selected in paths else 0, library)
 
 
 def _play_entity(ent, library: list) -> str | None:
@@ -324,11 +352,13 @@ def _play_entity(ent, library: list) -> str | None:
     pick = prompt.select(f"{ent.kind.title()}:", choices=choices,
                          columns=_SEARCH_COLUMNS,
                          header=_menu_header(ent.name, sub),
-                         on_inspect=_inspect_track if _show_editor else None, inspect_key='e',
-                         extra_hints={'e': 'edit'} if _show_editor else None,
+                         on_inspect=_inspect_track if _show_editor else None, inspect_key='library.edit',
+                         choose_label="Play",
+                         extra_hints={'library.edit': 'edit'} if _show_editor else None,
                          actions=(_list_actions(_show_editor, albums=len({(s.get('album'), s.get('album_artist'))
                                                                           for s in tracks}) > 1)
-                                  if len(tracks) > 1 else None))
+                                  if len(tracks) > 1 else None),
+                         **_queue_shortcut_kwargs(library, list_paths=[s['path'] for s in tracks]))
     if not pick:
         return None
     if pick in _PLAY_ACTIONS:
@@ -336,7 +366,6 @@ def _play_entity(ent, library: list) -> str | None:
     if pick == "__bulk_edit__":
         bulk_id3_manager(library, paths=[s['path'] for s in tracks])
         return None
-    ui.clear_screen()
-    music_player(pick)
-    ui.clear_screen()
+    paths = [s['path'] for s in tracks]
+    play_picked(paths, paths.index(pick), library)
     return None

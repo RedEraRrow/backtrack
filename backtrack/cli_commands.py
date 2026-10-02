@@ -2212,7 +2212,7 @@ TREE = [
             example='backtrack config get lyric_lead_in'),
         Cmd('set', 'Change one config value', run=_config_set, emits='config',
             args=[Arg('key', 'Config key'), Arg('value', 'New value')],
-            example='backtrack config set autoplay_on_select true'),
+            example='backtrack config set after_pick queue'),
     ]),
 
     Cmd('schema', 'Print the command tree, flags and output shapes as JSON',

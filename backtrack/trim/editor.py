@@ -38,7 +38,7 @@ from mutagen.id3 import ID3
 from backtrack.config import load_config
 from backtrack.trim import engine as trim
 from backtrack.music_library import drop_moved, track_title, first_text
-from backbone import ui
+from backbone import keys, ui
 from backbone.ui import Colors as C
 from backbone.prompt.core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
 from backbone.prompt import confirm as _confirm
@@ -327,8 +327,8 @@ def resolve_chapters(path: str, snapped_in_s: float, snapped_out_s: float
     overview = _promptmod.select(
         f"{len(affected)} of {ui.plural(len(classified), 'chapter')} affected by this cut, ↵ to review each:",
         choices=rows, columns=_CHAPTER_PREVIEW_COLUMNS,
-        shortcuts={'D': '__discard_all__'},
-        extra_hints={'D': 'discard all chapters'},
+        shortcuts={'trim_lists.discard_chapters': '__discard_all__'},
+        extra_hints={'trim_lists.discard_chapters': 'discard all chapters'},
     )
     if overview == '__discard_all__' or (overview is None and all_destroyed):
         return [], [], flags
@@ -369,6 +369,36 @@ def _header_box(title: str, artist: str, track_length: float) -> list[str]:
                                      f"[MP3]  {timefmt.clock(track_length)}")
 
 
+keys.define("trim", "Trim editor", [
+    ("switch", ("TAB",), "switch between the in and out points"),
+    ("mark_in", ("i",), "mark the in-point at the playhead"),
+    ("mark_out", ("o",), "mark the out-point at the playhead"),
+    ("clear", ("d",), "clear the point"),
+    ("type", ("e",), "type a time"),
+    ("back_frame", ("LEFT",), "one frame earlier"),
+    ("fwd_frame", ("RIGHT",), "one frame later"),
+    ("back_coarse", (",",), "earlier by the coarse step"),
+    ("fwd_coarse", (".",), "later by the coarse step"),
+    ("play_in", ("p",), "play from the in-point"),
+    ("play_out", ("P",), "play up to the out-point"),
+    ("join", ("j",), "audition the join"),
+    ("prev_marker", ("[",), "previous silence marker"),
+    ("next_marker", ("]",), "next silence marker"),
+    ("undo", ("u",), "undo"),
+    ("finish", ("s",), "commit, or next track in a bulk trim"),
+    ("skip", ("n",), "skip the track (bulk trim)"),
+    ("back", ("ESC",), "back"),
+    ("quit", ("q",), "quit the app"),
+])
+keys.define("trim_lists", "Trim editor: lists", [
+    ("discard_chapters", ("D",), "discard every chapter the cut affects"),
+    ("audition", ("p",), "audition the candidate"),
+], within=("list", "global"))
+keys.define("trim_edit", "Trim editor: typed time", [
+    ("playhead", ("p", "P"), "take the playhead"),
+])
+
+
 def _run_marking_screen(
     path: str,
     marks: Marks,
@@ -394,8 +424,9 @@ def _run_marking_screen(
     and a conveyor group mean different things by "done" (write now vs. record
     and move to the next track).
 
-    Returns `finish_key` once both marks are valid, `extra_key` if pressed
-    (the conveyor's skip), or 'ESC': back one track, or leave, at the
+    Returns `finish_key` once both marks are valid (the trim.finish key),
+    `extra_key` when given and the trim.skip key is pressed (the conveyor's
+    skip), or 'ESC' (the trim.back key): back one track, or leave, at the
     caller's discretion. `strip_lines` is the conveyor's group-state strip,
     prepended above the header. `flags` is a shared dict so the audition
     "approximate" note fires once across a whole group, not
@@ -511,21 +542,23 @@ def _run_marking_screen(
             # EDIT sub-mode has its own key set, the same as lyrics_editor's.
             pairs = [('tab/⇧tab', 'field'), ('←→', 'cursor'), ('↑↓', 'adjust')]
             if mp is not None:
-                pairs.append(('p', 'grab playhead'))
+                pairs.append((keys.label('trim_edit.playhead'), 'grab playhead'))
             pairs += [('↵', 'apply'), ('esc', 'cancel')]
             return pairs
-        pairs = [('tab', 'in/out')]
+        T = lambda *n: keys.label(*(f'trim.{x}' for x in n))  # noqa: E731
+        pairs = [(T('switch'), 'in/out')]
         if mp is not None:                  # marks are taken from the playhead
-            pairs.append(('i/o', 'mark'))
-        pairs += [('d', 'clear'), ('e', 'type'), ('←→', '1 frame'), (',/.', f'{_COARSE_STEP:g}s')]
+            pairs.append((T('mark_in', 'mark_out'), 'mark'))
+        pairs += [(T('clear'), 'clear'), (T('type'), 'type'), (T('back_frame', 'fwd_frame'), '1 frame'),
+                  (T('back_coarse', 'fwd_coarse'), f'{_COARSE_STEP:g}s')]
         if mp is not None:
-            pairs += [('p', 'play in'), ('P', 'play to out'), ('j', 'audition join'),
-                     ('[/]', 'silence marker')]
+            pairs += [(T('play_in'), 'play in'), (T('play_out'), 'play to out'), (T('join'), 'audition join'),
+                      (T('prev_marker', 'next_marker'), 'silence marker')]
         if undo_stack:
-            pairs.append(('u', f'undo ×{len(undo_stack)}'))
+            pairs.append((T('undo'), f'undo ×{len(undo_stack)}'))
         if extra_key:
-            pairs.append((extra_key, extra_hint))
-        pairs += [(finish_key, finish_hint), ('esc', 'back'), ('q', 'quit')]
+            pairs.append((T('skip'), extra_hint))
+        pairs += [(T('finish'), finish_hint), (T('back'), 'back'), (T('quit'), 'quit')]
         return pairs
 
     indent = " " * ui.MARGIN_H
@@ -654,7 +687,7 @@ def _run_marking_screen(
                     for rec in _edit_apply(marks, edit, edit_orig, frame_dur, track_length):
                         undo_stack.append(rec)
                     edit = None
-                elif key in ('p', 'P'):
+                elif keys.pressed(key, 'trim_edit.playhead'):
                     pm, ps, pms = _ts_parts(round(play_pos, 3))
                     bound = _EDIT_START if edit['fi'] < 3 else _EDIT_END
                     for fk, v in zip(bound, (pm, ps, pms)):
@@ -663,58 +696,59 @@ def _run_marking_screen(
                     _edit_field_key(edit, key)
                 continue
 
-            if key in ('q', 'CTRL_C'):
+            act = keys.action(key, 'trim')
+            if key == 'CTRL_C' or act == 'trim.quit':
                 from backbone.nav import QuitToTerminal
                 raise QuitToTerminal()
-            if key == 'ESC':
+            if act == 'trim.back':
                 do_stop()
                 return 'ESC'
-            elif key == 'TAB':
+            elif act == 'trim.switch':
                 active = 'out' if active == 'in' else 'in'
-            elif key == 'i':
+            elif act == 'trim.mark_in':
                 if mp: undo_stack.append(set_in(marks, play_pos, frame_dur))
-            elif key == 'o':
+            elif act == 'trim.mark_out':
                 if mp: undo_stack.append(set_out(marks, play_pos, frame_dur, track_length))
-            elif key == 'd':
+            elif act == 'trim.clear':
                 undo_stack.append(clear_in(marks) if active == 'in' else clear_out(marks))
-            elif key == 'e':
+            elif act == 'trim.type':
                 edit, edit_orig = _edit_seed(marks)
-            elif key == 'LEFT':
+            elif act == 'trim.back_frame':
                 if active == 'in':
                     undo_stack.append(nudge_in(marks, -frame_dur, frame_dur))
                 else:
                     undo_stack.append(nudge_out(marks, -frame_dur, frame_dur, track_length))
-            elif key == 'RIGHT':
+            elif act == 'trim.fwd_frame':
                 if active == 'in':
                     undo_stack.append(nudge_in(marks, frame_dur, frame_dur))
                 else:
                     undo_stack.append(nudge_out(marks, frame_dur, frame_dur, track_length))
-            elif key == ',':
+            elif act == 'trim.back_coarse':
                 if active == 'in':
                     undo_stack.append(nudge_in(marks, -_COARSE_STEP, frame_dur))
                 else:
                     undo_stack.append(nudge_out(marks, -_COARSE_STEP, frame_dur, track_length))
-            elif key == '.':
+            elif act == 'trim.fwd_coarse':
                 if active == 'in':
                     undo_stack.append(nudge_in(marks, _COARSE_STEP, frame_dur))
                 else:
                     undo_stack.append(nudge_out(marks, _COARSE_STEP, frame_dur, track_length))
-            elif key == 'p':
+            elif act == 'trim.play_in':
                 do_play_from_in()
-            elif key == 'P':
+            elif act == 'trim.play_out':
                 do_play_to_out()
-            elif key == 'j':
+            elif act == 'trim.join':
                 do_join()
-            elif key == 'u':
+            elif act == 'trim.undo':
                 do_undo()
-            elif key == '[' and mp is not None:
+            elif act == 'trim.prev_marker' and mp is not None:
                 do_jump_marker(-1)
-            elif key == ']' and mp is not None:
+            elif act == 'trim.next_marker' and mp is not None:
                 do_jump_marker(1)
-            elif extra_key is not None and key == extra_key:
+            elif extra_key is not None and act == 'trim.skip':
                 do_stop()
                 return extra_key
-            elif key == finish_key:
+            elif act == 'trim.finish':
                 if marks.in_snapped is None or marks.out_snapped is None:
                     ui.show_status(f"Could not {finish_verb}: set both an in-point and an out-point first.")
                     continue

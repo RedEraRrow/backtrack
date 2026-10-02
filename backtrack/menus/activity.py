@@ -3,7 +3,7 @@ from __future__ import annotations
 from backbone.ui import Colors as C
 from backbone import prompt
 from backbone.prompt import core as pc
-from backbone import ui
+from backbone import keys, ui
 
 
 def activity_centre() -> None:
@@ -15,7 +15,7 @@ def activity_centre() -> None:
     import time
     from backbone.terminal_input import raw_mode, get_key_non_blocking
 
-    _hint_pairs = [("esc/b", "back")]
+    _hint_pairs = [(keys.label("list.back", most=2), "back")]
     hint_cells: dict = {}
 
     def _draw() -> None:
@@ -70,7 +70,7 @@ def activity_centre() -> None:
                         key = _ch
                     elif key.startswith('MOUSE_CLICK:'):
                         key = ''
-                    if key in ('b', 'B', 'q', 'Q', '\x1b') or key == 'ESC':
+                    if key == '\x1b' or keys.action(key, 'list') in ('list.back', 'list.quit'):
                         break
                 time.sleep(0.08)
         finally:

@@ -12,6 +12,8 @@ from backbone import ui
 class PlayerToastTest(unittest.TestCase):
     def test_the_toast_is_on_the_controls_line(self):
         from backtrack.playback import player_ui
+        from backtrack.playback.player_geom import geom
+        geom.reset_frame()                  # no art laid out by an earlier test
         status, _hints = player_ui._controls_line(False, False, 50, "Seek Forward +5s")
         self.assertIn("Seek Forward +5s", ui.strip_ansi(status))
 

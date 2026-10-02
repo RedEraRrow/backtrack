@@ -8,7 +8,7 @@ class SeekKeysTest(unittest.TestCase):
     def test_each_key_seeks_its_amount(self):
         self.assertEqual(_seek_step('RIGHT', 100, 10), (5, 'Seek Forward +5s'))
         self.assertEqual(_seek_step('LEFT', 100, 10), (-5, 'Seek Backward -5s'))
-        self.assertEqual([_seek_step(k, 100, 10)[0] for k in ',.jJlL'], [-30, 30, -1, -1, 1, 1])
+        self.assertEqual([_seek_step(k, 100, 10)[0] for k in ',.jl'], [-30, 30, -1, 1])
         from backtrack import tuning as tune
         from backtrack.playback import player_ui
         self.assertIsNone(_seek_step('e', 100, 10))          # Diagnostics off

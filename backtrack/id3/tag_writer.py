@@ -17,7 +17,7 @@ from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPO
 from mutagen.mp4 import MP4, MP4Cover  # type: ignore[reportPrivateImportUsage]
 from backtrack.id3 import tag_registry as _reg
 from backbone.log import quietly
-from backtrack.music_library import first_text
+from backtrack.music_library import compilation_flag, first_text
 
 # The fields this writer understands (track/disc carry their totals). The
 # compilation flag is not a user field: it rides along when a compilation is
@@ -124,7 +124,7 @@ def _id3_present(audio: ID3) -> dict[str, bool]:
         'title': _txt('TIT2'), 'artist': _txt('TPE1'), 'album_artist': _txt('TPE2'),
         'album': _txt('TALB'), 'track': _num('TRCK'), 'disc': _num('TPOS'),
         'disc_subtitle': _txt('TSST'), 'year': _txt('TDRC'),
-        'compilation': bool(audio.get('TCMP') and str(audio['TCMP'].text[0]) not in ('', '0')),
+        'compilation': compilation_flag(audio),
     }
 
 
@@ -150,7 +150,7 @@ def _mp4_present(audio: MP4) -> dict[str, bool]:
         'album': _txt('\xa9alb'), 'track': _pair('trkn'), 'disc': _pair('disk'),
         'disc_subtitle': False,           # no standard MP4 atom, never written
         'year': _txt('\xa9day'),
-        'compilation': bool(tags.get('cpil')),
+        'compilation': compilation_flag(tags),
     }
 
 

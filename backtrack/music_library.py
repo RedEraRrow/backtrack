@@ -24,7 +24,7 @@ SYNC_INTERVAL_SECONDS = 30
 # Bump whenever `_get_default_metadata` gains a field or an extractor learns a new
 # tag: cached entries carrying an older version are re-read on the next sync even
 # though their mtime hasn't moved.
-METADATA_VERSION = 6
+METADATA_VERSION = 7
 
 
 def _default_cache_dir() -> Path:
@@ -123,6 +123,15 @@ def live_library() -> list | None:
     """The in-memory library the background sync keeps current, or None when
     no sync is running (a bare CLI invocation)."""
     return _sync_state.get("library")
+
+
+def library_entry(path: str, by_path: dict | None = None) -> dict:
+    """A track's details: its in-memory library entry, else its own tags (a
+    file played from the CLI isn't in the library). `by_path`, when given, is
+    the library indexed by path, for a caller looking up many tracks at once."""
+    if by_path is None:
+        by_path = {t['path']: t for t in (live_library() or [])}
+    return by_path.get(path) or get_metadata(path)
 
 
 def _reconcile_library(library: list, music_dirs, ignore_hidden: bool = False) -> bool:
@@ -292,6 +301,7 @@ def _get_default_metadata(file_path: str) -> dict:
         "title": os.path.splitext(os.path.basename(file_path))[0],
         "artist": "Unknown Artist",
         "album_artist": "",
+        "compilation": False,
         "album": "Unknown Album",
         "track": "0",
         "total_tracks": "0",
@@ -376,9 +386,17 @@ def get_metadata(file_path: str) -> dict:
     return metadata
 
 
+def compilation_flag(tags) -> bool:
+    """Whether an ID3 (TCMP) or MP4 ('cpil') tag marks the album a compilation."""
+    tcmp = tags.get('TCMP')
+    if tcmp is not None:
+        return bool(tcmp.text) and str(tcmp.text[0]).strip() not in ('', '0')
+    return bool(tags.get('cpil'))
+
+
 def _extract_id3_metadata(tags: ID3) -> dict:
     """Map an ID3 tag object's frames to the library's metadata field names."""
-    result = {}
+    result = {'compilation': compilation_flag(tags)}
 
     # Standard text frames
     frame_map = {
@@ -468,6 +486,7 @@ def _extract_mp4_metadata(tags: MP4) -> dict:
 
     if not tags:
         return result
+    result['compilation'] = compilation_flag(tags)
 
     # MP4 atom mappings for standard metadata
     field_map = {
@@ -816,6 +835,18 @@ def derive_album_credit(songs: list) -> str:
     return "; ".join(v for v in casts[0] if v.lower() in anchor)
 
 
+def album_credit(songs: list) -> str:
+    """Who an album is by, wherever it is filed or shown: its album artist;
+    else "Various Artists" when it is flagged a compilation; else the artists
+    credited on every track (derive_album_credit)."""
+    tagged = _first_album_artist(songs)
+    if tagged:
+        return tagged
+    if any(s.get('compilation') for s in songs):
+        return "Various Artists"
+    return derive_album_credit(songs)
+
+
 def get_grouped_data(library: list, category: str) -> dict:
     """Group library by category.
 
@@ -827,7 +858,7 @@ def get_grouped_data(library: list, category: str) -> dict:
 
     if category == "artist":
         # Prefer album_artist for artist grouping; with none, derive the album's
-        # credit from its track casts (see derive_album_credit).
+        # credit (see album_credit).
         album_groups: dict[tuple[str, str], list[dict]] = {}
         for song in library:
             album = (song.get("album") or "Unknown").strip()
@@ -835,7 +866,7 @@ def get_grouped_data(library: list, category: str) -> dict:
             album_groups.setdefault((album, album_artist), []).append(song)
 
         compilation_map: dict[tuple[str, str], str] = {
-            key: (key[1] or derive_album_credit(songs) or "Unknown")
+            key: (album_credit(songs) or "Unknown")
             for key, songs in album_groups.items()
         }
 
@@ -910,7 +941,7 @@ def _group_albums(library: list) -> dict:
     for key, songs in by_id.items():
         name = names[key]
         if counts[key[0]] > 1:
-            name = f"{name} ({songs[0].get('album_artist') or derive_album_credit(songs) or 'Unknown'})"
+            name = f"{name} ({album_credit(songs) or 'Unknown'})"
         grouped[name] = songs
     return grouped
 
@@ -1100,7 +1131,7 @@ def _field_value(field: str, t: dict, album: list, opts: dict):
         return _natural(sort_text(name, opts)) if name.strip() else None
     if field == 'album_artist':
         tag = next((s.get('Album Artist Sort Order') for s in album if s.get('Album Artist Sort Order')), None)
-        name = tag if opts['use_tags'] and tag else (_first_album_artist(album) or derive_album_credit(album))
+        name = tag if opts['use_tags'] and tag else album_credit(album)
         return _natural(sort_text(name, opts)) if name and name.strip() else None
     if field == 'album_year':
         return album_year(album) or None

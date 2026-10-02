@@ -127,7 +127,9 @@ Navigation is the same everywhere: `↑↓` move, `→`/`Enter` confirm, `←`/`
 `q` quits the app from anywhere (it never just closes a widget). In a field you type into, `q` is
 typed as a letter; in the live search, Ctrl-C quits instead. Lists never wrap, keep the cursor on
 the same item after a re-sort or an edit, restore it when you back out, and support mouse clicks;
-`a` selects all in a multi-select list. The hint bar (pinned to the bottom of the screen) is
+`a` selects all in a multi-select list. A list in sections (Settings, Key bindings) that is much
+taller than the window opens as its section titles: `Enter` opens one, `Esc` goes back to the
+titles, and `/` switches to the whole list and back. The hint bar (pinned to the bottom of the screen) is
 clickable too: click any highlighted key to trigger it. When audio is playing, the mini-player's
 ⏯/⏭ icons are clickable, and clicking anywhere else on it reopens the player. In the full player,
 the ⏮/⏯/⏭ controls, the hint bar, and the vertical volume bar are all clickable (click the volume
@@ -144,23 +146,35 @@ grouping, work: choose which appear, and their order, in Settings → Browse men
 everything or within one music directory (Browse → Libraries, each under the name you give it in
 Settings → Music directories). Drilling into a letter in the A-Z index and backing out returns you
 to the index. Play all (`p`), shuffle (`x`), album shuffle (`X`) and edit all (`E`) are in the hint
-bar at the bottom of each list; `e` edits just the highlighted row. While something is playing,
-`n` plays the highlighted row next and `a` adds it to the queue.
+bar at the bottom of each list; `e` edits just the highlighted row. `n` plays the highlighted row
+next and `a` adds it to the queue (with nothing playing, either starts it). `o` lists everything
+you can do with the highlighted row, each with its key: for a track, play it, edit its tags, play
+from here, play next, play after the album that's playing, add it to the queue (shuffled or not),
+add its whole album; for an album, artist or other group, the same for all its tracks. `O` lists
+the same for the whole list: play, shuffle, edit, sort, and play next or queue everything listed.
+Any of these can be given its own key in Settings → Key bindings. Shuffling, clearing and undoing
+the queue itself are in the player's queue panel.
 
 Albums and tracks follow one sort order, set with `s` in any list or in Settings → Sorting: a
 chain of levels (album, album year, disc, track, title, date…), each ascending or descending, with
-presets such as broadcast order. A music directory can have its own. Selecting a track offers Play
-/ Edit tags (or plays immediately if *Auto-play on select* is enabled).
+presets such as broadcast order. A music directory can have its own. Selecting a track plays it;
+what follows is Settings → *After a picked track*: nothing, the rest of the list it was picked from
+(the default), or the queue that was already playing. The queue is kept between runs: opening backtrack
+again offers to **Resume** it at the track and moment you left, or start fresh.
 
 ### Search
 
 Fuzzy search across title, artist, album, composer, lyricist, genre and people, and by disc
 ("disc 2"). Type to filter; results re-rank live with the matched characters highlighted. `^f`
 cycles the scope (all / title / artist / album / composer / lyricist / genre / people) and `Tab`
-jumps between result sections; `^e` edits the highlighted track and `^a` every result; `Enter`
-opens a result (with Play next / Add to queue offered while something is playing); `Esc` backs out.
+jumps between result sections; `^e` edits the highlighted track and `^a` every result; `^k` lists
+everything you can do with a result (as `o` does in a list); `Enter` opens a result or plays a track (what follows it is the
+After a picked track setting); `Esc` backs out.
 
 ### Playback controls
+
+These are the default keys. Every key in the app can be changed in Settings → Key bindings (screen
+by screen, with more than one key per action if you like), and every hint bar shows the keys you set.
 
 | Key | Action |
 |-----|--------|
@@ -171,7 +185,8 @@ opens a result (with Play next / Add to queue offered while something is playing
 | `+` / `-` | Volume up / down |
 | `m` | Show or hide the track details line (year · genre · disc/track …); remembered. Also Settings → Track details in player |
 | `w` | Cycle the side panel: off → lyrics → queue → lyrics+credits. Views with nothing in them are skipped |
-| `i` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[i] help` (click the `i`; it also works where `i` is typed as a letter); in the player it stays in the hint bar. Also Settings → Key hints |
+| `↑` / `↓` | With the queue panel showing: a cursor through the queue. `↵` plays the track at it, `J` / `K` move it up / down, `d` removes it, `x` shuffles what's coming, `c` clears what's coming, `u` undoes the last queue change |
+| `?` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[?] help`; in a text field, where `?` is typed, it says `[^/] help` and the key is Ctrl+/ (which works everywhere). Clicking the key in the corner works too. In the player it stays in the hint bar. Also Settings → Key hints |
 | `[` / `]` | Previous / next track |
 | `e` | Jump to the last 35 s (only with Settings → Diagnostics log on) |
 | `b` / `Esc` | Minimise: leave the player but keep the audio playing in the background (pinned while another window is attached) |
@@ -386,7 +401,7 @@ directory and handed to the same refresh the app uses.
 
 Settings are managed in-app under **Settings**, in seven sections:
 
-- **Playback**: lyric lead-in, auto-play on select, key hints, image album art (iTerm2), track
+- **Playback**: lyric lead-in, after a picked track, key hints, image album art (iTerm2), track
   details in player.
 - **Appearance**: accent colour (colours from your terminal's palette, fixed colours, or a custom
   hex value).

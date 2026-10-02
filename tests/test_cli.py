@@ -30,6 +30,7 @@ from mutagen.id3 import ID3, TALB, TCON, TIT2, TPE1, TPOS, TRCK  # type: ignore[
 
 from backtrack import cli
 from backbone import output as out
+from backbone import ui
 
 
 def _mp3(path: str, title: str, artist: str, album: str, track: str,
@@ -53,6 +54,7 @@ class CliTest(unittest.TestCase):
     """A CLI test with its own config, cache and music directory."""
 
     def setUp(self):
+        self._colour = ui._colour_on
         from backtrack import config as cfg
         from backtrack import history as hist
         from backtrack import music_library as ml
@@ -108,6 +110,7 @@ class CliTest(unittest.TestCase):
          hist.HISTORY_FILE) = self._saved
         sys.stdin = self.stdin
         out.configure()
+        ui.set_colour(self._colour)        # the CLI turns colour off for a pipe
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     # -- running ------------------------------------------------------------
@@ -274,10 +277,10 @@ class SearchTest(CliTest):
 
 class ConfigTest(CliTest):
     def test_get_and_set_a_boolean(self):
-        self.assertEqual(self.run_cli('config', 'set', 'autoplay_on_select',
-                                      'true')[0], out.OK)
-        _code, body = self.json_of('config', 'get', 'autoplay_on_select')
-        self.assertIs(body['value'], True)
+        self.assertEqual(self.run_cli('config', 'set', 'history_enabled',
+                                      'false')[0], out.OK)
+        _code, body = self.json_of('config', 'get', 'history_enabled')
+        self.assertIs(body['value'], False)
 
     def test_set_coerces_to_the_declared_type(self):
         self.run_cli('config', 'set', 'lyric_lead_in', '3.5')

@@ -128,3 +128,7 @@ LYRIC_FABRICATED_END_MS = 5000
 # that fills it exists.
 PANE_CREDITS_EST_ROWS = 5
 PANE_LYRICS_EST_ROWS = 6
+# The queue panel under the controls is only kept this much: a gap, the header
+# and one track. Its tracks give way before the art shrinks, and any rows the art
+# doesn't need go to it.
+PANE_QUEUE_MIN_ROWS = 3

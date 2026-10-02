@@ -345,7 +345,8 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             "Preview (↵ applies):",
             choices=preview_choices, columns=_COVER_PREVIEW_COLUMNS,
             header=_preview_header, multi=True,
-            extra_hints={'d': 'choose cover'}, on_inspect=_reassign)
+            extra_hints={'tags.details': 'choose cover'}, on_inspect=_reassign,
+            inspect_key='tags.details')
         if sel is None:
             return False
         state.update(plan=plan, shown=shown, apply_paths=set(sel))

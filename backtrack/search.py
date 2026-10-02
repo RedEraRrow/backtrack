@@ -515,6 +515,7 @@ def collect_entities(results: list, tokens: list, kinds: tuple = ENTITY_FIELDS,
     album does not, and collapsing it under that album would claim a match the
     album never made.
     """
+    from backtrack.music_library import album_credit
     if not tokens:
         return {k: [] for k in kinds}
 
@@ -523,6 +524,10 @@ def collect_entities(results: list, tokens: list, kinds: tuple = ENTITY_FIELDS,
         for kind in kinds:
             for name in _entity_values(r.song, kind):
                 key = name.casefold()
+                if kind == 'album':
+                    # One album per (name, album artist), as Browse files them,
+                    # so two artists' "Greatest Hits" stay apart.
+                    key = (key, str(r.song.get('album_artist') or '').strip().casefold())
                 ent = buckets[kind].get(key)
                 if ent is None:
                     quality = _name_quality(name, tokens)
@@ -530,9 +535,6 @@ def collect_entities(results: list, tokens: list, kinds: tuple = ENTITY_FIELDS,
                         buckets[kind][key] = False     # remember the miss
                         continue
                     ent = Entity(kind=kind, name=name, score=quality)
-                    if kind == 'album':
-                        ent.subtitle = str(r.song.get('album_artist')
-                                           or r.song.get('artist') or '').strip()
                     buckets[kind][key] = ent
                 elif ent is False:
                     continue
@@ -544,6 +546,8 @@ def collect_entities(results: list, tokens: list, kinds: tuple = ENTITY_FIELDS,
                 if e is not False and len(e.tracks) >= min_tracks]
         for e in ents:
             e.score = e.score * _ENTITY_QUALITY + math.log1p(len(e.tracks)) * _ENTITY_SIZE
+            if kind == 'album':
+                e.subtitle = album_credit(e.tracks)
         ents.sort(key=lambda e: (-e.score, e.name.casefold()))
         out[kind] = ents
     return out
@@ -552,7 +556,7 @@ def collect_entities(results: list, tokens: list, kinds: tuple = ENTITY_FIELDS,
 def collect_disc_entities(results: list, tokens: list, min_tracks: int = 1) -> list:
     """Group `results` into per-disc entities within multi-disc albums, e.g.
     "John Finnemore's Souvenir Programme Series 1" should surface just that
-    disc's tracks, not the whole album's. Grouped by (artist, album, disc
+    disc's tracks, not the whole album's. Grouped by (album artist, album, disc
     number), never by the disc label alone: two different albums can each
     have a "Disc 1" or even both happen to call one "Series 1", and those
     must stay distinct groups. Only albums that actually have more than one
@@ -564,6 +568,7 @@ def collect_disc_entities(results: list, tokens: list, min_tracks: int = 1) -> l
     combined display form; see its docstring for why that would let "series
     4" and "disc 4" cross-match a disc where those two numbers disagree).
     """
+    from backtrack.music_library import album_credit
     if not tokens:
         return []
     tokens, disc_number = extract_disc_constraint(tokens)
@@ -581,8 +586,10 @@ def collect_disc_entities(results: list, tokens: list, min_tracks: int = 1) -> l
         if not album:
             continue
         disc_num = _disc_number(song) or '1'
-        artist = str(song.get('album_artist') or song.get('artist') or '').strip()
-        key = (artist.casefold(), album.casefold(), disc_num)
+        # The album artist tag only: a compilation without one is still one
+        # album, not one per track artist.
+        album_artist = str(song.get('album_artist') or '').strip()
+        key = (album_artist.casefold(), album.casefold(), disc_num)
 
         ent = buckets.get(key)
         if ent is False:
@@ -596,13 +603,14 @@ def collect_disc_entities(results: list, tokens: list, min_tracks: int = 1) -> l
             else:
                 quality = 1.0   # the disc-number constraint alone already decided this
             name = f"{album}, {_disc_display_label(song)}"
-            ent = Entity(kind='disc', name=name, score=quality, subtitle=artist)
+            ent = Entity(kind='disc', name=name, score=quality)
             buckets[key] = ent
         ent.tracks.append(song)
 
     ents = [e for e in buckets.values() if e is not False and len(e.tracks) >= min_tracks]
     for e in ents:
         e.score = e.score * _ENTITY_QUALITY + math.log1p(len(e.tracks)) * _ENTITY_SIZE
+        e.subtitle = album_credit(e.tracks)
     ents.sort(key=lambda e: (-e.score, e.name.casefold()))
     return ents
 

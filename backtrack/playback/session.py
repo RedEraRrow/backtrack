@@ -4,7 +4,9 @@ over ipc via RemoteSession.
 """
 from __future__ import annotations
 
+import json
 import os
+import random
 import threading
 import time
 import uuid
@@ -16,8 +18,9 @@ from mutagen.id3 import ID3
 import mutagen.id3
 
 from backtrack.history import log_listening_history
-from backtrack.music_library import drop_moved, get_song_duration, track_title, first_text
-from backbone.log import quietly
+from backtrack.music_library import drop_moved, get_song_duration, library_entry, track_title, first_text
+from backbone.files import write_text_atomic
+from backbone.log import log, quietly
 
 # vlc.State attributes are dynamic; expose safe aliases.
 _VLC_STATE_PAUSED = getattr(vlc.State, 'Paused', None)
@@ -36,6 +39,53 @@ _PREV_RESTART_AFTER_S = tune.PREV_RESTART_AFTER_S
 REPEAT_OFF = 'off'
 REPEAT_ONE = 'one'
 REPEAT_ALL = 'all'
+
+# What happens after a track picked from a list (the `after_pick` setting):
+# it plays alone, the rest of its list follows, or the queue carries on after it.
+AFTER_PICK = ('stop', 'list', 'queue')
+
+# Queue edits that change the queue itself, so undo can take them back.
+_UNDOABLE = ('add', 'play_picked', 'move', 'remove', 'clear_upcoming', 'shuffle_upcoming')
+_UNDO_DEPTH = 20
+
+# The queue is kept between runs (Resume on the home menu): saved after every
+# edit and track change, on stop, and this often while playing.
+_SAVE_QUEUE_EVERY_S = 10
+
+
+def _queue_file():
+    from backtrack.config import CONFIG_DIR
+    return CONFIG_DIR / "queue.json"
+
+
+def saved_queue() -> dict | None:
+    """The queue a previous run left, for Resume, or None. Tracks that have
+    moved since are left out; a broken file is removed (and logged)."""
+    try:
+        data = json.loads(_queue_file().read_text(encoding="utf-8"))
+        queue, titles = list(data["queue"]), list(data.get("titles") or [])
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.warning("queue.json unreadable, dropped: %s", exc)
+        forget_saved_queue()
+        return None
+    keep = [i for i, p in enumerate(queue) if isinstance(p, str) and os.path.isfile(p)]
+    if not keep:
+        forget_saved_queue()
+        return None
+    paths = [queue[i] for i in keep]
+    names = [titles[i] if i < len(titles) else os.path.basename(queue[i]) for i in keep]
+    playing = data.get("path")
+    index = paths.index(playing) if playing in paths else max(0, min(int(data.get("index") or 0), len(paths) - 1))
+    return {"queue": paths, "titles": names, "index": index,
+            "elapsed": float(data.get("elapsed") or 0) if playing in paths else 0.0,
+            "mode": data.get("mode") if data.get("mode") in (REPEAT_OFF, REPEAT_ONE, REPEAT_ALL) else REPEAT_OFF}
+
+
+def forget_saved_queue() -> None:
+    with quietly():
+        _queue_file().unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +233,8 @@ class PlaybackSession:
         self.titles: list[str] = []          # display titles, parallel to queue
         self.index: int = 0
         self.mode: str = REPEAT_OFF
+        self._undo: list[tuple] = []         # (queue, titles, path playing) before each edit
+        self._saved_at: float = 0.0          # when the queue was last saved for Resume
 
         # A monotonically-increasing counter bumped whenever the current track
         # changes, so an attached view can cheaply detect "the track advanced".
@@ -274,6 +326,7 @@ class PlaybackSession:
             _apply_equalizer(mp, audio)     # right after play() so it takes (#74)
             mp.audio_set_volume(self._volume)   # carry the level across tracks
             self.track_start = time.time()
+            self._save_queue()
 
         # Only settle + probe VLC for a length when mutagen couldn't give one
         # (rare now get_song_duration covers MP4 too). Released here, but every
@@ -338,6 +391,9 @@ class PlaybackSession:
             self.enqueue(args['path'], args.get('title'))
         elif name == 'play_next':
             self.play_next(args['path'], args.get('title'))
+        elif name == 'queue_edit':
+            args = dict(args)
+            self.edit(args.pop('op', ''), **args)
         elif name == 'acquire_view':
             self.acquire_view(args.get('token', ''))
         elif name == 'release_view':
@@ -354,10 +410,24 @@ class PlaybackSession:
                 log_listening_history(self.file_path, self.track_start, time.time())
             self._history_logged = True
 
+    def _save_queue(self) -> None:
+        """Keep the queue and where it got to, for Resume next run. Only the
+        window playing the audio saves: a joined one mirrors it."""
+        if is_client() or not self.queue:
+            return
+        i = max(0, min(self.index, len(self.queue) - 1))
+        data = {"queue": self.queue, "titles": self.titles, "index": i, "path": self.queue[i],
+                "elapsed": round(self.elapsed(), 1) if self.is_active() else 0.0, "mode": self.mode}
+        with quietly():
+            write_text_atomic(_queue_file(), json.dumps(data))
+        self._saved_at = time.monotonic()
+
     def stop(self) -> None:
         """Stop playback and clear the current track (the queue is kept so the UI
         can still show it). Audio ends; history for the current track is logged."""
         with self._lock:
+            if self.is_active():
+                self._save_queue()           # where it stopped, for Resume
             self._log_history()
             if self.mp is not None:
                 with quietly():
@@ -481,6 +551,7 @@ class PlaybackSession:
             while True:
                 if not self.queue:
                     self.stop()
+                    forget_saved_queue()
                     return None
                 nxt = self.index + 1
                 if self.mode == REPEAT_ONE and not manual:
@@ -490,6 +561,7 @@ class PlaybackSession:
                         nxt = 0
                     else:
                         self.stop()
+                        forget_saved_queue()     # played to the end: nothing to resume
                         return None
                 if drop_moved([self.queue[nxt]]):
                     break
@@ -517,16 +589,163 @@ class PlaybackSession:
     def enqueue(self, path: str, title: str | None = None) -> int:
         """Append a track to the end of the queue. Returns the new queue length."""
         with self._lock:
-            self.queue.append(path)
-            self.titles.append(title or self._title_for(path))
+            self.edit('add', paths=[path], titles=[title] if title else None, where='end')
             return len(self.queue)
 
     def play_next(self, path: str, title: str | None = None) -> None:
         """Insert a track to play immediately after the current one."""
+        self.edit('add', paths=[path], titles=[title] if title else None, where='next')
+
+    # -- queue editing ------------------------------------------------------
+
+    def edit(self, op: str, **args) -> bool:
+        """Every change to the queue goes through here, from this window, a
+        joined one (the `queue_edit` ipc command) or the CLI. Returns whether
+        anything changed. The ops are the `_edit_*` methods below."""
         with self._lock:
+            fn = getattr(self, f"_edit_{op}", None)
+            if fn is None:
+                log.warning("unknown queue edit %r", op)
+                return False
+            before = (list(self.queue), list(self.titles), self.file_path)
+            try:
+                changed = bool(fn(**args))
+            except (TypeError, ValueError, IndexError) as exc:
+                log.warning("queue edit %s%r failed: %s", op, args, exc)
+                return False
+            if changed and op in _UNDOABLE:
+                self._undo.append(before)
+                del self._undo[:-_UNDO_DEPTH]
+            if changed:
+                self._save_queue()
+            if changed:
+                log.debug("queue edit %s: %d queued, at %d", op, len(self.queue), self.index)
+            return changed
+
+    def _at(self, pos: int, path: str) -> bool:
+        """Whether queue position `pos` still holds `path`: an edit sent from
+        another window can arrive after the queue moved on (an auto-advance),
+        and must not land on a different track."""
+        if 0 <= pos < len(self.queue) and self.queue[pos] == path:
+            return True
+        log.info("queue edit ignored: position %d no longer holds %s", pos, path)
+        return False
+
+    def _album_end(self) -> int:
+        """Queue position of the last track in the run that shares the current
+        track's album (and album artist): where "after this album" inserts."""
+        def key(p):
+            e = library_entry(p)
+            return ((e.get('album') or '').casefold(), (e.get('album_artist') or '').casefold())
+        end = self.index
+        if not self.queue:
+            return -1
+        here = key(self.queue[self.index])
+        while end + 1 < len(self.queue) and key(self.queue[end + 1]) == here:
+            end += 1
+        return end
+
+    def _edit_add(self, paths: list, titles: list | None = None, where: str = 'end',
+                  shuffled: bool = False) -> bool:
+        """Insert tracks: next, at the end, or after the current album; shuffled
+        among themselves first when asked, but kept together."""
+        items = list(zip(paths, titles or [None] * len(paths)))
+        if not items:
+            return False
+        if shuffled:
+            random.shuffle(items)
+        items = [(p, t or self._title_for(p)) for p, t in items]
+        if where == 'next':
             pos = self.index + 1
-            self.queue.insert(pos, path)
-            self.titles.insert(pos, title or self._title_for(path))
+        elif where == 'end':
+            pos = len(self.queue)
+        elif where == 'after_album':
+            pos = self._album_end() + 1
+        else:
+            raise ValueError(f"where={where!r}")
+        pos = max(0, min(pos, len(self.queue)))
+        self.queue[pos:pos] = [p for p, _ in items]
+        self.titles[pos:pos] = [t for _, t in items]
+        return True
+
+    def _edit_play_picked(self, paths: list, index: int, then: str = 'list',
+                          titles: list | None = None) -> bool:
+        """Play a track picked from a list: alone (`stop`), with the rest of its
+        list after it (`list`), or now and then back to the queue (`queue`;
+        with nothing playing that's the same as `list`)."""
+        titles = list(titles) if titles else [self._title_for(p) for p in paths]
+        path, title = paths[index], titles[index]
+        if then == 'stop':
+            return self.start(path, queue=[path], titles=[title])
+        if then == 'queue' and self.is_active():
+            self.queue.insert(self.index + 1, path)
+            self.titles.insert(self.index + 1, title)
+            self.index += 1
+            return self._load(path)
+        return self.start(path, queue=list(paths), titles=titles, index=index)
+
+    def _edit_jump(self, pos: int, path: str) -> bool:
+        if not self._at(pos, path):
+            return False
+        self.index = pos
+        return self._load(path)
+
+    def _edit_move(self, pos: int, delta: int, path: str) -> bool:
+        """Swap the track at `pos` with its neighbour above (-1) or below (+1)."""
+        j = pos + delta
+        if not self._at(pos, path) or not 0 <= j < len(self.queue):
+            return False
+        for lst in (self.queue, self.titles):
+            lst[pos], lst[j] = lst[j], lst[pos]
+        if self.index in (pos, j):
+            self.index = j if self.index == pos else pos
+        return True
+
+    def _edit_remove(self, pos: int, path: str) -> bool:
+        """Drop a track. Removing the one playing moves on to the next."""
+        if not self._at(pos, path):
+            return False
+        del self.queue[pos]
+        del self.titles[pos]
+        if pos < self.index:
+            self.index -= 1
+        elif pos == self.index:
+            if self.index < len(self.queue):
+                self._load(self.queue[self.index])
+            else:
+                self.index = max(0, len(self.queue) - 1)
+                self.stop()
+        return True
+
+    def _edit_clear_upcoming(self) -> bool:
+        if len(self.queue) <= self.index + 1:
+            return False
+        del self.queue[self.index + 1:]
+        del self.titles[self.index + 1:]
+        return True
+
+    def _edit_shuffle_upcoming(self) -> bool:
+        rest = list(zip(self.queue[self.index + 1:], self.titles[self.index + 1:]))
+        if len(rest) < 2:
+            return False
+        random.shuffle(rest)
+        self.queue[self.index + 1:] = [p for p, _ in rest]
+        self.titles[self.index + 1:] = [t for _, t in rest]
+        return True
+
+    def _edit_undo(self) -> bool:
+        """Put the queue back as it was before the last edit. The track playing
+        keeps playing: the cursor goes to it in the restored queue."""
+        if not self._undo:
+            return False
+        queue, titles, _was = self._undo.pop()
+        self.queue, self.titles = list(queue), list(titles)
+        if self.file_path in self.queue:
+            spots = [i for i, p in enumerate(self.queue) if p == self.file_path]
+            self.index = min(spots, key=lambda i: abs(i - self.index))
+        else:
+            self.index = max(0, min(self.index, len(self.queue) - 1))
+        return True
 
     def prev(self) -> str | None:
         """⏮: past the first ``_PREV_RESTART_AFTER_S`` seconds, restart the current
@@ -559,6 +778,8 @@ class PlaybackSession:
             if not ended and self.duration and self.elapsed() >= self.duration:
                 ended = True
             if not ended:
+                if time.monotonic() - self._saved_at > _SAVE_QUEUE_EVERY_S:
+                    self._save_queue()
                 return None
             result = self.next(manual=False)
             if result is None:
@@ -701,6 +922,11 @@ class RemoteSession:
 
     def play_next(self, path: str, title: str | None = None) -> None:
         self._link.send('play_next', {'path': path, 'title': title})
+
+    def edit(self, op: str, **args) -> bool:
+        """A queue edit (see PlaybackSession.edit), applied by the host; the
+        result comes back in the next snapshot."""
+        return self._link.send('queue_edit', {'op': op, **args})
 
     def pause_toggle(self) -> None:
         self._link.send('pause')

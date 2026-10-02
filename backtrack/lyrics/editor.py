@@ -36,11 +36,11 @@ from __future__ import annotations
 import sys, os, json, time
 
 from backtrack.music_library import drop_moved, track_title
-from backbone import ui
+from backbone import keys, ui
 from backbone.ui import Colors as C
 from backbone.prompt.core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs, _cols
 from backbone.prompt import text as _prompt_text
-from backbone.prompt.core import add_hint_click_cells_auto, _visible_rows
+from backbone.prompt.core import add_hint_click_cells, _visible_rows
 from backbone import prompt as _promptmod
 from backbone.files import write_text_atomic, backup_copy
 from backbone.log import log, quietly
@@ -56,7 +56,7 @@ from backtrack.lyrics.sync_doc import (
 )
 from backtrack.lyrics.verify import _split_candidates, _split_seg_at, _verify_matchup
 from backtrack import tuning as tune
-from backtrack.lyrics.editor_view import EDIT, SEG, TAP, WORD, _AUD_CLIP, _clip, _draw, _vlc
+from backtrack.lyrics.editor_view import EDIT, SEG, TAP, WORD, _AUD_CLIP, _clip, _draw, _vlc, shown_hint_pairs
 from backtrack.lyrics.editor_keys import _QUIT, _KeyHandlers
 
 
@@ -480,10 +480,11 @@ class _Session(_KeyHandlers):
         hint_cells: dict = {}
         while True:
             # Rebuilt each frame: the hints come and go with the corner toggle.
-            foot = [f"{C.DIM}{ui.divider()}{C.RESET}"] + \
-                   _promptmod.chrome_hint_lines(
-                       [('↑↓/j/k', 'scroll'), ('PgUp/PgDn', 'page'),
-                        ('Home/End', 'ends'), ('q', 'back')])
+            R = lambda *n: keys.label(*(f'lyrics_report.{x}' for x in n))  # noqa: E731
+            own = [(R('up', 'down'), 'scroll'), (R('page_up', 'page_down'), 'page'),
+                   (R('top', 'bottom'), 'ends'), (R('back'), 'back')]
+            pairs = _promptmod.chrome_hint_pairs(own)
+            foot = [f"{C.DIM}{ui.divider()}{C.RESET}"] + _promptmod.chrome_hint_lines(own)
             ui.footer_lines(ui.get_terminal_width())
             cols = _cols()
             avail = _visible_rows()
@@ -497,28 +498,29 @@ class _Session(_KeyHandlers):
             pad = max(0, (avail) - len(out) - len(foot))
             rendered = out + [""] * pad + foot
             hint_cells.clear()
-            rendered[0] = _promptmod.add_help_corner(rendered[0], 0, hint_cells)
+            rendered[0] = _promptmod.add_help_corner(rendered[0], 0, hint_cells, help_key=True)
             self.w.render(rendered)
             for _i in range(len(rendered) - len(foot), len(rendered)):
-                add_hint_click_cells_auto(hint_cells, rendered[_i], _i)
+                add_hint_click_cells(hint_cells, rendered[_i], _i, pairs)
             if not _wait_for_keypress(0.2):
                 continue
             k = _read_key(self.fd)
             if k.startswith('MOUSE_CLICK:') and self.w.row is not None:
                 _p = k.split(':'); _r = int(_p[2]); _c = int(_p[3]) if len(_p) > 3 else 1
                 k = hint_cells.get((_r - self.w.row - ui.MARGIN_V, _c)) or ''
-            _ch = _promptmod.consume_chrome(k, {})      # the transport keys it advertises
+            _ch = _promptmod.consume_chrome(k, hint_cells)   # transport keys, and `?` for help
             if _ch is _promptmod.CHROME_REDRAW:
                 self.w.anchor_reset(); continue
             if _ch is _promptmod.CHROME_HANDLED:
                 continue
-            if   k in ('q', 'ESC', 'CTRL_C'): break
-            elif k in ('UP', 'k'):            vp -= 1
-            elif k in ('DOWN', 'j', 'SPACE'): vp += 1
-            elif k == 'PGUP':                 vp -= vis
-            elif k == 'PGDN':                 vp += vis
-            elif k == 'HOME':                 vp = 0
-            elif k == 'END':                  vp = len(body)
+            act = keys.action(k, 'lyrics_report')
+            if   k == 'CTRL_C' or act == 'lyrics_report.back': break
+            elif act == 'lyrics_report.up':        vp -= 1
+            elif act == 'lyrics_report.down':      vp += 1
+            elif act == 'lyrics_report.page_up':   vp -= vis
+            elif act == 'lyrics_report.page_down': vp += vis
+            elif act == 'lyrics_report.top':       vp = 0
+            elif act == 'lyrics_report.bottom':    vp = len(body)
 
     def do_verify(self) -> None:
         """Run the JSON<->MD verification report, write it alongside the transcript, and page through it."""
@@ -767,8 +769,9 @@ class _Session(_KeyHandlers):
         # mistaken for a key, without depending on the divider glyph. Cells
         # are keyed by out-index row (col is absolute), matching the
         # r → line_idx inversion the mouse handler uses.
+        _pairs = shown_hint_pairs()
         for _i in range(max(0, len(lines) - footer_rows), len(lines)):
-            add_hint_click_cells_auto(self.hint_cells, lines[_i], _i)
+            add_hint_click_cells(self.hint_cells, lines[_i], _i, _pairs)
 
     def run(self) -> None:
         """The editor's key loop, until the user quits."""
