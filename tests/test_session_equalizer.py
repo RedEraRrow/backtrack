@@ -8,6 +8,7 @@ import unittest
 from mutagen.id3 import ID3, EQU2, RVA2  # type: ignore[reportPrivateImportUsage]
 
 from backtrack.playback import session
+from backtrack.playback.libvlc import vlc
 
 
 class FakePlayer:
@@ -19,6 +20,7 @@ class FakePlayer:
         return 0
 
 
+@unittest.skipUnless(vlc, "VLC (libvlc) not installed")
 class ApplyEqualizerRVA2Test(unittest.TestCase):
     def test_rva2_master_channel_becomes_preamp(self):
         audio = ID3()
