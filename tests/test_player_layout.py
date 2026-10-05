@@ -70,13 +70,13 @@ class QueueTest(unittest.TestCase):
 class PlayerHelpHintTest(unittest.TestCase):
     def test_hints_off_still_leave_i_help_in_the_players_bar(self):
         pc._hints_on[0] = False
-        _status, hints = player_ui._controls_line(False, False, 50, "")
+        _status, hints = player_ui._controls_line(False, False, 50)
         self.assertIn("[?] help", ui.strip_ansi(hints))
 
     def test_hints_on_show_hide_help_among_the_rest(self):
         pc._hints_on[0] = True
         try:
-            _status, hints = player_ui._controls_line(False, False, 50, "")
+            _status, hints = player_ui._controls_line(False, False, 50)
             self.assertIn("hide help", ui.strip_ansi(hints))
             self.assertIn("prev/next", ui.strip_ansi(hints))
         finally:

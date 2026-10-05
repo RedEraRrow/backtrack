@@ -454,7 +454,7 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
     return lines
 
 
-def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
+def _controls_line(is_uslt: bool, is_paused: bool, volume: int,
                    width: int | None = None,
                    has_lyrics: bool = True, has_credits: bool = True) -> tuple[str, str]:
     """Build the centred transport-controls line and the shortcuts/help hint line below it."""
@@ -477,11 +477,6 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int, toast: str,
 
     status = " " * left_pad + controls
     _record_transport_cols(status, icons)
-    if toast:
-        # The feedback line for the last action (seek, volume, warnings): after
-        # the controls, which keep their place, and cut at the window edge.
-        status = ui.clip_ansi(f"{status}   {C.DIM}{toast}{C.RESET}",
-                                    ui.get_terminal_size()[0] - ui.MARGIN_H)
 
     if not pc.hints_visible():
         # Hints are off app-wide, but the player keeps its way back to them.
@@ -530,11 +525,11 @@ def _set_controls_hint_pairs(pairs: list) -> None:
 
 
 def _place_controls(emit, ctrl_row: int, rows: int, is_uslt: bool, is_paused: bool,
-                    volume: int, toast: str, has_lyrics: bool, has_credits: bool) -> tuple[int, list[str]]:
+                    volume: int, has_lyrics: bool, has_credits: bool) -> tuple[int, list[str]]:
     """Draw the transport line at `ctrl_row` (pulled up so its hints still fit on
     screen) with the hint lines under it, and record their click cells. Returns
     the row it used and the hint lines."""
-    status_ln, shortcuts_ln = _controls_line(is_uslt, is_paused, volume, toast,
+    status_ln, shortcuts_ln = _controls_line(is_uslt, is_paused, volume,
                                              has_lyrics=has_lyrics, has_credits=has_credits)
     shortcut_lines = shortcuts_ln.splitlines() or [""]
     # A window too short for all the help shows the lines that fit under the
@@ -754,10 +749,10 @@ def _center_lines(lines: list[str], cols: int) -> list[str]:
 
 
 def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
-                 is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple[int, int, int, int, int]:
+                 is_paused: bool = False, volume: int = 100) -> tuple[int, int, int, int, int]:
     """Hide the cursor and draw the default playback UI layout."""
     sys.stdout.write(f"{C.HIDE}")
-    return _draw_default_ui(file_path, audio, pre_art, size, is_paused, volume, toast)
+    return _draw_default_ui(file_path, audio, pre_art, size, is_paused, volume)
 
 
 _MIN_ART_ROWS = 3
@@ -796,7 +791,7 @@ def _centred_art(file_path: str, box_w: int, max_w: int, avail_h: int,
 
 
 def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
-                     is_paused: bool = False, volume: int = 100, toast: str = "") -> tuple[int, int, int, int, int]:
+                     is_paused: bool = False, volume: int = 100) -> tuple[int, int, int, int, int]:
     """Render the full playback screen (art, metadata, controls, and any active pane)
     for the current layout mode, returning the progress/control/lyric row positions and art bottom row."""
     cols, rows = size
@@ -836,7 +831,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
         # Size the controls/hints first so the art leaves room for them: showing
         # help (several hint lines) shrinks the art instead of drawing over the controls.
-        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, toast, has_lyrics=has_lyrics, has_credits=has_cast)
+        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, has_lyrics=has_lyrics, has_credits=has_cast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
         avail_h = _art_room(rows - len(left_col) - len(shortcut_lines) - 4 - 2 * ui.MARGIN_V)
         # Art is inset from the panel edges so it floats with breathing room.
@@ -882,7 +877,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         # Recompute now that the art geometry is set, so the transport line centres over the art.
         ctrl_row, shortcut_lines = _place_controls(
-            emit, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
+            emit, ctrl_row, rows, is_uslt_track, is_paused, volume, has_lyrics, has_cast)
 
         _pane_top = geom.art_top  # right pane aligns with art top after any vertical centring
 
@@ -941,7 +936,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
 
         is_uslt_track = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
-        _, temp_shortcuts = _controls_line(is_uslt_track, is_paused, volume, toast, width=cols, has_lyrics=has_lyrics, has_credits=has_cast)
+        _, temp_shortcuts = _controls_line(is_uslt_track, is_paused, volume, width=cols, has_lyrics=has_lyrics, has_credits=has_cast)
         control_rows = 2 + len(temp_shortcuts.splitlines() or [""])
 
         credits_est = tune.PANE_CREDITS_EST_ROWS if (has_cast and _ui_state['show_credits']) else 0
@@ -995,7 +990,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         ctrl_row = prog_row + 1
 
         ctrl_row, shortcut_lines = _place_controls(
-            emit, ctrl_row, rows, is_uslt_track, is_paused, volume, toast, has_lyrics, has_cast)
+            emit, ctrl_row, rows, is_uslt_track, is_paused, volume, has_lyrics, has_cast)
 
         ctrl_row_end = ctrl_row + len(shortcut_lines)
 

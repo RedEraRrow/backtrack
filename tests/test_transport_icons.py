@@ -12,7 +12,7 @@ class TransportIconsTest(unittest.TestCase):
         player_ui.geom.art_left, player_ui.geom.art_width = 0, 64
         for nerd, prev_col in ((False, 27), (True, 28)):
             player_ui._ui_state['nerd_icons'] = nerd
-            player_ui._controls_line(False, False, 50, '')
+            player_ui._controls_line(False, False, 50)
             cols = player_ui._last_transport_cols
             self.assertEqual((cols['prev'], cols['playpause'], cols['next']), (prev_col, 32, 36))
             self.assertEqual(player_ui.transport_click_action(5, 37, 5), 'next')

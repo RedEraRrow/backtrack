@@ -10,12 +10,15 @@ from backbone import ui
 
 
 class PlayerToastTest(unittest.TestCase):
-    def test_the_toast_is_on_the_controls_line(self):
+    def test_the_toast_is_in_the_status_bar_not_by_the_controls(self):
         from backtrack.playback import player_ui
         from backtrack.playback.player_geom import geom
         geom.reset_frame()                  # no art laid out by an earlier test
-        status, _hints = player_ui._controls_line(False, False, 50, "Seek Forward +5s")
-        self.assertIn("Seek Forward +5s", ui.strip_ansi(status))
+        ui.show_status("Seek Forward +5s", 1.0)
+        status, _hints = player_ui._controls_line(False, False, 50)
+        self.assertNotIn("Seek Forward +5s", ui.strip_ansi(status))
+        self.assertIn("Seek Forward +5s", ui.strip_ansi(ui.get_status_line()))
+        ui.show_status("", 0)
 
 
 class HistorySwitchTest(unittest.TestCase):

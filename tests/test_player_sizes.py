@@ -42,7 +42,7 @@ class PlayerSizesTest(unittest.TestCase):
              patch.object(pc, 'hints_visible', lambda: help_on), \
              patch.object(sys, 'stdout', io.StringIO()):
             prog, ctrl, *_ = pu._draw_default_ui(self.cover, _Audio(), None, (cols, rows))
-            hints = len(pu._controls_line(False, False, 100, "", has_lyrics=False,
+            hints = len(pu._controls_line(False, False, 100, has_lyrics=False,
                                           has_credits=False)[1].splitlines())
         box = min(cols // 2, pu.ART_MAX_WIDTH) if pu._layout_mode(cols) == 'wide' and pane else cols
         return dict(w=geom.art_width or 0, h=geom.art_height or 0, top=geom.art_top or 0,

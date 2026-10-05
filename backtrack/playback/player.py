@@ -192,7 +192,6 @@ def _idle_view(woken, volume: int) -> bool:
     # A blank braille cell survives the tag strip, so the artist row keeps its place.
     placeholder.add(TPE1(text=["\u2800"]))
     player_ui.set_queue_context([], 0, [])
-    toast, toast_expiry = "", 0.0
     last_sig = None
     with raw_mode(sys.stdin):
         while True:
@@ -200,19 +199,17 @@ def _idle_view(woken, volume: int) -> bool:
                 return True
             if not has_other_windows():
                 return False
-            if toast and time.time() >= toast_expiry:
-                toast = ""
             size = ui.get_terminal_size()
-            if (size, toast) != last_sig:
+            if size != last_sig:
                 prog_row, _c, _l, width, _b = draw_full_ui(
-                    "", placeholder, IDLE_ART, size, is_paused=True, volume=volume, toast=toast)
+                    "", placeholder, IDLE_ART, size, is_paused=True, volume=volume)
                 update_progress_ui(prog_row, 0, 0, width)
-                last_sig = (size, toast)
+                last_sig = size
+            pc.render_status_bar()
             key = get_key_non_blocking() or ''
             act = keys.action(key, 'player') if key else None
             if act == 'player.back':
-                toast = 'Close the other window to leave the player'
-                toast_expiry = time.time() + tune.TOAST_MEDIUM_S
+                ui.show_status('Close the other window to leave the player', tune.TOAST_MEDIUM_S)
             elif key == 'FOCUS_IN':
                 last_sig = None
             elif act == 'player.quit':
@@ -264,8 +261,6 @@ def open_client_player_view() -> dict:
     volume = sess.clamp_volume(np0.get('volume'))
     prog_row = 0
     ctrl_row = 0
-    toast = ""
-    toast_expiry = 0.0
     width = ui.get_terminal_size()[0]
     player_ui._ui_state['lyrics_pane'] = False
     player_ui.refresh_player_settings()
@@ -294,8 +289,6 @@ def open_client_player_view() -> dict:
                 # show a second player; step back to the mirror (#14).
                 if np.get('view_holder') not in (None, token):
                     return {"status": "DETACH"}
-                if toast and time.time() >= toast_expiry:
-                    toast = ""; last_sig = None       # clear an expired message
                 fp = np['file_path']
                 size = ui.get_terminal_size()
                 player_ui.set_queue_context(np.get('titles') or [], int(np.get('index') or 0), np.get('queue') or [])
@@ -320,8 +313,9 @@ def open_client_player_view() -> dict:
                     duration = float(np.get('duration') or 0.0)
                     prog_row, ctrl_row, _lr, width, _br = draw_full_ui(
                         fp, audio, None, size, is_paused=bool(np.get('paused')),
-                        volume=volume, toast=toast)
+                        volume=volume)
                     last_sig = sig
+                pc.render_status_bar()
 
                 elapsed = float(np.get('elapsed') or 0.0)
                 if not np.get('paused'):
@@ -377,9 +371,7 @@ def open_client_player_view() -> dict:
                         # Pinned open while another window browses this session
                         # (#14): the two windows stay specialised until one closes.
                         if has_other_windows():
-                            toast = 'Close the other window to leave the player'
-                            toast_expiry = time.time() + tune.TOAST_MEDIUM_S
-                            last_sig = None
+                            ui.show_status('Close the other window to leave the player', tune.TOAST_MEDIUM_S)
                         else:
                             return {"status": "DETACH"}
                     elif act == 'player.stop':
@@ -425,8 +417,6 @@ def _player_view_loop() -> dict:
     dialogue_state = None
 
     # --- view / loop state ---
-    toast_text = ""
-    toast_expiry = 0.0
     last_size = ui.get_terminal_size()
     resize_pending = False
     resize_timer = 0.0
@@ -439,7 +429,7 @@ def _player_view_loop() -> dict:
         """(Re)load per-track render state from the session for the current track."""
         nonlocal track_path, audio, duration, pre_art, sylt_data, uslt_lines, line_times
         nonlocal is_uslt, has_credits, has_lyrics, dialogue_state
-        nonlocal toast_text, toast_expiry, pane
+        nonlocal pane
         t = SESSION.track()
         fp = track_path = t.file_path
         audio = t.audio
@@ -489,12 +479,10 @@ def _player_view_loop() -> dict:
         # Say it out loud. Paced-out timing looks right for the first minute and is
         # a line adrift by the last, which is not something a still screen shows.
         if dialogue_state.is_active() and dialogue_state.timing_source == 'estimated':
-            toast_text = "⚠ No transcript: lyric timing is estimated and will drift"
-            toast_expiry = time.time() + tune.TOAST_LONG_S
+            ui.show_status("⚠ No transcript: lyric timing is estimated and will drift", tune.TOAST_LONG_S)
 
         if audio and audio.getall('EQU2'):
-            toast_text = "♫ Equaliser applied"
-            toast_expiry = time.time() + tune.TOAST_LONG_S
+            ui.show_status("♫ Equaliser applied", tune.TOAST_LONG_S)
 
     def _redraw_full() -> None:
         """Full-screen redraw for the current track + view state; sets row positions."""
@@ -503,7 +491,6 @@ def _player_view_loop() -> dict:
         prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
             track_path, audio, pre_art, last_size,
             is_paused=SESSION.is_paused(), volume=vol,
-            toast=toast_text if time.time() < toast_expiry else "",
         )
 
         if pane and _ui_state['show_lyrics'] and not _ui_state.get('show_queue'):
@@ -529,9 +516,8 @@ def _player_view_loop() -> dict:
 
     def update_ctrl_ui() -> None:
         """Redraw just the transport/status line in place (see #86)."""
-        active_toast = toast_text if time.time() < toast_expiry else ""
         status_ln, _ = _controls_line(
-            is_uslt, SESSION.is_paused(), SESSION.get_volume(), active_toast,
+            is_uslt, SESSION.is_paused(), SESSION.get_volume(),
             has_lyrics=has_lyrics, has_credits=has_credits)
         sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}")
         sys.stdout.flush()
@@ -581,9 +567,7 @@ def _player_view_loop() -> dict:
                 # (or already settled): send it again.
                 player_ui.redraw_art_image()
 
-            if toast_text and time.time() >= toast_expiry:
-                toast_text = ""
-                update_ctrl_ui()
+            pc.render_status_bar()
 
             current_track_sig = SESSION.generation
             if current_track_sig != last_track_sig:
@@ -638,7 +622,7 @@ def _player_view_loop() -> dict:
                         _frac = player_ui.progress_from_click(_mr, _mc)
                         if _vol is not None:
                             v = SESSION.set_volume(_vol)
-                            toast_text = f'Volume: {v}%'; toast_expiry = time.time() + tune.TOAST_SHORT_S
+                            ui.show_status(f'Volume: {v}%', tune.TOAST_SHORT_S)
                             player_ui.draw_volume_bar(v); update_ctrl_ui()
                             key = ''
                         elif _frac is not None and duration:
@@ -646,8 +630,7 @@ def _player_view_loop() -> dict:
                             # takes relative seeks, so aim from where we are.
                             _tgt = _frac * duration
                             SESSION.seek(_tgt - elapsed)
-                            toast_text = f'Seek to {ui.format_time(int(_tgt))}'
-                            toast_expiry = time.time() + tune.TOAST_SHORT_S
+                            ui.show_status(f'Seek to {ui.format_time(int(_tgt))}', tune.TOAST_SHORT_S)
                             update_ctrl_ui()
                             key = ''
                         else:
@@ -673,7 +656,7 @@ def _player_view_loop() -> dict:
                     update_ctrl_ui()
                 elif (step := _seek_step(key, duration, elapsed)) is not None:
                     SESSION.seek(step[0])
-                    toast_text = step[1]; toast_expiry = time.time() + tune.TOAST_SHORT_S
+                    ui.show_status(step[1], tune.TOAST_SHORT_S)
                     update_ctrl_ui()
                 elif act == 'player.next':        # skip, stay in the view
                     if SESSION.next(manual=True) is None:
@@ -687,8 +670,7 @@ def _player_view_loop() -> dict:
                     # Pinned open while another window is browsing this session:
                     # the two windows stay specialised until one closes (#14).
                     if has_other_windows():
-                        toast_text = 'Close the other window to leave the player'
-                        toast_expiry = time.time() + tune.TOAST_MEDIUM_S
+                        ui.show_status('Close the other window to leave the player', tune.TOAST_MEDIUM_S)
                         update_ctrl_ui(); continue
                     return {"status": "DETACH"}
                 elif act == 'player.stop':
@@ -698,12 +680,12 @@ def _player_view_loop() -> dict:
                     raise QuitToTerminal()
                 elif act == 'player.vol_up':
                     v = SESSION.set_volume(SESSION.get_volume() + 5)
-                    toast_text = f'Volume: {v}%'; toast_expiry = time.time() + tune.TOAST_SHORT_S
+                    ui.show_status(f'Volume: {v}%', tune.TOAST_SHORT_S)
                     player_ui.draw_volume_bar(v)
                     update_ctrl_ui()
                 elif act == 'player.vol_down':
                     v = SESSION.set_volume(SESSION.get_volume() - 5)
-                    toast_text = f'Volume: {v}%'; toast_expiry = time.time() + tune.TOAST_SHORT_S
+                    ui.show_status(f'Volume: {v}%', tune.TOAST_SHORT_S)
                     player_ui.draw_volume_bar(v)
                     update_ctrl_ui()
                 elif pc.is_hints_key(key, key_free=True):

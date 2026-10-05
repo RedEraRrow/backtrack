@@ -37,7 +37,7 @@ class ReboundKeysTest(unittest.TestCase):
         self.assertEqual(keys.action("]", "trim"), "trim.next_marker")
         with patch.object(pc, "hints_visible", lambda: True), \
              patch.object(ui, "get_terminal_size", lambda *a: (120, 40)):
-            _, hints = player_ui._controls_line(False, False, 100, "", width=120)
+            _, hints = player_ui._controls_line(False, False, 100, width=120)
         plain = ui.strip_ansi(hints)
         self.assertIn("[[/n] prev/next", plain)
         player_ui.compute_controls_hint_cells([ui.strip_ansi(h) for h in hints.splitlines()], 1)
