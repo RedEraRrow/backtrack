@@ -227,9 +227,11 @@ def frame(timeline: Timeline, elapsed: float, geom: Geometry) -> list[str]:
     if cur < 0:
         return blank
 
+    # Sized to the pane, never past it: a speaker column only where there's
+    # room for it beside a readable line.
     pad = geom.width - 2
-    spk_w = max(12, min(pad // 3, 26)) if timeline.has_speakers else 0
-    txt_w = max(20, pad - spk_w - 5) if spk_w else max(20, pad - 3)
+    spk_w = max(12, min(pad // 3, 26)) if timeline.has_speakers and pad >= 40 else 0
+    txt_w = max(1, pad - spk_w - 5) if spk_w else max(1, pad - 3)
 
     shown = [i for i in (cur - 1, cur, cur + 1) if 0 <= i < len(timeline.beats)]
     body: list[str] = []
@@ -279,11 +281,15 @@ class Pane:
         if force or geom != self._geom:
             self._shown = []               # geometry moved: nothing on screen is trusted
             self._geom = geom
-            _pc.screen_forget_rows(geom.row, geom.bottom)
         new = frame(self.timeline, elapsed, geom)
         old = self._shown
         for i, line in enumerate(new):
             if i < len(old) and old[i] == line:
                 continue
-            out.write(f"\033[{geom.row + i};{geom.col}H\033[K{line}")
+            # Through the painter, cell by cell, padded to the pane's width: the
+            # rest of the row (the art beside it, a box's border) isn't touched.
+            # Clipped to the pane first: nothing it draws reaches the border.
+            line = ui.clip_ansi(line, geom.width)
+            out.write(_pc.screen_span_paint(geom.row + i, geom.col,
+                                            line + ' ' * max(0, geom.width - ui.visual_len(line))))
         self._shown = new

@@ -140,6 +140,7 @@ backtrack/
 | Feeds | `CONFIG_DIR/feeds.json` (url, filter, seen keys) | (follows `CONFIG_DIR`) |
 | Diagnostics log | `CONFIG_DIR/backtrack.log` (rotated at 1 MB, two kept) | (follows `CONFIG_DIR`) |
 | Key hints shown | `CONFIG_DIR/hints_on` (present = on) | (follows `CONFIG_DIR`) |
+| `[?] help` toggle hidden | `CONFIG_DIR/help_toggle_hidden` (present = hidden) | (follows `CONFIG_DIR`) |
 | Key bindings (changes from the defaults) | `CONFIG_DIR/keys.json` | (follows `CONFIG_DIR`) |
 | The queue, for Resume | `CONFIG_DIR/queue.json` | (follows `CONFIG_DIR`) |
 | Trim backups | `CONFIG_DIR/trim-backups/` | `trim_backup_dir` in config |
@@ -192,8 +193,8 @@ app against a throwaway config/cache without touching your own.
 ### Library & metadata: `music_library.py`
 
 Scans every configured music directory (`config.music_dirs()`; roots may nest and are de-duplicated),
-extracts metadata from ID3 (`_extract_id3_metadata`) and MP4
-(`_extract_mp4_metadata`), and caches it. A background sync thread runs on an interval and
+extracts metadata from every tag kind through one reader (`_extract_tags`, driven by the field table
+in `id3/tag_formats.py`), and caches it. A background sync thread runs on an interval and
 **reconciles against the filesystem** (a cheap `os.walk` diff), picking up external adds/removes and
 renames/moves, with an unmount guard so a temporarily-missing drive doesn't wipe the cache. In-app
 edits call `refresh_library_entry` to update the cache immediately.
@@ -324,6 +325,41 @@ them, so callers write `prompt.select(...)`:
   user may want to type. In widgets whose input is free text (the live search, `text`, `path`, the
   timezone search) `q` is a literal character. **Ctrl-C** quits from the live search; in `text`,
   `path` and the timezone search it leaves the field like Esc.
+- **Tabs (`backbone/nav.py`):** `main_menu` hands `nav.run_tabs` the tabs; each tab's screen loop
+  runs in its own thread, one at a time, and switching parks the current thread where it is, so a
+  tab comes back exactly as left without the menus keeping any state for it. F1, F2… and bar
+  clicks arrive through `consume_chrome` on every screen (nothing types them); Tab / Shift-Tab only
+  where the screen passes `free_keys`, as `select` does when not editing (`:` likewise) and the player's loops, which return `TAB` so the view detaches first.
+  `open_player_view` from another tab switches to Now playing instead. A screen with its own audio
+  wraps itself in `nav.modal()`. Row 1 belongs to the tab bar: `screen_row_paint` draws it there,
+  so every screen keeps that row as its top margin.
+- **Command line (`:`):** `cli.run_in_app` runs a command line through `cli.main` with the app's
+  library, output captured (a terminal-like buffer, so tables keep their layout) and the colour,
+  accents and output mode put back after. While it runs, `cli_commands._session_link` hands
+  commands this window's session (`session.AppLink`) rather than the newest one advertised.
+- **Column browser (`select(trail=…, preview=…)`):** `trail` is the levels above as `Trail`s
+  (labels, values, the opened one, a depth); `preview(value)` gives a `Preview` (a details drawer
+  `(w, h) → lines | Pane`, the contents, the width its text would like). `column_widths` lays them
+  out, sized once per list from every row's preview (a sample of a long one), so they hold still
+  within a level; a click on a trail row returns `JumpTo(depth,
+  value)`, which each level of a nested browser passes up until the level it names. A `Pane`
+  carries pictures (an image escape over some cells, with their width); `_Widget.render` draws one
+  only when a cell under it was written or it changed.
+- **Painter:** `screen_row_paint` keeps every row's cells (style, character) and writes only the
+  cells that changed, so an image over part of a row (album art) isn't erased by a change beside
+  it. A row it doesn't know cell by cell (first paint, after a clear) is written whole, unless
+  part of it is reserved (`screen_reserve`): cells with their own owner, like the player's lyrics,
+  which no row paint touches; the owner writes them with `screen_span_paint`, cell by cell too, as
+  do the progress bar and the transport controls. An overlay (`prompt.overlay_text`, the `:` line)
+  saves the cells it covers (`screen_save`) and puts them back cell by cell (`screen_restore`),
+  redrawing any image it overlapped, so the screen under it never repaints.
+  `screen_painted(row, first, last)` says whether the last paint wrote any of those columns.
+- **Boxed widgets:** `boxed_chrome(body, title, pairs, cells, header=…)` is a widget's whole frame
+  (the box down to the hint bar, then the hints); it returns how far right the body moved, for
+  widgets that map clicks on it. The boxed player is its own layout (`player_ui._draw_boxed_ui`),
+  listing its boxes and titles in `player_ui._frame`; the old layout is the clean one (no tab bar,
+  no panel). The header's volume is the tab bar's side box (`ui.set_header_side`); its direct writes pad to their width rather than erasing to
+  the end of the row, which would take the border.
 - **Shared screen chrome (`chrome.py`):** every screen owes the user the same four things: a hint
   bar pinned above the miniplayer + status bar so its keys never move, those keys clickable, the
   background transport keys listed whenever the miniplayer is up, and clicks on the miniplayer box
@@ -397,8 +433,9 @@ audio playing. `player_ui.py` renders the screen into a **frame buffer** flushed
 flow lines are positioned by a row counter while absolute-positioned items (volume bar, controls,
 lyrics) pass through. It has three layout modes (wide / standard / minimal) that size the art to
 leave room for the metadata and the (variable-height) hint block, a full-height volume bar clamped
-to the art bottom, and the side panel that `w` cycles (`cycle_right_pane`: off → lyrics → queue →
-lyrics+credits, skipping views with nothing in them). `lyric_pane.py` draws the lyrics,
+to the art bottom, and the panels `w` picks (`player_ui.PANELS`; `_ui_state['panels']` keeps, per window shape,
+`wide` beside the player or `tall` under it, each panel's order and side; `arrange_key` moves them;
+`_stack` fills a column). `lyric_pane.py` draws the lyrics,
 `queue_pane.py` the queue, `player_art.py` the art, and `player_geom.py` records where the last
 frame put everything so clicks and partial redraws can find it.
 

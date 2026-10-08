@@ -34,7 +34,7 @@ from mutagen.id3 import ID3
 from backtrack.config import load_config
 from backtrack.trim import engine as trim
 from backtrack.music_library import drop_moved, track_title, first_text
-from backbone import keys, ui
+from backbone import keys, nav, ui
 from backbone.ui import Colors as C
 from backbone.prompt.core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
 from backbone.prompt import confirm as _confirm
@@ -339,17 +339,17 @@ def resolve_chapters(path: str, snapped_in_s: float, snapped_out_s: float
             choices=[
                 _promptmod.Choice(title="Delete this chapter", value='delete'),
                 _promptmod.Choice(title="Keep, clamped to the cut boundary", value='clamp'),
-                _promptmod.Choice(title="Reassign: type new start-end in seconds", value='reassign'),
+                _promptmod.Choice(title="Type a new start and end", value='reassign'),
             ])
         if action == 'clamp':
             decisions[c[0]] = trim.clamp_chapter(c, cut_start_ms, cut_end_ms)
         elif action == 'reassign':
-            raw = _promptmod.text("New start-end in seconds, e.g. '12.5-45.0' (in the trimmed file):")
+            raw = _promptmod.text("New start-end in the trimmed file, in seconds:", placeholder="12.5-45.0")
             try:
                 new_start_s, new_end_s = (float(x) for x in (raw or '').split('-', 1))
                 decisions[c[0]] = (c[0], int(new_start_s * 1000), int(new_end_s * 1000), c[3])
             except (ValueError, AttributeError):
-                ui.show_status("Could not parse that range; chapter deleted instead.")
+                ui.show_status("That isn't a range, so the chapter was deleted.")
                 decisions[c[0]] = None
         else:   # 'delete', or backed out of the per-chapter choice
             decisions[c[0]] = None
@@ -498,15 +498,15 @@ def _run_marking_screen(
         nonlocal aud_queue
         clips = join_clips(marks, track_length)
         if not clips:
-            ui.show_status("Could not audition the join: set both marks first.")
+            ui.show_status("Set both marks first.")
             return
         aud_queue = clips
         _aud_next()
         if not flags.get('join_warned'):
             flags['join_warned'] = True
             ui.show_status(
-                "Approximate: a VLC seek isn't sample-accurate. Play back the "
-                "written file to check the real join.", duration=tune.STATUS_WARNING_S)
+                "This is close, not exact: VLC can't seek to the sample. Play the "
+                "saved file to hear the real join.", duration=tune.STATUS_WARNING_S)
 
     def do_undo() -> None:
         if undo_stack:
@@ -568,7 +568,8 @@ def _run_marking_screen(
         return f"{indent}{marker}{label}: {timefmt.clock(req)} → snapped {C.BOLD}{timefmt.clock(snap)}{C.RESET}"
 
     def _render() -> tuple[list[str], int, int, dict]:
-        out: list[str] = list(strip_lines or []) + list(_header_box(track_name, track_artist, track_length))
+        header = list(strip_lines or []) + list(_header_box(track_name, track_artist, track_length))
+        out: list[str] = []
 
         out.append(_mark_line("In ", 'in', marks))
         out.append(_mark_line("Out", 'out', marks))
@@ -588,7 +589,7 @@ def _run_marking_screen(
         # Bar spans the full width, like every other bar in the app: indent ·
         # play glyph (2 visible cols) · bar · elapsed/total, no fixed cap.
         cols = ui.get_terminal_width()
-        avail = max(10, cols - 2 * ui.MARGIN_H)
+        avail = max(10, cols - 2 * ui.MARGIN_H - (4 if _promptmod.box_fits() else 0))   # inside the box
         timer_plain = f" {timefmt.clock(play_pos)} / {timefmt.clock(track_length)}"
         play_glyph = f"{C.ACCENT}▸{C.RESET} " if playing else "  "
         bar_width = max(10, avail - len(timer_plain) - 2)
@@ -603,8 +604,8 @@ def _run_marking_screen(
             out.append("")
 
         cells: dict = {}
-        _promptmod.append_chrome(out, _footer_pairs(), cells)
-        return out, prog_row, bar_width, cells
+        lines, box_dx[0] = _promptmod.boxed_chrome(out, "Trim", _footer_pairs(), cells, header=header)
+        return lines, len(header) + 1 + prog_row, bar_width, cells
 
     try:
         _set_raw(fd)
@@ -613,6 +614,7 @@ def _run_marking_screen(
         need_redraw = True
         hint_cells: dict = {}
         prog_row = bar_width = 0
+        box_dx = [0]            # how far right the box moved the content (boxed_chrome)
 
         while True:
             if playing:
@@ -656,9 +658,9 @@ def _run_marking_screen(
                     parts = key.split(':')
                     r = int(parts[2]) if len(parts) > 2 else 0
                     col = int(parts[3]) if len(parts) > 3 else 1
-                    line_idx = r - w.row - ui.MARGIN_V
+                    line_idx = r - w.row - ui.top_margin()
                     # The bar sits after the indent and the 2-column play glyph.
-                    bar_col = col - (ui.MARGIN_H + 2)
+                    bar_col = col - (ui.MARGIN_H + 2) - box_dx[0]
                     if line_idx == prog_row and 0 <= bar_col - 1 < bar_width and track_length > 0:
                         frac = max(0.0, min(1.0, (bar_col - 1) / max(1, bar_width - 1)))
                         do_preview(min(frac * track_length, max(0.0, track_length - 0.5)))
@@ -746,10 +748,10 @@ def _run_marking_screen(
                 return extra_key
             elif act == 'trim.finish':
                 if marks.in_snapped is None or marks.out_snapped is None:
-                    ui.show_status(f"Could not {finish_verb}: set both an in-point and an out-point first.")
+                    ui.show_status("Set both an in-point and an out-point first.")
                     continue
                 if resulting_duration(marks) is None:
-                    ui.show_status(f"Could not {finish_verb}: the out-point is not after the in-point.")
+                    ui.show_status("The out-point has to come after the in-point.")
                     continue
                 do_stop()
                 return finish_key
@@ -787,12 +789,12 @@ def trim_editor(path: str, library: list | None = None) -> None:
     if not drop_moved([path]):
         return
     if not trim.HAS_FFMPEG:
-        ui.show_status("Could not open the trimmer: ffmpeg isn't installed. See README.md.")
+        ui.show_error("the trimmer needs ffmpeg, see README.md")
         return
     try:
         frame_dur = trim.probe_frame_duration(path)
     except ValueError as e:
-        ui.show_status(str(e))
+        ui.show_error(str(e))
         return
 
     from mutagen.mp3 import MP3
@@ -820,11 +822,12 @@ def trim_editor(path: str, library: list | None = None) -> None:
         set_out(marks, tail[0], frame_dur, track_length)
 
     while True:
-        outcome = _run_marking_screen(
-            path, marks, undo_stack,
-            track_length=track_length, frame_dur=frame_dur,
-            track_name=track_name, track_artist=track_artist, siblings=siblings,
-        )
+        with nav.modal():                   # it auditions through its own player
+            outcome = _run_marking_screen(
+                path, marks, undo_stack,
+                track_length=track_length, frame_dur=frame_dur,
+                track_name=track_name, track_artist=track_artist, siblings=siblings,
+            )
         if outcome != 's':
             return
 
@@ -843,5 +846,5 @@ def trim_editor(path: str, library: list | None = None) -> None:
         if result.ok:
             ui.show_status(f"Trimmed to {dur:.1f}s. Original backed up.")
             return
-        ui.show_status(f"Could not trim: {result.error}")
+        ui.show_error(f"couldn't trim: {result.error}")
         # loop back into the marking screen so a failed write can be retried

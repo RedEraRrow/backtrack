@@ -161,8 +161,8 @@ def _emit(on_event, kind: str, change: Change, detail: str) -> None:
 
 def summarise(applied: Applied, verb: str, noun: str = "file",
               skipped_note: str = "unsupported skipped",
-              kept_note: str = "kept existing (fill blanks only)",
-              unsupported_note: str = "skipped (format cannot hold it)") -> str:
+              kept_note: str = "already set, so kept",
+              unsupported_note: str = "skipped: the format can't hold it") -> str:
     """The one-line report every operation ends with: "Renumbered 12 files.
     2 unsupported skipped. 1 error."
     """
@@ -204,7 +204,7 @@ def plan_renumber(ordered: list, skipped: int, mode: str) -> Plan:
     `mode` is 'continuous' or 'per_disc'. MP3 and MP4 both write.
     """
     if not ordered:
-        return Plan(skipped=skipped, message="No MP3/MP4 tracks to renumber.")
+        return Plan(skipped=skipped, message="No taggable tracks to renumber.")
 
     numbering = bp.renumber_tracks(ordered, mode)
     changes = []
@@ -227,7 +227,7 @@ def plan_reflow(ordered: list, skipped: int, *, renumber: bool = True,
     as they were are listed with no `why`, so they stay visible but unticked.
     """
     if not ordered:
-        return Plan(skipped=skipped, message="No MP3/MP4 tracks to reflow.")
+        return Plan(skipped=skipped, message="No taggable tracks to reflow.")
 
     runs = bp.disc_ranges(ordered)
     flowed = bp.reflow_discs(ordered, renumber=renumber,
@@ -276,7 +276,7 @@ def plan_strip_single_disc(ordered: list, skipped: int) -> Plan:
     another disc: on a real multi-disc album an untotalled "1" is meaningful.
     """
     if not ordered:
-        return Plan(skipped=skipped, message="No MP3/MP4 tracks to change.")
+        return Plan(skipped=skipped, message="No taggable tracks to change.")
 
     single_disc = not {str(s['disc']).strip() for s in ordered} - {'', '1'}
 
@@ -308,7 +308,7 @@ def read_length_tags(paths: list) -> tuple[list, int]:
     return _gather(
         paths,
         lambda p: {'path': p, 'tags': tw.stale_length_tags(p)},
-        lambda p: tw.format_kind(p) == 'mp3')
+        lambda p: tw.is_mp3(p))
 
 
 def plan_strip_length_tags(songs: list, skipped: int) -> Plan:
@@ -355,11 +355,11 @@ def read_picture_types(paths: list) -> tuple[list, int]:
     """
     art = []
     for path in paths:
-        if not path.lower().endswith('.mp3'):
+        if tw.format_kind(path) != 'id3':
             continue
         try:
-            tags = ID3(path)
-        except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
+            tags = load_id3(path)
+        except (OSError, ValueError, mutagen.MutagenError):  # type: ignore[reportPrivateImportUsage]
             continue
         frames = [tags[k] for k in tags if k.startswith('APIC')]
         if frames:
@@ -378,7 +378,7 @@ def plan_set_picture_type(art: list, skipped: int, pic_type: int) -> Plan:
     _name = picture_type_name
     if not art:
         return Plan(skipped=skipped,
-                    message="No MP3s with embedded art in this selection.")
+                    message="No MP3/WAV/AIFF files with embedded art in this selection.")
 
     changes = []
     for a in art:
@@ -492,7 +492,7 @@ def plan_derive(paths: list, apply_fields: set, *, overwrite: bool = False,
     writable = [p for p in paths if tw.is_writable(p)]
     skipped = len(paths) - len(writable)
     if not writable:
-        return Plan(skipped=skipped, message="No MP3/MP4 tracks to derive from."), {}
+        return Plan(skipped=skipped, message="No taggable tracks to derive from."), {}
 
     derived = fp.derive_all(writable, template=template, regex=regex,
                             regex_base=regex_base)

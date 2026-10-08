@@ -14,6 +14,7 @@ keys.define("library", "Library lists", [
     ("play_all", ("p",), "play everything listed"),
     ("shuffle", ("x",), "shuffle everything listed"),
     ("album_shuffle", ("X",), "shuffle by album"),
+    ("random_album", ("R",), "play an album picked at random"),
     ("edit", ("e",), "edit the tags"),
     ("edit_all", ("E",), "edit the tags of everything listed"),
     ("sort", ("s",), "sort"),
@@ -24,7 +25,8 @@ keys.define("library", "Library lists", [
 # Structured column layouts for browse lists (no string parsing: each Choice
 # carries explicit `cells`).
 _TRACK_COLUMNS = [
-    prompt.Column(style='primary', max_frac=0.5),                # title (truncates)
+    prompt.Column(style='static-dim', align='right', gap=0),     # number (or a chapter's time): holds still
+    prompt.Column(style='primary', max_frac=0.5, scroll=True, gap=2),   # title (truncates; scrolls when highlighted)
     prompt.Column(style='dynamic-dim', flex=True, align='left', priority=1),  # featured artist: drops first when narrow
     prompt.Column(style='dynamic-dim', align='right', pin=True),  # duration (pinned right, kept)
 ]
@@ -46,7 +48,8 @@ def _idx_of(choices: list, value, default: int = 0) -> int:
 
 
 def _menu_header(title: str, subtitle: str | None = None):
-    """Return a lazy header builder callable for prompt.select's header= parameter.
+    """The header for prompt.select's header= parameter: the screen's name, in
+    its box's top border (with a subtitle, the box's first line).
 
     The header names the screen, so the accompanying select() message is left
     empty ("") whenever it would only say the same thing one line further down
@@ -54,19 +57,7 @@ def _menu_header(title: str, subtitle: str | None = None):
     the header does not: "Action:" under a track title, "Sort by:" over a list
     of sort modes.
     """
-
-    def _build() -> list[str]:
-        cols = ui.get_terminal_width()
-        # Title + optional subtitle on one line, then a thin divider
-        title_str    = f"{C.BOLD}{title}{C.RESET}"
-        subtitle_str = f"  {C.DIM}{subtitle}{C.RESET}" if subtitle else ""
-        lines = [
-            f"  {title_str}{subtitle_str}",
-            f"{C.DIM}{ui.divider(cols, '─')}{C.RESET}",
-        ]
-        return lines
-
-    return _build
+    return prompt.PanelTitle(title, subtitle)
 
 
 def _commit(cfg: dict, *keys: str) -> None:

@@ -13,6 +13,15 @@ from backbone import ui
 from backbone.prompt import core as pc
 
 
+def setUpModule():
+    # The toggle and hints as they are out of the box, whatever this machine's
+    # settings (or an earlier test) left them.
+    for name, value in (('_toggle_shown', [True]), ('_hints_on', [False])):
+        p = patch.object(pc, name, value)
+        p.start()
+        unittest.addModuleCleanup(p.stop)
+
+
 class QueueTest(unittest.TestCase):
     def _set(self, n, index):
         titles = [f"Track {i} with a fairly long title to force clipping" for i in range(n)]
@@ -29,10 +38,26 @@ class QueueTest(unittest.TestCase):
 
     def test_current_track_first_then_what_follows(self):
         self._set(40, 9)
-        lines = [ui.strip_ansi(l) for l in qp._build_queue_lines(80, 8)]
+        raw = qp._build_queue_lines(80, 8)
+        lines = [ui.strip_ansi(l) for l in raw]
         self.assertIn("10 of 40", lines[0])
-        self.assertTrue(lines[1].startswith("▶"))           # nothing played shown: more follows
+        self.assertIn("Track 9 ", lines[1])                 # nothing played shown: more follows
+        self.assertIn(ui.Colors.BAR_DIM, raw[1])             # the playing track: the soft bar
         self.assertIn("Track 10", lines[2])
+        self.assertTrue(all(ui.visual_len(l) == 80 for l in raw[1:]))
+
+    def test_the_focused_title_scrolls_rather_than_cut(self):
+        self._set(5, 2)
+        qp.scrolled()
+        with patch.object(qp.time, 'monotonic', lambda: 0.0):
+            at_start = [ui.strip_ansi(l) for l in qp._build_queue_lines(30, 6)]
+        self.assertTrue(qp.scrolled())
+        with patch.object(qp.time, 'monotonic', lambda: 9.0):
+            later = [ui.strip_ansi(l) for l in qp._build_queue_lines(30, 6)]
+        playing = 3                                         # header, then tracks 0 and 1, then the playing one
+        self.assertTrue(at_start[playing].startswith("Track 2 with"))    # its start, then
+        self.assertNotEqual(at_start[playing], later[playing])            # it moves on
+        self.assertIn("…", at_start[1])                      # the others are cut as before
 
     def test_not_drawn_without_room_for_the_header_and_a_track(self):
         self._set(10, 0)
@@ -50,7 +75,7 @@ class QueueTest(unittest.TestCase):
             self.assertLessEqual(ui.visual_len(body), 50 - qp._QUEUE_RIGHT_MARGIN)
         self.assertIsNone(qp.queue_click_index(10, 5))       # the header row
         first = qp._queue_ctx['visible'][0]
-        self.assertEqual(qp.queue_click_index(11, 3), first)
+        self.assertEqual(qp.queue_click_index(11, 3), ('queue', first))
         self.assertIsNone(qp.queue_click_index(11, 2))        # left of the pane
 
     def test_played_tracks_only_once_everything_after_shows(self):

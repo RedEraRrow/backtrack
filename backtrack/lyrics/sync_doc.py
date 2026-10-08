@@ -1,9 +1,10 @@
 """The lyrics editor's document: finding and loading a track's timed lyrics, the
 working copy (.sync.json) that keeps segment ids, and the per-segment checks the review phases use."""
 from __future__ import annotations
+from backtrack.id3.tag_formats import load_id3
 import os, json
 from backtrack import tuning as tune
-from mutagen.id3 import ID3, ID3NoHeaderError
+from mutagen.id3 import ID3NoHeaderError
 from backtrack.lyrics.formats import _find_timing_files_for_audio
 from backtrack.lyrics.md_overlay import _SD_SCOPES
 from backbone import timefmt
@@ -228,7 +229,7 @@ def find_lyrics(mp3_path: str) -> str | None:
     if _find_transcript(mp3_path):
         return SOURCE_TRANSCRIPT
     try:
-        audio = ID3(mp3_path)
+        audio = load_id3(mp3_path)
         if audio.getall('SYLT'): return SOURCE_SYLT
         if audio.getall('USLT'): return SOURCE_USLT
     except (OSError, ID3NoHeaderError):
@@ -265,7 +266,7 @@ def _load(mp3_path: str) -> tuple[list, str, dict] | None:
                                          'from_sidecar': False, 'drift': False}
     try:
         from backtrack.lyrics.formats import normalize_lyric_newlines
-        audio = ID3(mp3_path)
+        audio = load_id3(mp3_path)
 
         sylt = audio.getall('SYLT')
         if sylt:

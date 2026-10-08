@@ -383,6 +383,7 @@ def search(library: list, query: str, fields: list | None = None, *,
     above fuzzy ones; within a band the fine score (field weight × match geometry
     + recent/play-count boosts) orders results. Results whose fine score falls
     below `min_ratio` × the best fine score are pruned. Best first."""
+    from backtrack.music_library import is_audiobook
     fields = fields or ['title', 'artist', 'album']
     weights = weights or DEFAULT_WEIGHTS
     recent = recent or set()
@@ -444,8 +445,9 @@ def search(library: list, query: str, fields: list | None = None, *,
         if song.get('path') in recent:
             fine *= tune.SEARCH_RECENCY_BOOST
         try:
-            fine += (min(int(song.get('play_count') or 0), tune.SEARCH_PLAY_COUNT_CAP)
-                     * tune.SEARCH_PLAY_COUNT_WEIGHT)
+            if not is_audiobook(song.get('path') or ''):     # a book's plays aren't a favourite's
+                fine += (min(int(song.get('play_count') or 0), tune.SEARCH_PLAY_COUNT_CAP)
+                         * tune.SEARCH_PLAY_COUNT_WEIGHT)
         except (TypeError, ValueError):
             pass
 

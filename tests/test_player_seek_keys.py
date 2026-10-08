@@ -11,10 +11,11 @@ class SeekKeysTest(unittest.TestCase):
         self.assertEqual([_seek_step(k, 100, 10)[0] for k in ',.jl'], [-30, 30, -1, 1])
         from backtrack import tuning as tune
         from backtrack.playback import player_ui
-        self.assertIsNone(_seek_step('e', 100, 10))          # Diagnostics off
+        player_ui._ui_state['debug'] = False                  # whatever this machine's setting
+        self.assertIsNone(_seek_step('E', 100, 10))          # Diagnostics off
         player_ui._ui_state['debug'] = True
         try:
-            self.assertEqual(_seek_step('e', 100, 10)[0], 100 - tune.NEAR_END_JUMP_S - 10)
+            self.assertEqual(_seek_step('E', 100, 10)[0], 100 - tune.NEAR_END_JUMP_S - 10)
         finally:
             player_ui._ui_state['debug'] = False
         self.assertIsNone(_seek_step('p', 100, 10))

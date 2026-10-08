@@ -46,12 +46,9 @@ from dataclasses import dataclass, field
 from backtrack.playback.libvlc import vlc as _vlc  # noqa: E402,F401 (None without libvlc)
 _HAS_VLC = _vlc is not None
 
-from mutagen.id3 import ID3, ID3NoHeaderError, TXXX  # type: ignore[reportPrivateImportUsage]
 
 from backtrack.config import load_config
 from backtrack.id3 import tag_writer as tw
-from backtrack.id3.tag_handler import create_frame, save_id3
-from backtrack.music_library import refresh_library_entry
 from backtrack.trim import engine as trim
 from backtrack.trim.editor import (
     Marks, set_in, set_out, resulting_duration, sibling_durations,
@@ -62,7 +59,6 @@ from backbone import keys, ui
 from backbone.ui import Colors as C
 from backbone import timefmt
 from backtrack.config import setting
-from backbone.log import quietly
 
 # Preview columns for the commit pass: file · cut points · resulting duration.
 _COMMIT_COLUMNS = [
@@ -85,7 +81,7 @@ def _group_by_album(library: list) -> dict[tuple[str, str], list[dict]]:
     for t in library:
         path = t.get('path')
         dur = t.get('duration')
-        if not path or not dur or tw.format_kind(path) != 'mp3':
+        if not path or not dur or not tw.is_mp3(path):
             continue
         key = (t.get('artist') or '', t.get('album') or '')
         groups.setdefault(key, []).append(t)
@@ -261,29 +257,31 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
     task_id = "trim_bulk"
     count = errors = 0
     interrupted = False
-    with raw_mode(sys.stdin):
-        for i, p in enumerate(todo):
-            if p not in apply_set:
-                continue
-            ui.set_status(task_id, f"Trimming {i + 1}/{len(todo)}: {os.path.basename(p)}")
-            ui.print_inline_progress(f"Trimming {i + 1}/{len(todo)}: {os.path.basename(p)}",
-                                           i / len(todo))
-            m = state[p].marks
-            assert m.in_snapped is not None and m.out_snapped is not None  # `todo`'s filter guarantees this
-            result = trim.commit_trim(p, m.in_snapped, m.out_snapped,
-                                      library=library, chapters=state[p].chapters)
-            if result.ok:
-                count += 1
-            else:
-                errors += 1
+    try:
+        with raw_mode(sys.stdin):
+            for i, p in enumerate(todo):
+                if p not in apply_set:
+                    continue
+                ui.set_status(task_id, f"Trimming {i + 1}/{len(todo)}: {os.path.basename(p)}")
+                ui.print_inline_progress(f"Trimming {i + 1}/{len(todo)}: {os.path.basename(p)}",
+                                         i / len(todo))
+                m = state[p].marks
+                assert m.in_snapped is not None and m.out_snapped is not None  # `todo`'s filter guarantees this
+                result = trim.commit_trim(p, m.in_snapped, m.out_snapped,
+                                          library=library, chapters=state[p].chapters)
+                if result.ok:
+                    count += 1
+                else:
+                    errors += 1
 
-            key = get_key_non_blocking()
-            if key:
-                if key == '\x1b' or keys.action(key, 'trim') in ('trim.back', 'trim.quit'):
-                    interrupted = True
-                    break
-    ui.set_status(task_id, None)
-    ui.clear_inline_progress()
+                key = get_key_non_blocking()
+                if key:
+                    if key == '\x1b' or keys.action(key, 'trim') in ('trim.back', 'trim.quit'):
+                        interrupted = True
+                        break
+    finally:                                 # the progress box mustn't outlive the run
+        ui.set_status(task_id, None)
+        ui.clear_inline_progress()
 
     msg = f"Trimmed {ui.plural(count, 'file')}."
     if interrupted:
@@ -322,7 +320,7 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
         try:
             frame_dur = trim.probe_frame_duration(reference_path)
         except ValueError as e:
-            ui.show_status(str(e))
+            ui.show_error(str(e))
             return None
         from mutagen.mp3 import MP3
         track_length = MP3(reference_path).info.length
@@ -366,7 +364,7 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
         mp.pause()
 
     choices = [
-        prompt.Choice(title=f"{timefmt.clock(c['start'])} → {timefmt.clock(c['end'])}  (score {c['score']:.2f})",
+        prompt.Choice(title=f"{timefmt.clock(c['start'])} → {timefmt.clock(c['end'])}  score {c['score']:.2f}",
                      value=(c['start'], c['end']))
         for c in candidates
     ]
@@ -449,7 +447,7 @@ def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bou
 
         ref_edge = sting_start if side == 'start' else sting_end
         if not _apply(reference_path, ref_edge):
-            ui.show_status(f"Could not read {os.path.basename(reference_path)}'s frame info.")
+            ui.show_error(f"couldn't read {os.path.basename(reference_path)}'s frame info")
             return
         others = [p for p in paths if p != reference_path]
 
@@ -486,7 +484,7 @@ def _propagate_absolute_offset(paths: list[str], state: dict[str, _TrackState]) 
     try:
         frame_dur = trim.probe_frame_duration(reference_path)
     except ValueError as e:
-        ui.show_status(str(e))
+        ui.show_error(str(e))
         return
     from mutagen.mp3 import MP3
     track_length = MP3(reference_path).info.length
@@ -517,8 +515,8 @@ def _propagate_absolute_offset(paths: list[str], state: dict[str, _TrackState]) 
         seeded += 1
 
     ui.show_status(
-        f"Propagated the same timestamps to {ui.plural(seeded, 'other track')}; "
-        f"review each one, padding may vary.")
+        f"Same marks set on {ui.plural(seeded, 'other track')}. "
+        f"Check each one, as the padding can differ.")
 
 
 def trim_conveyor(paths: list, library: list, header) -> None:
@@ -526,9 +524,9 @@ def trim_conveyor(paths: list, library: list, header) -> None:
     single-track trim, then commit the whole batch in one pass.
     Marking is separated from writing: nothing is trimmed until the preview
     at the end is confirmed."""
-    mp3_paths = [p for p in paths if tw.format_kind(p) == 'mp3']
+    mp3_paths = [p for p in paths if tw.is_mp3(p)]
     if not trim.HAS_FFMPEG:
-        ui.show_status("Could not open the trimmer: ffmpeg isn't installed. See README.md.")
+        ui.show_error("the trimmer needs ffmpeg, see README.md")
         return
     if not mp3_paths:
         ui.show_status("No MP3 tracks to trim.")
@@ -542,13 +540,13 @@ def trim_conveyor(paths: list, library: list, header) -> None:
     # the walk starts, not a hidden extra. Head and tail are independent: a
     # series can have either, both, or neither.
     if len(mp3_paths) > 1:
-        if prompt.confirm("Seed this group from a shared opening (a sting)?", default=True):
+        if prompt.confirm("Find a shared opening sting in this group?", default=True):
             _seed_group_by_sting(mp3_paths, state, bound='in')
         elif prompt.confirm(
-                "No sting? Propagate one track's timestamp to the rest instead? "
-                "(the weaker tool: assumes identical padding across episodes)", default=False):
+                "Copy one track's marks to the rest instead? This only works if every "
+                "episode has the same padding.", default=False):
             _propagate_absolute_offset(mp3_paths, state)
-        if prompt.confirm("Seed the tail from a shared closing too?", default=False):
+        if prompt.confirm("Find a shared closing sting too?", default=False):
             _seed_group_by_sting(mp3_paths, state, bound='out')
 
     while 0 <= idx < len(mp3_paths):
@@ -556,7 +554,7 @@ def trim_conveyor(paths: list, library: list, header) -> None:
         try:
             frame_dur = trim.probe_frame_duration(path)
         except ValueError as e:
-            ui.show_status(str(e))
+            ui.show_error(str(e))
             idx += 1
             continue
 
@@ -599,13 +597,6 @@ def trim_conveyor(paths: list, library: list, header) -> None:
 
 
 # Loudness preview: file · measured level · proposed gain.
-_REPLAYGAIN_COLUMNS = [
-    prompt.Column(style='primary', flex=True),
-    prompt.Column(style='dynamic-dim', align='right'),
-    prompt.Column(style='dynamic-dim', align='right', pin=True),
-]
-
-
 def apply_replaygain_op(paths: list, library: list, header) -> None:
     """Measure loudness and propose a per-track gain: tags only,
     no audio bytes change. A separate operation from the trim, and one that
@@ -613,88 +604,49 @@ def apply_replaygain_op(paths: list, library: list, header) -> None:
     include the continuity announcement or trailer about to be cut, which is
     exactly the loud material that would skew it. A track already at target
     gets no frame written."""
-    mp3_paths = [p for p in paths if tw.format_kind(p) == 'mp3']
+    taggable = [p for p in paths if tw.is_writable(p)]
     if not trim.HAS_FFMPEG:
-        ui.show_status("Could not measure loudness: ffmpeg isn't installed. See README.md.")
+        ui.show_error("measuring loudness needs ffmpeg, see README.md")
         return
-    if not mp3_paths:
-        ui.show_status("No MP3 tracks to measure.")
+    if not taggable:
+        ui.show_status("No taggable tracks to measure.")
         return
 
     target_lufs = float(setting(load_config(), "trim_target_lufs"))
     task_id = "trim_loudness"
     measurements: dict[str, dict] = {}
-    for i, path in enumerate(mp3_paths):
-        label = f"Measuring {i + 1}/{len(mp3_paths)}: {os.path.basename(path)}"
-        ui.set_status(task_id, label)
-        ui.print_inline_progress(label, i / len(mp3_paths))
-        result = trim.measure_track_gain(path, target_lufs=target_lufs)
-        if result is not None:
-            measurements[path] = result
-    ui.set_status(task_id, None)
-    ui.clear_inline_progress()
+    try:
+        for i, path in enumerate(taggable):
+            label = f"Measuring {i + 1}/{len(taggable)}: {os.path.basename(path)}"
+            ui.set_status(task_id, label)
+            ui.print_inline_progress(label, i / len(taggable))
+            result = trim.measure_track_gain(path, target_lufs=target_lufs)
+            if result is not None:
+                measurements[path] = result
+    finally:                                 # the progress box mustn't outlive the run
+        ui.set_status(task_id, None)
+        ui.clear_inline_progress()
 
     if not measurements:
-        ui.show_status("Could not measure any of these tracks.")
+        ui.show_error("couldn't measure any of these tracks")
         return
 
     # Write nothing when there's nothing to correct: the same rule as the
     # sort-tag convention in docs/tag-etiquette.md.
     candidates = {p for p, m in measurements.items() if abs(m['gain_db']) >= 0.1}
     if not candidates:
-        ui.show_status("Every measured track is already at target, nothing to write.")
+        ui.show_status("Already at the target loudness.")
         return
 
-    rows = []
-    for path in mp3_paths:
-        m = measurements.get(path)
-        if m is None:
-            continue
-        clip_note = "  ⚠ may clip" if m['clips'] else ""
-        rows.append(prompt.Choice(
-            title=os.path.basename(path), value=path, checked=path in candidates,
-            cells=[os.path.basename(path), f"{m['integrated_lufs']:.1f} LUFS",
-                   f"{m['gain_db']:+.2f} dB{clip_note}"]))
-
-    sub = f"target {target_lufs:.0f} LUFS · " + ui.plural(len(candidates), "track") + " to change"
-    sel = prompt.select("Preview, ↵ writes gain tags:", choices=rows,
-                        columns=_REPLAYGAIN_COLUMNS, header=header(sub), multi=True)
-    if not sel:
-        return
-    apply_set = set(sel)
-
-    count = errors = 0
-    for path in mp3_paths:
-        if path not in apply_set:
-            continue
-        m = measurements.get(path)
-        if m is None:
-            continue
-        try:
-            try:
-                audio = ID3(path)
-            except ID3NoHeaderError:
-                audio = ID3()
-            audio.delall('TXXX:REPLAYGAIN_TRACK_GAIN')
-            audio.delall('TXXX:REPLAYGAIN_TRACK_PEAK')
-            audio.add(TXXX(encoding=3, desc='REPLAYGAIN_TRACK_GAIN', text=[f"{m['gain_db']:+.2f} dB"]))
-            audio.add(TXXX(encoding=3, desc='REPLAYGAIN_TRACK_PEAK', text=[f"{m['peak_linear']:.6f}"]))
-            # The builder only takes a payload marked as an RVA2 edit; without
-            # the marker it returned None, so RVA2 was never written and a
-            # stale one from an earlier run stayed (the delall sat inside).
-            rva2 = create_frame('RVA2', {'__rva2__': True, 'gain': m['gain_db']})
-            audio.delall('RVA2')
-            if rva2 is not None:
-                audio.add(rva2)
-            save_id3(audio, path)
-        except Exception:
-            errors += 1
-            continue
-        count += 1
-        with quietly():
-            refresh_library_entry(library, path)
-
-    msg = f"Wrote gain tags for {ui.plural(count, 'file')}."
-    if errors:
-        msg += f" {ui.plural(errors, 'error')}."
-    ui.show_status(msg)
+    from backtrack.id3 import bulk_ops as bo
+    from backtrack.id3.bulk_common import preview_and_apply
+    plan = bo.Plan(changes=[
+        bo.Change(path, f"{m['integrated_lufs']:.1f} LUFS → {m['gain_db']:+.2f} dB"
+                        + (", may clip" if m['clips'] else "") if path in candidates else "",
+                  {'gain_db': m['gain_db'], 'peak_linear': m['peak_linear']})
+        for path in taggable if (m := measurements.get(path)) is not None])
+    preview_and_apply(plan, library, header,
+                      lambda c: tw.write_replaygain(c.path, c.fields['gain_db'], c.fields['peak_linear']),
+                      "Wrote gain tags for", count=f"target {target_lufs:.0f} LUFS",
+                      changing="to change", unchanged=lambda c: "at target",
+                      skipped=len(taggable) - len(plan.changes), skipped_note="couldn't be measured")

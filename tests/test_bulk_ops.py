@@ -83,7 +83,7 @@ class RenumberTest(_Fixtures):
 
     def test_no_writable_files_carries_a_message(self):
         plan = bo.plan_renumber([], 3, 'continuous')
-        self.assertEqual(plan.message, "No MP3/MP4 tracks to renumber.")
+        self.assertEqual(plan.message, "No taggable tracks to renumber.")
         self.assertFalse(plan)
 
     def test_unsupported_formats_are_counted_not_planned(self):
@@ -419,7 +419,7 @@ class DeriveTest(_Fixtures):
         open(odd, "w").close()
         plan, _derived = bo.plan_derive([odd], {'title'})
         self.assertEqual(plan.skipped, 1)
-        self.assertEqual(plan.message, "No MP3/MP4 tracks to derive from.")
+        self.assertEqual(plan.message, "No taggable tracks to derive from.")
 
     def test_sort_orders_ride_along_when_asked_for(self):
         vals = bo.augment_sort({'artist': 'DJ Wren'}, {'artist', 'sort'})

@@ -390,20 +390,19 @@ class SortTag(NamedTuple):
     """One text frame and the sort frame that orders it."""
     field: str      # base field name, as the writer and derive engine spell it
     source: str     # ID3 text frame the sort string is computed from
-    frame: str      # ID3 sort frame written
-    atom: str       # the MP4 equivalent atom
+    frame: str      # ID3 sort frame written (its MP4 and Vorbis homes: tag_formats.TAG_HOMES)
     label: str      # human-readable name for previews and summaries
     is_name: bool   # a person's name (invert it) rather than a title (move the article)
     auto: bool      # generated alongside its base field on an ordinary write
 
 
 SORT_TAGS: tuple[SortTag, ...] = (
-    SortTag('artist',       'TPE1', 'TSOP', 'soar', 'artist',       True,  True),
-    SortTag('album_artist', 'TPE2', 'TSO2', 'soaa', 'album artist', True,  True),
+    SortTag('artist',       'TPE1', 'TSOP', 'artist',       True,  True),
+    SortTag('album_artist', 'TPE2', 'TSO2', 'album artist', True,  True),
     # Composer is never derived from a filename and is not written alongside a
     # base field: it is offered only by the standalone "apply sort orders" op.
-    SortTag('composer',     'TCOM', 'TSOC', 'soco', 'composer',     True,  False),
-    SortTag('album',        'TALB', 'TSOA', 'soal', 'album',        False, True),
+    SortTag('composer',     'TCOM', 'TSOC', 'composer',     True,  False),
+    SortTag('album',        'TALB', 'TSOA', 'album',        False, True),
 )
 
 SORT_SOURCE_OF: Dict[str, str] = {t.frame: t.source for t in SORT_TAGS}

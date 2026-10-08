@@ -12,7 +12,7 @@ from PIL import Image, ImageStat
 from backbone import ui
 from backtrack.playback.player_geom import geom
 from backbone.log import log
-from backtrack.album_art import fit_art, get_art, get_art_bytes, get_art_from_mp3
+from backtrack.album_art import booklet_file, decode_image, fit_art, get_art, get_art_bytes, get_embedded_art, half_blocks, has_alpha
 from backtrack.config import setting
 
 
@@ -42,7 +42,7 @@ def _get_art_cached(file_path: str, width: int, booklet: bool = False) -> str:
     if key not in _art_cache:
         if len(_art_cache) > 64:             # every width a drag passes through
             _art_cache.clear()
-        _art_cache[key] = (get_art_from_mp3(file_path, width, preferred_desc='Booklet', preferred_type=6)
+        _art_cache[key] = (get_embedded_art(file_path, width, preferred_desc='Booklet', preferred_type=6)
                            if booklet else get_art(file_path, width=width))
     return _art_cache[key]
 
@@ -148,7 +148,6 @@ def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
     (cols × rows at `px` pixels per column) and cached per file and size, so a
     resize back to a size already seen costs nothing. The preview size is also
     saved at a lower quality: it's only on screen for a moment."""
-    import base64
     try:
         key = (file_path, os.path.getmtime(file_path), cols, rows, px, ui.cell_aspect())
     except OSError:
@@ -157,27 +156,87 @@ def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
         if len(_inline_art_cache) > 24:
             _inline_art_cache.clear()
         dec = _cover_decoded(file_path)
-        data = None
-        if dec:
-            raw, img = dec
-            data = raw
-            if img is not None and cols and rows:
-                # One factor for both sides, so the image keeps its proportions;
-                # the terminal fits it to the cells (preserveAspectRatio=1).
-                f = min(cols * px / img.width, rows * ui.cell_aspect() * px / img.height)
-                if f < 1:                                   # only ever scale down
-                    img = img.resize((max(1, round(img.width * f)), max(1, round(img.height * f))),
-                                     Image.Resampling.BOX)
-                quality = 70 if px == _INLINE_PREVIEW_PX else 85
-                buf = BytesIO()
-                img.save(buf, "JPEG", quality=quality)
-                if buf.tell() < len(raw):                   # a heavy original still shrinks
-                    data = buf.getvalue()
-        _inline_art_cache[key] = (base64.b64encode(data).decode('ascii'), len(data)) if data else None
+        _inline_art_cache[key] = _encoded_picture(dec[0], dec[1], cols, rows, px) if dec else None
     return _inline_art_cache[key]
 
 
+def _encoded_picture(raw: bytes, img, cols: int, rows: int, px: int) -> tuple[str, int] | None:
+    """A picture as base64 for the image escape (and its byte count): cropped
+    about its centre to the cells' shape so it fills them with no gap, scaled
+    to them at `px` pixels a column (only ever down), a PNG when it has
+    transparency, else a JPEG. The raw bytes when there are no cells to fit."""
+    import base64
+    data = raw
+    transparent = has_alpha(raw)
+    if transparent:                                         # keep it: a JPEG has no transparency
+        img = decode_image(raw, keep_alpha=True)
+    if img is not None and cols and rows:
+        # A cover is cropped to fill its cells; a picture with transparency (a
+        # round portrait) is kept whole, fitted inside them (the terminal
+        # centres it), so a circle is never cut.
+        if not transparent:
+            img = crop_to_cells(img, cols, rows)
+        f = min(cols * px / img.width, rows * ui.cell_aspect() * px / img.height)
+        if f < 1:
+            img = img.resize((max(1, round(img.width * f)), max(1, round(img.height * f))),
+                             Image.Resampling.BOX)
+        buf = BytesIO()
+        if transparent:
+            img.save(buf, "PNG")
+        else:
+            img.save(buf, "JPEG", quality=70 if px == _INLINE_PREVIEW_PX else 85)
+        data = buf.getvalue()
+    return (base64.b64encode(data).decode('ascii'), len(data)) if data else None
+
+
 _mean_cache: dict = {}                   # (path, mtime) → the cover's average colour
+
+
+# Art-derived accents: how colourful a cover colour must be to count, and the
+# lightness and saturation the chosen ones are set to, so they read on a dark
+# terminal whatever the cover was like.
+_ART_MIN_SATURATION = 0.2
+_ART_LIGHTNESS = 0.62
+_ART_SATURATION = (0.5, 0.9)
+_ART_MIN_HUE_GAP = 0.08                  # a second accent this far round the wheel, at least
+_accents_cache: dict = {}
+
+
+def art_accents(file_path: str) -> tuple[str, str] | None:
+    """Two accents ("#RRGGBB") from a file's cover: its most prominent colourful
+    colour, and a second of a clearly different hue (the first's opposite when
+    the cover has only one). None when there's no cover or it's all greys."""
+    import colorsys
+    decoded = _cover_decoded(file_path)
+    if not decoded or decoded[1] is None:
+        return None
+    key = (file_path, id(decoded[1]))
+    if key not in _accents_cache:
+        if len(_accents_cache) > 32:
+            _accents_cache.clear()
+        small = decoded[1].copy()
+        small.thumbnail((64, 64))
+        q = small.quantize(colors=8)
+        pal = q.getpalette() or []
+        found = []
+        for count, idx in sorted(q.getcolors() or [], reverse=True):
+            h, l, s = colorsys.rgb_to_hls(*(c / 255 for c in pal[idx * 3:idx * 3 + 3]))
+            if s >= _ART_MIN_SATURATION and 0.12 < l < 0.92:
+                found.append((count * s, h, s))
+        if not found:
+            _accents_cache[key] = None
+        else:
+            found.sort(reverse=True)
+            _w, h1, s1 = found[0]
+            gap = lambda h: min(abs(h - h1), 1 - abs(h - h1))   # noqa: E731
+            other = next((f for f in found[1:] if gap(f[1]) >= _ART_MIN_HUE_GAP), None)
+            h2, s2 = (other[1], other[2]) if other else ((h1 + 0.5) % 1, s1)
+
+            def tone(h: float, s: float) -> str:
+                r, g, b = colorsys.hls_to_rgb(h, _ART_LIGHTNESS, min(max(s, _ART_SATURATION[0]), _ART_SATURATION[1]))
+                return "#%02X%02X%02X" % (round(r * 255), round(g * 255), round(b * 255))
+            _accents_cache[key] = (tone(h1, s1), tone(h2, s2))
+    return _accents_cache[key]
 
 
 def _cover_mean(file_path: str) -> tuple[int, int, int] | None:
@@ -208,8 +267,105 @@ def _draw_inline_art(full_only: bool = False) -> None:
         return
     if not full_only:
         _send_image(path, _INLINE_PREVIEW_PX)
-    if not _inline_art['resizing']:
+    # The full-quality image waits for focus: a terminal reading a background
+    # window's output slowly would hold the player on it (the track moving
+    # on behind it); focus coming back redraws the player, and sends it.
+    if not _inline_art['resizing'] and ui.window_focused():
         _inline_art['incomplete'] = not _send_image(path, _INLINE_PX_PER_COL, chunked=True)
+
+
+def _image_head(size: int, cols: int, rows: int) -> str:
+    """The start of an iTerm2 image escape filling cols × rows cells at the
+    cursor, leaving the cursor where it was; the base64 data and BEL follow."""
+    return (f"\033]1337;File=inline=1;size={size};width={cols};"
+            f"height={rows};preserveAspectRatio=1;doNotMoveCursor=1:")
+
+
+def crop_to_cells(img, cols: int, rows: int):
+    """`img` cropped about its centre to the shape cols × rows cells take on
+    screen, so drawn into them it fills them with no gap."""
+    want = cols / max(1e-6, rows * ui.cell_aspect())          # width over height, on screen
+    w, h = img.size
+    if w / h > want:
+        nw = max(1, round(h * want))
+        return img.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
+    nh = max(1, round(w / want))
+    return img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
+
+
+_fill_cache: dict = {}
+
+
+def _fill_or_fit(img, cols: int, rows: int):
+    """`img` at cols × rows cells' half-block pixels: a cover cropped to fill
+    them; a picture with transparency (a round portrait) whole, fitted and
+    centred on a clear background, so a circle is never cut."""
+    size = (cols, rows * 2)
+    if img.mode != "RGBA" or img.getextrema()[3][0] == 255:
+        return crop_to_cells(img, cols, rows).resize(size, Image.Resampling.BOX)
+    # A half-block pixel is half a cell high: the cells' own shape on screen.
+    f = min(cols / img.width, rows * 2 * ui.cell_aspect() / 2 / img.height)
+    w, h = max(1, round(img.width * f)), max(1, round(img.height * f * 2 / ui.cell_aspect()))
+    out = Image.new("RGBA", size, (0, 0, 0, 0))
+    out.paste(img.resize((min(w, cols), min(h, rows * 2)), Image.Resampling.BOX),
+              ((cols - min(w, cols)) // 2, (rows * 2 - min(h, rows * 2)) // 2))
+    return out
+
+
+def fill_art(path: str, cols: int, rows: int) -> list[str]:
+    """`path`'s picture filling cols × rows cells exactly, cropped about its
+    centre to their shape, as half-block text; [] when there's no picture."""
+    try:
+        key = (path, os.path.getmtime(path), cols, rows, ui.cell_aspect())
+    except OSError:
+        return []
+    if key not in _fill_cache:
+        if len(_fill_cache) > 32:
+            _fill_cache.clear()
+        dec = _cover_decoded(path)
+        img = (decode_image(dec[0], keep_alpha=True) if dec and has_alpha(dec[0])
+               else dec[1].convert("RGBA") if dec and dec[1] is not None else None)
+        _fill_cache[key] = (half_blocks(_fill_or_fit(img, cols, rows)).splitlines()
+                            if img is not None and cols > 0 and rows > 0 else [])
+    return _fill_cache[key]
+
+
+def square_art(path: str, cols: int, rows: int, pre_art: str | None) -> list[str]:
+    """The art filling a box cols × rows with no gap: the cover cropped to it
+    (an image where the terminal shows them, its cells standing under it, else
+    text art); the empty player's note. A group shows its booklet."""
+    _inline_art['path'] = None
+    if pre_art in _SHAPES:
+        return _shape_lines(pre_art, cols, rows)
+    if pre_art is GROUP_COVER:
+        path = booklet_file(path) or path
+    lines = fill_art(path, cols, rows)
+    if not lines:
+        return _shape_lines(IDLE_ART, cols, rows)
+    mean = _cover_mean(path) if inline_art_enabled() else None
+    if mean:
+        _inline_art['path'] = path
+        return [f"\033[48;2;{mean[0]};{mean[1]};{mean[2]}m{' ' * cols}\033[0m"] * rows
+    return lines
+
+
+def image_cells(path: str, cols: int, rows: int) -> tuple[list[str], str] | None:
+    """`path`'s picture as an image over cols × rows cells: (the cells, in the
+    picture's average colour, to stand under it, and the escape that draws it).
+    None when it isn't shown as an image here (the setting, the terminal) or
+    there's no picture to show; the text art is then the fallback."""
+    if not inline_art_enabled():
+        return None
+    mean = _cover_mean(path)
+    data = _inline_art_data(path, cols, rows, _INLINE_PX_PER_COL) if mean else None
+    if not data:
+        return None
+    # Under a picture with transparency (a round portrait) the cells stay
+    # blank, or its corners would show them.
+    dec = _cover_decoded(path)
+    blank = dec is not None and has_alpha(dec[0])
+    cells = ([" " * cols] if blank else [f"\033[48;2;{mean[0]};{mean[1]};{mean[2]}m{' ' * cols}\033[0m"]) * rows
+    return cells, _image_head(data[1], cols, rows) + data[0] + "\a"
 
 
 def _send_image(path: str, px: int, chunked: bool = False) -> bool:
@@ -227,8 +383,7 @@ def _send_image(path: str, px: int, chunked: bool = False) -> bool:
         return True
     b64, size = data
     head = (f"\0337\033[{geom.art_top};{(geom.art_left or 0) + 1}H"
-            f"\033]1337;File=inline=1;size={size};width={geom.art_width};"
-            f"height={geom.art_height};preserveAspectRatio=1;doNotMoveCursor=1:")
+            + _image_head(size, geom.art_width, geom.art_height))
     if not chunked:
         sys.stdout.write(head + b64 + "\a\0338")
         return True
@@ -255,6 +410,9 @@ def _send_image(path: str, px: int, chunked: bool = False) -> bool:
 # the box a square cover takes, so it scales with the window. The layout swaps
 # this marker for the drawing (see _art_fit).
 IDLE_ART = "♫"
+# A person with no picture of their own (an artist without an artist image),
+# drawn the same way.
+AVATAR_ART = "👤"
 # A grouping (audiobook-style) file shows its booklet image instead of its cover.
 GROUP_COVER = "booklet"
 _NOTE_W, _NOTE_H = 56, 64                # the note's design grid, in braille dots
@@ -277,11 +435,20 @@ def _in_note(x: float, y: float) -> bool:
     return 20 <= x <= 53 and any(0 <= y - (10 - (x - 20) * 6 / 33 + off) <= 6 for off in (0, 10))
 
 
-@functools.lru_cache(maxsize=8)
-def _idle_art_lines(max_w: int, avail_h: int) -> list[str]:
-    """The note centred in the box a square cover gets at this size (see
-    _art_fit for the cover's sizing), scaled to it, so the empty player lays
-    out like a playing one."""
+def _in_person(x: float, y: float) -> bool:
+    """Whether design-grid point (x, y) is inked: a head and shoulders."""
+    return (x - 28) ** 2 + (y - 20) ** 2 <= 11 ** 2 or (y <= 62 and ((x - 28) / 24) ** 2 + ((y - 62) / 22) ** 2 <= 1)
+
+
+_SHAPES = {IDLE_ART: _in_note, AVATAR_ART: _in_person}
+
+
+@functools.lru_cache(maxsize=16)
+def _shape_lines(shape: str, max_w: int, avail_h: int) -> list[str]:
+    """A placeholder (IDLE_ART's note, AVATAR_ART's person) centred in the box
+    a square cover gets at this size (see _art_fit for the cover's sizing),
+    scaled to it, so the empty player lays out like a playing one."""
+    inked = _SHAPES[shape]
     h = max(1, min(max_w // 2, avail_h))
     w = max_w if max_w - 2 * h <= _ART_SNAP_TO_FULL else max(10, 2 * h)
     # Braille cells are 2x4 dots, about square on a 1:2 cell.
@@ -294,7 +461,7 @@ def _idle_art_lines(max_w: int, avail_h: int) -> list[str]:
         cells = []
         for c in range(c0, c1):
             mask = sum(bit for dx, dy, bit in _BRAILLE_DOTS
-                       if _in_note((2 * c + dx + 0.5 - x0) / scale, (4 * r + dy + 0.5 - y0) / scale))
+                       if inked((2 * c + dx + 0.5 - x0) / scale, (4 * r + dy + 0.5 - y0) / scale))
             cells.append(chr(0x2800 + mask) if mask else " ")
         rows[r] = " " * c0 + "".join(cells) + " " * (w - c1)
     return rows
@@ -306,6 +473,8 @@ def _art_width_for_height(file_path: str, max_w: int, avail_h: int,
     cover's average colour, to be drawn over by the image (_draw_inline_art);
     the text art stays only when there's no image to show: no cover, one that
     won't decode, or a group cover, which is a composite of several."""
+    if pre_art is GROUP_COVER and booklet_file(file_path):
+        file_path, pre_art = booklet_file(file_path), None
     art_str, lines = _art_fit(file_path, max_w, avail_h, pre_art)
     _inline_art['path'] = None
     mean = _cover_mean(file_path) if (lines and pre_art is None and inline_art_enabled()) else None
@@ -320,11 +489,17 @@ def _art_fit(file_path: str, max_w: int, avail_h: int,
              pre_art: str | None) -> tuple[str, list[str]]:
     """The art at the widest width up to max_w that fits avail_h rows, through
     album_art.fit_art: narrowed to fit, never cropped or stretched. `pre_art` is
-    IDLE_ART for the empty player's note, GROUP_COVER for a grouping file's
-    booklet image, else None for the file's cover."""
-    if pre_art is IDLE_ART:
-        lines = _idle_art_lines(max_w, avail_h)
+    IDLE_ART for the empty player's note (AVATAR_ART: a person), GROUP_COVER
+    for a grouping file's booklet image, else None for the file's cover (or
+    an image file's picture)."""
+    if pre_art in _SHAPES:
+        lines = _shape_lines(pre_art, max_w, avail_h)
     else:
         booklet = pre_art is GROUP_COVER
         lines = fit_art(lambda w: _get_art_cached(file_path, w, booklet), max_w, avail_h)
+        if lines and not lines[0].startswith("\033["):
+            # No picture to draw (none embedded, or one that won't decode): the
+            # empty player's note stands in, rather than a line of text. No
+            # lines at all means no room for art, which stays that way.
+            lines = _shape_lines(IDLE_ART, max_w, avail_h)
     return "\n".join(lines), lines

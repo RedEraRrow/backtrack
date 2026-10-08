@@ -29,9 +29,10 @@ import os
 import re
 
 from backbone import numbering
+from backtrack.id3.tag_formats import AUDIO_EXTENSIONS
 from dataclasses import dataclass, field
 
-_AUDIO_EXTS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac', '.flac', '.ogg', '.opus', '.wav', '.wma')
+_AUDIO_EXTS = (*AUDIO_EXTENSIONS, '.wma')
 
 # Grandparent folder names that mark a Various-Artists compilation.
 _VARIOUS = {'various artists', 'various', 'va', 'v.a.', 'v/a',
@@ -426,10 +427,9 @@ def compile_regex(pattern: str) -> re.Pattern:
     try:
         compiled = re.compile(pattern)
     except re.error as e:
-        raise TemplateError(f"Invalid regex: {e}")
+        raise TemplateError(f"bad regex: {e}")
     if not (set(compiled.groupindex) & set(_GROUP_FIELD)):
-        raise TemplateError(
-            "No recognised named group: use e.g. (?P<track>\\d+), (?P<title>.+)")
+        raise TemplateError("no group backtrack knows, like (?P<track>\\d+) or (?P<title>.+)")
     return compiled
 
 
@@ -484,16 +484,16 @@ def compile_template(template: str) -> re.Pattern:
                 have_token = True
                 continue
             if name not in _TEMPLATE_TOKENS:
-                raise TemplateError(f"Unknown token %{name}%")
+                raise TemplateError(f"there's no %{name}% token")
             frag, group = _TEMPLATE_TOKENS[name]
             if group in used:
-                raise TemplateError(f"Token for '{group}' used more than once")
+                raise TemplateError(f"{group} is used more than once")
             used.add(group)
             if style:
                 # A number style makes the token match roman numerals or words
                 # instead of digits ("Act %track:r%", "Series %disc:en%").
                 if group not in _NUMERIC_FIELDS or style not in _STYLE_FRAGMENTS:
-                    raise TemplateError(f"%{name}% takes no '{style}' number style")
+                    raise TemplateError(f"%{name}% has no {style} number style")
                 frag = f'(?P<{group}>{_STYLE_FRAGMENTS[style]})'
             out.append(frag)
             have_token = True
@@ -501,7 +501,7 @@ def compile_template(template: str) -> re.Pattern:
             out.append(re.escape(part))
     out.append('$')
     if not have_token:
-        raise TemplateError("Template contains no %tokens%")
+        raise TemplateError("the template has no %tokens%")
     try:
         return re.compile("".join(out))
     except re.error as e:  # pragma: no cover - defensive

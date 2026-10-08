@@ -9,9 +9,13 @@ from mutagen.id3._frames import USLT, TXXX, WXXX, COMM  # type: ignore[reportPri
 from mutagen.id3._frames import APIC, EQU2, RVA2, POPM, PCNT, RBUF
 from mutagen.id3._frames import Frame  # type: ignore[reportPrivateImportUsage]
 
-from backtrack.id3.tag_registry import (parse_composite_tag_id, get_tag_info, get_tag_category, get_preferred_tag_name)
+from backtrack.id3.tag_registry import (TAG_REGISTRY, parse_composite_tag_id, get_tag_info, get_tag_category,
+                                        get_preferred_tag_name)
+from backtrack.id3.tag_formats import load_id3, save_id3  # noqa: F401 (re-exported)
+from backtrack.id3.languages import CODES, LANGUAGES
 from backtrack.music_library import refresh_library_entry, format_value_list
 
+import functools
 import mutagen.id3
 import os
 import re
@@ -210,7 +214,7 @@ def _prompt_for_image_metadata(*, initial_type: int = 3, initial_desc: str = '',
     def _edit_desc(_row) -> None:
         """Prompt for a description and restamp it onto every row's cells."""
         nonlocal desc
-        new_desc = prompt.text("Description (blank for none):", default=desc)
+        new_desc = prompt.text("Description:", default=desc)
         if new_desc is None:
             return
         desc = new_desc.strip()
@@ -262,48 +266,6 @@ def _as_value_list(value: Any) -> list[str]:
         return [s for s in (str(v).strip() for v in value) if s]
     s = str(value).strip()
     return [s] if s else []
-
-
-def _has_multivalue(audio: ID3) -> bool:
-    """True if any text frame in `audio` holds more than one value.
-
-    People frames (TMCL/TIPL) are skipped: their `.text` is a flat role/name
-    pair list, not a multi-value text field."""
-    for frame in audio.values():
-        if getattr(frame, 'people', None) is not None:
-            continue
-        txt = getattr(frame, 'text', None)
-        if isinstance(txt, list) and len(txt) > 1:
-            return True
-    return False
-
-
-def load_id3(path: str) -> ID3:
-    """A file's ID3 tag, or a new empty one when the MP3 has none yet, ready to
-    add frames to and hand to save_id3(audio, path)."""
-    try:
-        return ID3(path)
-    except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-        return ID3()
-
-
-def save_id3(audio: ID3, path: str | None = None) -> None:
-    """Save an ID3 tag, choosing the version by content.
-
-    ID3v2.3 collapses multi-value text into one '/'-joined string (corrupting
-    values that contain '/'), so files carrying any multi-value frame are saved
-    as v2.4. Single-value files stay v2.3 for maximum player compatibility.
-
-    Refuses any file that isn't an MP3: an ID3 header written onto an MP4 (a
-    fresh ID3() falls back to prepending one) corrupts the container."""
-    target = path or getattr(audio, 'filename', None)
-    if target and not str(target).lower().endswith('.mp3'):
-        raise ValueError(f"ID3 tags can only be written to MP3 files, not {os.path.basename(str(target))}")
-    ver = 4 if _has_multivalue(audio) else 3
-    if path is None:
-        audio.save(v2_version=ver)
-    else:
-        audio.save(path, v2_version=ver)
 
 
 def people_to_text(pairs) -> str:
@@ -683,7 +645,7 @@ def _prompt_for_musical_key(current_value: Any) -> str | None:
     if sel is None:
         return None
     if sel == '__custom__':
-        raw = prompt.text("Key (e.g. Dbm, F#, o):", default=cur)
+        raw = prompt.text("Key:", default=cur, placeholder="F#m")
         return raw or None
     return sel
 
@@ -691,14 +653,14 @@ def _prompt_for_musical_key(current_value: Any) -> str | None:
 def _prompt_for_media_type(current_value: Any) -> str | None:
     """Pick the media type (TMED) from common options, or type a custom code."""
     cur = _current_text(current_value)
-    choices = [prompt.Choice(title=f"{label}  ({code})", value=code) for label, code in _MEDIA_TYPES]
+    choices = [prompt.Choice(title=label, value=code, cells=[label, code]) for label, code in _MEDIA_TYPES]
     choices += [prompt.separator(), prompt.Choice(title='Type custom…', value='__custom__')]
     idx = next((i for i, (_, code) in enumerate(_MEDIA_TYPES) if code == cur), 0)
     sel = prompt.select("Media type:", choices=choices, index=idx)
     if sel is None:
         return None
     if sel == '__custom__':
-        raw = prompt.text("Media-type code (e.g. CD, DIG, VIN/33):", default=cur)
+        raw = prompt.text("Media type code:", default=cur, placeholder="VIN/33")
         return raw or None
     return sel
 
@@ -707,7 +669,7 @@ def _prompt_for_isrc(current_value: Any) -> str | None:
     """ISRC (TSRC) with light validation: normalise to 12 chars and warn if the
     shape isn't CC-RRR-YY-NNNNN, but let the user save anyway."""
     cur = _current_text(current_value)
-    raw = prompt.text("ISRC (CC-RRR-YY-NNNNN):", default=cur)
+    raw = prompt.text("ISRC:", default=cur, placeholder="CC-RRR-YY-NNNNN")
     if not raw:
         return None
     norm = re.sub(r'[\s-]', '', raw).upper()
@@ -924,7 +886,7 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
             from backtrack.id3 import cover_matcher as cm
             read = cm.read_image(img_path)
             if not read:
-                ui.show_status("Could not read that image.")
+                ui.show_error("couldn't read that image")
                 return None
             img_data = read[0]
         else:
@@ -942,7 +904,7 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         ui.show_status("Use lyric sync tool for SYLT.")
         return None
     if ui_cat == 'multiline text':
-        return prompt.system_editor_edit(initial_text=default_val)
+        return prompt.multiline(f"{label}:", default_val or "")
 
     def _edit_once(as_plain: bool):
         """Run a single edit pass: plain text/list field, or the format-specific widget."""
@@ -950,7 +912,7 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
             if as_plain:
                 lines = people_to_text(initial_people or [])
                 template = "# One 'role: name' per line\n" + (f"{lines}\n" if lines else "")
-                txt = prompt.system_editor_edit(initial_text=template)
+                txt = prompt.multiline(f"{label}:", template)
                 if txt is None:
                     return None
                 return people_from_text(txt)
@@ -1173,7 +1135,7 @@ def apply_bulk_operation_to_files(
 
     for path in file_paths:
         try:
-            audio = ID3(path)
+            audio = load_id3(path)
             changed = False
 
             for tag_id in tag_ids:
@@ -1197,11 +1159,215 @@ def apply_bulk_operation_to_files(
                         fail_count += 1
 
             if changed:
-                save_id3(audio)
+                save_id3(audio, path)
                 if library is not None:
                     with quietly():
                         refresh_library_entry(library, path)
-        except (mutagen.id3.ID3NoHeaderError, OSError, IOError):  # type: ignore[reportPrivateImportUsage]
+        except (mutagen.id3.ID3NoHeaderError, OSError, ValueError, mutagen.MutagenError):  # type: ignore[reportPrivateImportUsage]
             fail_count += len(tag_ids)
 
     return success_count, fail_count
+
+
+# --- typing a tag's id (adding or renaming one) --------------------------------
+# Suggested as it's typed, checked before it's taken: only ids a frame can be
+# built from, with a description or language only where the frame has one.
+
+_DESC_FRAMES = {'TXXX', 'WXXX', 'COMM', 'USLT'}        # what create_frame gives a description
+_LANG_FRAMES = {'COMM', 'USLT'}                        # and a language
+_NEEDS_DESC = {'TXXX', 'WXXX'}
+_COMMON_DESCS = {
+    'TXXX': ("Mood", "Catalog Number", "Barcode", "Release Type", "Script", "Original Year",
+             "MusicBrainz Album Id", "MusicBrainz Artist Id", "REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_ALBUM_GAIN"),
+    'WXXX': ("Homepage", "Purchase", "Wikipedia"),
+}
+_SAMPLE = {'TEXT': "x", 'URL': "https://example.com", 'FRACTIONAL': "1/2", 'NUMERIC': "1",
+           'LIST': ["x"], 'DATE': "0101", 'YEAR': "2020", 'TIME': "1200"}
+_ID_FORM = re.compile(r'^([A-Za-z0-9]{1,4})(?:\[([^\]]*)\]?|(?::([^:]*))?(?::([^:]*))?)$')
+
+
+@functools.lru_cache(maxsize=None)
+def _creatable(base: str) -> bool:
+    """Whether a frame `base` can be built from a value typed for it: asks
+    create_frame with a sample of its kind, so this never says yes to a frame
+    saving would then refuse (SYLT, binary frames)."""
+    info = get_tag_info(base)
+    st = _STRUCTURED.get(base)
+    if info is None:
+        return False
+    if (st is not None and st.build is not None) or info.ui_category == 'image':
+        return True
+    sample = [("role", "name")] if info.ui_category == 'people' else _SAMPLE.get(info.frame_type, "2020")
+    with quietly():
+        return create_frame(base + (":x" if base in _NEEDS_DESC else ""), sample) is not None
+
+
+def _id_parts(text: str):
+    """(base, desc, lang, bracketed) of a typed id, or None when it isn't one's shape."""
+    m = _ID_FORM.match(text.strip())
+    if not m:
+        return None
+    base, bracket, desc, lang = m.groups()
+    if bracket is not None:
+        return base.upper(), "", bracket, True
+    return base.upper(), desc or "", lang or "", False
+
+
+def check_tag_id(text: str, like: str | None = None) -> str | None:
+    """What's wrong with a typed tag id, or None. `like`: renaming that
+    frame, so the new id must hold the same kind of value."""
+    parts = _id_parts(text)
+    if parts is None:
+        return "not a tag ID"
+    base, desc, lang, _b = parts
+    if len(base) != 4:
+        return "a frame ID has four letters or digits"
+    if get_tag_info(base) is None:
+        return f"{base} isn't a frame backtrack knows"
+    if not _creatable(base):
+        return f"{base} can't be typed in"
+    if desc and base not in _DESC_FRAMES:
+        return f"{base} has no description"
+    if lang and base not in _LANG_FRAMES:
+        return f"{base} has no language"
+    if lang and lang.lower() not in CODES:
+        return f"{lang} isn't a language code"
+    if base in _NEEDS_DESC and not desc.strip():
+        return f"{base} needs a description"
+    if like and get_tag_category(like) != get_tag_category(base):
+        return f"{base} holds a different kind of value from {parse_composite_tag_id(like)[0]}"
+    return None
+
+
+def could_be_tag_id(text: str) -> bool:
+    """Whether typing could still make `text` a tag id check_tag_id takes:
+    a key that would take it anywhere else isn't let through."""
+    if text != text.lstrip():
+        return False
+    head, sep, rest = text.partition('[') if '[' in text else text.partition(':')
+    if not sep:
+        return any(_creatable(k) and k.startswith(head.upper()) for k in TAG_REGISTRY)
+    base = head.upper()
+    if not (len(base) == 4 and _creatable(base)):
+        return False
+    if sep == '[':
+        if base not in _LANG_FRAMES:
+            return False
+        lang, close, after = rest.partition(']')
+        return _could_be_language(lang) and not after and (not close or lang.lower() in CODES)
+    if base not in _DESC_FRAMES and base not in _LANG_FRAMES:
+        return False
+    desc, colon, lang = rest.partition(':')
+    if colon and (base not in _LANG_FRAMES or ':' in lang):
+        return False
+    return _could_be_language(lang)
+
+
+def _could_be_language(typed: str) -> bool:
+    return any(c.startswith(typed.lower()) for c in CODES)
+
+
+def could_be_tag_key(text: str, kind: str) -> bool:
+    """Whether typing could still make `text` a key check_tag_key takes."""
+    if kind == 'vorbis':
+        return re.fullmatch(r'[\x20-\x3c\x3e-\x7d]*', text) is not None
+    if text.startswith('-'):                          # a freeform ----:mean:name
+        return '----:'.startswith(text) or re.fullmatch(r'----:[^:]*(:.*)?', text) is not None
+    return len(text) <= 4 and ':' not in text
+
+
+def normalise_tag_id(text: str) -> str:
+    """A checked id in the form the rest of the app reads: the frame upper
+    case, the language lower."""
+    base, desc, lang, bracketed = _id_parts(text)
+    if bracketed:
+        return f"{base}[{lang.lower()}]"
+    return base + (f":{desc}" if desc or lang else "") + (f":{lang.lower()}" if lang else "")
+
+
+def suggest_tag_ids(text: str, descs: dict | None = None) -> list[tuple[str, str]]:
+    """Completions for a tag id as it's typed: frames (by id),
+    then a description (the file's own first, then common ones), then a
+    language. `descs`: base → descriptions already in use."""
+    t = text.lstrip()
+    if '[' in t:
+        base, _, typed = t.partition('[')
+        base, typed = base.upper(), typed.rstrip(']').lower()
+        if base not in _LANG_FRAMES:
+            return []
+        return [(f"{base}[{c}]", name) for c, name in LANGUAGES
+                if c.startswith(typed)]
+    parts = t.split(':')
+    base = parts[0].upper()
+    if len(parts) == 1:
+        q = parts[0].strip().lower()
+        if not q:
+            return []
+        return [(k + (":" if k in _NEEDS_DESC else ""), info.name[0]) for k, info in TAG_REGISTRY.items()
+                if k.lower().startswith(q) and _creatable(k)]
+    if len(parts) == 2 and base in _DESC_FRAMES:
+        typed = parts[1].lower()
+        known = list(dict.fromkeys([*(descs or {}).get(base, ()), *_COMMON_DESCS.get(base, ())]))
+        out = [(f"{base}:{d}", "in this file" if d in (descs or {}).get(base, ()) else "")
+               for d in known if d and d.lower().startswith(typed) and d.lower() != typed]
+        if base in _LANG_FRAMES:
+            out.append((f"{base}:{parts[1]}:eng", "with a language"))
+        return out
+    if len(parts) == 3 and base in _LANG_FRAMES:
+        typed = parts[2].lower()
+        return [(f"{base}:{parts[1]}:{c}", name) for c, name in LANGUAGES
+                if c.startswith(typed) and c != typed]
+    return []
+
+
+def tag_id_input(message: str, audio=None, like: str | None = None, default: str = "") -> str | None:
+    """Ask for a tag id: suggested as it's typed, checked before it's taken
+    (check_tag_id), returned in the app's form; None when cancelled. `audio`:
+    the file's tags, whose descriptions are suggested first."""
+    descs: dict = {}
+    for key in (getattr(audio, 'keys', lambda: [])() if audio is not None else []):
+        base, desc, _lang = parse_composite_tag_id(str(key))
+        if desc:
+            descs.setdefault(base, []).append(desc)
+    raw = prompt.text(message, default, suggest=lambda t: suggest_tag_ids(t, descs),
+                      check=lambda t: check_tag_id(t, like), allow=could_be_tag_id, placeholder="TXXX:Mood")
+    return normalise_tag_id(raw) if raw and raw.strip() and not check_tag_id(raw, like) else None
+
+
+# Vorbis comments and MP4 atoms name their tags freely: checked for what the
+# format allows, suggested from the fields the app knows for it.
+
+def check_tag_key(text: str, kind: str) -> str | None:
+    key = text.strip()
+    if kind == 'vorbis':
+        if not re.fullmatch(r'[\x20-\x3c\x3e-\x7d]+', key):
+            return "a key can't have = in it"
+        return None
+    if key.startswith('----'):
+        return None if re.fullmatch(r'----:[^:]+:.+', key) else "a freeform key is ----:mean:name"
+    return None if len(key) == 4 else "an MP4 key has four characters"
+
+
+def suggest_tag_keys(text: str, kind: str) -> list[tuple[str, str]]:
+    from backtrack.id3.tag_formats import PAIR_HOMES, TAG_HOMES, home, label_for
+    q = text.strip().lower()
+    if not q:
+        return []
+    keys_: list = []
+    for field in (*TAG_HOMES, *PAIR_HOMES):
+        where = home(field, kind)
+        keys_ += list(where) if isinstance(where, tuple) else ([where] if where else [])
+    keys_ = list(dict.fromkeys(k for k in keys_ if isinstance(k, str)))
+    hits = [k for k in keys_ if k.lower().startswith(q)] + [k for k in keys_ if not k.lower().startswith(q)
+                                                         and q in label_for(kind, k).lower()]
+    return [(k, label_for(kind, k)) for k in hits]
+
+
+def tag_key_input(message: str, kind: str) -> str | None:
+    """Ask for a Vorbis or MP4 tag key: suggested, checked; None when cancelled."""
+    raw = prompt.text(message, suggest=lambda t: suggest_tag_keys(t, kind),
+                      check=lambda t: check_tag_key(t, kind), allow=lambda t: could_be_tag_key(t, kind),
+                      placeholder="COMPOSER" if kind == 'vorbis' else "\xa9wrt")
+    if not raw or not raw.strip() or check_tag_key(raw, kind):
+        return None
+    return raw.strip().upper() if kind == 'vorbis' else raw.strip()

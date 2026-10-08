@@ -1,7 +1,8 @@
 """Format-agnostic tag writer: the fields the bulk and CLI operations set (title,
 artist, album_artist, album, track, disc, disc_subtitle, year), plus cover art,
-for MP3 (ID3v2) and MP4 (m4a/mp4/m4p). A blank MP3 gets a fresh ID3; an
-unsupported format returns ``unsupported=True`` instead of raising.
+for every kind of tag (ID3 on MP3/WAV/AIFF, MP4 atoms, Vorbis comments on
+FLAC/Ogg/Opus), through the field table in tag_formats. A blank file gets fresh
+tags; an unsupported format returns ``unsupported=True`` instead of raising.
 
 Field semantics: ``track`` and ``disc`` are treated as single units that carry
 their totals. "Fill blanks only" means a field is written only when its tag is
@@ -9,15 +10,17 @@ currently absent/empty, unless ``overwrite`` is set.
 """
 from __future__ import annotations
 
-import os
+import base64
 from dataclasses import dataclass, field
 
-import mutagen.id3 as _mid3
-from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TSST, TDRC, TCMP  # type: ignore[reportPrivateImportUsage]  # noqa: E501
+import mutagen
+from mutagen.flac import Picture
 from mutagen.mp4 import MP4, MP4Cover  # type: ignore[reportPrivateImportUsage]
 from backtrack.id3 import tag_registry as _reg
+from backtrack.id3.tag_formats import (compilation_flag, delete, embedded_cover, field_of_frame, has_home,
+                                       is_mp3, kind as format_kind, load_id3, open_tags, pair, save_id3,
+                                       set_compilation, set_pair, set_text, texts)
 from backbone.log import quietly
-from backtrack.music_library import compilation_flag, first_text
 
 # The fields this writer understands (track/disc carry their totals). The
 # compilation flag is not a user field: it rides along when a compilation is
@@ -25,27 +28,18 @@ from backtrack.music_library import compilation_flag, first_text
 FIELDS = ('title', 'artist', 'album_artist', 'album', 'track', 'disc',
           'disc_subtitle', 'year')
 
-# base field → (ID3 frame class, MP4 sort atom). Sort-order tags ride with their
+# base field → the sort field that orders it. Sort-order tags ride with their
 # base field when the 'sort' pseudo-field is applied; the caller supplies the
 # sort string as values['<base>_sort'] and the writer just stores it. Derived
 # from the canonical table in tag_registry; `auto` marks a sort tag as one an
 # ordinary write should produce.
-_SORT_MAP = {
-    t.field: (getattr(_mid3, t.frame), t.atom)
-    for t in _reg.SORT_TAGS if t.auto
-}
+_SORT_MAP = {t.field: field_of_frame(t.frame) for t in _reg.SORT_TAGS if t.auto}
+
 
 def _is_placeholder(value) -> bool:
     """A name the app derives rather than stores (see id3.tag_handler)."""
     from backtrack.id3.tag_handler import is_placeholder_name
     return is_placeholder_name(value)
-
-
-_MP3_EXTS = ('.mp3',)
-# Raw .aac (ADTS) is not an MP4 container and has no atoms (MP4() raises on it),
-# so it isn't tag-writable (music_library likewise only reads .m4a/.mp4/.m4p as MP4).
-# It stays playable/scannable, just reported unsupported for tag writes.
-_MP4_EXTS = ('.m4a', '.mp4', '.m4p')
 
 
 @dataclass
@@ -63,95 +57,38 @@ class WriteResult:
         return bool(self.written)
 
 
-def format_kind(path: str) -> str:
-    """Return 'mp3', 'mp4', or 'unsupported' for a path."""
-    ext = os.path.splitext(path)[1].lower()
-    if ext in _MP3_EXTS:
-        return 'mp3'
-    if ext in _MP4_EXTS:
-        return 'mp4'
-    return 'unsupported'
-
-
 def is_writable(path: str) -> bool:
-    """True if the path's format (MP3 or MP4 family) is one this writer supports."""
+    """True if the path's format keeps tags this writer can set. Raw .aac (ADTS)
+    plays and scans, but has nowhere to keep them."""
     return format_kind(path) != 'unsupported'
 
 
 def writable_fields(path: str) -> set:
-    """Fields that can actually be written for this file's format.
-
-    MP4 has no standard disc-subtitle atom, so ``disc_subtitle`` is dropped for
-    the MP4 family: the plan/preview must not claim a write it can't perform.
-    """
+    """Fields that can actually be written for this file's format: MP4 has no
+    standard disc-subtitle atom, so the plan/preview mustn't claim that write."""
     kind = format_kind(path)
-    if kind == 'unsupported':
-        return set()
-    fields = set(FIELDS)
-    if kind == 'mp4':
-        fields.discard('disc_subtitle')
-    return fields
+    return {f for f in FIELDS if has_home(kind, f)} if kind != 'unsupported' else set()
 
 
-def _fmt_pair(num, total) -> str:
-    """ID3 numeric-pair text: 'n/total' when a total is present, else 'n'.
-    A fractional disc ('1.5', kept by reflow on purpose) stays as it is."""
-    def _n(v) -> str:
-        f = float(v)
-        return str(int(f)) if f.is_integer() else str(f)
-    return f"{_n(num)}/{_n(total)}" if total else _n(num)
+def _num(v) -> str:
+    """A track or disc number as written. A fractional disc ('1.5', kept by
+    reflow on purpose) stays as it is."""
+    f = float(v)
+    return str(int(f)) if f.is_integer() else str(f)
 
 
 # ---------------------------------------------------------------------------
 # Reading current field presence (to honour fill-blanks-only)
 # ---------------------------------------------------------------------------
 
-def _id3_present(audio: ID3) -> dict[str, bool]:
-    """Which fields already have a non-empty value in this ID3 object, keyed by field name."""
-    def _txt(fid: str) -> bool:
-        """True if the text frame exists and its first value is non-blank."""
-        return bool(first_text(audio.get(fid)))
-
-    def _num(fid: str) -> bool:
-        """True if the numeric-pair frame's leading number is present and non-zero."""
-        fr = audio.get(fid)
-        if not (fr and fr.text):
-            return False
-        head = str(fr.text[0]).split('/')[0].strip()
-        return bool(head) and head != '0'
-
-    return {
-        'title': _txt('TIT2'), 'artist': _txt('TPE1'), 'album_artist': _txt('TPE2'),
-        'album': _txt('TALB'), 'track': _num('TRCK'), 'disc': _num('TPOS'),
-        'disc_subtitle': _txt('TSST'), 'year': _txt('TDRC'),
-        'compilation': compilation_flag(audio),
-    }
-
-
-def _mp4_present(audio: MP4) -> dict[str, bool]:
-    """Which fields already have a non-empty value in this MP4 tag object, keyed by field name."""
-    tags = audio.tags or {}
-
-    def _txt(atom: str) -> bool:
-        """True if the atom exists and its first value is non-blank."""
-        v = tags.get(atom)
-        return bool(v and str(v[0]).strip())
-
-    def _pair(atom: str) -> bool:
-        """True if the (num, total) atom is present with a truthy leading number."""
-        v = tags.get(atom)
-        try:
-            return bool(v and v[0][0])
-        except (IndexError, TypeError):
-            return False
-
-    return {
-        'title': _txt('\xa9nam'), 'artist': _txt('\xa9ART'), 'album_artist': _txt('aART'),
-        'album': _txt('\xa9alb'), 'track': _pair('trkn'), 'disc': _pair('disk'),
-        'disc_subtitle': False,           # no standard MP4 atom, never written
-        'year': _txt('\xa9day'),
-        'compilation': compilation_flag(tags),
-    }
+def _present(tags) -> dict[str, bool]:
+    """Which fields already have a non-empty value in these tags, keyed by field name."""
+    out = {f: bool(texts(tags, f)) for f in FIELDS if f not in ('track', 'disc')}
+    for f in ('track', 'disc'):
+        p = pair(tags, f)
+        out[f] = bool(p and p[0] and p[0] != '0')
+    out['compilation'] = compilation_flag(tags)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -164,15 +101,8 @@ def present_fields(path: str) -> dict[str, bool]:
     Used to build the preview (write vs skip) without modifying the file.
     Returns all-False if the file can't be read or isn't writable.
     """
-    kind = format_kind(path)
     with quietly():
-        if kind == 'mp3':
-            try:
-                return _id3_present(ID3(path))
-            except ID3NoHeaderError:
-                return {f: False for f in FIELDS}
-        if kind == 'mp4':
-            return _mp4_present(MP4(path))
+        return _present(open_tags(path)[0])
     return {f: False for f in FIELDS}
 
 
@@ -186,32 +116,12 @@ def read_number_pairs(path: str) -> dict:
     value keeps any fraction (``'1.5'``), which is how a disc gets parked between
     two others ahead of a reflow.
     """
-    kind = format_kind(path)
     out = {'track': '', 'total_tracks': '', 'disc': '', 'total_discs': ''}
     with quietly():
-        if kind == 'mp3':
-            try:
-                audio = ID3(path)
-            except ID3NoHeaderError:
-                return out
-            for fid, cur, tot in (('TRCK', 'track', 'total_tracks'),
-                                  ('TPOS', 'disc', 'total_discs')):
-                fr = audio.get(fid)
-                if fr is None or not getattr(fr, 'text', None):
-                    continue
-                head, _, tail = str(fr.text[0]).partition('/')
-                out[cur], out[tot] = head.strip(), tail.strip()
-        elif kind == 'mp4':
-            tags = MP4(path).tags or {}
-            for atom, cur, tot in (('trkn', 'track', 'total_tracks'),
-                                   ('disk', 'disc', 'total_discs')):
-                v = tags.get(atom)
-                try:
-                    n, t = v[0][0], v[0][1]          # type: ignore[index]
-                except (IndexError, TypeError):
-                    continue
-                out[cur] = str(n) if n else ''
-                out[tot] = str(t) if t else ''
+        tags = open_tags(path)[0]
+        for f, tot in (('track', 'total_tracks'), ('disc', 'total_discs')):
+            if (p := pair(tags, f)) is not None:
+                out[f], out[tot] = p
     return out
 
 
@@ -232,21 +142,12 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
     res = WriteResult()
 
     try:
-        if kind == 'mp3':
-            from backtrack.id3.tag_handler import load_id3
-            audio = load_id3(path)
-            present = _id3_present(audio)
-        else:
-            audio = MP4(path)
-            if audio.tags is None:
-                audio.add_tags()
-            present = _mp4_present(audio)
+        tags, save = open_tags(path)
+        present = _present(tags)
 
         for f in FIELDS:
-            if f not in apply_fields:
-                continue
-            if f == 'disc_subtitle' and kind == 'mp4':
-                continue                    # no standard MP4 disc-subtitle atom
+            if f not in apply_fields or not has_home(kind, f):
+                continue                    # e.g. no MP4 disc-subtitle atom
             val = values.get(f)
             if val is None or (isinstance(val, str) and not val.strip()):
                 continue                    # nothing derived for this field
@@ -257,166 +158,86 @@ def write_fields(path: str, values: dict, apply_fields, overwrite: bool = False)
             if present.get(f) and not overwrite:
                 res.skipped_existing.append(f)
                 continue
-            _set_field(audio, kind, f, values)
+            if f in ('track', 'disc'):
+                total = values.get(f'total_{f}s')
+                set_pair(tags, f, _num(val), _num(total) if total else '')
+            else:
+                set_text(tags, f, [str(val)])
             res.written.append(f)
 
         # Compilation flag rides along with the album artist when detected.
         if values.get('compilation') and 'album_artist' in apply_fields:
             if overwrite or not present.get('compilation'):
-                _set_compilation(audio, kind)
+                set_compilation(tags, True)
                 res.written.append('compilation')
 
         # Sort-order tags ride with a base field *actually written* this run, so
         # the sort string always matches the value we wrote (not a skipped one).
         if 'sort' in apply_fields:
             written_now = set(res.written)
-            for base, (frame_cls, atom) in _SORT_MAP.items():
-                if base not in written_now:
-                    continue
+            for base, sort_field in _SORT_MAP.items():
                 sval = values.get(f'{base}_sort')
-                if not sval:
-                    continue                    # no sort needed (e.g. "Radiohead")
-                _set_sort(audio, kind, frame_cls, atom, str(sval))
-                res.written.append(f'{base}_sort')
+                if base in written_now and sval:   # none needed for e.g. "Radiohead"
+                    set_text(tags, sort_field, [str(sval)])
+                    res.written.append(f'{base}_sort')
 
         if res.written:
-            if kind == 'mp3':
-                from backtrack.id3.tag_handler import save_id3
-                save_id3(audio, path)   # type: ignore[arg-type]  # ID3 in this branch; v2.4 iff multi-value present
-            else:
-                audio.save()
+            save()                      # ID3 is v2.4 iff a multi-value frame is present
     except Exception as e:                  # never let one bad file abort a bulk run
         return WriteResult(error=str(e))
 
     return res
 
 
-# Where each clearable field lives, per format, for `clear_fields`.
-_FIELD_HOMES: dict[str, tuple[str, str]] = {
-    'track':       ('TRCK', 'trkn'),
-    'disc':        ('TPOS', 'disk'),
-    'disc_subtitle': ('TSST', ''),
-    'title':       ('TIT2', '\xa9nam'),
-    'artist':      ('TPE1', '\xa9ART'),
-    'album_artist': ('TPE2', 'aART'),
-    'album':       ('TALB', '\xa9alb'),
-}
-
-
 def clear_fields(path: str, fields) -> WriteResult:
-    """Remove the chosen fields from ``path`` entirely (MP3 and MP4).
+    """Remove the chosen fields from ``path`` entirely, whatever its kind.
 
     `write_fields` can only *set* a value (it skips anything empty), so removing
     a tag needs its own path. Fields already absent aren't reported as written, so
     a no-op file isn't rewritten.
     """
-    kind = format_kind(path)
-    if kind == 'unsupported':
+    if format_kind(path) == 'unsupported':
         return WriteResult(unsupported=True)
 
     res = WriteResult()
     try:
-        if kind == 'mp3':
-            try:
-                audio = ID3(path)
-            except ID3NoHeaderError:
-                return res                      # no tags at all: nothing to clear
-        else:
-            audio = MP4(path)
-            if audio.tags is None:
-                return res
-
-        for f in fields:
-            frame, atom = _FIELD_HOMES.get(f, ('', ''))
-            if kind == 'mp3':
-                if frame and audio.getall(frame):
-                    audio.delall(frame)
-                    res.written.append(f)
-            elif atom and atom in audio.tags:
-                del audio.tags[atom]
-                res.written.append(f)
-
+        tags, save = open_tags(path)
+        res.written = [f for f in fields if delete(tags, f)]
         if res.written:
-            if kind == 'mp3':
-                from backtrack.id3.tag_handler import save_id3
-                save_id3(audio, path)   # type: ignore[arg-type]
-            else:
-                audio.save()
+            save()
     except Exception as e:                  # never let one bad file abort a bulk run
         return WriteResult(error=str(e))
 
     return res
 
 
+def write_replaygain(path: str, gain_db: float, peak: float) -> None:
+    """Store a track's ReplayGain (gain in dB, linear peak) where its kind keeps
+    it; ID3 also gets an RVA2 frame, which players that ignore the text read."""
+    tags, save = open_tags(path)
+    set_text(tags, 'replaygain_track_gain', [f"{gain_db:+.2f} dB"])
+    set_text(tags, 'replaygain_track_peak', [f"{peak:.6f}"])
+    if format_kind(path) == 'id3':
+        from backtrack.id3.tag_handler import create_frame
+        tags.delall('RVA2')
+        if (rva2 := create_frame('RVA2', {'__rva2__': True, 'gain': gain_db})) is not None:
+            tags.add(rva2)
+    save()
+
+
 def stale_length_tags(path: str) -> tuple[bool, bool]:
-    """(has_tlen, has_stale_tdly) for path. MP3 only: MP4 has neither frame.
+    """(has_tlen, has_stale_tdly) for path. MP3 only: nothing else has frames that go stale on a cut.
 
     TLEN (track length, ms) is suspect the instant a file is cut by any means,
     including outside backtrack. TDLY (playlist delay, ms) is equally suspect
     after a head cut, but a zero value still means "no delay" and isn't stale.
     """
-    if format_kind(path) != 'mp3':
+    if not is_mp3(path):
         return (False, False)
-    try:
-        audio = ID3(path)
-    except ID3NoHeaderError:
-        return (False, False)
+    audio = load_id3(path)
     has_tlen = bool(audio.getall('TLEN'))
     has_tdly = any(t.text and str(t.text[0]) != '0' for t in audio.getall('TDLY'))
     return (has_tlen, has_tdly)
-
-
-def _set_compilation(audio, kind: str) -> None:
-    """Write the compilation flag (TCMP or 'cpil') on the given tag object."""
-    if kind == 'mp3':
-        audio.setall('TCMP', [TCMP(encoding=3, text=['1'])])
-    else:
-        audio.tags['cpil'] = True
-
-
-def _set_sort(audio, kind: str, frame_cls, atom: str, val: str) -> None:
-    """Write a sort-order string to its ID3 frame or MP4 sort atom."""
-    if kind == 'mp3':
-        audio.setall(frame_cls.__name__, [frame_cls(encoding=3, text=[val])])
-    else:
-        audio.tags[atom] = [val]
-
-
-def _set_field(audio, kind: str, f: str, values: dict) -> None:
-    """Write one derived field (title/artist/track/etc.) to its ID3 frame or MP4 atom."""
-    if kind == 'mp3':
-        if f == 'title':
-            audio.setall('TIT2', [TIT2(encoding=3, text=[str(values['title'])])])
-        elif f == 'artist':
-            audio.setall('TPE1', [TPE1(encoding=3, text=[str(values['artist'])])])
-        elif f == 'album_artist':
-            audio.setall('TPE2', [TPE2(encoding=3, text=[str(values['album_artist'])])])
-        elif f == 'album':
-            audio.setall('TALB', [TALB(encoding=3, text=[str(values['album'])])])
-        elif f == 'track':
-            audio.setall('TRCK', [TRCK(encoding=3, text=[_fmt_pair(values['track'], values.get('total_tracks'))])])
-        elif f == 'disc':
-            audio.setall('TPOS', [TPOS(encoding=3, text=[_fmt_pair(values['disc'], values.get('total_discs'))])])
-        elif f == 'disc_subtitle':
-            audio.setall('TSST', [TSST(encoding=3, text=[str(values['disc_subtitle'])])])
-        elif f == 'year':
-            audio.setall('TDRC', [TDRC(encoding=3, text=[str(values['year'])])])
-    else:  # mp4
-        tags = audio.tags
-        if f == 'title':
-            tags['\xa9nam'] = [str(values['title'])]
-        elif f == 'artist':
-            tags['\xa9ART'] = [str(values['artist'])]
-        elif f == 'album_artist':
-            tags['aART'] = [str(values['album_artist'])]
-        elif f == 'album':
-            tags['\xa9alb'] = [str(values['album'])]
-        elif f == 'track':
-            tags['trkn'] = [(int(values['track']), int(values.get('total_tracks') or 0))]
-        elif f == 'disc':
-            tags['disk'] = [(int(values['disc']), int(values.get('total_discs') or 0))]
-        elif f == 'year':
-            tags['\xa9day'] = [str(values['year'])]
 
 
 # ---------------------------------------------------------------------------
@@ -424,45 +245,26 @@ def _set_field(audio, kind: str, f: str, values: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def has_cover(path: str) -> bool:
-    """Whether the file already carries embedded album art.
-
-    MP3: any APIC frame. MP4: a non-empty ``covr`` atom. False on read errors so
-    a bad file is treated as blank (and the fill-blanks preview offers to fill).
-    """
-    kind = format_kind(path)
-    with quietly():
-        if kind == 'mp3':
-            try:
-                audio = ID3(path)
-            except ID3NoHeaderError:
-                return False
-            return any(k == 'APIC' or k.startswith('APIC:') for k in audio.keys())
-        if kind == 'mp4':
-            audio = MP4(path)
-            return bool(audio.tags and audio.tags.get('covr'))
-    return False
+    """Whether the file already carries embedded album art. False on read errors
+    so a bad file is treated as blank (and the fill-blanks preview offers to fill)."""
+    return embedded_cover(path) is not None
 
 
 def retype_cover(path: str, pic_type: int) -> WriteResult:
     """Set the *picture type* of the art already on ``path``, keeping the image.
 
-    ID3 only: MP4's ``covr`` atom has no picture-type field, so an MP4 comes back
-    `unsupported`. Frames already carrying `pic_type` aren't rewritten, so a
-    second run over the same files is a no-op.
+    ID3 only (MP3/WAV/AIFF): MP4's ``covr`` atom has no picture-type field, so
+    anything else comes back `unsupported`. Frames already carrying `pic_type`
+    aren't rewritten, so a second run over the same files is a no-op.
     """
-    kind = format_kind(path)
-    if kind != 'mp3':
+    if format_kind(path) != 'id3':
         return WriteResult(unsupported=True)
 
     res = WriteResult()
     try:
-        from backtrack.id3.tag_handler import create_apic_frame, save_id3
-        try:
-            audio = ID3(path)
-        except ID3NoHeaderError:
-            return res                             # no tags: nothing to retype
-
-        frames = [audio[k] for k in list(audio.keys()) if k.startswith('APIC')]
+        from backtrack.id3.tag_handler import create_apic_frame
+        audio = load_id3(path)
+        frames = audio.getall('APIC')
         stale = [f for f in frames if int(getattr(f, 'type', 3)) != int(pic_type)]
         if not stale:
             return res
@@ -472,27 +274,54 @@ def retype_cover(path: str, pic_type: int) -> WriteResult:
                                         int(pic_type),
                                         getattr(frame, 'desc', '') or '')
             if rebuilt is None:
-                return WriteResult(error='could not rebuild the APIC frame')
+                return WriteResult(error='could not build the APIC frame')
             # Delete by the frame's own key: mutagen keys APIC by description.
             audio.delall(getattr(frame, 'HashKey', 'APIC'))
             audio.add(rebuilt)
             res.written.append('cover_type')
-        save_id3(audio, path)                      # type: ignore[arg-type]
+        save_id3(audio, path)
     except Exception as e:                         # never abort a bulk run
         return WriteResult(error=str(e))
 
     return res
 
 
+def _vorbis_picture(data: bytes, mime: str, pic_type: int, desc: str) -> Picture:
+    pic = Picture()
+    pic.data, pic.mime, pic.type, pic.desc = data, mime, pic_type, desc
+    return pic
+
+
+def _set_vorbis_cover(path: str, pic: Picture | None) -> None:
+    """Make `pic` a FLAC's or Ogg file's only picture (None: remove them all).
+    FLAC keeps pictures in their own blocks; Ogg in METADATA_BLOCK_PICTURE comments."""
+    f = mutagen.File(path)
+    if f is None:
+        raise ValueError("not a readable audio file")
+    if hasattr(f, 'clear_pictures'):
+        f.clear_pictures()
+        if pic is not None:
+            f.add_picture(pic)
+    else:
+        if f.tags is None:
+            f.add_tags()
+        for key in ('METADATA_BLOCK_PICTURE', 'COVERART', 'COVERARTMIME'):
+            if key in f.tags:
+                del f.tags[key]
+        if pic is not None:
+            f.tags['METADATA_BLOCK_PICTURE'] = [base64.b64encode(pic.write()).decode('ascii')]
+    f.save()
+
+
 def write_cover(path: str, data: bytes, mime: str, *, pic_type: int = 3,
                 desc: str = '', overwrite: bool = False) -> WriteResult:
-    """Embed ``data`` as album art on ``path`` (MP3 APIC or MP4 ``covr``).
+    """Embed ``data`` as album art on ``path`` (an ID3 APIC, an MP4 ``covr``, or
+    a FLAC/Ogg picture), as its only cover.
 
     Honours fill-blanks: a file that already has art is left untouched unless
     ``overwrite`` is set (reported via ``skipped_existing``). MP4 ``covr`` only
     holds JPEG/PNG: anything else returns ``skipped_format=True`` rather than
-    silently writing nothing. On MP3, existing APIC frames are replaced so the
-    new art is the only cover.
+    silently writing nothing.
     """
     kind = format_kind(path)
     if kind == 'unsupported':
@@ -506,15 +335,17 @@ def write_cover(path: str, data: bytes, mime: str, *, pic_type: int = 3,
             res.skipped_existing.append('cover')
             return res
 
-        if kind == 'mp3':
-            from backtrack.id3.tag_handler import create_apic_frame, load_id3, save_id3
+        if kind == 'id3':
+            from backtrack.id3.tag_handler import create_apic_frame
             audio = load_id3(path)
             frame = create_apic_frame(data, mime, pic_type, desc)
             if frame is None:
                 return WriteResult(error='could not build APIC frame')
             audio.delall('APIC')
             audio.add(frame)
-            save_id3(audio, path)                 # type: ignore[arg-type]
+            save_id3(audio, path)
+        elif kind == 'vorbis':
+            _set_vorbis_cover(path, _vorbis_picture(data, mime, pic_type, desc))
         else:  # mp4
             fmt = (MP4Cover.FORMAT_PNG if mime == 'image/png'
                    else MP4Cover.FORMAT_JPEG if mime == 'image/jpeg' else None)
@@ -523,12 +354,33 @@ def write_cover(path: str, data: bytes, mime: str, *, pic_type: int = 3,
             audio = MP4(path)
             if audio.tags is None:
                 audio.add_tags()
-            tags = audio.tags
-            assert tags is not None
-            tags['covr'] = [MP4Cover(data, imageformat=fmt)]
+            audio.tags['covr'] = [MP4Cover(data, imageformat=fmt)]
             audio.save()
     except Exception as e:
         return WriteResult(error=str(e))
 
     res.written.append('cover')
     return res
+
+
+def remove_cover(path: str) -> WriteResult:
+    """Remove every embedded picture from ``path``."""
+    kind = format_kind(path)
+    if kind == 'unsupported':
+        return WriteResult(unsupported=True)
+    if not has_cover(path):
+        return WriteResult()
+    try:
+        if kind == 'id3':
+            audio = load_id3(path)
+            audio.delall('APIC')
+            save_id3(audio, path)
+        elif kind == 'vorbis':
+            _set_vorbis_cover(path, None)
+        else:
+            audio = MP4(path)
+            audio.tags.pop('covr', None)
+            audio.save()
+    except Exception as e:
+        return WriteResult(error=str(e))
+    return WriteResult(written=['cover'])

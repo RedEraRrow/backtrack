@@ -11,6 +11,8 @@ DEFAULT_CONFIG = {
     "debug": False,
     "history_enabled": True,
     "lyric_lead_in": 2.0,
+    # How fast truncated names scroll: a column per beat.
+    "scroll_bpm": 100,
     "music_directories": [],
     # Legacy single-directory key, kept in step with the first entry of
     # `music_directories` so an older build reading this file still works.
@@ -29,6 +31,8 @@ DEFAULT_CONFIG = {
     "library_sort_levels": {},
     # Friendly names for music directories (directory → name), shown in Browse.
     "library_names": {},
+    # What a music directory holds (directory → "audiobooks"); unset means music.
+    "library_media_types": {},
     # Browse menu categories in order (menus.common.BROWSE_CATEGORIES keys); empty = default.
     "browse_menu": [],
     # Each non-album browse list's order (category → a menus.sorting._GROUP_SORTS mode), as last chosen with s.
@@ -37,14 +41,27 @@ DEFAULT_CONFIG = {
     # After a track picked from a list: "stop" (it plays alone), "list" (the
     # rest of the list follows) or "queue" (the queue playing carries on).
     "after_pick": "list",
+    # When the queue plays to its end: "stop", or "random_album" (one picked
+    # from the whole library, never an audiobook, then another, and so on).
+    "queue_end": "stop",
     # Album art in the player as a real image rather than text blocks. iTerm2
     # only (elsewhere the text art is used regardless). Experimental.
     "art_inline_images": False,
     # The accent colour: a ui.ACCENT_PRESETS key, or "#RRGGBB".
     "accent_colour": "green",
+    # The second accent (panel borders, the active tab), the same way.
+    "accent_colour_2": "cyan",
+    # Take both accents from the playing track's album art instead (the two
+    # above when nothing plays or the cover is all greys).
+    "accent_from_art": False,
     # The player's track details line (year, genre, disc/track…), which `m`
     # shows or hides; remembered between plays.
     "player_show_metadata": True,
+    "player_show_tabs": True,
+    "browse_by_letter": True,
+    # In a file with chapters, the player's time is the chapter's rather than
+    # the whole file's; `t` swaps them.
+    "player_chapter_time": False,
     # The player's transport buttons as Material Design icons, which only a
     # Nerd Font has; off uses the Unicode media symbols every font falls back to.
     "player_nerd_font_icons": False,

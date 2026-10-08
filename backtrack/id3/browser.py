@@ -1,6 +1,9 @@
 """Per-file ID3 tag browser and editor UI, plus the sort-order name engine
 (name splitting and sort suggestions) that bulk sort uses."""
 from __future__ import annotations
+
+from io import BytesIO
+from backtrack.id3.tag_formats import is_mp3, kind as tag_kind
 import os
 import re
 import sys
@@ -21,8 +24,10 @@ from mutagen.id3._frames import APIC
 from backbone import ui
 from backbone.prompt.core import _visible_rows
 from backbone.ui import Colors as C, get_terminal_width
-from backtrack.album_art import decode_image, fit_art, render_album_art
-from backtrack.music_library import drop_moved, refresh_library_entry, track_title, first_text
+from backtrack.playback.player_art import fill_art, image_cells
+from backtrack.album_art import decode_image, picture_file
+from backtrack.music_library import (drop_moved, format_label, library_entry, refresh_library_entry,
+                                    track_title, first_text)
 
 from backtrack.id3.tag_handler import (
     get_tag_info, get_tag_category, display_tag_id, summarize_tag_value, prompt_for_value,
@@ -34,7 +39,7 @@ from backtrack.id3 import tag_registry as _reg
 from backtrack.config import setting
 from backbone.log import quietly
 from backtrack import tuning as tune
-from backtrack.id3.tag_handler import picture_type_name
+from backtrack.id3.tag_handler import picture_type_name, tag_id_input, tag_key_input
 
 # Structured columns for the tag list. Column 1 holds the tag id AND the friendly
 # name as two styled segments (TAG bright + friendly dim) in a single column.
@@ -538,14 +543,6 @@ def _get_image_from_apic(apic_frame: APIC) -> tuple:
     return decode_image(img_data), mime_type, img_data
 
 
-def _convert_apic_to_viu(apic_frame: APIC, width: int = 80) -> str:
-    """Render an APIC frame's image data as terminal art at the given width."""
-    img_bytes = getattr(apic_frame, 'data', None)
-    if not img_bytes:
-        return "Error: No image data."
-    return render_album_art(img_bytes, width=width, is_bytes=True)
-
-
 def _open_apic_preview(apic_frame: APIC) -> bool:
     """Write the APIC image to a temp file and open it in the OS's default viewer."""
     image, mime_type, img_bytes = _get_image_from_apic(apic_frame)
@@ -575,7 +572,7 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
 
         return True
     except (OSError, subprocess.CalledProcessError) as e:
-        ui.show_status(f"Error opening preview: {e}")
+        ui.show_error(f"couldn't open the preview: {e}")
         return False
 
 
@@ -594,15 +591,10 @@ def _import_from_lrc(file_path: str, tag_id: str) -> None:
     if not written:
         ui.show_status("No usable lines in LRC file.")
     elif tag_id.startswith('SYLT') and written == 'USLT':
-        ui.show_status("LRC has no timestamps; cannot import to SYLT.")
+        ui.show_status("This LRC has no timestamps to import.")
     else:
         ui.show_status(f"Imported {count} lines to {written}.")
 
-
-# Rendered art, cached by (image bytes, width), so the art screens don't decode
-# and re-render the JPEG on every keystroke.
-_ART_CACHE: dict[tuple[int, int], str] = {}
-_ART_CACHE_MAX = 8
 
 # Cover-art actions: (value, label, dim note). Plain sentence-case labels, "…"
 # when the row opens a further prompt.
@@ -620,67 +612,75 @@ _APIC_ACTION_COLUMNS = [
 ]
 
 
-# A comfortable cover thumbnail: big enough to recognise, never filling the
-# screen (the player view is where full-size art belongs).
-_ART_MAX_WIDTH = 64
-_ART_BREATHING_ROWS = 2          # rows left free below the art box
+_ART_BREATHING_ROWS = 0          # rows left free below the art box
 # Below this the picture is mush; the facts line says more than it would.
 _MIN_ART_ROWS = 6
-
+# The facts beside the art need this many columns, or the art has the box.
+_FACTS_MIN_W = 18
 
 
 def _art_rows_available(reserved_rows: int) -> int:
-    """Rows the art box may occupy: what's left after the chrome, less breathing
-    room, so the picture never runs into the first action row."""
+    """Rows the art box may occupy: what's left after the chrome."""
     return _visible_rows() - reserved_rows - 2 - _ART_BREATHING_ROWS   # -2 box edges
 
 
-def _art_width(reserved_rows: int = 0) -> int:
-    """Art width in cells for the space left after `reserved_rows` of chrome.
-
-    A square image is `ui.cell_aspect()` (about 2) times as many cells wide as
-    rows tall. Capped at `_ART_MAX_WIDTH` so a big window gets a comfortable
-    thumbnail rather than wallpaper.
-    """
-    art_rows = max(3, _art_rows_available(reserved_rows))
-    cols = get_terminal_width() - 2 * ui.MARGIN_H - 4     # box + margins
-    return max(12, min(cols, int(art_rows * ui.cell_aspect()), _ART_MAX_WIDTH))
-
-
-def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0) -> list[str]:
-    """The art in a rounded box, centred, comfortably sized for what's left.
-
-    Narrowed to fit the height by album_art.fit_art, as the player does: never
-    cropped or stretched.
-    """
+def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0, title: str = "") -> list[str]:
+    """The picture in a box as wide as the screen's other boxes, `title` in its
+    top border: a square filled edge to edge (cropped about its centre), an
+    image where the terminal shows them (a prompt.Pane carrying it), else text
+    art, with what the image is beside it."""
     avail_rows = _art_rows_available(reserved_rows)
-    if avail_rows < _MIN_ART_ROWS:
-        # Not enough height left for art worth looking at: the facts line in the
-        # header carries the detail instead.
-        return [f"{' ' * ui.MARGIN_H}{C.DIM}(art hidden: window too short){C.RESET}"]
+    path = picture_file(getattr(apic_frame, 'data', b"") or b"")
+    if avail_rows < _MIN_ART_ROWS or not path:
+        # Not enough height left for art worth looking at (or nothing that
+        # decodes): the facts line in the header carries the detail instead.
+        why = "window too short" if path else "no picture to show"
+        return [f"{' ' * ui.MARGIN_H}{C.DIM}(art hidden: {why}){C.RESET}"]
 
-    width = _art_width(reserved_rows)
-    art = fit_art(lambda w: _apic_art(apic_frame, w), width, avail_rows)
-    inner = max((ui.visual_len(l) for l in art), default=width)
-    pad = " " * max(ui.MARGIN_H, (get_terminal_width() - inner - 4) // 2)   # centred
-    return ([f"{pad}{C.DIM}╭{'─' * (inner + 2)}╮{C.RESET}"]
-            + [f"{pad}{C.DIM}│{C.RESET} {line}{' ' * (inner - ui.visual_len(line))} "
-               f"{C.DIM}│{C.RESET}" for line in art]
-            + [f"{pad}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}"]
-            + [""] * _ART_BREATHING_ROWS)
+    inner = max(12, get_terminal_width() - 2 * ui.MARGIN_H - 4)
+    aspect = ui.cell_aspect()
+    rows = avail_rows
+    cols = round(rows * aspect)
+    room = inner - _FACTS_MIN_W - 3                                 # " │ " before the facts
+    if cols > max(room, inner * 2 // 3 if room < 12 else room):
+        cols = room if room >= 12 else inner
+        rows = max(1, int(cols / aspect))
+        cols = round(rows * aspect)
+    image = image_cells(path, cols, rows)
+    art = image[0] if image else fill_art(path, cols, rows)
+    facts_w = inner - cols - 3
+    facts = [f"{C.DIM}{k:<7}{C.RESET}{ui.truncate_text(v, max(1, facts_w - 7))}"
+             for k, v in _apic_fact_rows(apic_frame)] if facts_w >= _FACTS_MIN_W else []
+    side = [f" {C.DIM}│{C.RESET} " + (facts[i] if i < len(facts) else "") for i in range(rows)] if facts else []
+    pad = " " * ui.MARGIN_H
+    name = f" {ui.truncate_text(title, max(1, inner - 2))} " if title else ""
+    lines = ([f"{pad}{C.DIM}╭─{C.RESET}{C.PRIMARY}{C.BOLD}{name}{C.RESET}"
+              f"{C.DIM}{'─' * (inner + 1 - ui.visual_len(name))}╮{C.RESET}"]
+             + [f"{pad}{C.DIM}│{C.RESET} {row}{' ' * (inner - ui.visual_len(row))} {C.DIM}│{C.RESET}"
+                for row in (line + (side[i] if side else "") for i, line in enumerate(art))]
+             + [f"{pad}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}"]
+             + [""] * _ART_BREATHING_ROWS)
+    # The image over the art's cells: under the top border, inside "│ ".
+    pictures = [(1, len(pad) + 2, rows, (path, cols), image[1], cols)] if image else []
+    return prompt.Pane(lines, pictures)
 
 
-def _apic_art(apic_frame: APIC, width: int) -> str:
-    """Terminal art for an APIC frame, cached so a redraw costs nothing."""
-    data = getattr(apic_frame, 'data', b"") or b""
-    key = (hash(data), width, ui.cell_aspect())
-    art = _ART_CACHE.get(key)
-    if art is None:
-        art = _convert_apic_to_viu(apic_frame, width=width)
-        if len(_ART_CACHE) >= _ART_CACHE_MAX:
-            _ART_CACHE.clear()
-        _ART_CACHE[key] = art
-    return art
+def _apic_fact_rows(apic_frame: APIC) -> list[tuple[str, str]]:
+    """What the image is, as (label, value) rows, most useful first."""
+    from PIL import Image
+    _image, mime, img_data = _get_image_from_apic(apic_frame)
+    try:
+        with Image.open(BytesIO(img_data)) as img:
+            size, mode = img.size, img.mode
+    except (OSError, ValueError, Image.DecompressionBombError):
+        size = mode = None
+    rows = [("Size", f"{size[0]}×{size[1]} px")] if size else []
+    rows += [("Format", (mime or "").removeprefix("image/").upper() or "?"),
+             ("Weight", f"{len(img_data) / 1024:.0f} KB")]
+    if mode:
+        rows.append(("Colour", {"L": "greyscale", "LA": "greyscale", "RGB": "RGB", "RGBA": "RGBA",
+                                "CMYK": "CMYK", "P": "palette"}.get(mode, mode)))
+    return rows
 
 
 def _apic_facts(apic_frame: APIC, budget: int = 999) -> str:
@@ -689,20 +689,7 @@ def _apic_facts(apic_frame: APIC, budget: int = 999) -> str:
     Least useful facts drop first (colour mode, then format, then weight) so the
     line fits `budget` columns instead of wrapping.
     """
-    image, mime, img_data = _get_image_from_apic(apic_frame)
-    dims = ""
-    if image is not None:
-        w, h = image.size
-        dims = f"{w}×{h} px"
-    kb = f"{len(img_data) / 1024:.0f} KB"
-    fmt = (mime or "").removeprefix("image/").upper() or "?"
-    mode = ""
-    if image is not None:
-        channels = image.shape[2] if len(image.shape) == 3 else 1
-        mode = {1: "greyscale", 3: "RGB", 4: "RGBA"}.get(channels, f"{channels}ch")
-
-    # Most useful first; drop from the end until it fits.
-    bits = [b for b in (dims, fmt, kb, mode) if b]
+    bits = [v for _k, v in _apic_fact_rows(apic_frame)]
     while bits and len(" · ".join(bits)) > budget:
         bits.pop()
     return " · ".join(bits)
@@ -739,11 +726,14 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
 
         inner = max(12, get_terminal_width() - 2 * ui.MARGIN_H - 4)
         toggle_w = prompt.help_toggle_width() + 2           # the room the header keeps for the toggle
+        art = _art_lines_boxed(apic_frame, _CHROME_ROWS) if _visible_rows() >= 14 else None
+        shown = isinstance(art, prompt.Pane)                 # the facts are beside it
         lines = prompt.rounded_header(
             tag_txt, detail,
-            _apic_facts(apic_frame, max(0, inner - len(left_plain) - 2 - toggle_w)))
-        if _visible_rows() >= 14:
-            lines.extend(_art_lines_boxed(apic_frame, _CHROME_ROWS))
+            "" if shown else _apic_facts(apic_frame, max(0, inner - len(left_plain) - 2 - toggle_w)))
+        if art:
+            pictures = [(len(lines) + p[0], *p[1:]) for p in getattr(art, 'pictures', ())]
+            return prompt.Pane(lines + list(art), pictures)
         return lines
 
     def _replace_frame(data: bytes, mime: str, pic_type: int, desc: str) -> bool:
@@ -752,7 +742,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
         nonlocal apic_frame, key
         new_frame = create_apic_frame(data, mime, pic_type, desc)
         if new_frame is None:
-            ui.show_status("Could not build the image frame.")
+            ui.show_error("couldn't build the image frame")
             return False
         audio_obj.delall(key)
         audio_obj.add(new_frame)
@@ -778,7 +768,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
             if _open_apic_preview(apic_frame):
                 ui.show_status("Opening…")
             else:
-                ui.show_status("Could not open the image.")
+                ui.show_error("couldn't open the image")
 
         elif action == 'replace':
             # The same ranked picker the tag editor's image field uses: nearby
@@ -793,7 +783,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
                 with open(img_path, 'rb') as f:
                     new_data = f.read()
             except OSError as e:
-                ui.show_status(f"Could not read the image: {e}")
+                ui.show_error(f"couldn't read the image: {e}")
                 continue
             mime = _EXT_TO_MIME.get(os.path.splitext(img_path)[1].lower(), 'image/jpeg')
             # Keep the type and description; only the picture changes.
@@ -836,13 +826,63 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
                     f.write(data)
                 ui.show_status(f"Saved to {os.path.basename(dest)}.")
             except OSError as e:
-                ui.show_status(f"Could not save the image: {e}")
+                ui.show_error(f"couldn't save the image: {e}")
 
         elif action == 'remove':
             if prompt.confirm(f"Remove {display_tag_id(key)}? Cannot be undone."):
                 audio_obj.delall(key)
                 ui.show_status("Image removed.")
                 return True
+
+
+def _file_facts(file_path: str, library_metadata: dict | None) -> tuple[float, str]:
+    """The file's length and its audio's format label, from the library (else
+    the file): read once per editor visit, not per render (the header is
+    redrawn on every keypress/resize)."""
+    entry = library_metadata if (library_metadata or {}).get("format") else library_entry(file_path)
+    try:
+        dur = float(entry.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    return dur, format_label(entry)
+
+
+def _file_header(file_path: str, title: str, artist: str, duration: float, fmt: str = "") -> list[str]:
+    """The boxed title/artist/format/duration/size header of a tag editor screen."""
+    ext = fmt or os.path.splitext(file_path)[1].upper().lstrip('.')
+    try:
+        size_str = f"  {os.path.getsize(file_path) / (1024*1024):.1f} MB"
+    except OSError:
+        size_str = ""
+    dur_str = f"  {ui.format_time(int(duration))}" if duration else ""
+    return prompt.rounded_header(title or track_title(file_path), f" · {artist}" if artist else "",
+                                 f"{ext}{dur_str}{size_str}")
+
+
+def _refresh_entry(file_path: str, library: list | None, library_metadata: dict | None) -> None:
+    """Bring the in-memory library entry up to date after a tag save."""
+    if library is None:
+        return
+    try:
+        fresh = refresh_library_entry(library, file_path)
+        if library_metadata is not None:
+            library_metadata.update(fresh)
+    except (OSError, KeyError) as e:
+        ui.show_error(f"couldn't update the library cache: {e}")
+
+
+def _filepath_row():
+    """The read-only "File path" row heading a tag editor's list."""
+    return prompt.Choice(title="File path", value="__filepath__",
+                         cells=[[("File path", 'primary'), (" (filesystem)", 'dynamic-dim')], "", ""])
+
+
+def _show_filepath(file_path: str) -> None:
+    """The file path row's screen: where the file is, and copying it."""
+    header = lambda: prompt.path_box(file_path, "File path")   # noqa: E731 (re-wrapped at each width)
+    if prompt.select("", choices=["Copy path to clipboard"], header=header) == "Copy path to clipboard":
+        pyperclip.copy(file_path)
+        ui.show_status("File path copied.")
 
 
 def inspect_tag_loop(
@@ -854,54 +894,30 @@ def inspect_tag_loop(
     # Tag editing is ID3/MP3-only. Refuse other containers up front (including an
     # mp4/m4a that happens to carry a stray ID3 header, which would otherwise slip
     # past the per-load check and crash downstream): one clean, early message.
-    if not file_path.lower().endswith('.mp3'):
-        ui.show_status("Tag editing is only supported for MP3 files.", duration=tune.STATUS_WARNING_S)
+    kind = tag_kind(file_path)
+    if kind == 'unsupported':
+        ui.show_status("This file type has nowhere to keep tags.", duration=tune.STATUS_WARNING_S)
         return
     if not drop_moved([file_path]):
         return
+    if kind != 'id3':
+        _inspect_kv_loop(file_path, library_metadata, library)
+        return
 
-    # Duration is constant for the file: compute it ONCE here, not per render
-    # (the header is redrawn on every keypress/resize).
-    _cached_dur = 0.0
-    try:
-        _cached_dur = float((library_metadata or {}).get("duration") or 0.0)
-    except (TypeError, ValueError):
-        _cached_dur = 0.0
-    if not _cached_dur:
-        try:
-            _mf = mutagen.File(file_path)  # type: ignore[reportPrivateImportUsage]
-            if _mf is not None and getattr(_mf, "info", None) is not None:
-                _cached_dur = float(getattr(_mf.info, "length", 0.0) or 0.0)
-        except Exception:
-            _cached_dur = 0.0
+    _cached_dur, _fmt = _file_facts(file_path, library_metadata)
 
     from backtrack.config import load_config
     _cfg = load_config()
     _has_lyrics = setting(_cfg, "show_lyrics_editor") and bool(find_lyrics(file_path))
-    _has_trim = _trim.HAS_FFMPEG
+    _has_trim = _trim.HAS_FFMPEG and is_mp3(file_path)        # a frame-exact MPEG cut
 
     def _save(audio_obj):
         """Persist tags and refresh the in-memory library cache entry for this file."""
         save_id3(audio_obj, file_path)      # explicit path: works for a fresh ID3 too
-        if library is not None:
-            try:
-                fresh = refresh_library_entry(library, file_path)
-                if library_metadata is not None:
-                    library_metadata.update(fresh)
-            except (OSError, KeyError) as e:
-                ui.show_status(f"Warning: cache update failed: {e}")
+        _refresh_entry(file_path, library, library_metadata)
 
     def _main_header() -> list[str]:
         """Build the boxed title/artist/format/duration/size header for the tag list screen."""
-        ext = os.path.splitext(file_path)[1].upper().lstrip('.')
-
-        try:
-            size_str = f"  {os.path.getsize(file_path) / (1024*1024):.1f} MB"
-        except OSError:
-            size_str = ""
-
-        dur_str = f"  {ui.format_time(int(_cached_dur))}" if _cached_dur else ""
-
         # Prefer real tags over the (possibly cryptic) filename. Read live from
         # the loaded ID3 object, falling back to the cached library metadata,
         # and only to the filename when there is no title at all.
@@ -920,17 +936,13 @@ def inspect_tag_loop(
 
         title = _from_tags("TIT2", "title")
         artist = _from_tags("TPE1", "artist") or _from_tags("TPE2", "album_artist")
-        if not title:
-            title = track_title(file_path)
-
-        return prompt.rounded_header(title, f" · {artist}" if artist else "",
-                                     f"[{ext}]{dur_str}{size_str}")
+        return _file_header(file_path, title, artist, _cached_dur, _fmt)
 
     while True:
         try:
-            audio = load_id3(file_path)   # untagged MP3 (guaranteed .mp3 above): a fresh tag
-        except OSError as e:
-            ui.show_status(f"Could not open file: {e}", duration=tune.STATUS_WARNING_S)
+            audio = load_id3(file_path)   # untagged: a fresh tag (WAV/AIFF: in their ID3 chunk)
+        except (OSError, ValueError, mutagen.MutagenError) as e:
+            ui.show_error(f"couldn't open the file: {e}")
             break
         tags = sorted(audio.keys())
 
@@ -945,11 +957,7 @@ def inspect_tag_loop(
 
         # Read-only filesystem path row: "File path" white (bold when active),
         # "(filesystem)" dimmed, both in column 1.
-        filepath_row = prompt.Choice(
-            title="File path", value="__filepath__",
-            cells=[[("File path", 'primary'), (" (filesystem)", 'dynamic-dim')], "", ""],
-        )
-        non_id3_rows = [filepath_row]
+        non_id3_rows = [_filepath_row()]
         if _has_lyrics:
             # Same shape as the file-path row: a non-ID3 thing that lives with
             # this one track, not a tag: lyrics/transcript sync has its own
@@ -962,7 +970,7 @@ def inspect_tag_loop(
         tag_choices = non_id3_rows + [prompt.separator()] + [
             prompt.Choice(title=t, value=t, cells=_tag_cells(t)) for t in tags
         ]
-        has_id3 = file_path.lower().endswith('.mp3')
+        has_id3 = tag_kind(file_path) == 'id3'
         _shortcuts = {'tags.add': 'Add Tag'} if has_id3 else {}
         _extra_hints = {'tags.add': 'add tag'} if has_id3 else {}
         if _has_trim:
@@ -1001,22 +1009,11 @@ def inspect_tag_loop(
             continue
 
         if choice == "__filepath__":
-            def _fp_header() -> list[str]:
-                rule = f"{C.DIM}{'─' * ui.get_terminal_width()}{C.RESET}"
-                return [f"  {C.BOLD}File path{C.RESET}  {C.DIM}(filesystem location, not stored in ID3){C.RESET}",
-                        rule, f"  {file_path}", rule]
-            fp_action = prompt.select(
-                "Action:",
-                choices=["Copy path to clipboard"],
-                header=_fp_header,
-            )
-            if fp_action == "Copy path to clipboard":
-                pyperclip.copy(file_path)
-                ui.show_status("File path copied.")
+            _show_filepath(file_path)
             continue
 
         if choice == "Add Tag":
-            tag_id = prompt.text("Tag ID (e.g. TPE2, TXXX:Transcription:eng, COMM::fre):")
+            tag_id = tag_id_input("Tag ID:", audio)
             if not tag_id:
                 continue
 
@@ -1037,51 +1034,40 @@ def inspect_tag_loop(
                     _save(audio)
                     ui.show_status(f"Added {tag_id}.")
                 else:
-                    ui.show_status(f"Could not create frame for {tag_id}.")
+                    ui.show_error(f"couldn't create {tag_id}")
             continue
 
         if not choice:
             break
 
         while True:
-            audio = ID3(file_path)
+            audio = load_id3(file_path)
             if choice not in audio:
                 break
 
             raw_val = audio[choice]
             category = get_tag_category(choice)
 
+            info = get_tag_info(choice) if choice else None
+            tag_title = f"{display_tag_id(choice or '')} ({info.name[0] if info else choice or 'Unknown'})"
+
             def _tag_header() -> list[str]:
-                """Build the header for the single-tag edit screen: id/label plus art or people table."""
-                cols = ui.get_terminal_width()
-                info = get_tag_info(choice) if choice else None
-                label = info.name[0] if info else choice or "Unknown"
-
-                lines = [
-                    f"  {C.BOLD}{display_tag_id(choice or '')}{C.RESET}  {C.DIM}({label}){C.RESET}",
-                    f"{C.DIM}{'─' * cols}{C.RESET}",
-                ]
-
+                """The single-tag screen's header, over the actions' box: the
+                picture, or the people, in a box titled with the tag."""
                 if category == 'image':
-                    # 2 header lines + message + indicators + up to 6 action rows
-                    # + hints. A literal, not len(actions): this closure is defined
-                    # before that list is built.
-                    lines.extend(_art_lines_boxed(raw_val, 2 + 1 + 2 + 6 + 2))
-
-                if category == 'people':
-                    people = getattr(raw_val, 'people', [])
-                    cw = max(12, (cols - 6) // 2)
-                    lines.append(f"  {C.DIM}{'ROLE':<{cw}}  NAME{C.RESET}")
-                    lines.append(f"  {'─' * cw}  {'─' * (cols - cw - 4)}")
-                    for role, name in people[:8]:
-                        r = ui.truncate_text(role, cw)
-                        n = ui.truncate_text(name, cols - cw - 4)
-                        lines.append(f"  {r:<{cw}}  {n}")
-                    if len(people) > 8:
-                        lines.append(f"  {C.DIM}… +{len(people) - 8} more{C.RESET}")
-                    lines.append(f"{C.DIM}{'─' * cols}{C.RESET}")
-
-                return lines
+                    # header + message + indicators + up to 6 action rows + the
+                    # boxes' edges + hints. A literal, not len(actions): this
+                    # closure is defined before that list is built.
+                    return _art_lines_boxed(raw_val, 1 + 2 + 6 + 4 + 2, tag_title)
+                cols = ui.get_terminal_width() - 2 * ui.MARGIN_H - 4      # inside the box
+                people = getattr(raw_val, 'people', [])
+                cw = max(12, (cols - 2) // 2)
+                lines = [f"{C.DIM}{'ROLE':<{cw}}  NAME{C.RESET}", f"{'─' * cw}  {'─' * (cols - cw - 2)}"]
+                lines += [f"{ui.truncate_text(role, cw):<{cw}}  {ui.truncate_text(name, cols - cw - 2)}"
+                          for role, name in people[:8]]
+                if len(people) > 8:
+                    lines.append(f"{C.DIM}… +{len(people) - 8} more{C.RESET}")
+                return prompt.box_lines(lines, cols + 4, len(lines) + 2, tag_title)
 
             actions = ["Copy", "Paste", "Edit", "Rename", "Delete"]
             if category in ('lyrics',) and choice.startswith(('USLT', 'SYLT')):
@@ -1092,7 +1078,9 @@ def inspect_tag_loop(
             if choice.startswith('SYLT'):
                 actions.remove("Edit")
 
-            action = prompt.select("Action:", choices=actions, header=_tag_header)
+            action = prompt.select("Action:", choices=actions,
+                                   header=(_tag_header if category in ('image', 'people')
+                                           else prompt.PanelTitle(tag_title)))
 
             if action == "Manage" and category == 'image':
                 if _edit_apic_tag(audio, choice, raw_val, file_path):
@@ -1123,10 +1111,10 @@ def inspect_tag_loop(
                         _save(audio)
                         ui.show_status("Updated.")
                     else:
-                        ui.show_status("Could not create frame: wrong data type for this tag.")
+                        ui.show_error("that value doesn't fit this tag")
 
             elif action == "Rename":
-                new_id = prompt.text("New tag ID:")
+                new_id = tag_id_input("New tag ID:", audio, like=choice)
                 if new_id and new_id != choice:
                     old_frame = audio.pop(choice)
                     if rename_frame(audio, old_frame, new_id):
@@ -1150,7 +1138,7 @@ def inspect_tag_loop(
                         _save(audio)
                         ui.show_status("Updated.")
                     else:
-                        ui.show_status("Could not create frame: check data format.")
+                        ui.show_error("that value doesn't fit this tag")
                     break
 
             elif action == "Delete":
@@ -1160,8 +1148,128 @@ def inspect_tag_loop(
                         _save(audio)
                         ui.show_status(f"Deleted {choice}.")
                     except KeyError:
-                        ui.show_status(f"Could not delete {choice}.")
+                        ui.show_error(f"couldn't delete {choice}")
                     break
 
             elif not action:
                 break
+
+
+def _inspect_kv_loop(file_path: str, library_metadata: dict | None, library: list | None) -> None:
+    """The tag editor for an m4a/mp4 (MP4 atoms) or FLAC/Ogg/Opus (Vorbis
+    comments): every tag as a key and its values, plus the cover. Built from the
+    ID3 editor's pieces; the ID3-only actions (lyric sync, trim, frame editors)
+    aren't offered."""
+    from backtrack.id3 import cover_matcher as cm
+    from backtrack.id3 import tag_formats as tf
+    from backtrack.id3 import tag_writer as tw
+
+    kind = tf.kind(file_path)
+    duration, fmt = _file_facts(file_path, library_metadata)
+
+    def _edit_values(key: str, values: list[str]) -> list[str] | None:
+        """New values for a key: one line, several in a list, prose (lyrics) in the text box."""
+        if any("\n" in v for v in values) or key.upper() in ('LYRICS', 'UNSYNCEDLYRICS', '\xa9LYR'):
+            text = prompt.multiline(f"{key}:", "\n".join(values))
+            return None if text is None else [text.rstrip("\n")]
+        if len(values) > 1:
+            rows = prompt.list_edit(f"{key}:", [[v] for v in values], ("VALUE",))
+            return None if rows is None else [r[0] for r in rows]
+        new = prompt.text(f"{key}:", default=values[0] if values else "")
+        return None if new is None else [new]
+
+    def _store(key: str, values: list[str] | None, done: str) -> None:
+        if values is None:
+            return
+        values = [v for v in values if v.strip()]
+        try:
+            tags, save = tf.open_tags(file_path)
+            tf.kv_set(tags, key, values) if values else tf.kv_delete(tags, key)
+            save()
+        except (ValueError, OSError, mutagen.MutagenError) as e:
+            ui.show_error(f"not saved: {e}")
+            return
+        _refresh_entry(file_path, library, library_metadata)
+        ui.show_status(done)
+
+    while True:
+        try:
+            tags, save = tf.open_tags(file_path)
+        except (OSError, ValueError, mutagen.MutagenError) as e:
+            ui.show_error(f"couldn't open the file: {e}")
+            return
+        items = dict(tf.kv_items(tags))
+        title = (tf.texts(tags, 'title') or [''])[0]
+        artist = (tf.texts(tags, 'artist') or tf.texts(tags, 'album_artist') or [''])[0]
+        rows = [_filepath_row(),
+                prompt.Choice(title="Cover art", value="__cover__",
+                              cells=[[("Cover art", 'primary'), (" (picture)", 'dynamic-dim')], "",
+                                     "embedded" if tw.has_cover(file_path) else "none"]),
+                prompt.separator()]
+        for key, values in items.items():
+            label = tf.label_for(kind, key)
+            summary = "; ".join(v.replace("\n", "\\") for v in values)
+            rows.append(prompt.Choice(title=key, value=key, cells=[
+                [(key, 'primary'), (f" ({label})" if label else "", 'dynamic-dim')], "", summary]))
+
+        choice = prompt.select("Select tag to manage:", choices=rows,
+                               header=lambda: _file_header(file_path, title, artist, duration, fmt),
+                               shortcuts={'tags.add': 'Add Tag'}, extra_hints={'tags.add': 'add tag'},
+                               columns=_TAG_COLUMNS)
+        if not choice:
+            return
+        if choice == "__filepath__":
+            _show_filepath(file_path)
+        elif choice == "__cover__":
+            act = prompt.select("Cover art:", choices=["Replace", "Remove"])
+            if act == "Replace":
+                picked = pick_nearby_cover(file_path)
+                read = cm.read_image(picked) if isinstance(picked, str) else None
+                res = tw.write_cover(file_path, read[0], read[1], overwrite=True) if read else None
+                if res is not None and res.changed:
+                    ui.show_status("Cover replaced.")
+                elif res is not None:
+                    ui.show_error("MP4 covers must be JPEG or PNG" if res.skipped_format else f"not saved: {res.error}")
+            elif act == "Remove" and prompt.confirm("Remove the cover?"):
+                res = tw.remove_cover(file_path)
+                if res.error:
+                    ui.show_error(f"not saved: {res.error}")
+                else:
+                    ui.show_status("Cover removed.")
+            if act:
+                _refresh_entry(file_path, library, library_metadata)
+        elif choice == "Add Tag":
+            key = tag_key_input("Tag key:", kind) or ""
+            if key in items:
+                ui.show_status(f"{key} is already set: edit it instead.")
+            elif key:
+                _store(key, _edit_values(key, []), f"Added {key}.")
+        else:
+            values = items[choice]
+            act = prompt.select("", choices=["Copy", "Paste", "Edit", "Rename", "Delete"],
+                                header=prompt.PanelTitle(choice, tf.label_for(kind, choice)))
+            if act == "Copy":
+                pyperclip.copy("\n".join(values))
+                ui.show_status("Copied to clipboard.")
+            elif act == "Paste":
+                clip = pyperclip.paste()
+                if clip and prompt.confirm(f"Replace {choice}?"):
+                    _store(choice, [clip], "Updated.")
+            elif act == "Edit":
+                _store(choice, _edit_values(choice, values), "Updated.")
+            elif act == "Rename":
+                new_key = tag_key_input("New tag key:", kind) or ""
+                if new_key in items or (kind == 'vorbis' and new_key.upper() in items):
+                    ui.show_status(f"{new_key} is already set on this file: delete or edit it instead.")
+                elif new_key and new_key != choice:
+                    try:
+                        tf.kv_set(tags, new_key, values)
+                        tf.kv_delete(tags, choice)
+                        save()
+                    except (ValueError, OSError, mutagen.MutagenError) as e:
+                        ui.show_error(f"not saved: {e}")
+                        continue
+                    _refresh_entry(file_path, library, library_metadata)
+                    ui.show_status(f"Renamed to {new_key}.")
+            elif act == "Delete" and prompt.confirm(f"Delete {choice}?"):
+                _store(choice, [], f"Deleted {choice}.")

@@ -18,6 +18,7 @@ is `utils.output`).
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import sys
 from dataclasses import dataclass, field
@@ -459,8 +460,49 @@ def _zq(text: str) -> str:
 
 # --- entry point ------------------------------------------------------------
 
-def main(argv: list) -> int:
-    """Run one CLI invocation. Returns the process exit code."""
+class _Captured(io.StringIO):
+    """A command's output as a terminal would get it: tables keep their layout."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def run_in_app(line: str, library: list) -> tuple[int, str]:
+    """Run a command typed at the app's `:` line, as after `backtrack`, on the
+    app's library and its own session. Returns (exit code, its output, without
+    colour). The app's colours, accents and output mode are put back after."""
+    import shlex
+    from contextlib import redirect_stderr, redirect_stdout
+    from backbone import ui
+    from backtrack import accents, cli_commands
+    from backtrack.playback.session import current_now_playing
+    try:
+        argv = shlex.split(line)
+    except ValueError as exc:
+        return out.USAGE, f"Could not read that: {exc}"
+    if argv[:1] == ['backtrack']:
+        argv = argv[1:]
+    if not argv:
+        return out.OK, ""
+    buf, was = _Captured(), (out._json, out._quiet, ui._colour_on)
+    cli_commands.IN_APP[0] = True
+    try:
+        with redirect_stdout(buf), redirect_stderr(buf):
+            code = main(argv + ['--no-colour'], library=library)
+    except SystemExit as exc:                 # a handler that exits rather than returns
+        code = int(exc.code or 0) if isinstance(exc.code, int) else out.FAIL
+    finally:
+        cli_commands.IN_APP[0] = False
+        out._json, out._quiet = was[0], was[1]
+        ui.set_colour(was[2])
+        np = current_now_playing()
+        accents.apply(np.get('file_path') if np else None)
+    return code, ui.strip_ansi(buf.getvalue())
+
+
+def main(argv: list, library: list | None = None) -> int:
+    """Run one CLI invocation. Returns the process exit code. `library`: the
+    app's own, for a command typed at its `:` line (see run_in_app)."""
     from backtrack.cli_commands import TREE
 
     parser = build_parser(TREE)
@@ -476,6 +518,8 @@ def main(argv: list) -> int:
                   colour=False if args.no_colour else None)
 
     ctx = Ctx(args)
+    if library is not None:
+        ctx._library = library
     from backbone import ui
     ui.set_accent(ctx.config.get('accent_colour'))
     _resolve_defaults(args, getattr(args, '_cmd', None), ctx.config

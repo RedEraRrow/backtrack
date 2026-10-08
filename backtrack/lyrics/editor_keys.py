@@ -3,12 +3,13 @@ word lists, TAP, AUDITION, the timestamp editor), plus the mouse, the review
 walkthrough and the shared player transport. Mixed into the editor session,
 whose state and actions these read and call."""
 from __future__ import annotations
+from backtrack.id3.tag_formats import load_id3
 import sys, os, time
 from backtrack.music_library import format_value_list
 from backbone import keys, ui
 from backbone.prompt.core import _set_raw, _restore_term_attrs
 from backbone.prompt import text as _prompt_text
-from backbone.prompt.core import footer_click_action
+from backbone.prompt.core import FOOTER_ACTIONS, footer_click_action
 from backbone import prompt as _promptmod
 from backbone.prompt import chrome as _prompt_chrome
 from backtrack.lyrics.md_overlay import _SD_SCOPES, _sd_scope, build_md_overlay as _build_md_overlay
@@ -20,14 +21,10 @@ from backbone.nav import QuitToTerminal
 from backtrack import tuning as tune
 
 def _np_transport(action: str) -> None:
-    """Drive the shared session behind the now-playing box (play/pause · next ·
-    prev) from within the editor, then repaint the box."""
-    from backtrack.playback import session as sess
-    a = sess.active_session()
-    if   action == 'playpause': a.pause_toggle()
-    elif action == 'next':      a.next()
-    elif action == 'prev':      a.prev()
-    ui.pulse_footer()
+    """Drive the shared session behind the now-playing box from within the
+    editor, through the app's transport handler (see main._wire_playback)."""
+    if _prompt_chrome._transport_handler is not None:
+        _prompt_chrome._transport_handler(action)
 
 
 _QUIT = object()     # a key handler's "leave the editor" (Esc; q quits the app)
@@ -86,7 +83,7 @@ class _KeyHandlers:
                 _mr = int(_mp[2]) if len(_mp) > 2 else 0
                 _mc = int(_mp[3]) if len(_mp) > 3 else 1
                 _act = footer_click_action(_mr, _mc)
-                if _act in ('playpause', 'next', 'prev'):
+                if _act in FOOTER_ACTIONS:
                     _np_transport(_act); return
                 if _act == 'open':
                     if _prompt_chrome._player_opener is not None:
@@ -98,7 +95,7 @@ class _KeyHandlers:
             # physical click is one logical action.  A click on a footer-hint
             # glyph replays that key through the switch below; otherwise
             # `hit_map` (from the last _draw) maps a rendered line index to its
-            # item (the widget draws line[i] at row w.row + MARGIN_V + i, so
+            # item (the widget draws line[i] at row w.row + top_margin() + i, so
             # invert that). Clicking the ALREADY-current line opens its word
             # view; a not-yet-current line is made current first (double-click).
             _hk = None
@@ -106,7 +103,7 @@ class _KeyHandlers:
                 parts = key.split(':')
                 r = int(parts[2]) if len(parts) > 2 else 0
                 col = int(parts[3]) if len(parts) > 3 else 1
-                line_idx = r - self.w.row - ui.MARGIN_V
+                line_idx = r - self.w.row - ui.top_margin()
                 _hk = self.hint_cells.get((line_idx, col))
                 # A click on AUDITION's progress bar moves the playhead there:
                 # the clip queue is abandoned (the clicked point is nobody's
@@ -339,7 +336,7 @@ class _KeyHandlers:
                 self.mode = AUDITION
                 self._aud_clips('line')   # landing on a line plays it whole
             elif not _HAS_VLC:
-                ui.show_status("Audition needs VLC (not available).")
+                ui.show_error("audition needs VLC")
         elif line and name == 'words' and self.source == SOURCE_TRANSCRIPT:
             if self.segs and self.cursor < len(self.segs) and self.segs[self.cursor].get("words"):
                 self.seg_cursor = self.cursor
@@ -385,7 +382,7 @@ class _KeyHandlers:
         sys.stdout.write("\033[?1000h\033[?1006h")
         self.w.anchor_reset()
         if not (_ans or "").strip().lower().startswith("y"):
-            ui.show_status("Commit cancelled, working copy untouched.")
+            ui.show_status("Cancelled.")
         elif self.do_commit():  # writes transcript.json + refreshes fingerprint;
             self.do_save()      # False (with its reason shown) if it couldn't
             ui.show_status(f"Written to {os.path.basename(self.aux['jpath'])} + .srt.")
@@ -394,7 +391,7 @@ class _KeyHandlers:
         """c: append the composer and lyricist tags as credit lines (shown, never exported)."""
         try:
             from mutagen.id3 import ID3
-            _aud = ID3(self.mp3_path)
+            _aud = load_id3(self.mp3_path)
             _credits: list[str] = []
             _tcom = _aud.getall('TCOM')
             if _tcom:
@@ -413,7 +410,7 @@ class _KeyHandlers:
             else:
                 ui.show_status("No composer or lyricist tags found.")
         except Exception as _ce:
-            ui.show_status(f"Could not read tags: {_ce}")
+            ui.show_error(f"couldn't read tags: {_ce}")
 
     def _add_gap(self) -> object:
         """a: insert dead air, or a stage direction, at the cursor or before the first line."""
@@ -427,8 +424,8 @@ class _KeyHandlers:
         if _insert_before:
             _where = _prompt_text("Insert before first segment (b) or after cursor (a)?")
             _insert_before = (_where or "").strip().lower().startswith("b")
-        _dur_s = _prompt_text("Dead air duration (seconds):")
-        _label = _prompt_text("Stage direction (leave blank for silence):")
+        _dur_s = _prompt_text("Dead air, in seconds:")
+        _label = _prompt_text("Stage direction, or blank for silence:")
         _set_raw(self.fd)
         sys.stdout.write("\033[?1000h\033[?1006h")
         self.w.anchor_reset()
@@ -451,7 +448,7 @@ class _KeyHandlers:
                     self.dirty = True
                     self.refresh_overlay()
             except ValueError:
-                ui.show_status("Enter a number of seconds, e.g. 2 or 1.5.")
+                ui.show_status("That isn't a number of seconds.")
 
     def _delete_inserted(self) -> object:
         """d: delete the dead air or stage direction under the cursor."""
@@ -487,7 +484,7 @@ class _KeyHandlers:
         """x: cycle the stage direction under the cursor through inline / tone / external."""
         _sd = self.segs[self.cursor] if (self.segs and self.cursor < len(self.segs)) else None
         if not (_sd and _sd.get('kind') == 'stage_dir'):
-            ui.show_status("Cursor is not on a stage direction (✦).")
+            ui.show_status("The cursor isn't on a stage direction.")
         else:
             _next = _SD_SCOPES[(_SD_SCOPES.index(_sd_scope(_sd)) + 1) % len(_SD_SCOPES)]
             self.undo_stack.append(('snapshot', list(self.segs)))
@@ -579,7 +576,7 @@ class _KeyHandlers:
                         f"Overlay: {len(self.md_overlay)} annotations from {os.path.basename(_md_path)}"
                     )
                 except Exception as _exc:
-                    ui.show_status(f"MD overlay failed: {_exc}")
+                    ui.show_error(f"couldn't load the transcript overlay: {_exc}")
 
     def _commit_directions(self) -> object:
         """M: make the overlay's stage directions real lines of the document."""
@@ -641,7 +638,7 @@ class _KeyHandlers:
             seg_b  = self.segs[self.cursor + 1]
             if seg_a.get("kind") in ("dead_air", "stage_dir") or \
                seg_b.get("kind") in ("dead_air", "stage_dir"):
-                ui.show_status("Cannot join dead air or stage direction segments.")
+                ui.show_status("Dead air and stage directions can't be joined.")
                 return
             merged = {
                 "start": seg_a.get("start"),

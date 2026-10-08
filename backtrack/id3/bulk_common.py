@@ -118,7 +118,7 @@ def preview_and_apply(plan, library: list, header, writer, verb: str, *, count: 
             bits.append(f"{skipped} {skipped_note}")
         return header(' · '.join(bits))()
 
-    sel = prompt.select("Preview (↵ applies):", choices=choices,
+    sel = prompt.select("Preview, ↵ applies:", choices=choices,
                         columns=columns or _RENUMBER_COLUMNS, header=_header, multi=True)
     if sel is None:
         return

@@ -1,11 +1,13 @@
 """The bulk tag menu: per-tag set/rename/delete/copy, and the disc/track numbering operations."""
 from __future__ import annotations
+from backtrack.id3.tag_formats import kind as tag_kind, load_id3
 import os
 import re
 import mutagen.id3
 from mutagen.id3 import ID3
 from backbone import prompt
 from backtrack.id3.tag_handler import (
+    tag_id_input,
     prompt_for_value, get_tag_info, get_tag_category, display_tag_id, create_frame, save_id3,
     _prompt_for_image_metadata, _prompt_for_picture_type, pick_nearby_cover, picture_type_name,
     apply_bulk_edit,
@@ -63,7 +65,7 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
     relative / movement systems). Works for MP3 and MP4 via tag_writer."""
     ordered, skipped_fmt = bo.read_numbering(paths)
     if not ordered:
-        ui.show_status("No MP3/MP4 tracks to renumber.")
+        ui.show_status("No taggable tracks to renumber.")
         return
 
     _MODES = ["Continuous (album-relative): 1…N across all discs",
@@ -121,7 +123,7 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
     """Screens for bo.plan_reflow."""
     ordered, skipped_fmt = bo.read_numbering(paths)
     if not ordered:
-        ui.show_status("No MP3/MP4 tracks to reflow.")
+        ui.show_status("No taggable tracks to reflow.")
         return
 
     runs = bp.disc_ranges(ordered)
@@ -139,10 +141,8 @@ def reflow_discs_op(paths: list, library: list, header) -> None:
 
     which = prompt.select(
         "Totals to update:",
-        choices=[prompt.Choice(title="Disc totals (the 'of N' in disc n/N)",
-                               value='disc', checked=True),
-                 prompt.Choice(title="Track totals (each disc's own track count)",
-                               value='track')],
+        choices=[prompt.Choice(title="Disc totals", value='disc', checked=True),
+                 prompt.Choice(title="Track totals", value='track')],
         header=header(sub), multi=True)
     if which is None:
         return
@@ -169,7 +169,7 @@ def strip_single_disc_op(paths: list, library: list, header) -> None:
     """Screens for bo.plan_strip_single_disc."""
     ordered, skipped_fmt = bo.read_numbering(paths)
     if not ordered:
-        ui.show_status("No MP3/MP4 tracks to change.")
+        ui.show_status("No taggable tracks to change.")
         return
 
     plan = bo.plan_strip_single_disc(ordered, skipped_fmt)
@@ -251,13 +251,13 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         # The ID3-based operations below are MP3-only; non-MP3s are skipped
         # quietly rather than raising (use "Derive from filename" for
         # cross-format writes).
-        if not path.lower().endswith('.mp3'):
+        if tag_kind(path) != 'id3':
             continue
         try:
-            audio = ID3(path)
+            audio = load_id3(path)
         except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
             continue                          # untagged MP3: simply has no tags yet
-        except (OSError, IOError):
+        except (OSError, ValueError, mutagen.MutagenError):
             continue
         try:
             all_tag_counts.update(audio.keys())
@@ -282,7 +282,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 tag_values.setdefault(k, []).append(val)
                 tag_first_frame.setdefault(k, raw)
         except Exception as e:
-            ui.show_status(f"Error scanning {os.path.basename(path)}: {e}")
+            ui.show_error(f"couldn't scan {os.path.basename(path)}: {e}")
             continue
 
     def _bulk_header(subtitle: str | None = None):
@@ -457,12 +457,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     set_spec = None   # regex spec for "Set Common Value" (per-file value computation)
 
     if operation == "Add New Tag":
-        raw_id = prompt.text("New Tag ID (e.g. TSO2, COMM[eng], TXXX:Mood):")
-        if not raw_id:
+        target_tag_id = tag_id_input("New tag ID:")
+        if not target_tag_id:
             return
-        # Upper-case the base, preserving any :desc:lang or [lang] suffix.
-        _parts = raw_id.split(':')
-        target_tag_id = _parts[0].upper() + ((":" + ":".join(_parts[1:])) if len(_parts) > 1 else "")
         base_id, _, _ = parse_composite_tag_id(target_tag_id)
         # Reuse the same type-aware value prompt as single-track editing so the
         # right widget (date picker, fraction editor, etc.) is used in bulk too.
@@ -494,9 +491,8 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             return
 
         if operation == "Rename Tags":
-            target_val = prompt.text("New tag ID (e.g. TPE2, COMM[eng]):")
-            if target_val:
-                target_val = target_val.upper()
+            target_val = tag_id_input("New tag ID:",
+                                      like=selected_tags[0] if len(selected_tags) == 1 else None)
         elif operation == "Set Common Value":
             # People lists (TMCL/TIPL) get the common-entry editor (edit/add/remove
             # across files by coverage) instead of a blind whole-list replace.
@@ -547,16 +543,15 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 if source == "Enter a value":
                     target_val = prompt_for_value(first_tag, current_value=fallback_val)
                 elif source == "Find & replace (regex)":
-                    pat = prompt.text("Find (regex), applied to each existing value:")
+                    pat = prompt.text("Regex to find in each value:")
                     if not pat:
                         return
                     try:
                         rx = re.compile(pat)
                     except re.error as e:
-                        ui.show_status(f"Invalid regex: {e}")
+                        ui.show_error(f"bad regex: {e}")
                         return
-                    repl = prompt.text(r"Replace with (\1 / \g<name> for capture groups):",
-                                       default="")
+                    repl = prompt.text("Replace with:", placeholder=r"\1 or \g<name>")
                     if repl is None:
                         return
                     set_spec = {'mode': 'replace', 'rx': rx, 'repl': repl}
@@ -569,17 +564,15 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                         return
                     base = _derive_regex_base(album_tracks) if against == "Folder path" else None
                     sample = fp._regex_target(album_tracks[0], base) if album_tracks else ''
-                    pat = prompt.text(
-                        rf"Regex with capture groups (matches e.g. '{sample}'; "
-                        "use / between folders):")
+                    pat = prompt.text(f"Regex for {sample}:", placeholder=r"(\d+) (.+)")
                     if not pat:
                         return
                     try:
                         rx = re.compile(pat)
                     except re.error as e:
-                        ui.show_status(f"Invalid regex: {e}")
+                        ui.show_error(f"bad regex: {e}")
                         return
-                    tmpl = prompt.text(r"Value template (\1, \2 or \g<name> for groups):")
+                    tmpl = prompt.text("Value:", placeholder=r"\1 \2")
                     if not tmpl:
                         return
                     set_spec = {'mode': 'filename', 'rx': rx, 'tmpl': tmpl, 'base': base}
@@ -610,11 +603,11 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         if apic_action == "Replace image":
             picked = pick_nearby_cover(
                 album_tracks[0], header=_bulk_header,
-                title="Cover to embed on every ticked track (best guess first):")
+                title="Cover for every ticked track:")
             read = cm.read_image(picked) if isinstance(picked, str) else None
             if not read:
                 if isinstance(picked, str):
-                    ui.show_status("Could not read that image.")
+                    ui.show_error("couldn't read that image")
                 apic_tags = []
             else:
                 img_data, mime = read
@@ -648,10 +641,10 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     # Enter on the preview IS the confirmation, so it replaces the confirm.
     apic_apply: set = set(album_tracks)
     if apic_tags:
-        mp3s = [p for p in album_tracks if p.lower().endswith('.mp3')]
+        mp3s = [p for p in album_tracks if tag_kind(p) == 'id3']
         n_other = len(album_tracks) - len(mp3s)
         if not mp3s:
-            ui.show_status("No MP3s here: album-art frames are ID3-only.")
+            ui.show_status("No MP3/WAV/AIFF files here: album-art frames are ID3-only.")
             return
 
         had_art = {p: tw.has_cover(p) for p in mp3s}
@@ -689,7 +682,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             if n_blank:
                 bits.append(f"{n_blank} without art")
             if n_other:
-                bits.append(f"{n_other} non-MP3 skipped")
+                bits.append(f"{n_other} non-ID3 skipped")
             return _bulk_header(" · ".join(bits))()
 
         picked_rows = prompt.select(
@@ -709,24 +702,24 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     copy_source_frames: dict = {}
     if operation == "Copy From First Track" and album_tracks:
         try:
-            _src = ID3(album_tracks[0])
+            _src = load_id3(album_tracks[0])
             for tag in selected_tags:
                 if tag in _src:
                     copy_source_frames[tag] = _src[tag]
         except Exception as e:
-            ui.show_status(f"Could not read source track: {e}")
+            ui.show_error(f"couldn't read the source track: {e}")
             return
 
     count_modified = 0
     count_other_fmt = 0
     for path in album_tracks:
         # These operations are ID3/MP3-only; skip other formats without erroring.
-        if not path.lower().endswith('.mp3'):
+        if tag_kind(path) != 'id3':
             count_other_fmt += 1
             continue
         try:
             try:
-                audio = ID3(path)
+                audio = load_id3(path)
             except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
                 # Untagged MP3: only "Add New Tag" can create tags from nothing;
                 # for the other operations there is nothing to change.
@@ -805,8 +798,8 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                         if apply_bulk_edit(audio, tag, 'set', new_val):
                             changed = True
                         else:
-                            ui.show_status(
-                                f"{os.path.basename(path)}: {new_val!r} isn't a valid {tag}; kept the old value.")
+                            ui.show_error(
+                                f"{os.path.basename(path)}: {new_val!r} isn't a valid {tag}, so the old value stays")
 
             if changed:
                 save_id3(audio, path)   # explicit path: works for a fresh ID3 too
@@ -814,10 +807,10 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 with quietly():
                     refresh_library_entry(library, path)
         except Exception as e:
-            ui.show_status(f"Could not process track {os.path.basename(path)}: {e}")
+            ui.show_error(f"couldn't process {os.path.basename(path)}: {e}")
 
-    msg = f"Successfully processed {count_modified} files."
+    msg = f"Done: {ui.plural(count_modified, 'file')}."
     if count_other_fmt:
         # Say so, or a skip reads as "nothing happened".
-        msg += f" {count_other_fmt} non-MP3 skipped (these ops are ID3-only)."
+        msg += f" {count_other_fmt} skipped: this only works on MP3, WAV and AIFF."
     ui.show_status(msg)

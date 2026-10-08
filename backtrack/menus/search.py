@@ -241,7 +241,7 @@ def handle_search(library: list) -> str | None:
         bits = [ui.plural(v, singular.get(k, k))
                 for k, v in _last['counts'].items() if v]
         sub = " · ".join(bits) if bits else f"{ui.plural(len(library), 'track')} indexed"
-        return _menu_header("Search", f"{sub}    scope: {label}")()
+        return _menu_header("Search", f"{sub}    scope: {label}")
 
     def _edit_highlighted(value) -> None:
         """^e: edit the highlighted track directly, without leaving the

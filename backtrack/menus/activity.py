@@ -18,39 +18,28 @@ def activity_centre() -> None:
     _hint_pairs = [(keys.label("list.back", most=2), "back")]
     hint_cells: dict = {}
 
+    w = pc._Widget(sys.stdin.fileno())
+
     def _draw() -> None:
         tasks = list(ui.BACKGROUND_TASKS.values())
-        hint_cells.clear()
-        out = ["\033[H\033[3J\033[J" + C.HIDE,
-               "\n" + prompt.add_help_corner(f"  {C.BOLD}Activity{C.RESET}", 2, hint_cells, True)]
-        out.append(f"   {C.DIM}{len(tasks)} running{C.RESET}\n\n" if tasks else "\n\n")
-        if tasks:
-            for msg in tasks:
-                out.append(f"   {ui.pulse_circle()}  {msg}\n")
-        else:
-            out.append(f"   {C.DIM}Nothing running right now.{C.RESET}\n")
-        body = "".join(out) + "\n\n"
-        # Pin the hints to the bottom, above the now-playing box and status bar, so
-        # their keys hold a fixed position as the running-task list grows and
-        # shrinks underneath them, and pick up the transport keys while audio
-        # is playing, like every other screen.
-        pairs = prompt.chrome_hint_pairs(_hint_pairs)
-        hint = pc._hint(*pairs)
-        hint_lines = hint.split('\n')
-        used = body.count('\n')
-        pad = max(0, pc._hint_pin_target() - used - len(hint_lines))
-        sys.stdout.write(body + "\n" * pad + hint)
-        sys.stdout.flush()
-        first_row = 1 + used + pad
-        for k, line in enumerate(hint_lines):
-            prompt.add_hint_click_cells(hint_cells, line, first_row + k, pairs)
+        body = [f"  {C.DIM}{len(tasks)} running{C.RESET}" if tasks else f"  {C.DIM}Nothing running right now.{C.RESET}",
+                ""] + [f"  {ui.pulse_circle()}  {msg}" for msg in tasks]
+        # The hints pin above the miniplayer and status bar like every other
+        # screen's, and pick up the transport keys while audio is playing.
+        lines, _dx = prompt.boxed_chrome(body, "Activity", _hint_pairs, hint_cells, help_key=True)
+        w.render(lines)
 
     with raw_mode(sys.stdin):
         sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
         sys.stdout.flush()
         try:
             last = None
+            pc.screen_takeover_next()           # paint over the screen before, no flash
             while True:
+                if ui.consume_resize():
+                    ui.clear_screen()
+                    w.anchor_reset()
+                    last = None
                 # Re-key on the pulse frame only while active, so an idle panel is static.
                 frame = int(time.time() * 6) if ui.has_background_tasks() else 0
                 sig = (tuple(sorted(ui.BACKGROUND_TASKS.items())), frame)
@@ -64,6 +53,8 @@ def activity_centre() -> None:
                     # comes back as its key.
                     _ch = prompt.consume_chrome(key, hint_cells)
                     if _ch in (prompt.CHROME_HANDLED, prompt.CHROME_REDRAW):
+                        if _ch is prompt.CHROME_REDRAW:
+                            w.anchor_reset()
                         last = None                     # repaint
                         continue
                     if _ch is not None:

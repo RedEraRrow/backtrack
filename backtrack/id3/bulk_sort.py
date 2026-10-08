@@ -1,8 +1,8 @@
 """Bulk sort orders: filling the sort tags, with the split and people review screens."""
 from __future__ import annotations
 import re
-import mutagen.id3
-from mutagen.id3 import ID3
+import mutagen
+from backtrack.id3.tag_formats import kind as tag_kind, load_id3
 from backbone import prompt
 from backtrack.id3 import bulk_ops as bo
 from backtrack.id3 import tag_registry as _reg
@@ -255,9 +255,9 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
     (_review_sort_people). No title sort: a title sorts on itself, so TSOT is
     never generated. Nor is a sort tag whose value would equal its source.
     """
-    mp3s = [p for p in paths if p.lower().endswith('.mp3')]
+    mp3s = [p for p in paths if tag_kind(p) == 'id3']
     skipped_fmt = len(paths) - len(mp3s)
-    note = f" · {skipped_fmt} non-MP3 skipped" if skipped_fmt else ""
+    note = f" · {skipped_fmt} non-ID3 skipped" if skipped_fmt else ""
 
     from backtrack.config import load_config
     from backtrack.id3 import browser as nb
@@ -278,8 +278,8 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
         entries: dict = {}
         for p in mp3s:
             try:
-                audio = ID3(p)
-            except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
+                audio = load_id3(p)
+            except (OSError, ValueError, mutagen.MutagenError):  # type: ignore[reportPrivateImportUsage]
                 continue
             for field, src, sort_tag in _SORT_SRC:
                 if field not in chosen:
@@ -341,7 +341,7 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
             return _SKIP
         entries = _scan(overwrite)
         if not entries:
-            ui.show_status("No sort orders to write: already set, or none needed.")
+            ui.show_status("Nothing to write.")
             return False
         # Carry every decision across the rescan: they are keyed by person and by
         # value, so they outlive the entries they were made against.
@@ -399,4 +399,4 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
     applied = bo.apply_frame_writes(per_path, library)
     applied.skipped = skipped_fmt
     ui.show_status(bo.summarise(applied, "Wrote sort orders for",
-                                      skipped_note="non-MP3 skipped"))
+                                      skipped_note="non-ID3 skipped"))

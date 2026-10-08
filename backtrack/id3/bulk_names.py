@@ -10,6 +10,12 @@ from backtrack.id3 import file_namer as fnm
 from backbone import ui
 from backtrack.id3.bulk_common import _RENAME_PICK_COLUMNS, _SKIP, _SORT_BASE, _num_pair, _plan_write, _show_tokens, _sort_value, _walk
 
+# What the derive template and regex complete as they're typed.
+_TEMPLATE_TOKENS = {**{k: fnm.TOKENS.get(k, "") for k in fp._TEMPLATE_TOKENS},
+                    'season': "Season, read as the disc", 'episode': "Episode, read as the track",
+                    'ignore': "Text to skip"}
+_REGEX_GROUPS = {g: "" for g in fp._GROUP_FIELD}
+
 
 # Field → short label shown in the preview / detail view.
 _DERIVE_LABELS = {'title': 'title', 'artist': 'artist', 'album_artist': 'albumartist',
@@ -145,14 +151,14 @@ def derive_from_filename(paths: list, library: list, header) -> None:
     writable = [p for p in paths if tw.is_writable(p)]
     skipped_fmt = len(paths) - len(writable)
     if not writable:
-        ui.show_status("No MP3/MP4 files here to derive from.")
+        ui.show_status("No taggable files here to derive from.")
         return
 
     # 1) Which fields to write (Title on by default: the automatic baseline).
     _FIELDS = [("title", "Title: from file name"),
                ("track", "Track number (+ total)"),
                ("disc", "Disc number (+ total)"),
-               ("disc_subtitle", "Disc subtitle: from folder (MP3 only)"),
+               ("disc_subtitle", "Disc subtitle: from folder (not MP4)"),
                ("album", "Album: from folder"),
                ("album_artist", "Album artist: from parent folder"),
                ("artist", "Track artist: from file name / folder"),
@@ -201,17 +207,15 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         if state['detect'] != "Use a naming template":
             return _SKIP
         while True:
-            raw = prompt.text("Template (e.g. %disc%-%track% %title%; tokens: %track% "
-                              "%disc% %title% %artist% %albumartist% %album% %year% "
-                              "%date% %season% %episode% %ignore%):",
-                              default=state['template'])
+            raw = prompt.text("Template:", default=state['template'], placeholder="%disc%-%track% %title%",
+                              suggest=lambda t: prompt.token_completions(t, _TEMPLATE_TOKENS))
             if not raw:
                 return False
             state['template'] = raw          # kept even when it needs fixing
             try:
                 fp.compile_template(raw)
             except fp.TemplateError as e:
-                ui.show_status(f"Invalid template: {e}")
+                ui.show_error(str(e))
                 continue                     # ask again, don't leave the screen
             return True
 
@@ -235,22 +239,21 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         base = _derive_regex_base(writable) if state['target'] == "Folder path" else None
         sample = fp._regex_target(writable[0], base)
         while True:
-            raw = prompt.text(
-                rf"Regex, named groups (matches e.g. '{sample}'; use / between folders); "
-                "groups: track disc title artist albumartist album year date season episode:",
-                default=state['regex'])
+            raw = prompt.text(f"Regex for {sample}:", default=state['regex'],
+                              placeholder=r"(?P<track>\d+) (?P<title>.+)",
+                              suggest=lambda t: prompt.token_completions(t, _REGEX_GROUPS, "(?P<", ">"))
             if not raw:
                 return False
             state['regex'] = raw             # kept even when it needs fixing
             try:
                 compiled = fp.compile_regex(raw)
             except fp.TemplateError as e:
-                ui.show_status(f"Invalid regex: {e}")
+                ui.show_error(str(e))
                 continue                     # ask again, don't leave the screen
             unknown = fp.unrecognised_regex_groups(compiled)
             if unknown:
                 ui.show_status(
-                    f"Ignoring unrecognised group(s): {', '.join(unknown)}")
+                    f"Ignoring groups backtrack doesn't know: {', '.join(unknown)}")
             return True
 
     def _ask_preview() -> bool:
@@ -269,8 +272,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         to_write = [p for p in writable if plans[p]]
 
         if not to_write:
-            ui.show_status("Nothing to write: selected fields are already set "
-                                 "(try Overwrite).")
+            ui.show_status("Nothing to write: those fields are already set. Overwrite replaces them.")
             return False                     # back to the questions, not out
 
         # 4) Preview. Fields whose value is identical across every changed file are
@@ -298,7 +300,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         if n_skip_existing and not overwrite:
             header_bits.append(f"{n_skip_existing} existing kept")
         if skipped_fmt:
-            header_bits.append(f"{skipped_fmt} non-MP3/MP4 skipped")
+            header_bits.append(f"{skipped_fmt} untaggable skipped")
         # Called out explicitly (not silent): disc subtitle can't be stored on MP4.
         if 'disc_subtitle' in apply_fields:
             n_mp4 = sum(1 for p in writable if tw.format_kind(p) == 'mp4')
@@ -358,7 +360,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
         plan, library, bo.derive_writer(derived, apply_fields, overwrite),
         selected=apply_paths)
     ui.show_status(bo.summarise(applied, "Derived tags for",
-                                      skipped_note="non-MP3/MP4 skipped"))
+                                      skipped_note="untaggable skipped"))
 
 
 # Rename preview: position · old name · new name. Position (index) drops first;
@@ -378,7 +380,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
     writable = [p for p in paths if fnm.is_supported(p)]
     skipped_fmt = len(paths) - len(writable)
     if not writable:
-        ui.show_status("No MP3/MP4 files to rename.")
+        ui.show_status("No taggable files to rename.")
         return
 
     tokens = {p: fnm.read_tokens(p) for p in writable}
@@ -394,9 +396,9 @@ def rename_files_op(paths: list, library: list, header) -> None:
         """Pick a preset, type a pattern, or browse the token reference."""
         while True:
             choices: list = []
-            for pat, example in fnm.PRESETS:
-                tail = f"e.g. {example}" + ("   ★ suggested" if pat == default_pattern else "")
-                choices.append(prompt.Choice(title=pat, value=pat, cells=[pat, tail]))
+            presets = sorted(fnm.PRESETS, key=lambda p: p[0] != default_pattern)   # the suggested one first
+            for pat, example in presets:
+                choices.append(prompt.Choice(title=pat, value=pat, cells=[pat, example]))
             choices.append(prompt.separator())
             choices.append(prompt.Choice(title="Custom pattern…", value="__custom__",
                                          cells=["Custom pattern…", "type your own %token% pattern"]))
@@ -404,10 +406,10 @@ def rename_files_op(paths: list, library: list, header) -> None:
                                          cells=["Show all tokens", f"{len(fnm.TOKENS)} available"]))
             # Reopen on whatever was chosen last, else on the suggested preset.
             _prev = state['pattern']
-            default_idx = next((i for i, (pat, _) in enumerate(fnm.PRESETS)
+            default_idx = next((i for i, (pat, _) in enumerate(presets)
                                 if pat == (_prev or default_pattern)), 0)
             sub = ui.plural(len(writable), "file") + (
-                " · artists vary → artist suggested" if vary else "")
+                " · artists vary" if vary else "")
             sel = prompt.select("File-name pattern:", choices=choices,
                                 columns=_RENAME_PICK_COLUMNS, header=header(sub),
                                 index=default_idx)
@@ -417,9 +419,8 @@ def rename_files_op(paths: list, library: list, header) -> None:
                 _show_tokens(header)
                 continue
             if sel == "__custom__":
-                raw = prompt.text(
-                    "Pattern (e.g. %disc%-%track% %title%; 'Show all tokens' lists them):",
-                    default=_prev or default_pattern)
+                raw = prompt.text("Pattern:", default=_prev or default_pattern,
+                                  suggest=lambda t: prompt.token_completions(t, fnm.TOKENS))
                 if not raw:
                     continue                 # back out of typing → the preset list
                 unk = fnm.unknown_tokens(raw)

@@ -2,7 +2,7 @@
 
 A terminal music player and tag editor for macOS and Linux. Backtrack plays your library with
 VLC, draws album art as Unicode half-blocks in the terminal, shows synced and unsynced lyrics,
-and has an ID3/MP4 tag editor with bulk operations for whole albums.
+and has a tag editor (ID3, MP4 and Vorbis comments) with bulk operations for whole albums.
 
 > **Status:** in active development. Core playback, browsing, search, lyrics, and the tag editor
 > (including bulk operations) are working; expect rough edges and changing internals.
@@ -23,8 +23,8 @@ and has an ID3/MP4 tag editor with bulk operations for whole albums.
 **Playback**
 - VLC/libvlc-backed audio with transport controls and a live progress bar.
 - Album art drawn in the terminal as half-blocks, or as a real image in iTerm2 (opt-in).
-- A full-height **volume bar** beside the art, and a side panel for **lyrics**, the up-next
-  **queue**, and cast/crew **credits**.
+- The **volume**, shown for a moment over the middle of the screen as it changes, and panels for the **lyrics**, the up-next
+  **queue**, and the **people** credited.
 - **Equaliser**: 24 presets applied during playback via libvlc, stored per file as an `EQU2` tag.
 - Several terminal windows can share one session (see [Several windows](#several-windows)).
 
@@ -32,7 +32,7 @@ and has an ID3/MP4 tag editor with bulk operations for whole albums.
 - Shows **synced (`SYLT`)** and **unsynced (`USLT`)** lyrics, and markdown dialogue scripts for
   spoken-word tracks. A lyric editor times un-timed lyrics as the track plays.
 
-**Tag editing (MP3)**
+**Tag editing (MP3, WAV, AIFF; other formats as plain key/value tags)**
 - Edit every ID3 frame through a widget suited to its type: date/time with a **world-map timezone
   picker**, track/disc **fractions**, **people/credit lists**, a **star-rating** editor (`POPM`),
   a **graphic equaliser** (`EQU2`) and **dB gain** meter (`RVA2`), **numeric spinners**, and
@@ -115,9 +115,36 @@ startups after that.
 
 ## Usage
 
-### Main menu
+### Tabs
 
-Browse · Search · Listening History · Settings · Exit.
+Now playing · Browse · Directory · Search · Settings, along the top, on F1 to F5 (or a
+click); `Tab` / `Shift-Tab` move between them too, except where you're typing. The tab showing is
+outlined like a folder's tab, opening into the screen under it; that screen's title moves to the
+right end of its border (the breadcrumb at the bottom says it too, when there's no room). The keys
+show beside the names with the hints (`?`); in a narrow window the other tabs show just their keys. Each tab stays where
+you left it. The lyrics and trim editors keep you until you leave them. Backing out of a tab's
+first screen goes to the tab you came from. The app opens on Browse, offering first to resume what
+the last run left. With nothing playing, Now playing shows the empty player; `r` there resumes the
+last run's queue. In the player, `f` hides or shows the tab bar (also Settings → Tab bar in player).
+The player sits in boxes while the tab bar or a panel shows, at any window size, and edge to edge
+only with neither (`f` hides the bar). The
+boxes fill the window with no gaps between them: the art and the details in a box as wide as the art
+with the panels (`w`) in columns beside it when they get room enough there, else under it; and along the
+bottom the controls, the progress bar, the times and the speed or sleep timer. In a short, wide
+window the art sits beside the details instead of over them, so it stays as big as it can be.
+In a tiny window it's just the transport: boxed in 3 to 5 rows, bare in 1 or 2 (and the tab bar and
+status line step aside under 6 rows). As it narrows the row gives things up in turn, never cutting
+any short: the bar, then the length (the position alone), then the time, then previous, then next,
+leaving play/pause, and last the box. The art is a square
+that fills its space (a cover that isn't square is cropped about its centre), in the player,
+Browse's preview and the tag editor's picture screens alike; an audiobook's booklet picture too.
+The people panel
+lists everyone, in two columns when one won't hold them, taking the rows it needs above the
+lyrics. Settings → Exit quits, as `q` does.
+
+Every list highlights its current row with a soft bar; a row that opens something has a `›` at its
+right. Long titles on the highlighted row scroll, a column a beat, 100 beats a minute unless
+Settings → Scrolling text speed says otherwise.
 
 Navigation is the same everywhere: `↑↓` move, `→`/`Enter` confirm, `←`/`b`/`Esc` go back, and
 `q` quits the app from anywhere (it never just closes a widget). In a field you type into, `q` is
@@ -128,8 +155,7 @@ taller than the window opens as its section titles: `Enter` opens one, `Esc` goe
 titles, and `/` switches to the whole list and back. The hint bar (pinned to the bottom of the screen) is
 clickable too: click any highlighted key to trigger it. When audio is playing, the mini-player's
 ⏯/⏭ icons are clickable, and clicking anywhere else on it reopens the player. In the full player,
-the ⏮/⏯/⏭ controls, the hint bar, and the vertical volume bar are all clickable (click the volume
-bar at the height you want).
+the ⏮/⏯/⏭ controls, the progress bar and the hint bar are all clickable.
 
 If a file has been moved or renamed since the library was scanned, Backtrack notices when you act
 on it, re-syncs the library and says so. If a whole music folder has moved, the message asks you to
@@ -148,6 +174,36 @@ you can do with the highlighted row, each with its key: for a track, play it, ed
 from here, play next, play after the album that's playing, add it to the queue (shuffled or not),
 add its whole album; for an album, artist or other group, the same for all its tracks. `O` lists
 the same for the whole list: play, shuffle, edit, sort, and play next or queue everything listed.
+
+In a wide enough window Browse is a column browser: one box holds the levels above as columns
+(categories, then the artist, then the album) with the list you're in last, and a click on a row
+of an earlier column goes back to that level, at that row. Beside it, the highlighted row's cover,
+credits, length, format and copyright in one box over what opening it lists in another. The columns' widths
+are worked out once for each list from everything in it, so they hold still as you move through
+it and change when you go to another level.
+The cover is a real image in iTerm2 with Settings → Image album art on, else drawn in text. An
+artist (composer, person) shows their own picture: `artist`, `folder` or `poster` (.jpg, .png…)
+in the folder their albums are in, else a placeholder. Genres show no picture. A narrower window
+drops the oldest columns, then puts the details in a strip under the list, then shows the list
+alone. `v` (or Settings → Browse in columns) turns the columns off and on. A long list opens as its
+A–Z index (Settings → Long lists open by letter; `/` switches either way).
+
+### Command line
+
+`:` in any list or the player opens a box over the middle of the screen to type a command in, as
+after `backtrack` in a shell (`track list --artist
+Eagles`, `tag read`, `config set …`, `play --album …`, `--help`), on this window's library and
+session: `play` and the queue and session commands act on what this window is playing. A
+one-line answer shows in the status bar; more opens in a list to read.
+
+### Directory
+
+The music directories as folders on disk, and nothing more: folders first (each ending in `/`; one
+with no audio anywhere beneath it isn't listed),
+then their audio files, in name order, the folders above as columns to the left. No pictures or
+details: it's the filesystem.
+A folder plays, shuffles, queues and edits like an album (everything under it, in path order); a
+file plays like a track, with the rest of its folder after it as Settings → After a picked track says.
 Any of these can be given its own key in Settings → Key bindings. Shuffling, clearing and undoing
 the queue itself are in the player's queue panel.
 
@@ -180,16 +236,18 @@ by screen, with more than one key per action if you like), and every hint bar sh
 | `,` / `.` | Seek ∓30 s |
 | `+` / `-` | Volume up / down |
 | `m` | Show or hide the track details line (year · genre · disc/track …); remembered. Also Settings → Track details in player |
-| `w` | Cycle the side panel: off → lyrics → queue → lyrics+credits. Views with nothing in them are skipped |
+| `w` | Choose the panels: a box over the player to tick Lyrics, People, Queue and Chapters (one this track has nothing for says so). Its **Arrange panels…** moves them: `Tab` from panel to panel (the one moving is outlined in the accent), `↑` / `↓` up or down its column, `←` / `→` to the other side of the player, `↵` done. A wide window and a tall one each keep their own arrangement: wide, the panels are columns beside the player (either side, or both); tall, they're under it, side by side when there's room. Remembered |
 | `↑` / `↓` | With the queue panel showing: a cursor through the queue. `↵` plays the track at it, `J` / `K` move it up / down, `d` removes it, `x` shuffles what's coming, `c` clears what's coming, `u` undoes the last queue change |
-| `?` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[?] help`; in a text field, where `?` is typed, it says `[^/] help` and the key is Ctrl+/ (which works everywhere). Clicking the key in the corner works too. In the player it stays in the hint bar. Also Settings → Key hints |
+| `?` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[?] help`; in a text field, where `?` is typed, it says `[^/] help` and the key is Ctrl+/ (which works everywhere). Clicking the key in the corner works too. In the player it stays in the hint bar. Settings → Help toggle hides `[?] help` everywhere; `?` still works |
 | `[` / `]` | Previous / next track |
-| `e` | Jump to the last 35 s (only with Settings → Diagnostics log on) |
+| `e` | Edit the playing track's tags |
+| `a` / `A` | Go to the playing track's album / artist in Browse (`Esc` from there goes up through Browse) |
+| `E` | Jump to the last 35 s (only with Settings → Diagnostics log on) |
 | `b` / `Esc` | Minimise: leave the player but keep the audio playing in the background (pinned while another window is attached) |
 | `s` | Stop playback |
 | `q` | Quit the application |
 
-From any menu while audio is playing: **Ctrl-O** reopens the player, and **Ctrl-P** / **Ctrl-N** /
+From any menu while audio is playing: **Ctrl-O** reopens the player (the Now playing tab), and **Ctrl-P** / **Ctrl-N** /
 **Ctrl-B** control play-pause / next / previous.
 
 ### Several windows
@@ -201,8 +259,8 @@ player open at a time, and while another window is attached, `b` won't leave the
 
 ### Listening history
 
-Recent tracks in aligned columns (title · artist · album · when · listened), with relative times
-(`just now`, `40m ago`, `2w ago`). Replay any entry.
+In Settings → History. Recent tracks in aligned columns (title · artist · album · when ·
+listened), with relative times (`just now`, `40m ago`, `2w ago`). Replay any entry.
 
 ### Lyrics
 
@@ -241,6 +299,23 @@ rows that wouldn't change are greyed out.
 
 Disc and track numbering is read from the files themselves rather than the library cache, so
 renumbering and reflowing stay correct even right after you have hand-numbered a disc.
+
+Adding or renaming a tag (or assigning one in bulk), its id is suggested as you type: frames by id,
+then a description (`TXXX:Mood`, the file's own first) and an ISO 639-2
+language (`COMM:Notes:eng`, or `COMM[eng]`); `↑` / `↓` pick one, `Tab` takes it. A key that can't
+lead to a good id (a frame backtrack can't build from a typed value, a description or language on
+a frame that has none, a language code that doesn't exist) does nothing, and a TXXX with no
+description isn't taken till it has one. Vorbis and MP4 keys are checked and suggested the same way.
+
+Text of several lines (comments, unsynced lyrics, a list typed as text) is edited in a box in the
+app, its lines numbered down the left: `Enter` starts a new line, the arrows and a click move
+through it, long lines wrap at word boundaries. `Ctrl-F` opens a find box at its foot: matches show
+as you type (ignoring case unless you type a capital), `Enter` / `↓` goes to the next and `↑` the
+one before. `Ctrl-R` adds a replacement: `Tab` moves between the two, `Enter` replaces the match the
+caret is on and moves on, `Ctrl-A` replaces every match. In either, `Ctrl-T` switches between plain
+text and a pattern (a regular expression; `\1` or `\g<name>` in the replacement puts back a
+group). `Ctrl-S` saves; `Esc` closes the find box, or leaves, asking first if you changed anything;
+`Ctrl-E` carries on in the system editor (`$EDITOR`) for anyone who prefers it.
 
 The guides under [Documentation](#documentation) cover tagging practice and what *Derive from
 filename* recognises.
@@ -416,12 +491,18 @@ file.
 
 ## Supported formats
 
-- **Audio:** MP3, M4A, MP4, M4P and AAC. Raw `.aac` plays but can't be tagged.
-- **Tags:** ID3v2 (MP3) and MP4 atoms (`.m4a`/`.mp4`/`.m4p`). The single-track editor is MP3 only.
-  In bulk, derive, rename files, album art, renumber, reflow and remove single-disc numbering
-  write both MP3 and MP4; the tag operations, assign, sort orders and the rest are MP3 only.
-- **Lyrics:** `USLT` (unsynced) and `SYLT` (synced).
-- **Album art:** embedded MP3 `APIC` and MP4 `covr` (JPEG/PNG), drawn in the terminal as half-blocks.
+- **Audio:** MP3, WAV, AIFF, M4A/M4B/MP4/M4P, FLAC, Ogg Vorbis (`.ogg`/`.oga`), Opus and AAC.
+  Raw `.aac` plays but can't be tagged.
+- **Tags:** ID3v2 (MP3, and the ID3 chunk in WAV/AIFF), MP4 atoms and Vorbis comments
+  (FLAC/Ogg/Opus). The single-track editor edits ID3 frame by frame; MP4 and Vorbis files open in
+  it as key/value tags. In bulk, derive, rename files, album art, renumber, reflow, remove
+  single-disc numbering and ReplayGain write every format; the frame operations, assign and sort
+  orders are ID3 only. Trimming is MP3 only.
+- **Lyrics:** `USLT` (unsynced) and `SYLT` (synced); MP4 `©lyr` and Vorbis `LYRICS` are shown too,
+  timed when they hold LRC text.
+- **Album art:** embedded ID3 `APIC`, MP4 `covr` (JPEG/PNG) and FLAC/Ogg pictures, drawn in the
+  terminal as images where it shows them (iTerm2 outside tmux, with Settings → Image album art on), else as
+  half-blocks.
 
 ## Troubleshooting
 
@@ -434,8 +515,9 @@ shrink or omit the art.
 **Lyrics don't appear**: not all files have embedded lyrics. Import an `.lrc` from the tag editor,
 or time existing lyrics in the lyric editor.
 
-**Tag editing says "MP3 only"**: the single-track editor edits ID3/MP3; use the bulk Automation
-tools for MP4 tag changes.
+**A tag operation skips some files**: the frame operations, assign and sort orders work on ID3
+(MP3, WAV, AIFF); edit other formats in the single-track editor or with the cross-format Automation
+tools.
 
 **Something else went wrong**: turn on Settings → Diagnostics log, repeat what you did, and look
 in `~/.config/backtrack/backtrack.log`.

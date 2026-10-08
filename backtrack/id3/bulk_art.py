@@ -20,7 +20,7 @@ def set_picture_type_op(paths: list, library: list, header) -> None:
     """Screens for bo.plan_set_picture_type."""
     art, skipped = bo.read_picture_types(paths)
     if not art:
-        ui.show_status("No MP3s with embedded art in this selection.")
+        ui.show_status("No MP3/WAV/AIFF files with embedded art in this selection.")
         return
 
     counts = Counter(t for a in art for t in a['types'])
@@ -66,14 +66,14 @@ def _cover_pattern_prompt(header) -> str | None:
     """Pick / type a %token% pattern for matching image file names."""
     choices: list = []
     for pat, ex in _COVER_PATTERN_PRESETS:
-        choices.append(prompt.Choice(title=pat, value=pat, cells=[pat, f"e.g. {ex}"]))
+        choices.append(prompt.Choice(title=pat, value=pat, cells=[pat, ex]))
     choices.append(prompt.separator())
     choices.append(prompt.Choice(title="Custom pattern…", value="__custom__",
                                  cells=["Custom pattern…", "type your own %token%"]))
     choices.append(prompt.Choice(title="Show all tokens", value="__tokens__",
                                  cells=["Show all tokens", f"{len(fnm.TOKENS)} available"]))
     while True:
-        sel = prompt.select("Image-name pattern (matched against the image files):",
+        sel = prompt.select("Image file name pattern:",
                             choices=choices, columns=_RENAME_PICK_COLUMNS,
                             header=header("cover-name pattern"))
         if not sel:
@@ -82,7 +82,8 @@ def _cover_pattern_prompt(header) -> str | None:
             _show_tokens(header)
             continue
         if sel == "__custom__":
-            raw = prompt.text("Pattern (e.g. %track% %title%; 'Show all tokens' lists them):")
+            raw = prompt.text("Pattern:", placeholder="%track% %title%",
+                              suggest=lambda t: prompt.token_completions(t, fnm.TOKENS))
             if not raw:
                 continue
             unk = fnm.unknown_tokens(raw)
@@ -104,7 +105,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     writable = [p for p in paths if tw.is_writable(p)]
     skipped_fmt = len(paths) - len(writable)
     if not writable:
-        ui.show_status("No MP3/MP4 files here to set art on.")
+        ui.show_status("No taggable files here to set art on.")
         return
 
     tokens = {p: fnm.read_tokens(p) for p in writable}
@@ -116,8 +117,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
         if d not in dir_images:
             dir_images[d] = cm.find_images(d)
     if not any(dir_images.values()):
-        ui.show_status("No images found beside these tracks "
-                             "(looked in the folder + artwork/covers/scans).")
+        ui.show_status("No images in these tracks' folders, or in artwork, covers or scans beside them.")
         return
     n_images = len({img for imgs in dir_images.values() for img in imgs})
 
@@ -290,7 +290,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             if scope == "down":
                 return below
             if scope == "count":
-                raw = prompt.text(f"How many tracks from here (1-{len(below)}):",
+                raw = prompt.text(f"How many tracks from here, up to {len(below)}:",
                                   default=str(len(below)))
                 if raw is None:
                     return None
@@ -370,5 +370,5 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     applied.skipped = skipped_fmt
     ui.show_status(bo.summarise(
         applied, "Set album art on", noun="track",
-        kept_note="kept existing art (fill blanks only)",
-        unsupported_note="MP4 skipped (cover needs JPEG/PNG)"))
+        kept_note="already had art, so kept",
+        unsupported_note="MP4 skipped: the cover has to be JPEG or PNG"))

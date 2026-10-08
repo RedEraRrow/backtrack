@@ -5,7 +5,7 @@ tags, this expands a ``%token%`` pattern using the file's existing tags to make
 a clean, uniform file name. Pure and unit-testable; ``bulk_names`` owns the
 screens and ``bulk_ops.rename_files`` does the two-phase rename.
 
-MP3 exposes the full token set; MP4/m4a exposes the common atoms.
+Every kind of tag gives the tokens it has a place for (see tag_formats.TAG_HOMES).
 """
 from __future__ import annotations
 
@@ -14,14 +14,13 @@ import re
 
 from backbone import numbering
 
-from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[attr-defined]
-from mutagen.mp4 import MP4  # type: ignore[reportPrivateImportUsage]
+from backtrack.id3.tag_formats import kind as tag_kind, open_tags, pair, texts
 
 
 # token → human description. Order defines how the help line lists them.
 TOKENS: dict[str, str] = {
-    'track': 'Track number, zero-padded (01)',
-    'tracknopad': 'Track number, no padding (1)',
+    'track': 'Track number as 01',
+    'tracknopad': 'Track number as 1',
     'totaltracks': 'Number of tracks on the disc',
     'disc': 'Disc number',
     'totaldiscs': 'Number of discs',
@@ -30,7 +29,7 @@ TOKENS: dict[str, str] = {
     'albumartist': 'Album artist',
     'album': 'Album',
     'discsubtitle': 'Disc subtitle',
-    'year': 'Year (YYYY)',
+    'year': 'Year',
     'date': 'Full date',
     'genre': 'Genre',
     'composer': 'Composer',
@@ -67,36 +66,19 @@ PRESETS: list[tuple[str, str]] = [
     ('%track:r% - %title%', 'IV - Song.mp3'),
 ]
 
-# Single-text ID3 frames that map one-to-one to a token.
-_ID3_TEXT: dict[str, str] = {
-    'title': 'TIT2', 'artist': 'TPE1', 'albumartist': 'TPE2', 'album': 'TALB',
-    'genre': 'TCON', 'composer': 'TCOM', 'conductor': 'TPE3', 'remixer': 'TPE4',
-    'lyricist': 'TEXT', 'grouping': 'TIT1', 'subtitle': 'TIT3', 'discsubtitle': 'TSST',
-    'publisher': 'TPUB', 'copyright': 'TCOP', 'isrc': 'TSRC', 'bpm': 'TBPM',
-    'key': 'TKEY', 'language': 'TLAN', 'mood': 'TMOO', 'encoder': 'TSSE',
-    'movement': 'MVNM', 'originalartist': 'TOPE', 'originalalbum': 'TOAL',
-}
-
-# The common MP4 atoms.
-_MP4_TEXT: dict[str, str] = {
-    'title': '\xa9nam', 'artist': '\xa9ART', 'albumartist': 'aART', 'album': '\xa9alb',
-    'genre': '\xa9gen', 'composer': '\xa9wrt', 'grouping': '\xa9grp', 'comment': '\xa9cmt',
+# Text tokens → the field each reads (where it lives in every kind of tag: tag_formats).
+_TOKEN_FIELDS: dict[str, str] = {
+    'title': 'title', 'artist': 'artist', 'albumartist': 'album_artist', 'album': 'album',
+    'genre': 'genre', 'composer': 'composer', 'conductor': 'conductor', 'remixer': 'remixer',
+    'lyricist': 'lyricist', 'grouping': 'grouping', 'subtitle': 'subtitle', 'discsubtitle': 'disc_subtitle',
+    'publisher': 'publisher', 'copyright': 'copyright', 'isrc': 'isrc', 'bpm': 'bpm',
+    'key': 'key', 'language': 'language', 'mood': 'mood', 'encoder': 'encoder',
+    'movement': 'movement_name', 'originalartist': 'original_artist', 'originalalbum': 'original_album',
 }
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 # %token%, optionally with a number style and case: %track:r%, %disc:en:u%.
 _TOKEN_RE = re.compile(r'%([a-zA-Z]+)(?::([a-zA-Z]+))?(?::([a-zA-Z]+))?%')
-
-_MP3_EXTS = ('.mp3',)
-# Raw .aac (ADTS) has no MP4 atoms, so it is not tag-writable (see tag_writer).
-_MP4_EXTS = ('.m4a', '.mp4', '.m4p')
-
-
-def _split_frac(raw: str) -> tuple[str, str]:
-    """'3/12' → ('3', '12'); '3' → ('3', '')."""
-    n, _, tot = str(raw).replace('⁄', '/').partition('/')
-    return n.strip(), tot.strip()
-
 
 def _finalize(raw: dict[str, str]) -> dict[str, str]:
     """Derive the numeric/padded tokens from raw track/disc parts."""
@@ -112,89 +94,29 @@ def _finalize(raw: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in raw.items() if v}
 
 
-def _read_id3(path: str) -> dict[str, str]:
-    """Read renaming tokens from an ID3 (MP3) file's tags."""
-    try:
-        audio = ID3(path)
-    except (ID3NoHeaderError, OSError, Exception):
-        return {}
-    raw: dict[str, str] = {}
-    for tok, fid in _ID3_TEXT.items():
-        frame = audio.get(fid)
-        text = getattr(frame, 'text', None)
-        if text:
-            joined = '; '.join(str(x) for x in text if str(x).strip())
-            if joined:
-                raw[tok] = joined
-    for key in audio.keys():
-        if key.startswith('COMM'):
-            text = getattr(audio[key], 'text', None)
-            if text and str(text[0]).strip():
-                raw['comment'] = '; '.join(str(x) for x in text if str(x).strip())
-                break
-    trck = audio.get('TRCK')
-    if trck is not None and trck.text:
-        raw['_tracknum'], raw['totaltracks'] = _split_frac(str(trck.text[0]))
-    tpos = audio.get('TPOS')
-    if tpos is not None and tpos.text:
-        raw['_discnum'], raw['totaldiscs'] = _split_frac(str(tpos.text[0]))
-    mvin = audio.get('MVIN')
-    if mvin is not None and mvin.text:
-        raw['movementno'] = _split_frac(str(mvin.text[0]))[0]
-    tdrc = audio.get('TDRC')
-    if tdrc is not None and tdrc.text:
-        date = str(tdrc.text[0]).strip()
-        if date:
-            raw['date'] = date
-            raw['year'] = date[:4]
-    return _finalize(raw)
-
-
-def _read_mp4(path: str) -> dict[str, str]:
-    """Read renaming tokens from an MP4/M4A file's atoms."""
-    try:
-        audio = MP4(path)
-    except (OSError, Exception):
-        return {}
-    raw: dict[str, str] = {}
-    for tok, atom in _MP4_TEXT.items():
-        val = audio.get(atom)
-        if val:
-            s = str(val[0]).strip()
-            if s:
-                raw[tok] = s
-    trkn = audio.get('trkn')
-    if trkn:
-        parts = list(trkn[0]) + [0, 0]
-        raw['_tracknum'] = str(parts[0]) if parts[0] else ''
-        raw['totaltracks'] = str(parts[1]) if parts[1] else ''
-    disk = audio.get('disk')
-    if disk:
-        parts = list(disk[0]) + [0, 0]
-        raw['_discnum'] = str(parts[0]) if parts[0] else ''
-        raw['totaldiscs'] = str(parts[1]) if parts[1] else ''
-    day = audio.get('\xa9day')
-    if day:
-        date = str(day[0]).strip()
-        if date:
-            raw['date'] = date
-            raw['year'] = date[:4]
-    return _finalize(raw)
-
-
 def read_tokens(path: str) -> dict[str, str]:
     """All available token → value pairs for a file (empty values omitted)."""
-    ext = os.path.splitext(path)[1].lower()
-    if ext in _MP3_EXTS:
-        return _read_id3(path)
-    if ext in _MP4_EXTS:
-        return _read_mp4(path)
-    return {}
+    try:
+        tags = open_tags(path)[0]
+    except Exception:
+        return {}
+    raw = {tok: '; '.join(vals) for tok, f in _TOKEN_FIELDS.items() if (vals := texts(tags, f))}
+    if comment := texts(tags, 'comment'):
+        raw['comment'] = comment[0]
+    if (p := pair(tags, 'track')) is not None:
+        raw['_tracknum'], raw['totaltracks'] = p
+    if (p := pair(tags, 'disc')) is not None:
+        raw['_discnum'], raw['totaldiscs'] = p
+    if (p := pair(tags, 'movement_number')) is not None:
+        raw['movementno'] = p[0]
+    if date := texts(tags, 'year'):
+        raw['date'], raw['year'] = date[0], date[0][:4]
+    return _finalize(raw)
 
 
 def is_supported(path: str) -> bool:
-    """True if the file's extension is a renamable MP3 or MP4 type."""
-    return os.path.splitext(path)[1].lower() in _MP3_EXTS + _MP4_EXTS
+    """True if the file keeps tags a name can be made from."""
+    return tag_kind(path) != 'unsupported'
 
 
 def _cleanup(s: str) -> str:

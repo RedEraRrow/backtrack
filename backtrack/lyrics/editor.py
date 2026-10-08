@@ -36,7 +36,7 @@ from __future__ import annotations
 import sys, os, json, time
 
 from backtrack.music_library import drop_moved, track_title
-from backbone import keys, ui
+from backbone import keys, nav, ui
 from backbone.ui import Colors as C
 from backbone.prompt.core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs, _cols
 from backbone.prompt import text as _prompt_text
@@ -70,7 +70,7 @@ class _Session(_KeyHandlers):
         self.track_name = track_title(self.mp3_path, read_tags=True)
         if self.aux.get('drift'):
             ui.show_status(
-                "⚠ transcript.json changed since this working copy: W will overwrite it.", duration=tune.STATUS_WARNING_S)
+                "transcript.json has changed since this copy was made: W will overwrite it.", duration=tune.STATUS_WARNING_S)
 
         # Lead-in offset for tap sync (compensates for reaction time)
         try:
@@ -241,8 +241,8 @@ class _Session(_KeyHandlers):
                 self.cursor = issues[0]
                 self.viewport = 0
                 ui.show_status(
-                    f"Review · {_REVIEW_PHASE_NAME[ph]}: {len(issues)} to fix: "
-                    f"Tab/⇧Tab next/prev, fix in place, Esc to leave.")
+                    f"Review · {_REVIEW_PHASE_NAME[ph]}: {len(issues)} to fix. "
+                    f"Tab and ⇧Tab move between them, Esc leaves.")
                 return
         _none = {'dirs': "stage directions need categorising or timing",
                  'long': "lines are too long"}.get(program, "MD mismatches, word or overlap errors")
@@ -278,7 +278,7 @@ class _Session(_KeyHandlers):
                 return
         self.review_phase = None
         self.review_program = None
-        ui.show_status("Review complete, all resolved. (Save with s.)")
+        ui.show_status("Nothing left to review.")
 
     def do_smart_split(self) -> None:
         """Split the current spoken line at its strongest semantic break nearest the
@@ -337,7 +337,7 @@ class _Session(_KeyHandlers):
             return True
         _restore_term_attrs(self.fd, self.old)
         sys.stdout.write("\033[?1000l\033[?1006l")
-        _ans = _prompt_text("You have unsaved changes (s saves). Leave without saving? (y/N)")
+        _ans = _prompt_text("Leave without saving? [y/N]")
         _set_raw(self.fd)
         sys.stdout.write("\033[?1000h\033[?1006h")
         self.w.anchor_reset()
@@ -444,7 +444,7 @@ class _Session(_KeyHandlers):
             container = {}
         except json.JSONDecodeError:
             # Writing {} + segments would drop every other key it holds.
-            ui.show_status(f"{os.path.basename(jpath)} can't be read as JSON; not overwritten.", duration=tune.STATUS_WARNING_S)
+            ui.show_error(f"{os.path.basename(jpath)} isn't valid JSON, so it wasn't overwritten")
             return False
         spoken = [s for s in self.segs if s.get('kind') not in ('stage_dir', 'dead_air', 'credit')]
         container['segments']      = [_clean_seg(s) for s in spoken]
@@ -470,7 +470,7 @@ class _Session(_KeyHandlers):
             write_text_atomic(jpath[:-5] + '.sync.json', json.dumps(sdata, indent=2, ensure_ascii=False))
         except Exception as exc:
             log.warning("couldn't write %s.sync.json: %s", jpath[:-5], exc)
-            ui.show_status(f"Committed, but the .sync.json couldn't be written: {exc}", duration=tune.STATUS_WARNING_S)
+            ui.show_error(f"committed, but couldn't write the .sync.json: {exc}")
         return True
 
     def _pager(self, body: list, title: str) -> None:
@@ -507,7 +507,7 @@ class _Session(_KeyHandlers):
             k = _read_key(self.fd)
             if k.startswith('MOUSE_CLICK:') and self.w.row is not None:
                 _p = k.split(':'); _r = int(_p[2]); _c = int(_p[3]) if len(_p) > 3 else 1
-                k = hint_cells.get((_r - self.w.row - ui.MARGIN_V, _c)) or ''
+                k = hint_cells.get((_r - self.w.row - ui.top_margin(), _c)) or ''
             _ch = _promptmod.consume_chrome(k, hint_cells)   # transport keys, and `?` for help
             if _ch is _promptmod.CHROME_REDRAW:
                 self.w.anchor_reset(); continue
@@ -556,7 +556,7 @@ class _Session(_KeyHandlers):
             ui.show_status("No transcript.md found to verify against."); return
         cands, _unplaced, _suggested = _split_candidates(self.segs, _mdp)
         if not cands:
-            ui.show_status("✔ Every segment is a single script beat, nothing to split.")
+            ui.show_status("Nothing to split.")
             return
         _restore_term_attrs(self.fd, self.old)
         sys.stdout.write("\033[?1000l\033[?1006l")
@@ -742,6 +742,26 @@ class _Session(_KeyHandlers):
                     if new_cur != self.cursor:
                         self.cursor = new_cur; self.need_redraw = True
 
+    def _boxed(self, lines: list, footer_rows: int) -> tuple[list, int]:
+        """The editor's frame in a box of its own kind: perforated edges (a
+        tear-off sheet, not a menu), its top border over the header and its
+        dotted rule, its bottom border in place of the divider over the hints,
+        the hints toggle in its border. The click maps move a row down and two
+        columns right."""
+        body, foot = lines[:len(lines) - footer_rows], lines[len(lines) - footer_rows:]
+        if foot and not ui.strip_ansi(foot[0]).strip(" ·"):          # the divider
+            foot = foot[1:]
+        body = [ln[ui.MARGIN_H:] if ln.startswith(" " * ui.MARGIN_H) else ln for ln in body]
+        help_key = self.mode != EDIT
+        out = _promptmod.box_lines(body, ui.get_terminal_width() - 2 * ui.MARGIN_H, len(body) + 2, "",
+                                   _promptmod.help_corner_text(help_key)[0], dotted=True) + foot
+        _promptmod.place_help_toggle(out, 0, self.hint_cells, help_key)
+        self.hit_map = {k + 1: v for k, v in self.hit_map.items()}
+        if self.prog_geo is not None:
+            line, col, width = self.prog_geo
+            self.prog_geo = (line + 1, col + 2, width)
+        return out, len(foot)
+
     def _redraw(self) -> None:
         """Draw the editor and map its clickable hints."""
         review_info = None
@@ -759,7 +779,9 @@ class _Session(_KeyHandlers):
             review=review_info, sources=self._sources_label(),
         )
         self.hint_cells.clear()
-        if lines:       # the app-wide hints toggle, on the top line
+        if lines and _promptmod.box_fits():
+            lines, footer_rows = self._boxed(lines, footer_rows)
+        elif lines:     # the app-wide hints toggle, on the top line
             lines[0] = _promptmod.add_help_corner(lines[0], 0, self.hint_cells, self.mode != EDIT)
         self.w.render(lines)
         self.need_redraw = False
@@ -818,4 +840,5 @@ def lyrics_editor(mp3_path: str) -> None:
     if result is None:
         ui.show_status("No lyrics or transcript found for this track.")
         return
-    _Session(mp3_path, result).run()
+    with nav.modal():                       # it plays the track itself
+        _Session(mp3_path, result).run()

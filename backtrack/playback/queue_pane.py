@@ -2,7 +2,8 @@
 and the rows a click can play."""
 from __future__ import annotations
 import re
-from backtrack.music_library import format_tag_values, library_entry, live_library
+import time
+from backtrack.music_library import chapter_label, format_tag_values, library_entry, live_library
 from backbone import ui
 from backbone.prompt.core import Column, _table_widths
 from backbone.ui import Colors as C
@@ -12,7 +13,32 @@ from backbone.log import quietly
 # Up-next context for the queue view: list of display titles + current index,
 # and the queue keys' cursor (a queue position, or None to follow the current).
 _queue_ctx: dict = {'titles': [], 'paths': [], 'index': 0, 'meta': [], 'visible': [],
-                    'cursor': None}
+                    'cursor': None, 'label': 'Queue'}
+# The same pane can list the current file's chapters instead (see use_list).
+_chapter_ctx: dict = {'titles': [], 'paths': [], 'index': 0, 'meta': [], 'visible': [],
+                      'cursor': None, 'label': 'Chapters'}
+_shown = [_queue_ctx]
+
+
+def use_list(name: str) -> None:
+    """Which list the pane, its cursor and its clicks work on: 'queue' or 'chapters'."""
+    _shown[0] = _chapter_ctx if name == 'chapters' else _queue_ctx
+
+
+def _ctx() -> dict:
+    return _shown[0]
+
+
+def set_chapter_context(chapters: list, current: int) -> None:
+    """Register the current file's chapters ([[start s, title], ...]) and the one playing."""
+    times = [ui.format_time(int(start)) for start, _t in chapters]
+    w = max(map(len, times), default=0)              # right-aligned, so the titles line up
+    titles = [f"{t.rjust(w)}  {chapter_label(chapters, i)[0]}" for i, t in enumerate(times)]
+    if titles != _chapter_ctx['titles']:
+        _chapter_ctx['meta'] = [{'title': t, 'artist': '', 'album': '', 'album_artist': ''} for t in titles]
+        _chapter_ctx['titles'] = titles
+        _chapter_ctx['cursor'] = None
+    _chapter_ctx['index'] = current
 
 
 def set_queue_context(titles: list[str], index: int, paths: list[str] | None = None) -> None:
@@ -30,19 +56,19 @@ def set_queue_context(titles: list[str], index: int, paths: list[str] | None = N
 
 
 def queue_cursor() -> int | None:
-    """The queue position the queue keys act on; None follows the current track."""
-    return _queue_ctx['cursor']
+    """The position the pane's keys act on; None follows the current item."""
+    return _ctx()['cursor']
 
 
 def set_queue_cursor(pos: int | None) -> None:
-    n = len(_queue_ctx['titles'])
-    _queue_ctx['cursor'] = None if pos is None or not n else max(0, min(n - 1, pos))
+    n = len(_ctx()['titles'])
+    _ctx()['cursor'] = None if pos is None or not n else max(0, min(n - 1, pos))
 
 
 def move_queue_cursor(delta: int) -> None:
-    """Move the cursor a row, starting from the current track."""
-    cur = _queue_ctx['cursor']
-    set_queue_cursor((_queue_ctx['index'] if cur is None else cur) + delta)
+    """Move the cursor a row, starting from the current item."""
+    cur = _ctx()['cursor']
+    set_queue_cursor((_ctx()['index'] if cur is None else cur) + delta)
 
 
 def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
@@ -65,6 +91,7 @@ def _queue_metadata(titles: list[str], paths: list[str]) -> list[dict]:
                 item['artist'] = data.get('artist') or ''
                 item['album'] = data.get('album') or ''
                 item['album_artist'] = data.get('album_artist') or ''
+                item['duration'] = data.get('duration') or 0
         meta.append(item)
     return meta
 
@@ -82,30 +109,44 @@ _QUEUE_RIGHT_MARGIN = 2 * ui.MARGIN_H   # breathing room before the screen edge
 _QUEUE_MIN_ROWS = 2         # the header and one track, or the pane isn't drawn at all
 
 
-# Screen row → (queue position, first column, last column) of each track row
-# drawn, so a click on one can play it.
-_queue_click_rows: dict[int, tuple[int, int, int]] = {}
+# Screen row → (position, first column, last column, which list) of each row
+# drawn, so a click on one can play it (the queue) or go to it (the chapters).
+# Cleared by each frame (the layout), as both lists may be on screen.
+_queue_click_rows: dict[int, tuple[int, int, int, str]] = {}
 
 
-def queue_click_index(row: int, col: int) -> int | None:
-    """The queue position of the track row clicked at (row, col), if any."""
+def queue_click_index(row: int, col: int) -> tuple[str, int] | None:
+    """(which list, position) of the row clicked at (row, col), if any."""
     hit = _queue_click_rows.get(row)
-    return hit[0] if hit and hit[1] <= col <= hit[2] else None
+    return (hit[3], hit[0]) if hit and hit[1] <= col <= hit[2] else None
 
 
-def _place_queue(log, top: int, left: int, width: int, rows: int) -> bool:
-    """Draw the queue at (top, left) within width × rows, or nothing when there
-    isn't room for even the header and one track. Returns whether it drew."""
-    _queue_click_rows.clear()
-    if rows < _QUEUE_MIN_ROWS or width < 10:
+def _place_queue(log, top: int, left: int, width: int, rows: int, heading: bool = True,
+                 kind: str = 'queue') -> bool:
+    """Draw the list `use_list` picked (`kind`: 'queue' or 'chapters') at
+    (top, left) within width × rows, or nothing when there isn't room for even
+    the header and one row. Returns whether it drew. `heading` False: no
+    heading line (a box's title says it: queue_title)."""
+    if rows < _QUEUE_MIN_ROWS - (0 if heading else 1) or width < 10:
         return False
-    lines = _build_queue_lines(width - _QUEUE_RIGHT_MARGIN, rows)
+    lines = _build_queue_lines(width - (_QUEUE_RIGHT_MARGIN if heading else 0), rows + (0 if heading else 1))
+    if not heading:
+        lines = lines[1:]
+    first = 1 if heading else 0                       # the line the tracks start on
     for qi, line in enumerate(lines):
         log(f"\033[{top + qi};{left}H{line}")
-        if qi and qi - 1 < len(_queue_ctx['visible']):
-            _queue_click_rows[top + qi] = (_queue_ctx['visible'][qi - 1], left,
-                                           left + ui.visual_len(line) - 1)
+        if qi >= first and qi - first < len(_ctx()['visible']):
+            _queue_click_rows[top + qi] = (_ctx()['visible'][qi - first], left,
+                                           left + ui.visual_len(line) - 1, kind)
     return True
+
+
+def queue_title() -> str:
+    """The queue's name and where it's at, for its box: "Queue · 3 of 12"."""
+    ctx = _ctx()
+    total, idx = len(ctx['titles']), ctx['index']
+    where = f"{idx + 1} of {total}" if 0 <= idx < total else str(total)
+    return f"{ctx['label']} · {where}" if total else ctx['label']
 
 
 def _queue_window(total: int, current: int | None, rows: int) -> list[int]:
@@ -121,70 +162,64 @@ def _queue_window(total: int, current: int | None, rows: int) -> list[int]:
     return list(range(current - before, current + after + 1))
 
 
-def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
-    """Render the play queue: a header with the position, then the current
-    track near the top (see _queue_window)."""
-    titles = _queue_ctx['titles']
-    idx = _queue_ctx['index']
-    meta = _queue_ctx['meta']
-    if not titles:
-        return [f"{C.DIM}(queue empty){C.RESET}"]
+_scrolled = [False]          # a row's title is scrolling: the player keeps redrawing (scrolled())
 
+
+def scrolled() -> bool:
+    """Whether the lists drawn since the last ask had a title scrolling; asks
+    once (the next frame says afresh)."""
+    was, _scrolled[0] = _scrolled[0], False
+    return was
+
+
+def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
+    """The queue as a list like every other: a heading with the position,
+    then the current track near the top (see _queue_window), each row its
+    title, who and what it's from (when the queue mixes them) and length. What's been played is dim; the playing track sits on the soft
+    bar; the queue keys' cursor on the highlight bar."""
+    ctx = _ctx()
+    titles, idx, meta = ctx['titles'], ctx['index'], ctx['meta']
+    if not titles:
+        return [f"{C.DIM}{ctx['label']}{C.RESET}",
+                f"{C.DIM}{'No chapters' if ctx is _chapter_ctx else 'Nothing queued'}{C.RESET}"]
     total = len(titles)
     current = idx if 0 <= idx < total else None
-    pos = f"  {current + 1} of {total}" if current is not None else f"  {total}"
-    out = [f"{C.DIM}QUEUE{pos}{C.RESET}"]
+    pos = f" · {current + 1} of {total}" if current is not None else f" · {total}"
+    out = [f"{C.DIM}{ctx['label']}{pos}{C.RESET}"]
     body_rows = max(0, max_rows - len(out))
     if body_rows <= 0:
         return out
-    cursor = _queue_ctx['cursor']
-    visible_indices = _queue_window(total, current, body_rows)
-    if cursor is not None and cursor not in visible_indices:     # follow the cursor out
-        visible_indices = _queue_window(total, cursor, body_rows)
-    _queue_ctx['visible'] = visible_indices          # row i+1 ↔ queue position, for clicks
+    cursor = ctx['cursor']
+    visible = _queue_window(total, current, body_rows)
+    if cursor is not None and cursor not in visible:              # follow the cursor out
+        visible = _queue_window(total, cursor, body_rows)
+    ctx['visible'] = visible                         # row i+1 ↔ list position, for clicks
 
-    show_artist = _queue_should_show_artist(meta)
-    show_album = _queue_should_show_album(meta)
-    cols = ['meta'] if show_artist or show_album else []
-
-    rows: list[str] = []
+    chapters = ctx is _chapter_ctx
     same_album = _queue_all_same_album(meta)
-    same_album_compilation = same_album and _queue_is_compilation_without_album_artist(meta)
-    rows_cells = []
-    row_kinds = []
-    prefixes = []
-    for item_idx in visible_indices:
-        item = meta[item_idx] if item_idx < len(meta) else {'title': titles[item_idx], 'artist': '', 'album': '', 'album_artist': ''}
-        prefix = (f"{C.ACCENT}▶ {C.RESET}" if item_idx == current
-                  else f"{C.ACCENT}› {C.RESET}" if item_idx == cursor else "  ")
-        if current is None:
-            row_kind = 'next'
-        elif item_idx < current:
-            row_kind = 'prev'
-        elif item_idx == current:
-            row_kind = 'current'
-        else:
-            row_kind = 'next'
-        rows_cells.append([
-            item.get('title', ''),
-            ui.strip_ansi(_queue_meta_value(item, same_album, same_album_compilation))
-        ])
-        row_kinds.append(row_kind)
-        prefixes.append(prefix)
-
-    specs = _queue_column_specs(cols)
-    # The ▶ / blank marker takes 2 columns ahead of every row: leave room for
-    # it, or each row runs 2 past the pane and wraps into the next screen row.
-    widths = _table_widths(rows_cells, specs, max_w, pointer_w=2, right_margin=0)
-
-    for item_idx, row_kind, prefix in zip(visible_indices, row_kinds, prefixes):
-        item = meta[item_idx] if item_idx < len(meta) else {'title': titles[item_idx], 'artist': '', 'album': '', 'album_artist': ''}
-        meta_text = _queue_meta_value(item, same_album, same_album_compilation)
-        line = _render_queue_row(item, cols, specs, widths, row_kind, prefix, meta_text,
-                                 highlight=item_idx == cursor)
-        rows.append(line)
-
-    out.extend(rows)
+    compilation = same_album and _queue_is_compilation_without_album_artist(meta)
+    detail = not chapters and (_queue_should_show_artist(meta) or _queue_should_show_album(meta))
+    cells = []
+    for i in visible:
+        item = meta[i] if i < len(meta) else {'title': titles[i]}
+        row = [item.get('title', '')]
+        if detail:
+            row.append(ui.strip_ansi(_queue_meta_value(item, same_album, compilation)))
+        if not chapters:
+            row.append(ui.format_time(int(item['duration'])) if item.get('duration') else "")
+        cells.append(row)
+    specs = _queue_column_specs(chapters, detail)
+    widths = _table_widths(cells, specs, max_w, pointer_w=0, right_margin=0)
+    # The row in focus (the cursor's, else the playing one) scrolls a title
+    # too long for its room, as a list's highlighted row does.
+    focus = cursor if cursor is not None else current
+    if focus in visible and widths and ui.visual_len(cells[visible.index(focus)][0]) > widths[0] > 0:
+        row = cells[visible.index(focus)]
+        row[0] = ui.marquee(row[0], widths[0], time.monotonic())
+        _scrolled[0] = True
+    for i, row in zip(visible, cells):
+        kind = 'prev' if current is not None and i < current else 'current' if i == current else 'next'
+        out.append(_render_queue_row(row, specs, widths, kind, max_w, highlight=i == cursor))
     return out
 
 
@@ -227,7 +262,7 @@ def _queue_should_show_artist(meta: list[dict]) -> bool:
 def _queue_meta_value(item: dict, same_album: bool = False, compilation_without_album_artist: bool = False) -> str:
     """The detail beside a queued title. On a one-album queue, the artist only when
     it differs from the album artist (always, on a compilation with no album
-    artist); otherwise artist - album."""
+    artist); otherwise artist · album."""
     if same_album or compilation_without_album_artist:
         artist = item.get('artist')
         album_artist = item.get('album_artist')
@@ -243,9 +278,8 @@ def _queue_meta_value(item: dict, same_album: bool = False, compilation_without_
     if item.get('artist'):
         pieces.append(format_tag_values(item['artist']))
     if item.get('album'):
-        album = item['album']
-        pieces.append(f"{C.DIM}{C.ITALIC}{album}{C.RESET}")
-    return ' - '.join(pieces)
+        pieces.append(item['album'])
+    return ' · '.join(pieces)
 
 
 def _queue_should_show_album(meta: list[dict]) -> bool:
@@ -255,53 +289,42 @@ def _queue_should_show_album(meta: list[dict]) -> bool:
     return len(set(albums)) > 1
 
 
-def _queue_column_specs(columns: list[str]) -> list[Column]:
-    if not columns:
-        return [Column(style='normal', align='left', flex=True, min_width=10, max_frac=1.0, gap=0)]
+def _queue_column_specs(chapters: bool, detail: bool) -> list[Column]:
+    """The queue's columns: the title, who and what it's from (first to go),
+    the length against the right edge (the next to go)."""
+    if chapters:
+        return [Column(flex=True, min_width=10, gap=0)]
+    specs = [Column(flex=True, min_width=10, gap=0)]
+    if detail:
+        specs.append(Column(flex=True, min_width=8, priority=1, gap=3))
+    return specs + [Column(align='right', pin=True, priority=2, gap=2)]
 
-    return [
-        Column(style='normal', align='left', flex=False, min_width=6, max_width=40, max_frac=0.65, gap=0),
-        Column(style='normal', align='left', flex=True, min_width=10, max_width=None, max_frac=1.0, priority=1),
-    ]
 
-
-def _render_queue_row(item: dict, columns: list[str], specs: list[Column], widths: list[int], row_kind: str,
-                      prefix: str, meta_text: str = '', highlight: bool = False) -> str:
-    title = item.get('title', '')
-    values = [title, meta_text] if columns else [title]
-
-    if row_kind == 'current':
-        title_style = f"{C.BOLD}{C.WHITE}"
-        other_style = f"{C.BOLD}{C.DIM}"
-    elif row_kind == 'prev':
-        title_style = C.DIM
-        other_style = C.DIM
-    else:
-        title_style = C.WHITE
-        other_style = C.DIM
-    if highlight:                                  # under the queue keys' cursor
-        title_style = f"{C.BOLD}{C.ACCENT}"
-
-    row = prefix
-    first = True
-    for i, width in enumerate(widths):
-        if width < 0:
+def _render_queue_row(cells: list, specs: list[Column], widths: list[int], kind: str,
+                      width: int, highlight: bool = False) -> str:
+    """One queue row `width` wide: the title as bright as the row matters
+    (dim once played, bold while playing), everything else dim; the playing
+    row on the soft bar, the cursor's on the highlight bar."""
+    title_at = 0
+    left, right = "", ""
+    for i, (spec, w) in enumerate(zip(specs, widths)):
+        if w < 0:
             continue
-        raw = values[i] if i < len(values) else ''
-        if ui.visual_len(raw) > width:
-            if width <= 1:
-                text = ui.clip_ansi(raw, width)
-            else:
-                # removesuffix, not a slice: with colour off RESET is "", and
-                # [:-0] would empty the title.
-                text = ui.clip_ansi(raw, max(0, width - 1)).removesuffix(C.RESET) + '…'
+        raw = cells[i] if i < len(cells) else ""
+        # Cut as plain text, so the "…" takes the cell's style (dim, or bold
+        # on the playing row) with the rest.
+        text = ui.truncate_text(ui.strip_ansi(raw), w) if ui.visual_len(raw) > w else raw
+        text = text.rjust(w) if spec.align == 'right' else text + " " * max(0, w - ui.visual_len(text))
+        style = (C.DIM if kind == 'prev' or i != title_at
+                 else C.BOLD if kind == 'current' else "")
+        piece = " " * (spec.gap if left or right else 0) + (f"{style}{text}{C.RESET}" if style else text)
+        if spec.pin:
+            right += piece
         else:
-            text = raw
-        text = text + ' ' * max(0, width - ui.visual_len(text))
-        styled = f"{title_style if i == 0 else other_style}{text}{C.RESET}"
-        if first:
-            row += styled
-            first = False
-        else:
-            row += ' ' * specs[i].gap + styled
-    return row
+            left += piece
+    line = left + " " * max(0, width - ui.visual_len(left) - ui.visual_len(right)) + right
+    if highlight:
+        return ui.on_bar(line, width)
+    if kind == 'current':
+        return ui.on_bar(line, width, C.BAR_DIM)
+    return line

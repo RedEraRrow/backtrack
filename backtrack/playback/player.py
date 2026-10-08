@@ -10,10 +10,12 @@ from __future__ import annotations
 import os
 import sys
 
+from backbone import nav
 from backbone.nav import QuitToTerminal
 import time
+from contextlib import contextmanager
 
-from backbone import keys, ui
+from backbone import keys, prompt, ui
 from backtrack.lyrics import lyric_pane
 from backtrack.lyrics.formats import (
     _parse_sylt, _parse_uslt, build_uslt_line_times, DialoguePlaybackState,
@@ -25,13 +27,12 @@ from backtrack.playback.player_ui import (
     _ui_state,
     toggle_metadata,
     toggle_help,
-    cycle_right_pane,
 )
 from backtrack.playback import player_ui
 from backtrack.playback.player_geom import geom
 from backtrack.playback.player_art import GROUP_COVER, IDLE_ART
-from backbone.log import log
-from backtrack.music_library import drop_moved
+from backbone.log import log, quietly
+from backtrack.music_library import chapter_at, drop_moved, library_entry
 from backbone.prompt import core as pc
 from backtrack.playback.session import (
     SESSION, is_client, has_other_windows,
@@ -40,7 +41,7 @@ from backbone.terminal_input import (
     get_key_non_blocking,
     raw_mode,
 )
-from backtrack import tuning as tune
+from backtrack import accents, tuning as tune
 
 _KEY_POLL_INTERVAL_S = tune.KEY_POLL_INTERVAL_S
 _LOOP_TICK_S = tune.LOOP_TICK_S
@@ -61,12 +62,13 @@ def _show_load_error(file_path: str) -> None:
 def music_player(file_path: str, is_grouping: bool = False,
                  queue_titles: list[str] | None = None, queue_index: int = 0,
                  queue_paths: list[str] | None = None, mode: str | None = None,
-                 then: str | None = None, start_at: float = 0.0) -> dict:
+                 then: str | None = None, start_at: float | None = None, view: bool = True) -> dict:
     """Start the shared session on ``file_path`` (with its queue) and open the
     player view. Audio keeps playing after the view is left; only Stop ends it.
     ``then``: a track picked from the list ``queue_paths``, played as the
     after-a-picked-track setting says (session.AFTER_PICK), not as a new queue.
-    ``start_at``: seconds into the track to start from (Resume).
+    ``start_at``: seconds into the track to start from (Resume); None resumes
+    a started audiobook where it was left.
     Returns a status
     dict: ``DETACH`` (minimised, still playing), ``STOP``, ``OK`` (queue
     finished), or ``ERROR``; q raises QuitToTerminal."""
@@ -93,33 +95,82 @@ def music_player(file_path: str, is_grouping: bool = False,
         if then is not None:
             return session.edit('play_picked', paths=paths, index=queue_index, then=then,
                                 titles=queue_titles)
-        ok = session.start(file_path, queue=paths, titles=queue_titles, index=queue_index,
-                           mode=mode, is_grouping=is_grouping)
-        if ok and start_at:
-            session.seek(start_at)              # from the track's start, just loaded
-        return ok
+        return session.start(file_path, queue=paths, titles=queue_titles, index=queue_index,
+                             mode=mode, is_grouping=is_grouping, start_at=start_at)
     if is_client():
         _play()
-        ui.show_status("▶ Sent to the session host.")
+        ui.show_status("Sent to the window that's playing.")
         return {"status": "OK"}
     ok = _play()
     if not ok:
         _show_load_error(file_path)
         return {"status": "ERROR"}
     SESSION.start_background_tick()
-    return open_player_view()
+    return open_player_view() if view else {"status": "OK"}
+
+
+NOW_PLAYING_TAB = "Now playing"
+
+
+def show_player() -> dict | None:
+    """Open the player on what's playing, here or in the session this window
+    joined (Ctrl-O, and the Now playing tab). None when it can't open."""
+    from backtrack.playback import session as sess
+    snap = sess.current_now_playing()
+    if not snap:
+        ui.show_status("Nothing is playing.")
+        return None
+    holder = snap.get('view_holder')
+    if holder and holder != sess.my_token():
+        ui.show_status("The player is open in another window.")
+        return None
+    return open_client_player_view() if sess.is_client() else open_player_view()
+
+
+def _tab_asked(key: str) -> int | None:
+    """The tab a key or tab-bar click in the player asks for. Refused while
+    the player is pinned open for another window, as leaving it is."""
+    tab = nav.tab_for(key)
+    if tab is not None and has_other_windows():
+        ui.show_status('Close the other window to leave the player', tune.TOAST_MEDIUM_S)
+        return None
+    return tab
+
+
+def _on_now_playing(view) -> dict:
+    """Run a player view (this window's or a joined one's) on the Now playing
+    tab: from any other tab, show that tab instead, returning once it's left.
+    Leaving the view for another tab detaches it and shows that tab; it opens
+    again when Now playing shows again (if anything still plays)."""
+    if nav.go_to_tab(NOW_PLAYING_TAB):
+        return {"status": "DETACH"}
+    while True:
+        result = view()
+        if result.get("status") != "TAB":
+            return result
+        if result.get("browse"):                 # a, A: the track's album or artist
+            from backtrack.menus.browse import open_in_browse
+            open_in_browse(*result["browse"])
+        else:
+            nav.switch_to(result["tab"])
 
 
 def open_player_view() -> dict:
     """Render + control the current session in the foreground until the user
     leaves. Does NOT stop the session on ``DETACH``: audio keeps playing.
     Claims the cross-window view lock; if another window holds it, just detaches."""
+    return _on_now_playing(_host_view)
+
+
+def _host_view() -> dict:
+    """open_player_view's view: until it's left, or another tab asked for (``TAB``)."""
     from backtrack.playback.session import my_token
     if not SESSION.is_active():
         return {"status": "OK"}
     if not SESSION.acquire_view(my_token()):
         return {"status": "DETACH"}          # a client window has the player open
     SESSION.view_attached = True
+    player_ui.view_chrome(True)
     try:
         while True:
             result = _player_view_loop()
@@ -130,6 +181,7 @@ def open_player_view() -> dict:
             if not _idle_view(SESSION.is_active, SESSION.get_volume()):
                 return {"status": "OK"}
     finally:
+        player_ui.view_chrome(False)
         SESSION.view_attached = False
         SESSION.release_view(my_token())
         ui.clear_screen()
@@ -153,16 +205,79 @@ def _seek_step(key: str, duration: float, elapsed: float) -> tuple[float, str] |
     return secs, f"Seek {'Forward +' if secs > 0 else 'Backward -'}{abs(secs)}s"
 
 
-def _queue_key(key: str, session, queue: list, index: int) -> bool:
+def _speed_or_sleep(act: str | None, session, rate: float) -> bool:
+    """The speed and sleep-timer keys, for the host player and a joined window's.
+    Returns whether `act` was one."""
+    if act in ('player.slower', 'player.faster'):
+        r = session.set_rate(rate + (tune.RATE_STEP if act == 'player.faster' else -tune.RATE_STEP))
+        ui.show_status(f'Speed ×{r:g}' if r is not None else 'Speed is for audiobooks', tune.TOAST_SHORT_S)
+        return True
+    if act == 'player.sleep':
+        mode = session.cycle_sleep()
+        ui.show_status('Sleep timer off' if mode is None else 'Sleep at the end of the chapter'
+                       if mode == 'chapter' else f'Sleep in {mode} min', tune.TOAST_MEDIUM_S)
+        return True
+    return False
+
+
+def _track_key(act: str | None, path: str | None, session) -> bool | dict:
+    """e, a and A on the playing track, for the host player and a joined
+    window's: its tag editor (True: the player is then drawn afresh), or
+    its album or artist in Browse (the result for the view to return, to
+    leave it as a tab key does). False when `act` isn't one."""
+    if not path or act not in ('player.edit', 'player.album', 'player.artist'):
+        return False
+    if act != 'player.edit':
+        if nav.TABS:
+            return {"status": "TAB", "tab": None,
+                    "browse": ('albums' if act == 'player.album' else 'artists', path)}
+        ui.show_status("Browse is in the app, not this window.", tune.TOAST_MEDIUM_S)
+        return True
+    from backtrack.id3.browser import inspect_tag_loop
+    from backtrack.music_library import live_library
+    ui.clear_screen()
+    with _out_of_view(session):
+        inspect_tag_loop(path, library_metadata=library_entry(path), library=live_library())
+    sys.stdout.write("\033[?1000h\033[?1006h")      # the editor had the mouse
+    ui.clear_screen()
+    return True
+
+
+def _choose_panels(has: dict) -> None:
+    """`w`: which panels show, ticked in a box over the player (one this track
+    has nothing for says so, and stays as set for the tracks that do), and
+    Arrange, to move them around."""
+    rows = [prompt.Choice(title=label if has.get(kind) else f"{label}  {ui.Colors.DIM}none here{ui.Colors.RESET}",
+                          value=kind) for kind, label in player_ui.PANELS]
+    before = player_ui.shown_panels()
+    ticked, picked = prompt.overlay_checklist("Panels", rows, set(before),
+                                              [prompt.Choice(title="Arrange panels…", value='arrange')])
+    kinds = [k for k in before if k in ticked] + [k for k, _l in player_ui.PANELS if k in ticked and k not in before]
+    if kinds != before:
+        player_ui.set_panels(kinds)
+    if picked == 'arrange':
+        player_ui.arrange_start()
+
+
+def _queue_key(key: str, session, queue: list, index: int, chapters: list | None = None) -> bool:
     """A queue-panel key (player_queue scope, live while the panel shows):
     move the cursor, or edit the queue at it through `session.edit` (this
-    window's session, or the one joined). Returns whether it was one."""
+    window's session, or the one joined). With the chapters showing instead,
+    only the cursor and going to a chapter apply. Returns whether it was one."""
     act = keys.action(key, 'player_queue') if key else None
     if not (act and act.startswith('player_queue.')):
         return False
     name = act.split('.', 1)[1]
     if name in ('up', 'down'):
         player_ui.move_queue_cursor(-1 if name == 'up' else 1)
+        return True
+    if player_ui.chapters_listed():
+        cur = player_ui.queue_cursor()
+        if name != 'play':
+            return False
+        if cur is not None and 0 <= cur < len(chapters or []):
+            session.seek_to(chapters[cur][0])
+            player_ui.set_queue_cursor(None)
         return True
     cur = player_ui.queue_cursor()
     pos = index if cur is None else cur
@@ -182,10 +297,41 @@ def _queue_key(key: str, session, queue: list, index: int) -> bool:
     return True
 
 
-def _idle_view(woken, volume: int) -> bool:
+@contextmanager
+def _out_of_view(session):
+    """A screen opened from the player (the tag editor, the command line):
+    the view let go of meanwhile, so the background tick carries the queue on
+    and that screen shows the now-playing box and the app's chrome."""
+    from backtrack.playback.session import my_token
+    session.release_view(my_token())
+    if session is SESSION:
+        SESSION.view_attached = False
+    player_ui.view_chrome(False)
+    try:
+        yield
+    finally:
+        player_ui.view_chrome(True)
+        session.acquire_view(my_token())
+        if session is SESSION:
+            SESSION.view_attached = True
+
+
+def _command_line_detached(session) -> bool:
+    """`:` in the player: the command line, out of the view. Whether it ran
+    (the player is then drawn again: its art is an image)."""
+    with _out_of_view(session):
+        return prompt.open_command_line() is not None
+
+
+def _idle_view(woken, volume: int, own_tab: bool = False):
     """The empty player a pinned window shows while nothing plays and another
     window browses the session (#14). Returns True once ``woken()`` says there's
-    something to show, False when the other window has gone (back to browse)."""
+    something to show, False when the other window has gone (back to browse).
+
+    `own_tab`: it's the Now playing tab with nothing playing, which can be left
+    like the player (DETACH, or TAB for another tab) and resumes (r) what the
+    last run left."""
+    from backtrack.playback.session import saved_queue
     from mutagen.id3 import ID3, TIT2, TPE1
     placeholder = ID3()
     placeholder.add(TIT2(text=["Not playing"]))
@@ -193,11 +339,14 @@ def _idle_view(woken, volume: int) -> bool:
     placeholder.add(TPE1(text=["\u2800"]))
     player_ui.set_queue_context([], 0, [])
     last_sig = None
+    if own_tab and saved_queue():
+        ui.show_status(f"{keys.label('player.resume', first=True)}: resume where the last run left off",
+                       tune.TOAST_MEDIUM_S)
     with raw_mode(sys.stdin):
         while True:
             if woken():
                 return True
-            if not has_other_windows():
+            if not own_tab and not has_other_windows():
                 return False
             size = ui.get_terminal_size()
             if size != last_sig:
@@ -205,11 +354,21 @@ def _idle_view(woken, volume: int) -> bool:
                     "", placeholder, IDLE_ART, size, is_paused=True, volume=volume)
                 update_progress_ui(prog_row, 0, 0, width)
                 last_sig = size
+            if pc.float_tick():                # the volume's box went: the art it covered back
+                player_ui.redraw_art_image()
             pc.render_status_bar()
             key = get_key_non_blocking() or ''
             act = keys.action(key, 'player') if key else None
+            if own_tab and key and (tab := _tab_asked(key)) is not None:
+                return {"status": "TAB", "tab": tab}
+            if act == 'player.back' and own_tab:
+                return {"status": "DETACH"}
             if act == 'player.back':
                 ui.show_status('Close the other window to leave the player', tune.TOAST_MEDIUM_S)
+            elif act == 'player.resume' and own_tab:
+                from backtrack.menus.play import resume_queue
+                resume_queue(view=False)        # it plays; woken() opens the player
+                last_sig = None
             elif key == 'FOCUS_IN':
                 last_sig = None
             elif act == 'player.quit':
@@ -219,6 +378,32 @@ def _idle_view(woken, volume: int) -> bool:
                 toggle_help()
                 last_sig = None
             time.sleep(_LOOP_TICK_S)
+
+
+def _empty_view() -> dict:
+    """Now playing with nothing playing: the empty player, until something
+    plays (PLAYING, for the player to open), it's left (DETACH) or another
+    tab is asked for (TAB)."""
+    from backtrack.playback import session as sess
+    player_ui.view_chrome(True)
+    try:
+        r = _idle_view(lambda: bool(sess.current_now_playing()), SESSION.get_volume(), own_tab=True)
+    finally:
+        player_ui.view_chrome(False)
+        ui.clear_screen()
+    return {"status": "PLAYING"} if r is True else r
+
+
+def now_playing_tab() -> None:
+    """The Now playing tab: the player, or the empty player while nothing
+    plays, which opens into the player when something starts."""
+    from backtrack.playback import session as sess
+    while True:
+        if sess.current_now_playing():
+            show_player()
+            return
+        if _on_now_playing(_empty_view).get("status") != "PLAYING":
+            return
 
 
 def _step_volume(remote, target, delta: int):
@@ -234,12 +419,16 @@ def _step_volume(remote, target, delta: int):
 
 
 def open_client_player_view() -> dict:
+    """The player view for a *joined* window; see _client_view."""
+    return _on_now_playing(_client_view)
+
+
+def _client_view() -> dict:
     """Full player view for a *joined* window (#14): renders the host's
     current track from its snapshots + the track file on the shared disk, with
     transport routed to the host. Elapsed is interpolated between snapshots for a
     smooth progress bar. No lyrics pane on a client (see player_ui `lyrics_pane`)."""
     from backtrack.playback import session as sess
-    from mutagen.id3 import ID3
 
     remote = sess.active_session()
     np0 = remote.now_playing()
@@ -257,6 +446,9 @@ def open_client_player_view() -> dict:
     last_sig = None
     audio = None
     duration = 0.0
+    chapters: list = []
+    chapter_i = -1
+    next_scroll = 0.0                      # when a scrolling title next moves (ui.marquee)
     vol_target = None                      # (level, time) of the last +/- press
     volume = sess.clamp_volume(np0.get('volume'))
     prog_row = 0
@@ -264,6 +456,7 @@ def open_client_player_view() -> dict:
     width = ui.get_terminal_size()[0]
     player_ui._ui_state['lyrics_pane'] = False
     player_ui.refresh_player_settings()
+    player_ui.view_chrome(True)
     try:
         with raw_mode(sys.stdin):
             sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
@@ -302,29 +495,45 @@ def open_client_player_view() -> dict:
                     tuple(np.get('titles') or []),
                     size,
                 )
-                if sig != last_sig:
+                scroll_due = _ui_state.get('scrolling') and time.monotonic() >= next_scroll
+                if sig != last_sig or scroll_due:
+                    next_scroll = time.monotonic() + ui.MARQUEE_STEP_S
                     if last_sig is None or fp != last_sig[0] or np.get('generation') != last_sig[3]:
-                        try:
-                            audio = ID3(fp)
-                        except Exception:
-                            # No ID3 tag (an M4A, an untagged MP3): an empty one,
-                            # as the host player uses; the layout reads from it.
-                            audio = ID3()
+                        audio = sess.player_tags(fp)       # as the host player reads it
+                        with quietly():
+                            accents.apply(fp)              # this window follows the host's track
+                        chapters = library_entry(fp).get('chapters') or []
+                        chapter_i = chapter_at(chapters, float(np.get('elapsed') or 0.0))
+                        player_ui.set_chapter(chapters, chapter_i)
+                    _ui_state['book'] = bool(np.get('is_book'))
                     duration = float(np.get('duration') or 0.0)
                     prog_row, ctrl_row, _lr, width, _br = draw_full_ui(
                         fp, audio, None, size, is_paused=bool(np.get('paused')),
                         volume=volume)
                     last_sig = sig
+                if pc.float_tick():                # the volume's box went: the art it covered back
+                    player_ui.redraw_art_image()
                 pc.render_status_bar()
 
                 elapsed = float(np.get('elapsed') or 0.0)
+                rate = float(np.get('rate') or 1.0)
                 if not np.get('paused'):
-                    elapsed += max(0.0, time.time() - (remote.latest_at() or time.time()))
+                    elapsed += rate * max(0.0, time.time() - (remote.latest_at() or time.time()))
                 if duration:
                     elapsed = min(elapsed, duration)
-                update_progress_ui(prog_row, elapsed, duration, width)
+                if chapter_at(chapters, elapsed) != chapter_i:
+                    chapter_i = chapter_at(chapters, elapsed)
+                    player_ui.set_chapter(chapters, chapter_i)
+                    last_sig = None                        # the chapter line and panel move on
+                update_progress_ui(prog_row, elapsed, duration, width, chapters,
+                                   player_ui.timer_extra(rate, np.get('sleep_left')))
 
                 key = get_key_non_blocking()
+                if key and player_ui.arrange_key(key):     # arranging the panels: its keys first
+                    last_sig = None
+                    continue
+                if key and (tab := _tab_asked(key)) is not None:
+                    return {"status": "TAB", "tab": tab}
                 if key:
                     act = None
                     if key.startswith('MOUSE_CLICK:'):
@@ -334,27 +543,34 @@ def open_client_player_view() -> dict:
                         _q = np.get('queue') or []
                         if _act in ('prev', 'next', 'playpause'):
                             act, key = f'player.{_act}', ''
-                        elif _qi is not None and _qi < len(_q):
-                            remote.edit('jump', pos=_qi, path=_q[_qi]); key = ''
+                        elif _qi is not None and _qi[0] == 'chapters':
+                            if _qi[1] < len(chapters):
+                                remote.seek_to(chapters[_qi[1]][0])
+                            key = ''
+                        elif _qi is not None and _qi[1] < len(_q):
+                            remote.edit('jump', pos=_qi[1], path=_q[_qi[1]]); key = ''
                         else:
-                            _vol = player_ui.volume_from_click(_mr, _mc)
                             _frac = player_ui.progress_from_click(_mr, _mc)
-                            if _vol is not None:
-                                remote.set_volume(_vol); key = ''
-                            elif _frac is not None and duration:
+                            if _frac is not None and duration:
                                 # Click anywhere on the bar to jump there (the
                                 # session only takes relative seeks).
                                 remote.seek(_frac * duration - elapsed); key = ''
+                            elif chapters and player_ui.time_clicked(_mr, _mc):
+                                act, key = 'player.chapter_time', ''
                             else:
                                 _hk = player_ui.hint_click_key(_mr, _mc)
                                 key = _hk or ''
                     if _ui_state.get('show_queue') and _queue_key(
-                            key, remote, np.get('queue') or [], int(np.get('index') or 0)):
+                            key, remote, np.get('queue') or [], int(np.get('index') or 0), chapters):
                         last_sig = None                # the host's edit arrives in the next snapshot
                         continue
                     act = act or (keys.action(key, 'player') if key else None)
                     if key == 'FOCUS_IN':
                         last_sig = None                # force a full redraw
+                    elif key == ':' and _command_line_detached(remote):
+                        sys.stdout.write("\033[?1000h\033[?1006h")
+                        ui.clear_screen()
+                        last_sig = None
                     elif act == 'player.playpause':
                         remote.pause_toggle()
                     elif (step := _seek_step(key, duration, elapsed)) is not None:
@@ -363,10 +579,21 @@ def open_client_player_view() -> dict:
                         remote.next()
                     elif act == 'player.prev':
                         remote.prev()
+                    elif _speed_or_sleep(act, remote, rate):
+                        pass
+                    elif done := _track_key(act, fp, remote):
+                        if isinstance(done, dict):
+                            return done
+                        last_sig = None
+                    elif act == 'player.chapter_time' and chapters:
+                        player_ui.toggle_chapter_time()
+                        last_sig = None
                     elif act == 'player.vol_up':
                         vol_target = _step_volume(remote, vol_target, +5)
+                        player_ui.volume_changed()
                     elif act == 'player.vol_down':
                         vol_target = _step_volume(remote, vol_target, -5)
+                        player_ui.volume_changed()
                     elif act == 'player.back':
                         # Pinned open while another window browses this session
                         # (#14): the two windows stay specialised until one closes.
@@ -384,14 +611,19 @@ def open_client_player_view() -> dict:
                         ui.clear_screen()
                         (toggle_metadata if act == 'player.meta' else toggle_help)()
                         last_sig = None                # redraw with the new layout
+                    elif act == 'player.tabs' and nav.TABS:
+                        ui.clear_screen()
+                        player_ui.toggle_tabs()
+                        last_sig = None
                     elif act == 'player.panel' and audio is not None:
-                        if cycle_right_pane(False, bool(audio.getall('TMCL') or audio.getall('TIPL')),
-                                            player_ui.has_queue()):
-                            ui.clear_screen()
-                            last_sig = None
+                        _choose_panels({'lyrics': False, 'people': bool(audio.getall('TMCL') or audio.getall('TIPL')),
+                                        'queue': player_ui.has_queue(), 'chapters': bool(chapters)})
+                        ui.clear_screen()
+                        last_sig = None
                 time.sleep(_LOOP_TICK_S)
     finally:
         player_ui._ui_state['lyrics_pane'] = True
+        player_ui.view_chrome(False)
         sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse on exit
         sys.stdout.flush()
         remote.release_view(token)
@@ -415,6 +647,8 @@ def _player_view_loop() -> dict:
     has_credits = False
     has_lyrics = False
     dialogue_state = None
+    chapters: list = []
+    chapter_i = -1
 
     # --- view / loop state ---
     last_size = ui.get_terminal_size()
@@ -424,16 +658,21 @@ def _player_view_loop() -> dict:
     pane = None
     current_width = last_size[0]
     last_q_sig: tuple | None = None
+    next_scroll = 0.0                    # when a scrolling title next moves (ui.marquee)
 
     def _prepare() -> None:
         """(Re)load per-track render state from the session for the current track."""
         nonlocal track_path, audio, duration, pre_art, sylt_data, uslt_lines, line_times
         nonlocal is_uslt, has_credits, has_lyrics, dialogue_state
-        nonlocal pane
+        nonlocal pane, chapters, chapter_i
         t = SESSION.track()
         fp = track_path = t.file_path
         audio = t.audio
         duration = t.duration
+        chapters = t.chapters
+        chapter_i = chapter_at(chapters, SESSION.elapsed())
+        player_ui.set_chapter(chapters, chapter_i)
+        _ui_state['book'] = t.is_book
         # Keep the in-player queue pane ('w' cycle) in sync with the session queue.
         player_ui.set_queue_context(t.titles, t.index, t.queue)
         pre_art = GROUP_COVER if t.is_grouping else None
@@ -479,10 +718,10 @@ def _player_view_loop() -> dict:
         # Say it out loud. Paced-out timing looks right for the first minute and is
         # a line adrift by the last, which is not something a still screen shows.
         if dialogue_state.is_active() and dialogue_state.timing_source == 'estimated':
-            ui.show_status("⚠ No transcript: lyric timing is estimated and will drift", tune.TOAST_LONG_S)
+            ui.show_status("No transcript, so the lyric timing is a guess", tune.TOAST_LONG_S)
 
         if audio and audio.getall('EQU2'):
-            ui.show_status("♫ Equaliser applied", tune.TOAST_LONG_S)
+            ui.show_status("Equaliser on", tune.TOAST_LONG_S)
 
     def _redraw_full() -> None:
         """Full-screen redraw for the current track + view state; sets row positions."""
@@ -493,7 +732,7 @@ def _player_view_loop() -> dict:
             is_paused=SESSION.is_paused(), volume=vol,
         )
 
-        if pane and _ui_state['show_lyrics'] and not _ui_state.get('show_queue'):
+        if pane and player_ui.lyrics_laid_out():
             # A full redraw has just wiped the screen, so what the pane last
             # painted is gone. Its record is of rows it wrote, not rows that
             # survived, so it is told, and repaints in step with the rest of the
@@ -519,11 +758,8 @@ def _player_view_loop() -> dict:
         status_ln, _ = _controls_line(
             is_uslt, SESSION.is_paused(), SESSION.get_volume(),
             has_lyrics=has_lyrics, has_credits=has_credits)
-        sys.stdout.write(f"\033[{ctrl_row};1H\033[K{status_ln}")
+        player_ui.write_controls(ctrl_row, status_ln)     # through the painter, cell by cell
         sys.stdout.flush()
-        # Written outside the painter: have it forget the row, or the next full
-        # frame skips it as unchanged (a paused ⏵ stayed after skipping track).
-        pc.screen_forget_rows(ctrl_row, ctrl_row)
 
     player_ui.set_resizing(False)      # in case the last visit ended mid-resize
     with raw_mode(sys.stdin):
@@ -567,6 +803,8 @@ def _player_view_loop() -> dict:
                 # (or already settled): send it again.
                 player_ui.redraw_art_image()
 
+            if pc.float_tick():                # the volume's box went: the art it covered back
+                player_ui.redraw_art_image()
             pc.render_status_bar()
 
             current_track_sig = SESSION.generation
@@ -580,6 +818,8 @@ def _player_view_loop() -> dict:
             adv = SESSION.tick()
             if adv == 'stopped':
                 return {"status": "OK"}
+            if adv == 'slept':
+                update_ctrl_ui()
             if adv == 'changed':
                 last_track_sig = SESSION.generation
                 _prepare()
@@ -598,8 +838,17 @@ def _player_view_loop() -> dict:
 
             elapsed_ms = mp.get_time()
             elapsed = elapsed_ms / 1000.0 if elapsed_ms >= 0 else 0.0
+            if chapter_at(chapters, elapsed) != chapter_i:
+                chapter_i = chapter_at(chapters, elapsed)
+                player_ui.set_chapter(chapters, chapter_i)
+                _redraw_full()                     # the chapter line and panel move on
 
             key = get_key_non_blocking()
+            if key and player_ui.arrange_key(key):         # arranging the panels: its keys first
+                _redraw_full()
+                continue
+            if key and (tab := _tab_asked(key)) is not None:
+                return {"status": "TAB", "tab": tab}
             if key:
                 act = None
                 if key.startswith('MOUSE_CLICK:'):
@@ -610,22 +859,20 @@ def _player_view_loop() -> dict:
                     _qi = player_ui.queue_click_index(_mr, _mc)
                     if _act in ('prev', 'next', 'playpause'):
                         act, key = f'player.{_act}', ''
+                    elif _qi is not None and _qi[0] == 'chapters':
+                        if _qi[1] < len(chapters):
+                            SESSION.seek_to(chapters[_qi[1]][0])
+                        key = ''
                     elif _qi is not None:
                         # A track row in the queue pane: play it. The track
                         # change is picked up (and redrawn) at the top of the loop.
                         _t = SESSION.track()
-                        if _qi != _t.index and _qi < len(_t.queue):
-                            SESSION.edit('jump', pos=_qi, path=_t.queue[_qi])
+                        if _qi[1] != _t.index and _qi[1] < len(_t.queue):
+                            SESSION.edit('jump', pos=_qi[1], path=_t.queue[_qi[1]])
                         key = ''
                     else:
-                        _vol = player_ui.volume_from_click(_mr, _mc)
                         _frac = player_ui.progress_from_click(_mr, _mc)
-                        if _vol is not None:
-                            v = SESSION.set_volume(_vol)
-                            ui.show_status(f'Volume: {v}%', tune.TOAST_SHORT_S)
-                            player_ui.draw_volume_bar(v); update_ctrl_ui()
-                            key = ''
-                        elif _frac is not None and duration:
+                        if _frac is not None and duration:
                             # Click anywhere on the bar to jump there; SESSION only
                             # takes relative seeks, so aim from where we are.
                             _tgt = _frac * duration
@@ -633,13 +880,15 @@ def _player_view_loop() -> dict:
                             ui.show_status(f'Seek to {ui.format_time(int(_tgt))}', tune.TOAST_SHORT_S)
                             update_ctrl_ui()
                             key = ''
+                        elif chapters and player_ui.time_clicked(_mr, _mc):
+                            act, key = 'player.chapter_time', ''
                         else:
                             _hk = player_ui.hint_click_key(_mr, _mc)
                             key = _hk or ''
 
                 if _ui_state.get('show_queue'):
                     _t = SESSION.track()
-                    if _queue_key(key, SESSION, _t.queue, _t.index):
+                    if _queue_key(key, SESSION, _t.queue, _t.index, chapters):
                         _t = SESSION.track()
                         player_ui.set_queue_context(_t.titles, _t.index, _t.queue)
                         last_q_sig = (tuple(_t.titles), _t.index)
@@ -649,6 +898,10 @@ def _player_view_loop() -> dict:
                 if key == 'FOCUS_OUT':
                     pass
                 elif key == 'FOCUS_IN':
+                    _redraw_full()
+                elif key == ':' and _command_line_detached(SESSION):
+                    sys.stdout.write("\033[?1000h\033[?1006h")   # the command's screens had the mouse
+                    ui.clear_screen()
                     _redraw_full()
                 elif act == 'player.playpause':
                     SESSION.pause_toggle()
@@ -678,32 +931,47 @@ def _player_view_loop() -> dict:
                     return {"status": "STOP"}
                 elif act == 'player.quit':
                     raise QuitToTerminal()
+                elif _speed_or_sleep(act, SESSION, SESSION.rate):
+                    pass
+                elif done := _track_key(act, track_path, SESSION):
+                    if isinstance(done, dict):
+                        return done
+                    _prepare()                     # the tags may have changed
+                    _redraw_full()
+                elif act == 'player.chapter_time' and chapters:
+                    player_ui.toggle_chapter_time()
+                    update_ctrl_ui()
                 elif act == 'player.vol_up':
-                    v = SESSION.set_volume(SESSION.get_volume() + 5)
-                    ui.show_status(f'Volume: {v}%', tune.TOAST_SHORT_S)
-                    player_ui.draw_volume_bar(v)
-                    update_ctrl_ui()
+                    SESSION.set_volume(SESSION.get_volume() + 5)
+                    player_ui.volume_changed()
                 elif act == 'player.vol_down':
-                    v = SESSION.set_volume(SESSION.get_volume() - 5)
-                    ui.show_status(f'Volume: {v}%', tune.TOAST_SHORT_S)
-                    player_ui.draw_volume_bar(v)
-                    update_ctrl_ui()
+                    SESSION.set_volume(SESSION.get_volume() - 5)
+                    player_ui.volume_changed()
                 elif pc.is_hints_key(key, key_free=True):
                     ui.clear_screen()
                     toggle_help()
                     _redraw_full()
                 elif act == 'player.panel':
-                    if cycle_right_pane(has_lyrics, has_credits, player_ui.has_queue()):
-                        ui.clear_screen()
-                        _redraw_full()
+                    _choose_panels({'lyrics': has_lyrics, 'people': has_credits,
+                                    'queue': player_ui.has_queue(), 'chapters': bool(chapters)})
+                    ui.clear_screen()
+                    _redraw_full()
                 elif act == 'player.meta':
                     ui.clear_screen()
                     toggle_metadata()
                     _redraw_full()
+                elif act == 'player.tabs' and nav.TABS:
+                    ui.clear_screen()
+                    player_ui.toggle_tabs()
+                    _redraw_full()
 
-            update_progress_ui(prog_row, elapsed, duration, current_width)
+            update_progress_ui(prog_row, elapsed, duration, current_width, chapters,
+                               player_ui.timer_extra(SESSION.rate, SESSION.sleep_left()))
+            if _ui_state.get('scrolling') and time.monotonic() >= next_scroll:
+                next_scroll = time.monotonic() + ui.MARQUEE_STEP_S
+                _redraw_full()                    # a title too long for its room moves on
 
-            if pane and _ui_state.get('show_lyrics', True) and not _ui_state.get('show_queue'):
+            if pane and player_ui.lyrics_laid_out():
                 # Every tick takes the same path: the frame is a function of the
                 # clock and the geometry and nothing else. A seek is just a
                 # different number arriving, a resize just a different box;

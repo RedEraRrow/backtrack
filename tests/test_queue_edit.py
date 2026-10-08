@@ -14,7 +14,7 @@ ALBUMS = {f"/m/{a}{n}.mp3": a for a in "AB" for n in range(1, 4)}
 
 class _Session(sess.PlaybackSession):
     """No audio: loading a track just records it."""
-    def _load(self, path):
+    def _load(self, path, start_at=0.0):
         self.file_path = path
         self.mp = object()
         return True
@@ -234,10 +234,12 @@ class PlayerQueueKeysTest(unittest.TestCase):
     def test_the_cursor_row_is_marked(self):
         self.qp.set_queue_cursor(3)
         from backbone import ui
-        lines = [ui.strip_ansi(l) for l in self.qp._build_queue_lines(60, 8)]
+        raw = self.qp._build_queue_lines(60, 8)
         # (titles come from the files' names here: they don't exist)
-        self.assertTrue(any(l.split()[:2] == ["›", "3"] for l in lines))
-        self.assertTrue(any(l.split()[:2] == ["▶", "1"] for l in lines))
+        rows = raw[1:]                                          # positions 1-5, the window from the top
+        self.assertIn(ui.Colors.BAR, rows[3])                   # the cursor: the highlight bar
+        self.assertIn(ui.Colors.BAR_DIM, rows[1])               # the playing track: the soft one
+        self.assertEqual(ui.strip_ansi(rows[1]).split()[0], "1")     # its title ("1.mp3"), no position before it
 
 
 class SavedQueueTest(unittest.TestCase):

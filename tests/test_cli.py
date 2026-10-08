@@ -751,7 +751,7 @@ class BulkCommandsTest(CliTest):
         code, stdout, _err = self.run_cli('bulk', 'pictype', '--album', 'rio',
                                           '--yes')
         self.assertEqual(code, out.OK)
-        self.assertIn('No MP3s with embedded art', stdout)
+        self.assertIn('No MP3/WAV/AIFF files with embedded art', stdout)
 
     def test_art_embeds_a_shared_cover(self):
         from backtrack.id3 import tag_writer as tw
@@ -1189,7 +1189,7 @@ class FeedCommandsTest(CliTest):
         code, stdout, _err = self.run_cli('feed', 'sync',
                                           '--output', self.podcasts)
         self.assertEqual(code, out.OK)
-        self.assertIn('No feeds added', stdout)
+        self.assertIn('No feeds yet', stdout)
 
     def test_sync_with_nowhere_to_put_them_is_a_usage_error(self):
         self.run_cli('feed', 'add', self.url, '--name', 'local')

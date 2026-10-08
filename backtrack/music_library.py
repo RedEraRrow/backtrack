@@ -5,26 +5,29 @@ import json
 import re
 import tempfile
 import threading
+from bisect import bisect_right
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import mutagen
-from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from backtrack.config import setting
-from backbone.log import quietly
+from backtrack.id3.tag_formats import (  # noqa: F401 (MP4_EXTENSIONS, compilation_flag re-exported)
+    AUDIO_EXTENSIONS, MP4_EXTENSIONS, PAIR_HOMES, compilation_flag, credits as tag_credits, kind as tag_kind,
+    load_id3, open_tags, pair, tags_kind, texts)
+from backbone.log import log, quietly
 from backtrack import tuning as tune
 
 
 
-VALID_AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.mp4', '.m4p', '.aac')
+VALID_AUDIO_EXTENSIONS = AUDIO_EXTENSIONS
 SYNC_INTERVAL_SECONDS = 30
 
 # Bump whenever `_get_default_metadata` gains a field or an extractor learns a new
 # tag: cached entries carrying an older version are re-read on the next sync even
 # though their mtime hasn't moved.
-METADATA_VERSION = 7
+METADATA_VERSION = 11
 
 
 def _default_cache_dir() -> Path:
@@ -314,6 +317,7 @@ def _get_default_metadata(file_path: str) -> dict:
         "lyricist": "",
         "year": "Unknown Year",
         "grouping": "",
+        "copyright": "",
         "work": "",
         "movement_name": "",
         "movement_number": "0",
@@ -325,7 +329,15 @@ def _get_default_metadata(file_path: str) -> dict:
         # for search to match against, and can't be split back apart: a role
         # may itself contain commas ("Sundry Ruffians, Publishers, and …").
         "credits": [],
+        # [[start seconds, title], ...] in play order; empty without chapters.
+        "chapters": [],
         "duration": 0.0,
+        # The audio itself (see format_label): codec, kbps, Hz, bits, channels.
+        "format": "",
+        "bitrate": 0,
+        "sample_rate": 0,
+        "bit_depth": 0,
+        "channels": 0,
         "cached_mtime": 0,
         "meta_version": METADATA_VERSION,
     }
@@ -360,100 +372,151 @@ def get_metadata(file_path: str) -> dict:
     except OSError:
         pass
 
-    # Extract from ID3 tags (MP3)
-    if file_path.lower().endswith('.mp3'):
+    audio = tags = None
+    with quietly():
+        audio = mutagen.File(file_path)  # type: ignore[reportPrivateImportUsage]
+        tags = audio.tags
+    if tag_kind(file_path) == 'id3':
+        # An MP3's ID3 header is read even when its audio won't parse.
         with quietly():
-            tags = ID3(file_path)
-            metadata.update(_extract_id3_metadata(tags))
-
-    # Extract from MP4 tags (M4A, MP4, M4P)
-    elif file_path.lower().endswith(('.m4a', '.mp4', '.m4p')):
-        try:
-            tags = MP4(file_path)
-            if tags:  # Only process if tags exist
-                extracted = _extract_mp4_metadata(tags)
-                metadata.update(extracted)
-        except (mutagen.MutagenError, OSError):  # type: ignore[reportPrivateImportUsage]
-            pass
+            tags = load_id3(file_path)
+    if tags_kind(tags) != 'unsupported':
+        metadata.update(_extract_tags(tags))
+    # An MP4's chapters are the file's, not its tags' (a file with no tags can still have them).
+    metadata["chapters"] = chapters_of(audio if isinstance(audio, MP4) else tags, file_path)
 
     # Cache the audio duration (seconds) so track lists can show it without
     # re-reading every file during browse.
-    with quietly():
-        mf = mutagen.File(file_path)  # type: ignore[reportPrivateImportUsage]
-        if mf is not None and getattr(mf, "info", None) is not None:
-            metadata["duration"] = float(getattr(mf.info, "length", 0.0) or 0.0)
+    if audio is not None and getattr(audio, "info", None) is not None:
+        metadata["duration"] = float(getattr(audio.info, "length", 0.0) or 0.0)
+        metadata.update(_audio_format(audio))
 
     return metadata
 
 
-def compilation_flag(tags) -> bool:
-    """Whether an ID3 (TCMP) or MP4 ('cpil') tag marks the album a compilation."""
-    tcmp = tags.get('TCMP')
-    if tcmp is not None:
-        return bool(tcmp.text) and str(tcmp.text[0]).strip() not in ('', '0')
-    return bool(tags.get('cpil'))
+# mutagen's file types and MP4 codecs as people name them.
+_CODEC_NAMES = {'MP3': 'MP3', 'FLAC': 'FLAC', 'OggFLAC': 'FLAC', 'OggVorbis': 'Vorbis', 'OggOpus': 'Opus',
+                'WAVE': 'WAV', 'AIFF': 'AIFF', 'AAC': 'AAC', 'alac': 'ALAC', 'mp4a.6b': 'MP3', 'mp4a.69': 'MP3'}
+_LOSSLESS = ('FLAC', 'WAV', 'AIFF', 'ALAC')
 
 
-def _extract_id3_metadata(tags: ID3) -> dict:
-    """Map an ID3 tag object's frames to the library's metadata field names."""
+def _audio_format(audio) -> dict:
+    """The audio's codec, bitrate (kbps), sample rate, bit depth (lossless
+    only: a lossy codec's is meaningless) and channels, 0/'' when unknown."""
+    info = audio.info
+    codec = _CODEC_NAMES.get(type(audio).__name__)
+    if codec is None:                                   # MP4: whatever its audio is
+        raw = str(getattr(info, 'codec', '') or '').lower()
+        codec = _CODEC_NAMES.get(raw) or ('AAC' if raw.startswith('mp4a.40') else raw.upper())
+    return {'format': codec or '', 'bitrate': int(round((getattr(info, 'bitrate', 0) or 0) / 1000)),
+            'sample_rate': int(getattr(info, 'sample_rate', 0) or 0),
+            'bit_depth': int(getattr(info, 'bits_per_sample', 0) or 0) if codec in _LOSSLESS else 0,
+            'channels': int(getattr(info, 'channels', 0) or 0)}
+
+
+def format_label(entry: dict) -> str:
+    """The audio's details in one line: "FLAC 24/96 · stereo · 1411 kbps",
+    "AAC 44.1 kHz · mono · 72 kbps"; whatever's unknown is left out."""
+    codec, rate, bits = entry.get('format') or '', entry.get('sample_rate') or 0, entry.get('bit_depth') or 0
+    khz = f"{rate / 1000:g}" if rate else ''
+    head = f"{codec} {bits}/{khz}" if bits and khz else f"{codec} {khz} kHz" if khz else codec
+    ch = entry.get('channels') or 0
+    parts = [head.strip(), {1: 'mono', 2: 'stereo'}.get(ch, f"{ch} ch" if ch else ''),
+             f"{entry['bitrate']} kbps" if entry.get('bitrate') else '']
+    return " · ".join(p for p in parts if p)
+
+
+def chapters_of(tags, file_path: str = "") -> list:
+    """A file's chapters as [[start seconds, title], ...] in play order, from ID3
+    CHAP frames (CTOC order when there is one), MP4 chapters or Vorbis
+    CHAPTERnnn comments. An untitled one has title '' (see chapter_label); an
+    unreadable set is logged and treated as none."""
+    try:
+        if tags_kind(tags) == 'vorbis':
+            raw = []
+            for n in range(1, 1000):
+                start = tags.get(f"CHAPTER{n:03d}")
+                if not start:
+                    break
+                h, m, sec = start[0].strip().split(':')
+                raw.append((int(h) * 3600 + int(m) * 60 + float(sec),
+                            (tags.get(f"CHAPTER{n:03d}NAME") or [''])[0]))
+        elif hasattr(tags, "getall"):
+            frames = {f.element_id: f for f in tags.getall("CHAP")}
+            ctoc = tags.getall("CTOC")
+            order = [frames[i] for i in ctoc[0].child_element_ids if i in frames] if ctoc else []
+            order = order or sorted(frames.values(), key=lambda f: f.start_time)
+            raw = [(f.start_time / 1000, first_text(f.sub_frames.get("TIT2"))) for f in order]
+        else:
+            chapters = getattr(tags, "chapters", None) or []
+            # mutagen turns a Nero chapter time (always in 100 ns units) into
+            # seconds by dividing by the movie's timescale as well, which is only
+            # right when that is 1000; ffmpeg 9 writes the sample rate there.
+            # ponytail: reads mutagen's private _timescale; drop once mutagen fixes _parse_chpl.
+            scale = getattr(chapters, '_timescale', 1000) / 1000
+            raw = [(c.start * scale, c.title) for c in chapters]
+    except Exception as e:
+        log.info("chapters unreadable in %s: %s", file_path, e)
+        return []
+    return [[round(float(start), 3), (title or '').strip()] for start, title in raw]
+
+
+# A title that is only a chapter number ("Chapter 9", "Chapter IX", "Chapter Twenty
+# One"), and the front and back matter that isn't counted as a chapter.
+_NUMBER_ONLY_CHAPTER = re.compile(r'^chapter\s+(\d+|[a-z]+(?:[\s-][a-z]+)?)$', re.I)
+_UNNUMBERED_CHAPTER = re.compile(r'^(prologue|epilogue|introduction|intro|foreword|preface|afterword'
+                                 r'|acknowledg\w*|(opening |end )?credits)\b', re.I)
+
+
+def chapter_number(chapters: list, i: int) -> tuple[int, int]:
+    """Chapter `i`'s number and how many are numbered, as (3, 20); (0, 20) for a
+    prologue, epilogue and the like, which aren't counted."""
+    numbered = [j for j, (_s, t) in enumerate(chapters) if not _UNNUMBERED_CHAPTER.match(t)]
+    return (numbered.index(i) + 1 if i in numbered else 0), len(numbered)
+
+
+def chapter_label(chapters: list, i: int) -> tuple[str, str]:
+    """Chapter `i`'s title, and where it sits ("Chapter 3 of 20") when the title
+    doesn't already say. An untitled chapter is called "Chapter n"."""
+    n, total = chapter_number(chapters, i)
+    title = chapters[i][1] or f"Chapter {n or i + 1}"
+    if not n or not chapters[i][1] or _NUMBER_ONLY_CHAPTER.match(title):
+        return title, ''
+    return title, f"Chapter {n} of {total}"
+
+
+def chapter_at(chapters: list, t: float) -> int:
+    """Index of the chapter playing at `t` seconds, or -1 when there are none."""
+    if not chapters:
+        return -1
+    return max(0, bisect_right([c[0] for c in chapters], t) - 1)
+
+
+# Library fields read whole (multi-value joined with '; ', so every value is
+# searchable and browsing splits them back into one group each), and those of
+# which only the first value counts.
+_LIBRARY_TEXT = ('title', 'artist', 'album_artist', 'album', 'genre', 'composer', 'lyricist', 'year',
+                 'work', 'bpm', 'Title Sort Order', 'Performer Sort Order', 'Album Artist Sort Order',
+                 'Album Sort Order', 'Composer Sort Order')
+_LIBRARY_FIRST = ('movement_name', 'disc_subtitle', 'grouping', 'copyright')
+
+
+def _extract_tags(tags) -> dict:
+    """Map a file's tags, of any kind, to the library's metadata field names."""
     result = {'compilation': compilation_flag(tags)}
-
-    # Standard text frames
-    frame_map = {
-        'TIT2': 'title',
-        'TPE1': 'artist',
-        'TPE2': 'album_artist',
-        'TALB': 'album',
-        'TCON': 'genre',
-        'TCOM': 'composer',
-        'TEXT': 'lyricist',
-        'TDRC': 'year',
-        'TIT3': 'work',
-        'TBPM': 'bpm',
-        # Sort-order frames, under the friendly names the sort keys look up.
-        'TSOT': 'Title Sort Order',
-        'TSOP': 'Performer Sort Order',
-        'TSO2': 'Album Artist Sort Order',
-        'TSOA': 'Album Sort Order',
-        'TSOC': 'Composer Sort Order',
-    }
-
-    for frame_id, field in frame_map.items():
-        if frame_id in tags:
-            # Multi-value frames (#60, e.g. artist/genre) join with '; ' so every
-            # value is searchable and shown; single-value frames are unaffected.
-            vals = [str(t) for t in tags[frame_id].text] if tags[frame_id].text else []
+    for field in _LIBRARY_TEXT:
+        if vals := texts(tags, field):
             result[field] = "; ".join(vals)
+    for field in _LIBRARY_FIRST:
+        if vals := texts(tags, field):
+            result[field] = vals[0]
+    for field, home in PAIR_HOMES.items():
+        if (p := pair(tags, field)) is not None:
+            result[field], result[home[4]] = p[0] or '0', p[1] or '0'
 
-    # Track and disc numbers
-    if 'TRCK' in tags:
-        parts = tags['TRCK'].text[0].replace('⁄', '/').split('/') if tags['TRCK'].text else []
-        result['track'] = str(parts[0]) if parts else '0'
-        result['total_tracks'] = str(parts[1]) if len(parts) > 1 else '0'
-    if 'TPOS' in tags:
-        parts = tags['TPOS'].text[0].replace('⁄', '/').split('/') if tags['TPOS'].text else []
-        result['disc'] = str(parts[0]) if parts else '0'
-        result['total_discs'] = str(parts[1]) if len(parts) > 1 else '0'
-
-    # Classical music extensions
-    if 'MVIN' in tags:
-        parts = tags['MVIN'].text[0].replace('⁄', '/').split('/') if tags['MVIN'].text else []
-        result['movement_number'] = str(parts[0]) if parts else '0'
-        result['total_movements'] = str(parts[1]) if len(parts) > 1 else '0'
-    if 'MVNM' in tags:
-        result['movement_name'] = first_text(tags['MVNM'])
-    if 'TSST' in tags:
-        result['disc_subtitle'] = first_text(tags['TSST'])
-
-    # Grouping (TIT1 = Content Group / Grouping per ID3 spec)
-    if 'TIT1' in tags:
-        result['grouping'] = first_text(tags['TIT1'])
-
-    # Work name: try sources in priority order:
-    #   1. TXXX:WORK (MusicBrainz Picard / standard classical convention)
-    #   2. TIT1 (Content Group / Grouping; iTunes and many editors store the work here)
-    #   3. TIT3 (Subtitle) is already mapped via frame_map above
-    if not result.get('work'):
+    # Work name: TIT3/©wrk/WORK above; else TXXX:WORK (MusicBrainz Picard, the
+    # classical convention); else the grouping, where iTunes and many editors keep it.
+    if not result.get('work') and tags_kind(tags) == 'id3':
         for txxx_key in ('TXXX:WORK', 'TXXX:work', 'TXXX:Work'):
             frame = tags.get(txxx_key)
             if frame and frame.text:
@@ -462,129 +525,11 @@ def _extract_id3_metadata(tags: ID3) -> dict:
     if not result.get('work') and result.get('grouping'):
         result['work'] = result['grouping']
 
-    # People from TMCL (performers) / TIPL (involved people). Store each as
-    # "Name (Role)" when a role is present so search matches (and the results
-    # people column can show) both the person and their role/character.
-    credits = []
-    for frame_id in ('TMCL', 'TIPL'):
-        frame = tags.get(frame_id)
-        if frame and hasattr(frame, 'people'):
-            for role, name in frame.people:
-                n, r = name.strip(), role.strip()
-                if n:
-                    credits.append([n, r])
-    if credits:
-        result['credits'] = credits
-        result['people'] = ', '.join(f"{n} ({r})" if r else n for n, r in credits)
-
-    return result
-
-
-def _extract_mp4_metadata(tags: MP4) -> dict:
-    """Map an MP4 tag object's atoms to the library's metadata field names."""
-    result = {}
-
-    if not tags:
-        return result
-    result['compilation'] = compilation_flag(tags)
-
-    # MP4 atom mappings for standard metadata
-    field_map = {
-        '\xa9nam': 'title',
-        '\xa9ART': 'artist',
-        'aART': 'album_artist',
-        '\xa9alb': 'album',
-        '\xa9gen': 'genre',
-        '\xa9wrt': 'composer',
-        '\xa9day': 'year',
-        '\xa9wrk': 'work',
-        'tmpo': 'bpm',
-        # Sort atoms: the MP4 counterparts of the TSO* frames.
-        'sonm': 'Title Sort Order',
-        'soar': 'Performer Sort Order',
-        'soaa': 'Album Artist Sort Order',
-        'soal': 'Album Sort Order',
-        'soco': 'Composer Sort Order',
-    }
-
-    for mp4_atom, field in field_map.items():
-        try:
-            if mp4_atom in tags:
-                val = tags[mp4_atom]
-                if val:
-                    # Handle both list and direct values. A multi-value atom
-                    # (artist/genre) joins with '; ', the same shape as the ID3 side,
-                    # so browsing splits it back into one group per value.
-                    if isinstance(val, list):
-                        parts = [str(v).strip() for v in val if str(v).strip()]
-                        text = "; ".join(parts)
-                    else:
-                        text = val
-                    if text:
-                        result[field] = str(text).strip()
-        except (KeyError, IndexError, TypeError):
-            continue
-
-    # Freeform ('----') atoms. MP4 has no standard atom for some fields the ID3
-    # side covers, and iTunes puts them here instead. Values come back as bytes,
-    # so they are decoded rather than str()'d: str() on bytes yields "b'...'".
-    freeform_map = {
-        '----:com.apple.iTunes:LYRICIST': 'lyricist',
-    }
-    for atom, field in freeform_map.items():
-        try:
-            if atom in tags and tags[atom] and not result.get(field):
-                parts = []
-                for v in tags[atom]:
-                    text = v.decode('utf-8', 'replace') if isinstance(v, bytes) else str(v)
-                    if text.strip():
-                        parts.append(text.strip())
-                if parts:
-                    result[field] = "; ".join(parts)
-        except (KeyError, IndexError, TypeError, UnicodeDecodeError):
-            continue
-
-    # Track and disc number with their totals, split the same way as ID3's
-    # (track / total_tracks, disc / total_discs): stored as "5/12" they showed
-    # as "5/12" in lists and multi-disc albums never got disc labels.
-    for atom, num_key, total_key in (('trkn', 'track', 'total_tracks'),
-                                     ('disk', 'disc', 'total_discs')):
-        try:
-            if atom in tags and tags[atom]:
-                pair = tags[atom][0]
-                result[num_key] = str(pair[0])
-                if len(pair) > 1 and pair[1]:
-                    result[total_key] = str(pair[1])
-        except (KeyError, IndexError, TypeError):
-            pass
-
-    # Classical music extensions (©mvi = movement number, ©mvn = movement name)
-    try:
-        if '©mvi' in tags and tags['©mvi']:
-            val = tags['©mvi']
-            result['movement_number'] = str(val[0]).strip() if val else ""
-    except (KeyError, IndexError, TypeError):
-        pass
-
-    try:
-        if '©mvn' in tags and tags['©mvn']:
-            val = tags['©mvn']
-            result['movement_name'] = str(val[0]).strip() if val else ""
-    except (KeyError, IndexError, TypeError):
-        pass
-
-    # Grouping (©grp): fall back to it as work name if ©wrk is absent
-    try:
-        if '©grp' in tags and tags['©grp']:
-            val = tags['©grp']
-            grp = str(val[0]).strip() if val else ""
-            if grp:
-                result['grouping'] = grp
-                if not result.get('work'):
-                    result['work'] = grp
-    except (KeyError, IndexError, TypeError):
-        pass
-
+    # People, each stored as "Name (Role)" too, so search matches (and the
+    # results people column can show) both the person and their role.
+    if people := tag_credits(tags):
+        result['credits'] = people
+        result['people'] = ', '.join(f"{n} ({r})" if r else n for n, r in people)
     return result
 
 
@@ -706,12 +651,7 @@ def track_title(path: str, song: dict | None = None, *, read_tags: bool = False)
     title = str((song or {}).get('title') or '').strip()
     if not title and read_tags:
         try:
-            if path.lower().endswith('.mp3'):
-                title = first_text(ID3(path).get('TIT2'))
-            else:
-                tags = MP4(path).tags
-                name = tags.get('\xa9nam') if tags else None
-                title = str(name[0]).strip() if name else ''
+            title = (texts(open_tags(path)[0], 'title') or [''])[0]
         except Exception:
             title = ''
     return title or os.path.splitext(os.path.basename(path))[0]
@@ -1038,20 +978,24 @@ DEFAULT_SORT_LEVELS = [['album', 'asc'], ['album_year', 'asc'], ['disc', 'asc'],
 _opts_cache: dict = {}
 
 
+def _live_config() -> dict:
+    """The config file's settings, re-read only when the file has changed."""
+    from backtrack.config import CONFIG_FILE, load_config
+    try:
+        mtime = CONFIG_FILE.stat().st_mtime
+    except OSError:
+        mtime = None
+    if _opts_cache.get('mtime') != mtime or 'cfg' not in _opts_cache:
+        _opts_cache.update(mtime=mtime, cfg=load_config())
+    return _opts_cache['cfg']
+
+
 def sort_options(cfg: dict | None = None) -> dict:
     """The sort settings: `levels`, `use_tags`, `ignore_words`, `libraries`
     (directory → its own levels). Read from `cfg`, else from the config file
     (cached on its mtime; group keys are computed per row, per render)."""
     from backtrack.config import music_dirs
-    if cfg is None:
-        from backtrack.config import CONFIG_FILE, load_config
-        try:
-            mtime = CONFIG_FILE.stat().st_mtime
-        except OSError:
-            mtime = None
-        if _opts_cache.get('mtime') != mtime or 'cfg' not in _opts_cache:
-            _opts_cache.update(mtime=mtime, cfg=load_config())
-        cfg = _opts_cache['cfg']
+    cfg = cfg if cfg is not None else _live_config()
     return {
         'levels':       valid_levels(cfg.get('sort_levels')) or DEFAULT_SORT_LEVELS,
         'use_tags':     setting(cfg, 'sort_use_tags'),
@@ -1102,6 +1046,43 @@ def library_of(path: str, dirs: list) -> str | None:
         if (p == nd or p.startswith(nd.rstrip(os.sep) + os.sep)) and (best is None or len(nd) > len(best[0])):
             best = (nd, d)
     return best[1] if best else None
+
+
+def is_audiobook(path: str, cfg: dict | None = None) -> bool:
+    """Whether a file is part of an audiobook: it lives in a directory whose
+    media type is set to Audiobooks (the deepest directory, when they nest)."""
+    cfg = cfg if cfg is not None else _live_config()
+    types = cfg.get('library_media_types') or {}
+    if not types:
+        return False
+    from backtrack.config import music_dirs
+    return types.get(library_of(path, music_dirs(cfg))) == 'audiobooks'
+
+
+def album_tracks(path: str, library: list) -> list[str]:
+    """Every track of `path`'s album, in the sort order."""
+    song = next((t for t in library if t['path'] == path), None)
+    if song is None:
+        return [path]
+    key = ((song.get('album') or ''), (song.get('album_artist') or ''))
+    album = [t for t in library if ((t.get('album') or ''), (t.get('album_artist') or '')) == key]
+    return [t['path'] for t in sort_tracks(album, _live_config())]
+
+
+def random_album(paths, library: list, avoid: str | None = None) -> list[str]:
+    """Every track, in order, of one album picked at random from the albums
+    `paths` belong to: never an audiobook, and not `avoid`'s album when there's
+    another to choose. Empty when there's none."""
+    import random
+    by_path = {t['path']: t for t in library}
+    firsts: dict = {}
+    for p in paths:
+        t = by_path.get(p)
+        if t and not is_audiobook(p):
+            firsts.setdefault(((t.get('album') or ''), (t.get('album_artist') or '')), p)
+    if avoid in by_path and len(firsts) > 1:
+        firsts.pop(((by_path[avoid].get('album') or ''), (by_path[avoid].get('album_artist') or '')), None)
+    return album_tracks(random.choice(list(firsts.values())), library) if firsts else []
 
 
 def resolve_levels(tracks: list, cfg: dict | None = None) -> tuple[list, str | None]:

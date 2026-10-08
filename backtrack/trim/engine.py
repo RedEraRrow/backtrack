@@ -17,11 +17,12 @@ from pathlib import Path
 import numpy as np
 from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, TIT2, CHAP, CTOC  # type: ignore[reportPrivateImportUsage]
 from mutagen.mp3 import MP3
+import mutagen
 from mutagen import MutagenError
 
 from backtrack.config import load_config, CONFIG_DIR
 from backtrack.id3 import tag_writer as tw
-from backtrack.id3.tag_handler import save_id3
+from backtrack.id3.tag_handler import load_id3, save_id3
 from backtrack.music_library import refresh_library_entry, first_text
 from backbone.log import quietly
 
@@ -50,7 +51,7 @@ def probe_frame_duration(path: str) -> float:
     try:
         info = MP3(path).info
     except Exception as e:
-        raise ValueError(f"Could not read MPEG frame info: {e}") from e
+        raise ValueError(f"couldn't read the MPEG frame info: {e}") from e
     samples_per_frame = 1152 if info.version == 1 else 576  # type: ignore[reportAttributeAccessIssue]
     return samples_per_frame / info.sample_rate  # type: ignore[reportAttributeAccessIssue]
 
@@ -458,8 +459,8 @@ def read_chapters(path: str) -> tuple[list[tuple], list[str] | None, int | None]
     file order, plus the CTOC's child order and flags (None, None if there's
     no CTOC at all). No classification here; that's `classify_chapters`."""
     try:
-        audio = ID3(path)
-    except ID3NoHeaderError:
+        audio = load_id3(path)
+    except (OSError, ValueError, MutagenError):
         return [], None, None
 
     chapters = []
@@ -481,10 +482,7 @@ def write_chapters(path: str, chapters: list[tuple],
     first, so an empty `chapters` (the "discard all" choice) or an empty
     `child_order` (nothing survived to reference) just leaves the file with
     no chapters at all, rather than a malformed CTOC pointing at nothing."""
-    try:
-        audio = ID3(path)
-    except ID3NoHeaderError:
-        audio = ID3()
+    audio = load_id3(path)
     audio.delall('CHAP')
     audio.delall('CTOC')
 
@@ -517,7 +515,7 @@ def cut_stream(src_path: str, out_path: str, in_s: float, out_s: float) -> TrimR
     job (the backup/commit sequence), not the engine's."""
     if not HAS_FFMPEG or FFMPEG_PATH is None:
         return TrimResult(ok=False, error="ffmpeg is not installed")
-    if tw.format_kind(src_path) != 'mp3':
+    if not tw.is_mp3(src_path):
         ext = os.path.splitext(src_path)[1] or 'no extension'
         return TrimResult(ok=False, error=f"Not an MP3 ({ext}): trimming is MP3 only")
 
@@ -592,6 +590,17 @@ def _copy_with_fsync(src: str, dst: Path) -> None:
         os.fsync(fout.fileno())
 
 
+def _length(path: str) -> float:
+    """An audio file's length in seconds, whatever its format."""
+    return float(mutagen.File(path).info.length)
+
+
+def backup_original(path: str, reason: str) -> dict:
+    """Keep the file as it is now in the backup store before something other
+    than a trim rewrites it (restorable like a trim's backup)."""
+    return _backup_original(path, 0.0, _length(path), reason=reason)
+
+
 def backup_chain(original_path: str) -> list[dict]:
     """Every backup entry for `original_path`, oldest (the true pre-trim
     original) first. A file trimmed more than once has one entry per trim,
@@ -604,18 +613,18 @@ def _backup_original(path: str, snapped_in: float, snapped_out: float,
                      reason: str = "trim") -> dict:
     """Copy the current (pre-trim) file into the store and record it in the
     manifest, chained onto any earlier backup for the same original path.
-    `reason` says what was about to replace it ("trim", "restore")."""
+    `reason` says what was about to replace it ("trim", "restore", "chapters")."""
     bdir = _backup_dir()
     bdir.mkdir(parents=True, exist_ok=True)
     entry_id = uuid.uuid4().hex[:12]
-    backup_name = f"{entry_id}.mp3"
+    backup_name = f"{entry_id}{os.path.splitext(path)[1].lower() or '.mp3'}"
     _copy_with_fsync(path, bdir / backup_name)
 
     chain = backup_chain(path)
     entry = {
         "id": entry_id,
         "original_path": os.path.abspath(path),
-        "original_length_s": MP3(path).info.length,
+        "original_length_s": _length(path),
         "snapped_in_s": snapped_in,
         "snapped_out_s": snapped_out,
         "timestamp": time.time(),
@@ -701,12 +710,11 @@ def restore_backup(entry_id: str, library: list | None = None) -> TrimResult:
     # later trim): back it up too, so the restore can itself be undone.
     if os.path.exists(dest):
         try:
-            length = MP3(dest).info.length
-            _backup_original(dest, 0.0, length, reason="restore")
+            _backup_original(dest, 0.0, _length(dest), reason="restore")
         except (OSError, MutagenError) as e:
             return TrimResult(ok=False, error=f"Couldn't back up the current file first: {e}")
     d = os.path.dirname(dest) or "."
-    fd, tmp_path = tempfile.mkstemp(prefix=".trimrestore_", suffix=".mp3", dir=d)
+    fd, tmp_path = tempfile.mkstemp(prefix=".trimrestore_", suffix=os.path.splitext(dest)[1] or ".mp3", dir=d)
     os.close(fd)
     try:
         _copy_with_fsync(str(backup_path), Path(tmp_path))

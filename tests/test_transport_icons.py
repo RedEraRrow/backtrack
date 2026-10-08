@@ -5,6 +5,9 @@ from backtrack.playback import player_ui
 
 
 class TransportIconsTest(unittest.TestCase):
+    def setUp(self):
+        player_ui._frame.update(boxed=False)      # a clean player: no box to move the controls into
+
     def tearDown(self):
         player_ui._ui_state['nerd_icons'] = False
 

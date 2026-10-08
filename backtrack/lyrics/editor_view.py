@@ -5,7 +5,7 @@ from __future__ import annotations
 from backbone import keys, ui
 from backbone.ui import Colors as C
 from backbone.prompt.core import _cols
-from backbone.prompt.core import _visible_rows
+from backbone.prompt.core import _hint_pin_target, _visible_rows
 from backbone import prompt as _promptmod
 from backtrack.lyrics.formats import _apply_markdown_formatting
 from backtrack.lyrics.md_overlay import _sd_scope, _is_framed
@@ -202,17 +202,23 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     mouse clicks, how many trailing lines are the pinned hint footer, and the
     progress bar's `(line_idx, first_col, width)` click geometry (None when the
     mode draws no bar)."""
-    cols = _cols()
+    # Boxed (see the editor's _redraw), the body is laid out inside the box:
+    # four columns narrower.
+    boxed = _promptmod.box_fits()
+    cols = _cols() - (4 if boxed else 0)
     # Refresh the now-playing box height, then budget the body with the same
     # helper the list menus use (it reserves the status bar, the now-playing box
     # and the vertical margins), so the editor never paints under the player.
     ui.footer_lines(ui.get_terminal_width())
-    avail = _visible_rows()
+    # Boxed, its top border is a row more and its bottom one takes the
+    # divider's over the hints; it reaches down to the now-playing box as
+    # every boxed screen does (_hint_pin_target).
+    avail = _hint_pin_target() - 1 if boxed else _visible_rows()
     n    = len(segs)
     vp   = viewport
 
     # Row → item-index map for mouse clicks.  Keyed by the index of a line within
-    # the returned list (== its offset below the widget anchor + MARGIN_V), so the
+    # the returned list (== its offset below the widget anchor + top_margin()), so the
     # click handler never has to reverse-engineer the layout: only rows that carry
     # a selectable item (a seg in SEG, a word in WORD) get an entry.  Speaker
     # banners, ✦ stage-direction overlays and blank spacers are absent, so clicks
@@ -273,7 +279,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     left_w       = len(label) + 2 + len(track_txt)
     gap          = max(1, B - left_w - right_w)
 
-    # Header starts on the first line; _Widget.render adds the MARGIN_V top row,
+    # Header starts on the first line; _Widget.render adds the top_margin() rows,
     # matching the rest of the app (no extra leading blank here).
     term_w = ui.get_terminal_width()
     out: list[str] = [
@@ -372,7 +378,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         if selected: pairs.append(('', f'{len(selected)} marked'))
         footer.extend(_hint_lines(pairs))
 
-    HEADER    = 2   # title + rule (no leading blank; render adds the MARGIN_V top row)
+    HEADER    = 2   # title + rule (no leading blank; render adds the top_margin() rows)
     available = avail - HEADER - 2 - len(footer)
     vis       = max(1, available)
 

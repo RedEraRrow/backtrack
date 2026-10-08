@@ -16,6 +16,7 @@ from backbone import output as out
 from backbone.prompt import core as pc
 from backbone import timefmt, ui
 from backtrack.config import setting
+from backtrack.id3.tag_formats import kind as tag_kind, load_id3
 from backbone.log import quietly
 
 
@@ -102,8 +103,8 @@ def _library_scan(ctx: Ctx) -> int:
     roots = music_dirs(ctx.config)
     if not roots:
         return out.fail(out.USAGE, "No music directory configured.",
-                        hint="pass --library DIR, or set one with "
-                             "`backtrack library dirs --add DIR`")
+                        hint="pass --library DIR, or add one with "
+                             "backtrack library dirs --add DIR")
     missing = [r for r in roots if not os.path.isdir(r)]
     if missing:
         return out.fail(out.NOT_FOUND, "Music directory does not exist.",
@@ -120,6 +121,8 @@ def _library_scan(ctx: Ctx) -> int:
         out.note("Scanned with --library: the library cache was left as it was.")
     else:
         save_library_cache(library, _async=False)
+        if ctx._library is not None:         # the app's own (its `:` line): update what it shows
+            ctx._library[:] = library
     out.record('library', {'tracks': len(library), 'directories': roots},
                human=f"  Scanned {ui.plural(len(library), 'track')} in {len(roots)} "
                      f"director{'y' if len(roots) == 1 else 'ies'}.")
@@ -350,7 +353,7 @@ def _config_get(ctx: Ctx) -> int:
     key = ctx.args.key
     if key not in DEFAULT_CONFIG and key not in ctx.config:
         return out.fail(out.NOT_FOUND, "No such config key.", key=key,
-                        hint="`backtrack config list` shows them all")
+                        hint="run backtrack config list to see them all")
     value = ctx.config.get(key)
     out.record('config', {'key': key, 'value': value},
                human=f"  {_fmt_value(value)}")
@@ -365,7 +368,7 @@ def _config_set(ctx: Ctx) -> int:
     key, raw = ctx.args.key, ctx.args.value
     if key not in DEFAULT_CONFIG:
         return out.fail(out.NOT_FOUND, "No such config key.", key=key,
-                        hint="`backtrack config list` shows them all")
+                        hint="run backtrack config list to see them all")
     current = DEFAULT_CONFIG[key]
     try:
         value = _coerce(raw, current)
@@ -465,13 +468,17 @@ def _targets_or_filter(ctx: Ctx) -> list[str]:
 
 
 def _tag_rows(path: str) -> list[dict]:
-    """Every frame in one file, as the rows both modes are built from."""
-    from mutagen.id3 import ID3
-
+    """Every tag in one file, as the rows both modes are built from: ID3
+    frames, or an m4a's atoms and a FLAC/Ogg file's comments as keys."""
     from backtrack.id3.tag_handler import display_tag_id, summarize_tag_value
     from backtrack.id3.tag_registry import get_preferred_tag_name
 
-    audio = ID3(path)
+    if tag_kind(path) != 'id3':
+        from backtrack.id3 import tag_formats as tf
+        return [{'path': path, 'tag': key, 'name': tf.label_for(tag_kind(path), key),
+                 'value': "; ".join(v.replace("\n", "\\") for v in values)}
+                for key, values in tf.kv_items(tf.open_tags(path)[0])]
+    audio = load_id3(path)
     rows = []
     for key in sorted(audio.keys()):
         tag_id = display_tag_id(key)
@@ -504,9 +511,9 @@ def _tag_read(ctx: Ctx) -> int:
         if not os.path.exists(path):
             code = out.fail(out.NOT_FOUND, "No such track.", path=path)
             continue
-        if not path.lower().endswith('.mp3'):
+        if tag_kind(path) == 'unsupported':
             # An empty table would read as "this file has no tags".
-            code = out.fail(out.FAIL, "tag read lists ID3 tags, so MP3 files only.", path=path)
+            code = out.fail(out.FAIL, "This file type has nowhere to keep tags.", path=path)
             continue
         try:
             rows = _tag_rows(path)
@@ -602,7 +609,7 @@ def _tag_copy(ctx: Ctx) -> int:
 
     from mutagen.id3._util import ID3NoHeaderError
     try:
-        src_tags = ID3(source)
+        src_tags = load_id3(source)
     except (ID3NoHeaderError, OSError) as exc:
         return out.fail(out.FAIL, "Couldn't read tags from the source.", path=source, detail=str(exc))
     wanted = {t.upper() for t in ctx.args.tag} if ctx.args.tag else None
@@ -817,7 +824,7 @@ def _bulk_derive(ctx: Ctx) -> int:
         template=ctx.args.template, regex=ctx.args.regex)
     return _run_plan(ctx, plan,
                      bo.derive_writer(derived, fields, ctx.args.overwrite),
-                     "Derived tags for", skipped_note="non-MP3/MP4 skipped")
+                     "Derived tags for", skipped_note="untaggable skipped")
 
 
 def _bulk_sortorders(ctx: Ctx) -> int:
@@ -836,13 +843,13 @@ def _bulk_sortorders(ctx: Ctx) -> int:
     if not paths:
         return code
 
-    writable = [p for p in paths if tw.format_kind(p) == 'mp3']
+    writable = [p for p in paths if tw.format_kind(p) == 'id3']
     skipped = len(paths) - len(writable)
     per_path: dict = {}
     changes = []
     for path in writable:
         try:
-            audio = ID3(path)
+            audio = load_id3(path)
         except Exception:
             continue
         writes = []
@@ -880,7 +887,7 @@ def _bulk_sortorders(ctx: Ctx) -> int:
             kind, path=change.path, detail=detail))
     applied.skipped = skipped
     out.note(bo.summarise(applied, "Wrote sort orders for",
-                          skipped_note="non-MP3 skipped"))
+                          skipped_note="non-ID3 skipped"))
     return out.FAIL if applied.errors and not applied.written else out.OK
 
 
@@ -989,8 +996,8 @@ def _bulk_art(ctx: Ctx) -> int:
             kind, path=change.path, detail=detail))
     applied.skipped = skipped
     out.note(bo.summarise(applied, "Set album art on", noun="track",
-                          kept_note="kept existing art (fill blanks only)",
-                          unsupported_note="MP4 skipped (cover needs JPEG/PNG)"))
+                          kept_note="already had art, so kept",
+                          unsupported_note="MP4 skipped: the cover has to be JPEG or PNG"))
     return out.FAIL if applied.errors and not applied.written else out.OK
 
 
@@ -1004,7 +1011,7 @@ def _bulk_assign(ctx: Ctx) -> int:
     if not paths:
         return code
     tag_id = ctx.args.tag.upper()
-    writable = [p for p in paths if tw.format_kind(p) == 'mp3']
+    writable = [p for p in paths if tw.format_kind(p) == 'id3']
     skipped = len(paths) - len(writable)
     ordered, _skipped = bo.read_numbering(writable)
     if not ordered:
@@ -1059,7 +1066,7 @@ def _bulk_assign(ctx: Ctx) -> int:
             kind, path=change.path, detail=detail))
     applied.skipped = skipped
     out.note(bo.summarise(applied, f"Assigned {tag_id} to",
-                          skipped_note="non-MP3 skipped",
+                          skipped_note="non-ID3 skipped",
                           kept_note="kept an existing value"))
     return out.FAIL if applied.errors and not applied.written else out.OK
 
@@ -1070,9 +1077,17 @@ def _bulk_assign(ctx: Ctx) -> int:
 # once; with no session, `play` hosts one itself and blocks until the queue
 # ends, the way any other terminal player does.
 
+# Set while a command typed at the app's `:` line runs: "the running session"
+# is then that window's own, not the newest one advertised.
+IN_APP = [False]
+
+
 def _session_link():
     """A connected client for the newest live session, or None."""
     from backtrack.playback import ipc
+    if IN_APP[0]:
+        from backtrack.playback.session import AppLink
+        return AppLink(), {}
 
     for info in ipc.list_sessions():
         link = ipc.SessionClient(info.get('socket', ''))
@@ -1148,7 +1163,7 @@ def _transport(ctx: Ctx, command: str, args: dict | None = None,
     link, _info = _session_link()
     if link is None:
         return out.fail(out.NOT_FOUND, "No Backtrack session is running.",
-                        hint="`backtrack play <track>` starts one")
+                        hint="run backtrack play <track> to start one")
     try:
         if ctx.dry_run():
             out.event('plan', action=command, detail=describe or command)
@@ -1313,7 +1328,7 @@ def _queue_send(ctx: Ctx, command: str, verb: str) -> int:
     link, _info = _session_link()
     if link is None:
         return out.fail(out.NOT_FOUND, "No Backtrack session is running.",
-                        hint="`backtrack play <track>` starts one")
+                        hint="run backtrack play <track> to start one")
     try:
         for song in songs:
             title = song.get('title') or os.path.basename(song['path'])
@@ -1365,16 +1380,13 @@ def _one_target(ctx: Ctx, what: str = "track"):
 
 
 def _lyric_lines(path: str) -> tuple[list, str]:
-    """A track's lyrics as `(rows, source)`: timed SYLT first, else USLT; no
-    rows for a file without an ID3 tag (untagged, or not an MP3)."""
-    from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[reportPrivateImportUsage]
-
+    """A track's lyrics as `(rows, source)`: timed SYLT first, else USLT (an
+    m4a's, FLAC's or Ogg file's embedded lyrics read the same way, through the
+    player's view of its tags); no rows for a file without any."""
     from backtrack.lyrics import formats as ly
+    from backtrack.playback.session import player_tags
 
-    try:
-        audio = ID3(path)
-    except ID3NoHeaderError:
-        return [], ''
+    audio = player_tags(path)
     timed = ly._parse_sylt(audio)
     if timed:
         return ([{'path': path, 'time_ms': ms, 'text': text}
@@ -1425,8 +1437,8 @@ def _lyrics_import(ctx: Ctx) -> int:
     if not os.path.exists(source):
         return out.fail(out.NOT_FOUND, "No such .lrc file.", path=source)
 
-    if not path.lower().endswith('.mp3'):
-        return out.fail(out.FAIL, "Lyrics can only be imported into MP3 files.", path=path)
+    if tag_kind(path) != 'id3':
+        return out.fail(out.FAIL, "Lyrics can only be imported into MP3, WAV or AIFF files.", path=path)
     entries = ly.parse_lrc_file(source)
     if not entries:
         return out.fail(out.FAIL, "Nothing readable in that .lrc file.",
@@ -1461,7 +1473,14 @@ def _lyrics_export(ctx: Ctx) -> int:
 
     fmt = ctx.args.format
     if fmt == 'lrc':
-        text = "\n".join(f"{_ms(r['time_ms'])}{r['text']}" for r in rows)
+        # The standard header, which players (rmpc among them) match a file to its song by.
+        from backtrack.music_library import library_entry
+        e = library_entry(path)
+        dur = int(e.get('duration') or 0)
+        head = [f"[{tag}:{e[key]}]" for tag, key in (('ar', 'artist'), ('al', 'album'), ('ti', 'title'))
+                if e.get(key) and not str(e[key]).startswith('Unknown ')]
+        head += [f"[length:{dur // 60:02d}:{dur % 60:02d}]"] if dur else []
+        text = "\n".join(head + [f"{_ms(r['time_ms'])}{r['text']}" for r in rows])
     elif fmt == 'srt':
         parts = []
         for i, row in enumerate(rows, 1):
@@ -1670,7 +1689,7 @@ def _trim_restore(ctx: Ctx) -> int:
     known = {entry.get('id') for entry in t.list_backups()}
     if entry_id not in known:
         return out.fail(out.NOT_FOUND, "No such backup.", id=entry_id,
-                        hint="`backtrack trim list` shows them")
+                        hint="run backtrack trim list to see them")
     if ctx.dry_run():
         out.event('plan', action='restore', detail=entry_id)
         return out.OK
@@ -1767,11 +1786,11 @@ def _feed_remove(ctx: Ctx) -> int:
     name = ctx.args.name
     if name not in feeds:
         return out.fail(out.NOT_FOUND, "No feed by that name.", name=name,
-                        hint="`backtrack feed list` shows them")
+                        hint="run backtrack feed list to see them")
     if ctx.dry_run():
         out.event('plan', action='feed-remove', name=name)
         return out.OK
-    if not ctx.confirm(f"Stop following {name}? (downloaded files are kept)",
+    if not ctx.confirm(f"Stop following {name}? Downloaded files stay.",
                        default=True):
         out.note("Left alone.")
         return out.OK
@@ -1815,9 +1834,9 @@ def _feed_sync(ctx: Ctx) -> int:
     if ctx.args.name and ctx.args.name not in feeds:
         return out.fail(out.NOT_FOUND, "No feed by that name.",
                         name=ctx.args.name,
-                        hint="`backtrack feed list` shows them")
+                        hint="run backtrack feed list to see them")
     if not feeds:
-        out.note("No feeds added. `backtrack feed add <url>` starts one.")
+        out.note("No feeds yet. Run backtrack feed add <url> to add one.")
         return out.OK
     wanted = [ctx.args.name] if ctx.args.name else sorted(feeds)
 
@@ -1905,7 +1924,7 @@ def _download_one(ctx: Ctx, item, target: str, feed_title: str) -> None:
     # broadcast date, and it has to win over the year the field write left.
     fields, frames = fd.tag_plan(item, feed_title)
     tw.write_fields(target, fields, set(fields), overwrite=True)
-    if frames and tw.format_kind(target) == 'mp3':
+    if frames and tw.format_kind(target) == 'id3':
         from backtrack.id3 import bulk_ops as bo
         bo.apply_frame_writes({target: list(frames.items())}, ctx.library, overwrite=True)
     with quietly():

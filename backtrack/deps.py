@@ -46,6 +46,6 @@ DEPS = [
         "fedora": "sudo dnf install wl-clipboard (Wayland) or xclip (X11)",
         "arch": "sudo pacman -S wl-clipboard (Wayland) or xclip (X11)",
         "linux": "install wl-clipboard (Wayland) or xclip (X11)"}),
-    Dep("text editor", _editor, "editing long text in an editor", hints={
+    Dep("text editor", _editor, "editing long text in the system editor with Ctrl-E", hints={
         "other": "set $EDITOR, or install nano"}),
 ]

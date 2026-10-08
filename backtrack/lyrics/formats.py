@@ -604,8 +604,12 @@ _LRC_META_RE = re.compile(r'^\s*\[(ti|ar|al|by|offset|re|ve)\s*:.+\]\s*$', re.I)
 def parse_lrc_file(lrc_path: str) -> list[tuple[str, int | None]]:
     """Parse an LRC file into (text, timestamp_ms) lines, skipping metadata tags like [ti:...]."""
     with open(lrc_path, "r", encoding="utf-8") as f:
-        raw = f.read()
+        return parse_lrc_text(f.read())
 
+
+def parse_lrc_text(raw: str) -> list[tuple[str, int | None]]:
+    """LRC text (a file's, or lyrics kept in a tag) as (text, timestamp_ms) lines;
+    an untimed line has None."""
     entries: list[tuple[str, int | None]] = []
     for raw_line in raw.splitlines():
         if _LRC_META_RE.match(raw_line):
@@ -674,7 +678,7 @@ def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]],
         audio.add(frame)
         save_id3(audio, file_path)   # v2.4 iff a multi-value frame is present
     except Exception as exc:
-        ui.show_status(f"Failed to save SYLT: {exc}", duration=tune.STATUS_WARNING_S)
+        ui.show_error(f"couldn't save SYLT: {exc}")
         raise
 
 

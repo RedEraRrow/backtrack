@@ -1,11 +1,11 @@
 """Assigning values across tracks: ranged or periodic patterns, and the people and
 fraction (n/total) editors."""
 from __future__ import annotations
+from backtrack.id3.tag_formats import kind as tag_kind
 import os
 import mutagen.id3
-from mutagen.id3 import ID3
 from backbone import prompt
-from backtrack.id3.tag_handler import get_tag_info, create_frame, load_id3, save_id3
+from backtrack.id3.tag_handler import get_tag_info, create_frame, load_id3, save_id3, tag_id_input
 from backtrack.id3.tag_registry import parse_composite_tag_id
 from backtrack.id3 import tag_writer as tw
 from backtrack.id3 import bulk_ops as bo
@@ -43,10 +43,10 @@ def _people_apply(current: list, edits: dict, deletes: set, adds: list) -> list:
 def _read_people(path: str, tag_id: str) -> list | None:
     """The (role, name) pairs for a people tag on one MP3, or None if unreadable."""
     try:
-        audio = ID3(path)
+        audio = load_id3(path)
     except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
         return []
-    except (OSError, IOError):
+    except (OSError, ValueError, mutagen.MutagenError):
         return None
     fr = audio.get(tag_id)
     if fr is None or not hasattr(fr, 'people'):
@@ -64,14 +64,14 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
     info = get_tag_info(tag_id)
     label = info.name[0] if info else tag_id
 
-    mp3s = [p for p in paths if p.lower().endswith('.mp3')]
+    mp3s = [p for p in paths if tag_kind(p) == 'id3']
     per_file: dict = {}
     for p in mp3s:
         pl = _read_people(p, tag_id)
         if pl is not None:
             per_file[p] = pl
     if not per_file:
-        ui.show_status(f"No writable MP3s for {label}.")
+        ui.show_status(f"No MP3/WAV/AIFF files for {label}.")
         return
     total = len(per_file)
 
@@ -193,20 +193,20 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
     label = info.name[0] if info else tag_id
     base_id, _, _ = parse_composite_tag_id(tag_id)
 
-    mp3s = [p for p in paths if p.lower().endswith('.mp3')]
+    mp3s = [p for p in paths if tag_kind(p) == 'id3']
     skipped_fmt = len(paths) - len(mp3s)
     existing: dict = {}
     for p in mp3s:
         try:
-            audio = ID3(p)
-        except (mutagen.id3.ID3NoHeaderError, OSError):  # type: ignore[reportPrivateImportUsage]
+            audio = load_id3(p)
+        except (mutagen.id3.ID3NoHeaderError, OSError, ValueError, mutagen.MutagenError):  # type: ignore[reportPrivateImportUsage]
             continue
         fr = audio.get(tag_id)
         raw = first_text(fr)
         cur, _, tot = raw.partition('/')
         existing[p] = (cur.strip(), tot.strip())
     if not existing:
-        ui.show_status(f"No MP3s carry {label}.")
+        ui.show_status(f"No MP3/WAV/AIFF files carry {label}.")
         return
 
     currents = {c for c, _ in existing.values()}
@@ -261,7 +261,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
         nk = sum(1 for ch in choices if ch.checked)
         bits = [f"{label}", ui.plural(len(choices), "file"), f"{n_changed} changing", f"{nk} ticked"]
         if skipped_fmt:
-            bits.append(f"{skipped_fmt} non-MP3 skipped")
+            bits.append(f"{skipped_fmt} non-ID3 skipped")
         return header(' · '.join(bits))()
 
     sel = prompt.select("Preview (↵ applies):", choices=choices,
@@ -293,7 +293,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
 
     msg = f"Set {label} on {ui.plural(count, 'file')}."
     if skipped_fmt:
-        msg += f" {skipped_fmt} non-MP3 skipped."
+        msg += f" {skipped_fmt} non-ID3 skipped."
     if errors:
         msg += f" {ui.plural(errors, 'error')}."
     ui.show_status(msg)
@@ -349,20 +349,13 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
                    'tmpl': '', 'mode2': "Fill blanks only", 'apply_set': None}
 
     def _ask_tag() -> bool:
-        """Which frame to assign. A name that isn't a frame is asked again here
-        rather than reported as a back, which on the first screen would end the
-        operation over a typo."""
-        while True:
-            raw = prompt.text("Tag to assign (e.g. TSST, TIT1, TDRC):",
-                              default=state['tag'])
-            if not raw:
-                return False
-            tag_id = raw.strip().upper()
-            if get_tag_info(tag_id):
-                state['tag'] = tag_id
-                return True
-            ui.show_status(f"Unknown tag: {tag_id}")
-            state['tag'] = tag_id            # so the typo is there to correct
+        """Which frame to assign: suggested and checked as it's typed (a typo
+        is put right there, not reported as a back that ends the operation)."""
+        tag_id = tag_id_input("Tag to assign:", default=state['tag'])
+        if not tag_id:
+            return False
+        state['tag'] = tag_id
+        return True
 
     def _modes() -> list:
         """The assignment modes this tag supports (schedules need a date frame)."""
@@ -421,14 +414,14 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
                 ranges.append((lo, hi, str(cells[2]).strip()))
             assignments = bp.assign_ranges(ordered, ranges)
         elif mode.startswith("Every"):
-            gs = _int(prompt.text("Group size (N tracks per group):",
+            gs = _int(prompt.text("Tracks per group:",
                                   default=state['gs']), "Group size")
             if gs is None:
                 return False
             state['gs'] = str(gs)
-            tmpl = prompt.text("Value: group number as {n} 3, {r} III or {en} Three "
-                               "(e.g. Series {n}, Act {r}, Series {en}):",
-                               default=state['tmpl'])
+            tmpl = prompt.text("Value:", default=state['tmpl'], placeholder="Series {n}",
+                               suggest=lambda t: prompt.token_completions(
+                                   t, {'n': "group number as 3", 'r': "as III", 'en': "as Three"}, "{", "}"))
             if tmpl is None:
                 return False
             state['tmpl'] = tmpl
@@ -466,7 +459,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             specs, row_errors = bp.validate_schedule_rows(rows, n)
             if row_errors:
                 ui.show_status("  ·  ".join(row_errors[:3])
-                                     + (f"  (+{len(row_errors) - 3} more)"
+                                     + (f"  and {len(row_errors) - 3} more"
                                         if len(row_errors) > 3 else ""), duration=tune.STATUS_WARNING_S)
                 if not specs:
                     return False
@@ -488,7 +481,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
                 if not tsel:
                     return False
                 if tsel == "Same time for all":
-                    tval = bp.norm_time(prompt.text("Time (HH:MM, 24-hour):"))
+                    tval = bp.norm_time(prompt.text("Time:", placeholder="18:30"))
                     if not tval:
                         ui.show_status("Not a valid 24-hour time.")
                         return False
@@ -508,7 +501,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             start = prompt.calendar_select("Start date:")
             if not start:
                 return False
-            iv = _int(prompt.text("Interval in days (7 = weekly):", default="7"), "Interval")
+            iv = _int(prompt.text("Days between:", default="7"), "Interval")
             if iv is None:
                 return False
             gsel = prompt.select("Step the date:",
@@ -519,7 +512,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             if gsel.startswith("Per disc"):
                 gran = 'disc'
             elif gsel.startswith("Per group"):
-                gsize = _int(prompt.text("Group size (N):"), "Group size")
+                gsize = _int(prompt.text("Tracks per group:"), "Group size")
                 if gsize is None:
                     return False
                 gran = 'group'
@@ -535,13 +528,13 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             if not tmode:
                 return False
             if tmode == "Same time for all":
-                times = prompt.text("Time (HH:MM, 24-hour):")
+                times = prompt.text("Time:", placeholder="18:30")
                 if not times:
                     return False
             elif tmode == "Per group":
                 times = {}
                 for g in groups:
-                    t = prompt.text(f"Time for group {g} (HH:MM, blank = none):")
+                    t = prompt.text(f"Time for group {g}:", placeholder="18:30")
                     if t:
                         times[g] = t
             assignments = bp.assign_dates(ordered, start, iv, gran, gsize, times=times)
@@ -569,20 +562,20 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         tag_id, assignments = state['tag'], state['assignments']
         pos = {s['path']: i + 1 for i, s in enumerate(ordered)}
         targets = [s for s in ordered if s['path'] in assignments]
-        n_mp4 = sum(1 for s in targets if not s['path'].lower().endswith('.mp3'))
+        n_mp4 = sum(1 for s in targets if tag_kind(s['path']) != 'id3')
         keep = state['apply_set']
         choices = [
             prompt.Choice(title=os.path.basename(s['path']), value=s['path'],
                           checked=keep is None or s['path'] in keep,
                           cells=[str(pos[s['path']]), os.path.basename(s['path']),
                                  assignments[s['path']]])
-            for s in targets if s['path'].lower().endswith('.mp3')
+            for s in targets if tag_kind(s['path']) == 'id3'
         ]
         if not choices:
-            ui.show_status("No MP3s to assign (this operation is MP3-only).")
+            ui.show_status("Nothing to assign: this works on MP3, WAV and AIFF files.")
             return False
         sub = f"{tag_id} · {ui.plural(len(choices), 'file')}" + (
-            f" · {n_mp4} non-MP3 skipped" if n_mp4 else "")
+            f" · {n_mp4} non-ID3 skipped" if n_mp4 else "")
         sel = prompt.select("Preview (↵ applies):", choices=choices,
                             columns=_PATTERN_COLUMNS, header=header(sub), multi=True)
         if sel is None:
@@ -603,7 +596,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         ui.show_status("No files selected.")
         return
 
-    # MP3 only: create_frame/save_id3 write ID3.
+    # ID3 files only (MP3, WAV, AIFF): create_frame/save_id3 write ID3 frames.
     writable = [s for s in targets if tw.format_kind(s['path']) == 'mp3']
     n_other = len(targets) - len(writable)
     applied = bo.apply_frame_writes(
@@ -612,5 +605,5 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         library, overwrite=overwrite)
     applied.skipped = n_other
     ui.show_status(bo.summarise(applied, f"Assigned {tag_id} to",
-                                      skipped_note="non-MP3 skipped",
+                                      skipped_note="non-ID3 skipped",
                                       kept_note="kept an existing value"))

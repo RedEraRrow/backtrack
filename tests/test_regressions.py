@@ -52,9 +52,9 @@ class TagTextTest(unittest.TestCase):
         self.assertEqual(people_from_text(people_to_text(pairs)), pairs)
 
     def test_a_fractional_disc_is_written_as_it_is(self):
-        from backtrack.id3.tag_writer import _fmt_pair
-        self.assertEqual(_fmt_pair('1.5', 3), '1.5/3')
-        self.assertEqual(_fmt_pair('4', '12'), '4/12')
+        from backtrack.id3.tag_writer import _num
+        self.assertEqual((_num('1.5'), _num(3)), ('1.5', '3'))
+        self.assertEqual((_num('4'), _num('12.0')), ('4', '12'))
 
     def test_reflow_leaves_an_unnumbered_track_alone(self):
         from backtrack import bulk_pattern as bp

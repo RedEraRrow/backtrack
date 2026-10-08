@@ -4,12 +4,14 @@ import time
 
 from backtrack.config import load_config, music_dirs, set_music_dirs, setting, update_config
 from backbone.log import log, configure as log_setup, quietly
+from backtrack import accents
 from backtrack.playback.session import SESSION
 from backtrack.music_library import (
     build_library, load_library_cache, save_library_cache,
     start_background_sync
 )
 from backtrack.menus import main_menu
+from backtrack.menus.play import offer_resume
 from backtrack.id3.tag_registry import TAG_REGISTRY
 from backbone.nav import QuitToTerminal
 from backbone import prompt, ui
@@ -60,7 +62,7 @@ def _maybe_join_session() -> bool:
     sessions = ipc.list_sessions()
     if not sessions:
         return False
-    choices = [prompt.Choice(title="Start a new session (this window plays its own audio)",
+    choices = [prompt.Choice(title="Start a new session in this window",
                              value="__new__")]
     for s in sessions:
         np = s.get("now_playing") or {}
@@ -83,29 +85,8 @@ def _maybe_join_session() -> bool:
         # Take the player view for this window if it's free (see docstring).
         _take_player_if_free(link, info)
     else:
-        ui.show_status("Could not join that session, starting a new one.")
+        ui.show_error("couldn't join that session, so this window started its own")
     return True
-
-
-def _maybe_resume() -> None:
-    """If the last run left a queue, offer to pick it up where it stopped or
-    start fresh, as joining a session is offered. Esc decides later: the queue
-    is kept and offered again next time."""
-    from backtrack.playback.session import forget_saved_queue, saved_queue
-    from backtrack.menus.play import resume_queue
-    saved = saved_queue()
-    if not saved:
-        return
-    i, n = saved['index'], len(saved['queue'])
-    at = f" at {ui.format_time(int(saved['elapsed']))}" if saved['elapsed'] >= 1 else ""
-    pick = prompt.select("You were listening to:", choices=[
-        prompt.Choice(title=f"Resume  {saved['titles'][i]}{at} · {i + 1} of {n}", value="resume"),
-        prompt.Choice(title="Start fresh (forget it)", value="fresh"),
-    ])
-    if pick == "resume":
-        resume_queue()
-    elif pick == "fresh":
-        forget_saved_queue()
 
 
 def _run(config: dict) -> None:
@@ -126,15 +107,12 @@ def _run(config: dict) -> None:
         ui.show_status(f"Library: {ui.plural(len(library), 'track')}.")
         # Keep the cache fresh in the background (adds/removes/edits).
         start_background_sync(library)
-        # A running session's queue is its own, live: offered as a join above.
-        if not others:
-            _maybe_resume()
-
         library_ref = [library]
         # No save on the way out: everything that changes a setting saves it
         # as it goes, and this dict is the one loaded at startup, and saving it here
         # put back every setting as it was when the app opened.
-        main_menu(library_ref)
+        # A running session's queue is its own, live: offered as a join above.
+        main_menu(library_ref, on_start=None if others else offer_resume)
         return
 
     # First run: prompt for music directory
@@ -183,27 +161,10 @@ def _wire_playback() -> None:
     Ctrl-P/N/B transport hotkeys (#14), so menus/browse can show background audio
     and control (or reopen) the player from anywhere."""
     from backtrack.playback import now_playing_box
-    from backtrack.playback.player import open_player_view
+    from backtrack.playback.player import show_player
 
     ui.set_footer_provider(now_playing_box.format_now_playing_bar)
-
-    def _open_player() -> None:
-        from backtrack.playback import session as sess
-        from backtrack.playback.player import open_client_player_view
-        snap = sess.current_now_playing()
-        if not snap:
-            ui.show_status("Nothing is playing.")
-            return
-        holder = snap.get('view_holder')
-        if holder and holder != sess.my_token():
-            ui.show_status("The player is open in another window.")
-            return
-        if sess.is_client():
-            open_client_player_view()
-        else:
-            open_player_view()
-
-    prompt.set_player_opener(_open_player)
+    prompt.set_player_opener(show_player)
 
     def _transport(action: str) -> None:
         """Route a global transport hotkey to the active session (local host or
@@ -216,9 +177,13 @@ def _wire_playback() -> None:
             a.next()
         elif action == 'prev':
             a.prev()
+        elif action == 'time':
+            from backtrack.playback.player_ui import toggle_chapter_time
+            toggle_chapter_time()
         ui.pulse_footer()
 
     prompt.set_transport_handler(_transport)
+    from backtrack.playback import player_ui
 
     # Clicking the status-bar activity beacon opens the live activity centre.
     from backtrack.menus.activity import activity_centre
@@ -252,7 +217,8 @@ def _run_app() -> None:
 
     config = load_config()
     log_setup(bool(setting(config, "debug")))
-    ui.set_accent(config.get("accent_colour"))
+    ui.set_marquee_bpm(setting(config, "scroll_bpm"))
+    accents.apply()
     _wire_keyboard()
     _wire_playback()
     ui.enter_alt_screen()

@@ -1,7 +1,7 @@
 """The background-audio now-playing box drawn above the status bar on every
 menu screen: transport glyphs, the track, and the clock over a progress border."""
 from __future__ import annotations
-from backtrack.music_library import format_tag_values
+from backtrack.music_library import chapter_at, chapter_label, format_tag_values, library_entry
 from backbone import ui
 from backbone.ui import Colors as C
 
@@ -57,6 +57,16 @@ def _clip_to_cols(text: str, cols: int) -> str:
     return "".join(out)
 
 
+_chapters_of: dict = {}           # the playing file's chapters, looked up once per file
+
+
+def _chapters(path: str) -> list:
+    if path not in _chapters_of:
+        _chapters_of.clear()
+        _chapters_of[path] = library_entry(path).get('chapters') or []
+    return _chapters_of[path]
+
+
 def format_now_playing_bar(width: int) -> list[str] | None:
     """The background-audio now-playing box (#14), styling only (no colour): a
     rounded box whose bottom border doubles as the progress bar. Row 1 = top
@@ -69,6 +79,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     too narrow for a box."""
     from backtrack.playback.session import current_now_playing
     np = current_now_playing()
+    ui.set_footer_time_cols(None)
     if np is None:
         ui.set_footer_signature(None)
         ui.set_footer_unboxed(False)
@@ -102,8 +113,12 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     # player view, and the queue pane inside it).
     # The player's own formatter (int: whole seconds), so an hour-long track
     # reads 1:00:00 here as it does in the player, not 60:00.
-    right = (f"{ui.format_time(int(max(0, np['elapsed'])))} / "
-             f"{ui.format_time(int(max(0, np['duration'])))}")
+    # A file with chapters shows the chapter's title, and its time or the
+    # file's (the player's setting; a click on the clock swaps it).
+    from backtrack.playback.player_ui import shown_time
+    chapters = _chapters(np.get('file_path') or '')
+    at, length, span = shown_time(max(0, np['elapsed']), max(0, np['duration']), chapters)
+    right = f"{ui.format_time(int(at))} / {ui.format_time(int(length))}"
 
     # How narrow the box may get, in terms of what it is actually being asked to
     # hold. A fixed threshold can't know: `right` grows with the track (an hour-
@@ -120,7 +135,8 @@ def format_now_playing_bar(width: int) -> list[str] | None:
 
     ui.set_footer_unboxed(False)
 
-    left_segs: list = [(icon, C.BOLD), (np['title'] or '?', C.BOLD)]
+    title = chapter_label(chapters, chapter_at(chapters, np['elapsed']))[0] if chapters else np['title']
+    left_segs: list = [(icon, C.BOLD), (title or '?', C.BOLD)]
     if np['artist']:
         left_segs += [("  ·  ", C.DIM), (format_tag_values(np['artist']), C.DIM)]
     if np['album']:
@@ -141,16 +157,17 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     # the only thing that varies is the size of the gap before the clock.
     pipe_col = mh + box_w                    # 1-based column of the closing │
     time_col = pipe_col - 1 - len(right)
+    if chapters:
+        ui.set_footer_time_cols((time_col, time_col + len(right) - 1))
     mid = (f"{pad}{C.DIM}│{C.RESET} {left_styled}"
            f"\033[{time_col}G{C.DIM}{right}{C.RESET}"
            f"\033[{pipe_col}G{C.DIM}│{C.RESET}")
 
     # Progress along the bottom border: heavy ━ for the elapsed fraction, light ─
-    # for the rest (the join to the rounded corners is intentionally light).
-    cells = box_w - 2
+    # for the rest (the join to the rounded corners is intentionally light), and
+    # the chapter playing picked out as in the player.
     pct = (np['elapsed'] / np['duration']) if np['duration'] else 0.0
-    filled = max(0, min(cells, round(pct * cells)))
-    prog = f"{C.BOLD}{'━' * filled}{C.RESET}{C.DIM}{'─' * (cells - filled)}{C.RESET}"
+    prog = ui.progress_cells(pct, box_w - 2, span, rest="─")
     bot = f"{pad}{C.DIM}╰{C.RESET}{prog}{C.DIM}╯{C.RESET}"
 
     return [_clip_ansi_to_width(ln, width) for ln in (top, mid, bot)]

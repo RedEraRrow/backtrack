@@ -15,10 +15,12 @@ from types import SimpleNamespace
 from backtrack.playback.libvlc import LOAD_ERROR as _VLC_LOAD_ERROR, vlc
 from backtrack import tuning as tune
 from mutagen.id3 import ID3
-import mutagen.id3
 
 from backtrack.history import log_listening_history
-from backtrack.music_library import drop_moved, get_song_duration, library_entry, track_title, first_text
+from backtrack import accents, books
+from backtrack.id3.tag_formats import kind as tag_kind, load_id3, open_tags, parse_gain, texts
+from backtrack.music_library import (chapter_at, drop_moved, get_song_duration,
+                                    is_audiobook, library_entry, track_title, first_text)
 from backbone.files import write_text_atomic
 from backbone.log import log, quietly
 
@@ -92,6 +94,62 @@ def forget_saved_queue() -> None:
 # Low-level audio primitives.
 # ---------------------------------------------------------------------------
 
+def player_tags(path: str) -> ID3:
+    """The tags the player shows and applies (details, credits, lyrics, gain):
+    the file's own ID3 (an MP3, WAV or AIFF), else an ID3 view of any other
+    file's tags, so one way of drawing and playing serves every format."""
+    k = tag_kind(path)
+    try:
+        if k == 'id3':
+            return load_id3(path)
+        if k != 'unsupported':
+            return _id3_view(path)
+    except Exception as exc:
+        log.info("tags unreadable in %s: %s", path, exc)
+    return ID3()
+
+
+# The library's stand-ins for a missing value, which aren't shown as values.
+_UNSET = ('', '0', 'Unknown Artist', 'Unknown Album', 'Unknown Genre', 'Unknown Year')
+
+
+def _id3_view(path: str) -> ID3:
+    """An m4a/FLAC/Ogg/Opus file's tags as ID3 frames: the library's reading of
+    them, plus its embedded lyrics (LRC text becomes timed SYLT) and ReplayGain.
+    ponytail: a read-only view, never saved (it has no file name, so a save fails loudly)."""
+    from mutagen import id3 as f
+    from backtrack.lyrics.formats import parse_lrc_text
+    e, view = library_entry(path), ID3()
+
+    def add(frame, value, split=False):
+        if str(value or '').strip() not in _UNSET:
+            view.add(frame(encoding=3, text=str(value).split('; ') if split else [str(value)]))
+
+    for frame, key, split in ((f.TIT2, 'title', False), (f.TPE1, 'artist', True), (f.TPE2, 'album_artist', True),
+                              (f.TALB, 'album', False), (f.TCON, 'genre', True), (f.TCOM, 'composer', True),
+                              (f.TEXT, 'lyricist', True), (f.TDRC, 'year', False), (f.TIT1, 'work', False),
+                              (f.TSST, 'disc_subtitle', False), (f.MVNM, 'movement_name', False)):
+        add(frame, e.get(key), split)
+    for frame, num, total in ((f.TRCK, 'track', 'total_tracks'), (f.TPOS, 'disc', 'total_discs'),
+                              (f.MVIN, 'movement_number', 'total_movements')):
+        if str(e.get(num) or '0') != '0':
+            add(frame, f"{e[num]}/{e[total]}" if str(e.get(total) or '0') != '0' else e[num])
+    if e.get('credits'):
+        view.add(f.TMCL(encoding=3, people=[[role, name] for name, role in e['credits']]))
+
+    tags = open_tags(path)[0]
+    if lyrics := "\n".join(texts(tags, 'lyrics')):
+        lines = parse_lrc_text(lyrics)
+        if any(ms is not None for _t, ms in lines):
+            view.add(f.SYLT(encoding=3, lang='eng', format=2, type=1,
+                            text=[(t, ms) for t, ms in lines if ms is not None]))
+        else:
+            view.add(f.USLT(encoding=3, lang='eng', desc='', text=lyrics))
+    if gain := texts(tags, 'replaygain_track_gain'):
+        view.add(f.TXXX(encoding=3, desc='REPLAYGAIN_TRACK_GAIN', text=[gain[0]]))
+    return view
+
+
 def _new_instance() -> vlc.Instance:
     """Create the single reusable libvlc instance for the process."""
     if vlc is None:
@@ -130,6 +188,9 @@ def _apply_equalizer(mp, audio) -> bool:
     except Exception:
         rva2_frames = []
     preamp_gain = next((fr.gain for fr in rva2_frames if getattr(fr, 'channel', None) == 1), None)
+    if preamp_gain is None:                  # ReplayGain from any tagger, and every non-MP3 format
+        preamp_gain = next((parse_gain(fr.text[0]) for fr in audio.getall('TXXX')
+                            if fr.desc.upper() == 'REPLAYGAIN_TRACK_GAIN' and fr.text), None)
 
     if not adjustments and preamp_gain is None:
         return False
@@ -200,6 +261,12 @@ def clamp_volume(value) -> int:
     return max(0, min(100, v))
 
 
+def next_sleep_mode(mode):
+    """The sleep timer setting after `mode`: off, each of SLEEP_MINUTES, end of chapter, off."""
+    steps = [None, *tune.SLEEP_MINUTES, 'chapter']
+    return steps[(steps.index(mode) + 1) % len(steps)] if mode in steps else steps[1]
+
+
 class PlaybackSession:
     """Owns the process's VLC player, the current track, and the queue.
 
@@ -215,6 +282,12 @@ class PlaybackSession:
         self.file_path: str | None = None
         self.audio = None                    # mutagen ID3 of the current track (for the view + EQ)
         self.duration: float = 0.0
+        self.entry: dict = {}                # the current track's library details
+        self.chapters: list = []             # its [[start s, title], ...], if any
+        self.is_book: bool = False           # it's in a directory set to Audiobooks
+        self.rate: float = 1.0               # playback speed (books only; music plays at 1)
+        self.sleep_mode = None               # sleep timer: None, minutes, or 'chapter'
+        self._sleep_deadline: float = 0.0    # monotonic time a minutes timer runs out
         self.track_start: float = 0.0        # wall-clock start, for history logging
         self.is_grouping: bool = False
         self._history_logged: bool = True    # guard so each track logs at most once
@@ -267,10 +340,12 @@ class PlaybackSession:
 
     def start(self, path: str, queue: list[str] | None = None,
               titles: list[str] | None = None, index: int = 0,
-              mode: str | None = None, is_grouping: bool = False) -> bool:
+              mode: str | None = None, is_grouping: bool = False,
+              start_at: float | None = None) -> bool:
         """Start playing ``path`` (replacing any current track/queue). ``queue`` is
         the full list of paths this play belongs to (an album/selection) so
-        track-end can auto-advance; ``index`` is ``path``'s position in it."""
+        track-end can auto-advance; ``index`` is ``path``'s position in it.
+        ``start_at`` is where to begin; None resumes a started audiobook."""
         with self._lock:
             if queue is None:
                 queue = [path]
@@ -285,24 +360,41 @@ class PlaybackSession:
             if mode is not None:
                 self.mode = mode
             self.is_grouping = is_grouping
-            ok = self._load(self.queue[self.index])
+            if start_at is None:
+                start_at = self._book_resume()
+            ok = self._load(self.queue[self.index], start_at)
             if ok:
                 self._ensure_advertised()
             return ok
 
-    def _load(self, path: str) -> bool:
-        """Load and begin playing a single track, logging the previous one first.
-        Returns False if the file can't be read."""
+    def _book_resume(self) -> float:
+        """Where the queue item about to play should start: a started audiobook
+        resumes at its saved file and spot (the queue moves to that file), and
+        anything else starts at 0."""
+        path = self.queue[self.index]
+        point = books.resume_point(path) if is_audiobook(path) else None
+        if point is None:
+            return 0.0
+        saved, at = point
+        if saved in self.queue:
+            self.index = self.queue.index(saved)
+        else:
+            self.queue[self.index] = saved
+            if self.index < len(self.titles):
+                self.titles[self.index] = self._title_for(saved)
+        if at >= 1:
+            from backbone import ui
+            ui.show_status(f"Resumed at {ui.format_time(int(at))}", tune.TOAST_MEDIUM_S)
+        return at
+
+    def _load(self, path: str, start_at: float = 0.0) -> bool:
+        """Load and begin playing a single track `start_at` seconds in, logging
+        the previous one first. Returns False if the file can't be read."""
         with self._lock:
             # Finish accounting for whatever was playing.
             self._log_history()
-            try:
-                audio = ID3(path)
-            except (FileNotFoundError, OSError, mutagen.id3.ID3NoHeaderError):  # type: ignore[reportPrivateImportUsage]
-                try:
-                    audio = ID3()
-                except Exception:
-                    return False
+            self._save_book()
+            audio = player_tags(path)
             try:
                 duration = get_song_duration(path)
             except Exception:
@@ -310,6 +402,8 @@ class PlaybackSession:
 
             inst = self._ensure_instance()
             media = inst.media_new(path)
+            if start_at:
+                media.add_option(f"start-time={start_at:.2f}")
             if self.mp is None:
                 self.mp = inst.media_player_new()
             assert self.mp is not None
@@ -317,6 +411,12 @@ class PlaybackSession:
 
             self.file_path = path
             self.audio = audio
+            self.entry = library_entry(path)
+            with quietly():
+                accents.apply(path)              # art mode: this cover's colours
+            self.chapters = self.entry.get('chapters') or []
+            self.is_book = is_audiobook(path)
+            self.rate = books.rate_for(path) if self.is_book else 1.0
             self.duration = duration if duration and duration > 0 else 0.0
             self._history_logged = False
             self.generation += 1
@@ -325,6 +425,8 @@ class PlaybackSession:
             need_vlc_len = not self.duration
 
             mp.play()
+            if mp.set_rate(self.rate) != 0:
+                log.warning("speed %.1f not applied to %s", self.rate, path)
             _apply_equalizer(mp, audio)     # right after play() so it takes (#74)
             mp.audio_set_volume(self._volume)   # carry the level across tracks
             self.track_start = time.time()
@@ -376,7 +478,8 @@ class PlaybackSession:
         """Apply a command received from a joined client window to this session."""
         if name == 'play':
             self.start(args['path'], queue=args.get('queue'), titles=args.get('titles'),
-                       index=int(args.get('index', 0)), mode=args.get('mode'))
+                       index=int(args.get('index', 0)), mode=args.get('mode'),
+                       start_at=args.get('start_at'))
         elif name == 'pause':
             self.pause_toggle()
         elif name == 'next':
@@ -385,6 +488,12 @@ class PlaybackSession:
             self.prev()
         elif name == 'seek':
             self.seek(float(args.get('delta', 0)))
+        elif name == 'seek_to':
+            self.seek_to(float(args.get('at', 0)))
+        elif name == 'set_rate':
+            self.set_rate(float(args.get('rate', 1.0)))
+        elif name == 'sleep':
+            self.cycle_sleep()
         elif name == 'set_volume':
             self.set_volume(int(args.get('vol', self.get_volume())))
         elif name == 'stop':
@@ -424,12 +533,27 @@ class PlaybackSession:
             write_text_atomic(_queue_file(), json.dumps(data))
         self._saved_at = time.monotonic()
 
+    def _save_book(self) -> None:
+        """Keep where the audiobook playing got to (books.json). Nothing in its
+        first second, so a track just loaded can't wipe a saved spot; at its end,
+        the book moves on to its next file."""
+        if is_client() or not self.is_book or not self.file_path or self.mp is None:
+            return
+        at = self.elapsed()
+        at_end = (self.mp.get_state() in (_VLC_STATE_ENDED, _VLC_STATE_STOPPED)
+                  or bool(self.duration and at >= self.duration - tune.SEEK_END_MARGIN_S))
+        if at < 1 and not at_end:
+            return
+        with quietly():
+            books.remember(self.file_path, at, self.rate, at_end)
+
     def stop(self) -> None:
         """Stop playback and clear the current track (the queue is kept so the UI
         can still show it). Audio ends; history for the current track is logged."""
         with self._lock:
             if self.is_active():
                 self._save_queue()           # where it stopped, for Resume
+                self._save_book()
             self._log_history()
             if self.mp is not None:
                 with quietly():
@@ -438,6 +562,8 @@ class PlaybackSession:
             self.audio = None
             self.duration = 0.0
             self.generation += 1
+            with quietly():
+                accents.apply()                  # nothing playing: the chosen colours
 
     def shutdown(self) -> None:
         """Fully tear down the session (on app exit): stop audio and restore stderr."""
@@ -459,6 +585,7 @@ class PlaybackSession:
         with self._lock:
             if self.mp is not None:
                 self.mp.pause()
+                self._save_book()
 
     def track(self) -> SimpleNamespace:
         """The current track and queue, read together under the lock: another
@@ -468,6 +595,7 @@ class PlaybackSession:
             return SimpleNamespace(
                 generation=self.generation, file_path=self.file_path or "",
                 audio=self.audio, duration=self.duration, is_grouping=self.is_grouping,
+                chapters=list(self.chapters), is_book=self.is_book, rate=self.rate,
                 titles=list(self.titles), index=self.index, queue=list(self.queue))
 
     def is_paused(self) -> bool:
@@ -540,16 +668,78 @@ class PlaybackSession:
         return time.time()
 
     def seek_to(self, seconds: float) -> None:
-        """Seek to an absolute position (used when a new host resumes a track)."""
+        """Seek to an absolute position (a chapter picked from the panel)."""
         with self._lock:
             if self.mp is not None:
                 self.mp.set_time(int(max(0.0, seconds) * 1000))
 
+    def set_rate(self, rate: float) -> float | None:
+        """Set an audiobook's speed (kept for that book); None for music."""
+        with self._lock:
+            if not self.is_book or self.mp is None:
+                return None
+            self.rate = round(min(max(rate, tune.RATE_MIN), tune.RATE_MAX), 1)
+            if self.mp.set_rate(self.rate) != 0:
+                log.warning("speed %.1f not applied to %s", self.rate, self.file_path)
+            self._save_book()
+            return self.rate
+
+    def cycle_sleep(self):
+        """Step the sleep timer on (next_sleep_mode); returns the new setting."""
+        with self._lock:
+            self.sleep_mode = next_sleep_mode(self.sleep_mode)
+            if isinstance(self.sleep_mode, int):
+                self._sleep_deadline = time.monotonic() + self.sleep_mode * 60
+            if self.sleep_mode is None and self.mp is not None:
+                self.mp.audio_set_volume(self._volume)       # undo a fade in progress
+            return self.sleep_mode
+
+    def sleep_left(self) -> float | None:
+        """Real seconds until the sleep timer pauses, or None when it's off. At
+        end of chapter that's to the next chapter, or the end of the track."""
+        if self.sleep_mode is None:
+            return None
+        if self.sleep_mode != 'chapter':
+            return max(0.0, self._sleep_deadline - time.monotonic())
+        at = self.elapsed()
+        ci = chapter_at(self.chapters, at)
+        end = self.chapters[ci + 1][0] if 0 <= ci < len(self.chapters) - 1 else self.duration
+        return max(0.0, (end - at) / (self.rate or 1.0))
+
+    def _sleep_tick(self) -> bool:
+        """Fade over the timer's last seconds, then pause. True when it paused."""
+        left = self.sleep_left()
+        if left is None or self.mp is None:
+            return False
+        if self.is_paused():
+            if self.sleep_mode != 'chapter' and left <= 0:
+                self.sleep_mode = None          # ran out while already paused
+            return False
+        if left > tune.SLEEP_END_EARLY_S:
+            if left < tune.SLEEP_FADE_S:
+                self.mp.audio_set_volume(int(self._volume * left / tune.SLEEP_FADE_S))
+            return False
+        self.mp.set_pause(1)
+        self.mp.audio_set_volume(self._volume)
+        self.sleep_mode = None
+        self._save_book()
+        self._save_queue()
+        log.info("sleep timer paused %s at %.0fs", self.file_path, self.elapsed())
+        from backbone import ui
+        ui.show_status("Sleep timer: paused", tune.TOAST_LONG_S)
+        return True
+
     def next(self, *, manual: bool = True) -> str | None:
         """Advance to the next queued track. ``manual`` ignores repeat-one (an
         explicit skip). Returns the new path, or None if the queue is exhausted
-        (which stops playback)."""
+        (which stops playback). A manual skip in a file with chapters goes to
+        the next chapter, until the last."""
         with self._lock:
+            if manual and self.mp is not None:
+                ci = chapter_at(self.chapters, self.elapsed())
+                if 0 <= ci < len(self.chapters) - 1:
+                    self.mp.set_time(int(self.chapters[ci + 1][0] * 1000))
+                    return self.file_path
             while True:
                 if not self.queue:
                     self.stop()
@@ -560,6 +750,9 @@ class PlaybackSession:
                     nxt = self.index
                 elif nxt >= len(self.queue):
                     if self.mode == REPEAT_ALL:
+                        nxt = 0
+                    elif album := self._queue_end_album():
+                        self.queue, self.titles = album, [self._title_for(p) for p in album]
                         nxt = 0
                     else:
                         self.stop()
@@ -577,6 +770,16 @@ class PlaybackSession:
             self.index = nxt
             self._load(self.queue[self.index])
             return self.file_path
+
+    def _queue_end_album(self) -> list[str]:
+        """What follows the end of the queue when Settings says a random album
+        does (not after an audiobook): its tracks, else nothing."""
+        from backtrack.config import setting
+        from backtrack.music_library import _live_config, live_library, random_album
+        if setting(_live_config(), 'queue_end') != 'random_album' or self.is_book:
+            return []
+        library = live_library() or []
+        return random_album([t['path'] for t in library], library, avoid=self.file_path)
 
     def jump(self, index: int) -> str | None:
         """Play queue position `index` now (a click in the queue pane). Returns
@@ -683,7 +886,7 @@ class PlaybackSession:
             self.queue.insert(self.index + 1, path)
             self.titles.insert(self.index + 1, title)
             self.index += 1
-            return self._load(path)
+            return self._load(path, self._book_resume())
         return self.start(path, queue=list(paths), titles=titles, index=index)
 
     def _edit_jump(self, pos: int, path: str) -> bool:
@@ -727,12 +930,15 @@ class PlaybackSession:
         return True
 
     def _edit_shuffle_upcoming(self) -> bool:
-        rest = list(zip(self.queue[self.index + 1:], self.titles[self.index + 1:]))
-        if len(rest) < 2:
+        """Shuffle what's still to play; audiobook files keep their places."""
+        spots = [i for i in range(self.index + 1, min(len(self.queue), len(self.titles)))
+                 if not is_audiobook(self.queue[i])]
+        if len(spots) < 2:
             return False
-        random.shuffle(rest)
-        self.queue[self.index + 1:] = [p for p, _ in rest]
-        self.titles[self.index + 1:] = [t for _, t in rest]
+        items = [(self.queue[i], self.titles[i]) for i in spots]
+        random.shuffle(items)
+        for i, (p, t) in zip(spots, items):
+            self.queue[i], self.titles[i] = p, t
         return True
 
     def _edit_undo(self) -> bool:
@@ -752,10 +958,20 @@ class PlaybackSession:
     def prev(self) -> str | None:
         """⏮: past the first ``_PREV_RESTART_AFTER_S`` seconds, restart the current
         track; within that window step back to the previous queue item (restarting
-        this one anyway when it is the first). Returns the now-loaded path."""
+        this one anyway when it is the first). In a file with chapters the same
+        goes for its chapters, back to the first. Returns the now-loaded path."""
         with self._lock:
             if not self.queue:
                 return None
+            if self.chapters and self.mp is not None:
+                at = self.elapsed()
+                ci = chapter_at(self.chapters, at)
+                if at - self.chapters[ci][0] >= _PREV_RESTART_AFTER_S:
+                    self.mp.set_time(int(self.chapters[ci][0] * 1000))
+                    return self.file_path
+                if ci > 0:
+                    self.mp.set_time(int(self.chapters[ci - 1][0] * 1000))
+                    return self.file_path
             if (self.index > 0 and self.mp is not None
                     and self.elapsed() >= _PREV_RESTART_AFTER_S):
                 # Seek rather than reload: no audible gap, and pause state holds.
@@ -771,7 +987,8 @@ class PlaybackSession:
         """Advance the session's state machine once: if the current track has
         ended, log it and move to the next (or stop). Safe to call from either the
         background thread or the foreground view loop. Returns ``'changed'`` when
-        the track advanced, ``'stopped'`` when the queue finished, else None."""
+        the track advanced, ``'stopped'`` when the queue finished, ``'slept'``
+        when the sleep timer paused it, else None."""
         with self._lock:
             if not self.is_active() or self.mp is None:
                 return None
@@ -780,8 +997,11 @@ class PlaybackSession:
             if not ended and self.duration and self.elapsed() >= self.duration:
                 ended = True
             if not ended:
+                if self._sleep_tick():
+                    return 'slept'
                 if time.monotonic() - self._saved_at > _SAVE_QUEUE_EVERY_S:
                     self._save_queue()
+                    self._save_book()
                 return None
             result = self.next(manual=False)
             if result is None:
@@ -862,6 +1082,10 @@ class PlaybackSession:
                 'titles': list(self.titles),
                 'mode': self.mode,
                 'is_grouping': self.is_grouping,
+                'rate': self.rate,
+                'is_book': self.is_book,
+                'sleep_mode': self.sleep_mode,
+                'sleep_left': self.sleep_left(),
             }
 
     # -- player-view lock (one open view across all windows) ---------------
@@ -914,9 +1138,10 @@ class RemoteSession:
         return clamp_volume(np.get('volume', 0)) if np else 0
 
     def start(self, path: str, queue: list | None = None, titles: list | None = None,
-              index: int = 0, mode: str | None = None, is_grouping: bool = False) -> bool:
+              index: int = 0, mode: str | None = None, is_grouping: bool = False,
+              start_at: float | None = None) -> bool:
         return self._link.send('play', {'path': path, 'queue': queue, 'titles': titles,
-                                        'index': index, 'mode': mode})
+                                        'index': index, 'mode': mode, 'start_at': start_at})
 
     def enqueue(self, path: str, title: str | None = None) -> int:
         self._link.send('enqueue', {'path': path, 'title': title})
@@ -944,6 +1169,20 @@ class RemoteSession:
     def seek(self, seconds: float) -> None:
         """Ask the host to seek by ``seconds``; the new position arrives in a snapshot."""
         self._link.send('seek', {'delta': seconds})
+
+    def seek_to(self, seconds: float) -> None:
+        self._link.send('seek_to', {'at': seconds})
+
+    def set_rate(self, rate: float) -> float | None:
+        """Ask the host for a speed; it confirms (or ignores, for music) in a snapshot."""
+        np = self._link.latest() or {}
+        rate = round(min(max(rate, tune.RATE_MIN), tune.RATE_MAX), 1)
+        self._link.send('set_rate', {'rate': rate})
+        return rate if np.get('is_book') else None
+
+    def cycle_sleep(self):
+        self._link.send('sleep')
+        return next_sleep_mode((self._link.latest() or {}).get('sleep_mode'))
 
     def set_volume(self, vol: int) -> int:
         """Ask the host to set the volume; returns the clamped level asked for."""
@@ -995,6 +1234,26 @@ def has_other_windows() -> bool:
         return link.connected
     srv = SESSION._server
     return srv is not None and srv.peer_count() > 0
+
+
+class AppLink:
+    """This window's own session as a CLI command typed at its `:` line sees
+    it: the calls a SessionClient makes on a running session, applied here (or
+    sent on to the session this window joined)."""
+
+    def send(self, name: str, args: dict | None = None) -> bool:
+        if is_client():
+            return _client_link.send(name, args or {})
+        SESSION._handle_remote_command(name, args or {})
+        if name == 'play':
+            SESSION.start_background_tick()
+        return True
+
+    def latest(self):
+        return active_session().now_playing()
+
+    def close(self) -> None:
+        pass
 
 
 def active_session():
@@ -1062,9 +1321,9 @@ def _become_host_from(session_id: str, snap: dict | None) -> None:
                   titles=snap.get('titles'),
                   index=int(snap.get('index', 0)),
                   mode=snap.get('mode'),
-                  is_grouping=bool(snap.get('is_grouping', False)))
+                  is_grouping=bool(snap.get('is_grouping', False)),
+                  start_at=float(snap.get('elapsed') or 0.0))
     with quietly():
-        SESSION.seek_to(float(snap.get('elapsed') or 0.0))
         if snap.get('paused'):
             SESSION.pause_toggle()
     SESSION.start_background_tick()

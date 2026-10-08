@@ -31,6 +31,16 @@ DURATION_FALLBACK_S = 999.0
 EQ_GAIN_LIMIT_DB = 20.0
 # Restart the current track rather than stepping back, if it is this far in.
 PREV_RESTART_AFTER_S = 5.0
+# Audiobook playback speed: its range and the step of one key press.
+RATE_MIN = 0.5
+RATE_MAX = 3.0
+RATE_STEP = 0.1
+# Sleep timer: the lengths a key press cycles through (then end of chapter),
+# how long the volume fades before it pauses, and how far ahead of a chapter or
+# track end it pauses, so VLC can't move on to the next one first.
+SLEEP_MINUTES = (15, 30, 45, 60)
+SLEEP_FADE_S = 5.0
+SLEEP_END_EARLY_S = 0.5
 # Hex characters of a uuid4 kept as a session / process id. Short enough to sit
 # in a socket path and a status line, long enough not to collide in practice.
 ID_SLICE_LEN = 8
@@ -132,3 +142,6 @@ PANE_LYRICS_EST_ROWS = 6
 # and one track. Its tracks give way before the art shrinks, and any rows the art
 # doesn't need go to it.
 PANE_QUEUE_MIN_ROWS = 3
+
+# How long the volume shows (over the middle of the screen) after it changes.
+VOLUME_SHOWN_S = 1.5
