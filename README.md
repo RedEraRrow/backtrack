@@ -61,9 +61,11 @@ and has a tag editor (ID3, MP4 and Vorbis comments) with bulk operations for who
 
 macOS, starting from nothing:
 ```bash
-# Homebrew, if you don't have it yet (it asks for your password, and on Apple
-# Silicon prints two lines to run afterwards: run them)
+# Homebrew, if you don't have it yet (it asks for your password)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# put brew on your PATH, now and in new windows (Apple Silicon; does nothing on an Intel Mac)
+echo 'eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)"' >> ~/.zprofile
+eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)"
 
 brew install pipx
 brew install --cask vlc
@@ -244,7 +246,7 @@ by screen, with more than one key per action if you like), and every hint bar sh
 | `m` | Show or hide the track details line (year · genre · disc/track …); remembered. Also Settings → Track details in player |
 | `w` | Choose the panels: a box over the player to tick Lyrics, People, Queue and Chapters (one this track has nothing for says so). Its **Arrange panels…** moves them: `Tab` from panel to panel (the one moving is outlined in the accent), `↑` / `↓` up or down its column, `←` / `→` to the other side of the player, `↵` done. A wide window and a tall one each keep their own arrangement: wide, the panels are columns beside the player (either side, or both); tall, they're under it, side by side when there's room. Remembered |
 | `↑` / `↓` | With the queue panel showing: a cursor through the queue (the mouse wheel or a trackpad over the panel moves it too). `↵` plays the track at it, `J` / `K` move it up / down, `d` removes it, `x` shuffles what's coming, `c` clears what's coming, `u` undoes the last queue change |
-| `?` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[?] help`; in a text field, where `?` is typed, it says `[^/] help` and the key is Ctrl+/ (which works everywhere). Clicking the key in the corner works too. In the player it stays in the hint bar. Settings → [?] help toggle hides `[?] help` everywhere; `?` still works |
+| `?` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[?] help`; in a text field, where `?` is typed, it says `[^/] help` and the key is Ctrl+/ (macOS's Terminal sends nothing for that, so there it says `[^g] help` and the key is Ctrl+G; either works anywhere it arrives). Clicking the key in the corner works too. In the player it stays in the hint bar. Settings → [?] help toggle hides `[?] help` everywhere; `?` still works |
 | `[` / `]` | Previous / next track |
 | `e` | Edit the playing track's tags |
 | `a` / `A` | Go to the playing track's album / artist in Browse (`Esc` from there goes up through Browse) |

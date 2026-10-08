@@ -201,10 +201,9 @@ class _TrackState:
 
 
 def _build_strip(paths: list[str], state: dict[str, _TrackState], idx: int) -> list[str]:
-    """One line of group state: position, and a glyph per track, the only
-    group-level UI. ● current, ✔ marked, ◐ partly marked,
+    """One line of group state, for the trim editor's header box: position,
+    and a glyph per track, the only group-level UI. ● current, ✔ marked, ◐ partly marked,
     ○ untouched."""
-    indent = " " * ui.MARGIN_H
     glyphs = []
     for i, p in enumerate(paths):
         s = state[p]
@@ -218,10 +217,7 @@ def _build_strip(paths: list[str], state: dict[str, _TrackState], idx: int) -> l
             glyphs.append(f"{C.ACCENT}◐{C.RESET}")
         else:
             glyphs.append(f"{C.DIM}○{C.RESET}")
-    return [
-        f"{indent}{C.BOLD}Trim group{C.RESET} · {idx + 1}/{len(paths)}  {' '.join(glyphs)}",
-        "",
-    ]
+    return [f"Trim group · {idx + 1}/{len(paths)}  {' '.join(glyphs)}"]   # in the header's box, under the track
 
 
 def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list, header) -> None:

@@ -379,6 +379,9 @@ def _idle_view(woken, volume: int, own_tab: bool = False):
                 return {"status": "DETACH"}
             if act == 'player.back':
                 ui.show_status('Close the other window to leave the player', tune.TOAST_MEDIUM_S)
+            elif act == 'player.panel':
+                _choose_panels({})              # nothing playing: each says so, and shows once something does
+                last_sig = None
             elif act == 'player.resume' and own_tab:
                 from backtrack.menus.play import resume_queue
                 resume_queue(view=False)        # it plays; woken() opens the player

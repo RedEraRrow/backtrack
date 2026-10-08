@@ -357,12 +357,13 @@ def resolve_chapters(path: str, snapped_in_s: float, snapped_out_s: float
     return _finish(decisions)
 
 
-def _header_box(title: str, artist: str, track_length: float) -> list[str]:
-    """One-line rounded box, same shape as the rest of the app's per-file
-    screens (id3.browser's tag list, the bulk-edit header): styled title (+
-    dim artist) left, dim facts right, spanning the full terminal width."""
+def _header_box(title: str, artist: str, track_length: float, subtitle: str | None = None) -> list[str]:
+    """Rounded box, same shape as the rest of the app's per-file screens
+    (id3.browser's tag list, the bulk-edit header): styled title (+ dim
+    artist) left, dim facts right, spanning the full terminal width; a
+    bulk trim's group strip (`subtitle`) inside it, under them."""
     return _promptmod.rounded_header(title, f" · {artist}" if artist else "",
-                                     f"[MP3]  {timefmt.clock(track_length)}")
+                                     f"[MP3]  {timefmt.clock(track_length)}", subtitle)
 
 
 keys.define("trim", "Trim editor", [
@@ -568,7 +569,7 @@ def _run_marking_screen(
         return f"{indent}{marker}{label}: {timefmt.clock(req)} → snapped {C.BOLD}{timefmt.clock(snap)}{C.RESET}"
 
     def _render() -> tuple[list[str], int, int, dict]:
-        header = list(strip_lines or []) + list(_header_box(track_name, track_artist, track_length))
+        header = list(_header_box(track_name, track_artist, track_length, strip_lines[0] if strip_lines else None))
         out: list[str] = []
 
         out.append(_mark_line("In ", 'in', marks))

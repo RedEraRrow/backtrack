@@ -9,7 +9,7 @@ from unittest.mock import patch
 from backtrack.playback import player_ui
 from backtrack.playback import queue_pane as qp
 from backtrack import music_library
-from backbone import ui
+from backbone import keys, ui
 from backbone.prompt import core as pc
 
 
@@ -144,7 +144,7 @@ class UniversalHintsTest(unittest.TestCase):
             typed: dict = {}
             out = prompt.append_chrome(["  Name"], [], typed, pin=False)      # a text field
             self.assertIsNone(prompt.consume_chrome('?', typed))              # ? stays a character
-            col = ui.strip_ansi(out[0]).index("[^/]") + 2                   # it names Ctrl-/ instead
+            col = ui.strip_ansi(out[0]).index(f"[{keys.glyph(keys.of('global.help_typed')[0])}]") + 2   # it names Ctrl-/ (or Ctrl-G) instead
             self.assertIs(prompt.consume_chrome(f"MOUSE_CLICK:0:{row}:{col}", typed),
                           prompt.CHROME_REDRAW)                              # and clicking it works
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "backpack-backtrack"
-version = "0.3.0"
+version = "0.3.1"
 description = "Terminal music player with VLC playback, lyrics sync, and metadata editing."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,7 +16,7 @@ dependencies = [
     "pyperclip>=1.11.0",
     "python-vlc>=3.0.21203",
     "colorama>=0.4.6",
-    "backpack-backbone>=0.3,<0.4",
+    "backpack-backbone>=0.3.1,<0.4",
 ]
 classifiers = [
     "Environment :: Console :: Curses",
