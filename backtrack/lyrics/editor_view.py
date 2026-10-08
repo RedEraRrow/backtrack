@@ -36,8 +36,8 @@ keys.define("lyrics", "Lyrics editor", [
     ("play", ("p",), "play / stop"),
     ("save", ("s",), "save the working copy"),
     ("undo", ("u",), "undo"),
-    ("verify", ("V",), "verify against the markdown (transcripts)"),
-    ("write", ("W",), "write the transcript file (transcripts)"),
+    ("verify", ("V",), "verify against the markdown, for transcripts"),
+    ("write", ("W",), "write the transcript file, for transcripts"),
     ("back", ("ESC",), "back"),
     ("quit", ("q",), "quit the app"),
 ])
@@ -48,7 +48,7 @@ keys.define("lyrics_lines", "Lyrics editor: lines", [
     ("move_up", ("J",), "move the line up"),
     ("move_down", ("K",), "move the line down"),
     ("split", ("/",), "split the line"),
-    ("words", ("w",), "open the line's words (transcripts)"),
+    ("words", ("w",), "open the line's words, for transcripts"),
     ("tap", ("t",), "tap sync"),
     ("audition", ("b",), "audition"),
     ("dead_air", ("a",), "add dead air"),
@@ -60,7 +60,7 @@ keys.define("lyrics_lines", "Lyrics editor: lines", [
     ("overlay", ("m",), "import or remove the markdown"),
     ("commit_dirs", ("M",), "commit stage directions"),
     ("credits", ("c",), "add credits"),
-    ("speaker_split", ("S",), "split by speaker (transcripts)"),
+    ("speaker_split", ("S",), "split by speaker, for transcripts"),
     ("review", ("R",), "review issues"),
     ("review_dirs", ("D",), "review directions"),
     ("review_long", ("L",), "review long lines"),
@@ -343,7 +343,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
                       (K('lyrics_lines.label'), 'label'), (K('lyrics_lines.air_dir'), 'air↔dir'),
                       (K('lyrics_lines.fill_gaps'), 'fill gaps'), (K('lyrics_lines.overlay'), _md_label)]
             if is_sdir:
-                pairs.append((K('lyrics_lines.kind'), 'kind (inline/tone/external)'))
+                pairs.append((K('lyrics_lines.kind'), 'kind'))
             if _has_sdir: pairs.append((K('lyrics_lines.commit_dirs'), 'commit stage dirs'))
             pairs += [(K('lyrics_lines.credits'), 'credits'), (K('lyrics_lines.mark'), 'mark')]
             if _HAS_VLC: pairs.append((K('lyrics.play'), 'preview'))

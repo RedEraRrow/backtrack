@@ -376,7 +376,7 @@ class _KeyHandlers:
         _restore_term_attrs(self.fd, self.old)
         sys.stdout.write("\033[?1000l\033[?1006l")
         _ans = _prompt_text(
-            f"Write spoken words (Whisper format) to "
+            f"Write spoken words in Whisper format to "
             f"{os.path.basename(self.aux['jpath'])}? (y/N)")
         _set_raw(self.fd)
         sys.stdout.write("\033[?1000h\033[?1006h")
@@ -468,7 +468,7 @@ class _KeyHandlers:
             _restore_term_attrs(self.fd, self.old)
             sys.stdout.write("\033[?1000l\033[?1006l")
             _prompt = ("Stage direction text:" if self.segs[self.cursor].get("kind") == "stage_dir"
-                       else "Stage direction (blank = silence):")
+                       else "Stage direction, or blank for silence:")
             _new_lbl = _prompt_text(_prompt, default=_cur_lbl)
             _set_raw(self.fd)
             sys.stdout.write("\033[?1000h\033[?1006h")

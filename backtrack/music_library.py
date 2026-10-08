@@ -264,7 +264,7 @@ def _sync_worker(library: list) -> None:
         path_map = {track['path']: track for track in library}
         for i, (path, track) in enumerate(path_map.items()):
             if i % 20 == 0:
-                ui.set_status("sync", f"Syncing library ({i}/{len(library)})")
+                ui.set_status("sync", f"Syncing library {i}/{len(library)}")
 
             try:
                 current_mtime = os.path.getmtime(path)

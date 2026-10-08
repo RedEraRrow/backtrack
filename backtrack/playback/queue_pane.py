@@ -113,6 +113,13 @@ _QUEUE_MIN_ROWS = 2         # the header and one track, or the pane isn't drawn 
 # drawn, so a click on one can play it (the queue) or go to it (the chapters).
 # Cleared by each frame (the layout), as both lists may be on screen.
 _queue_click_rows: dict[int, tuple[int, int, int, str]] = {}
+_queue_area: list = [None]              # (top, left, bottom, right) the list drew in, this frame
+
+
+def in_queue(row: int, col: int) -> bool:
+    """Whether (row, col) is on the queue (or chapters) list, rows or not."""
+    a = _queue_area[0]
+    return bool(a) and a[0] <= row <= a[2] and a[1] <= col <= a[3]
 
 
 def queue_click_index(row: int, col: int) -> tuple[str, int] | None:
@@ -132,6 +139,7 @@ def _place_queue(log, top: int, left: int, width: int, rows: int, heading: bool 
     lines = _build_queue_lines(width - (_QUEUE_RIGHT_MARGIN if heading else 0), rows + (0 if heading else 1))
     if not heading:
         lines = lines[1:]
+    _queue_area[0] = (top, left, top + rows - 1, left + width - 1)
     first = 1 if heading else 0                       # the line the tracks start on
     for qi, line in enumerate(lines):
         log(f"\033[{top + qi};{left}H{line}")
@@ -141,12 +149,14 @@ def _place_queue(log, top: int, left: int, width: int, rows: int, heading: bool 
     return True
 
 
-def queue_title() -> str:
-    """The queue's name and where it's at, for its box: "Queue · 3 of 12"."""
+def queue_title(room: int | None = None) -> str:
+    """The queue's name and where it's at, for its box: "Queue · 3 of 12";
+    just the name when that won't fit in `room` columns whole."""
     ctx = _ctx()
     total, idx = len(ctx['titles']), ctx['index']
     where = f"{idx + 1} of {total}" if 0 <= idx < total else str(total)
-    return f"{ctx['label']} · {where}" if total else ctx['label']
+    full = f"{ctx['label']} · {where}" if total else ctx['label']
+    return ctx['label'] if room is not None and ui.visual_len(full) > room else full
 
 
 def _queue_window(total: int, current: int | None, rows: int) -> list[int]:

@@ -96,5 +96,12 @@ class PeopleTest(unittest.TestCase):
         self.assertIn("more", "".join(lines))
 
 
+class PeopleCutTest(unittest.TestCase):
+    def test_a_role_too_long_ends_in_an_ellipsis_like_a_name(self):
+        lines = [ui.strip_ansi(l) for l in pu._people_lines([], [('Executive Producer', 'Someone')], 24, 5)]
+        self.assertTrue(lines[0].endswith("…"), lines)
+        self.assertLessEqual(ui.visual_len(lines[0]), 24)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -64,7 +64,7 @@ def _detail_view(path, derived, plan: dict, present: dict, apply_fields: set,
         elif f == 'disc':
             val = _num_pair(d['disc'], d.get('total_discs'))
         if f not in supported:
-            action = 'n/a (MP4)'
+            action = 'not in MP4'
         elif f in plan:
             action = 'write'
         else:
@@ -156,9 +156,9 @@ def derive_from_filename(paths: list, library: list, header) -> None:
 
     # 1) Which fields to write (Title on by default: the automatic baseline).
     _FIELDS = [("title", "Title: from file name"),
-               ("track", "Track number (+ total)"),
-               ("disc", "Disc number (+ total)"),
-               ("disc_subtitle", "Disc subtitle: from folder (not MP4)"),
+               ("track", "Track number and total"),
+               ("disc", "Disc number and total"),
+               ("disc_subtitle", "Disc subtitle from the folder, not MP4"),
                ("album", "Album: from folder"),
                ("album_artist", "Album artist: from parent folder"),
                ("artist", "Track artist: from file name / folder"),
@@ -329,7 +329,7 @@ def derive_from_filename(paths: list, library: list, header) -> None:
                          apply_fields, overwrite, header)
 
         selected = prompt.select(
-            "Preview (↵ applies):",
+            "Preview, ↵ applies:",
             choices=preview_choices, columns=prev_cols,
             header=header(sub), multi=True,
             extra_hints={'tags.details': 'details'}, on_inspect=_show_detail,
@@ -447,7 +447,7 @@ def rename_files_op(paths: list, library: list, header) -> None:
                    for i, (p, o, n) in enumerate(changed)]
         sub = f"{len(changed)} to rename" + (
             f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
-        sel = prompt.select("Preview (↵ renames):", choices=choices,
+        sel = prompt.select("Preview, ↵ renames:", choices=choices,
                             columns=_RENAME_COLUMNS, header=header(sub), multi=True)
         if sel is None:
             return False

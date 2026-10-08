@@ -238,7 +238,7 @@ def _review_sort_people(plan: _SortPlan, header, note: str = "") -> set | None:
     choices = _choices()
     files = len({p for ps in plan.entries.values() for p in ps})
     sub = f"{ui.plural(len(choices), 'name')} · {ui.plural(files, 'file')}{note}"
-    sel = prompt.select("Preview (↵ applies):", choices=choices,
+    sel = prompt.select("Preview, ↵ applies:", choices=choices,
                         columns=_SORT_VALUE_COLUMNS, header=header(sub), multi=True,
                         row_edit=_options, row_edit_commit=_commit, row_edit_col=1)
     return None if sel is None else set(sel)

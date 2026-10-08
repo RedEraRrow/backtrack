@@ -285,7 +285,7 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
 
     msg = f"Trimmed {ui.plural(count, 'file')}."
     if interrupted:
-        msg += " Stopped early (Esc)."
+        msg += " Stopped early with Esc."
     if errors:
         msg += f" {ui.plural(errors, 'error')}."
     ui.show_status(msg)
@@ -372,7 +372,7 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
     choices.append(prompt.Choice(title="Mark manually…", value='__manual__'))
 
     picked = prompt.select(
-        "Candidate stings found (shared with another track in the group):",
+        "Stings shared with another track in the group:",
         choices=choices,
         on_inspect=_audition if mp is not None else None, inspect_key='trim_lists.audition',
         extra_hints={'trim_lists.audition': 'audition'} if mp is not None else None,
@@ -469,7 +469,7 @@ def _seed_group_by_sting(paths: list[str], state: dict[str, _TrackState], *, bou
 
     msg = f"Seeded {ui.plural(seeded, 'track')} from the {which} sting" + (" (learned from an earlier trim)." if used_history else ".")
     if skipped:
-        msg += f" {skipped} left unseeded (low match score)."
+        msg += f" {skipped} left unseeded: the match was too weak."
     ui.show_status(msg)
 
 

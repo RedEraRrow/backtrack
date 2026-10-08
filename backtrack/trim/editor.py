@@ -382,7 +382,7 @@ keys.define("trim", "Trim editor", [
     ("next_marker", ("]",), "next silence marker"),
     ("undo", ("u",), "undo"),
     ("finish", ("s",), "commit, or next track in a bulk trim"),
-    ("skip", ("n",), "skip the track (bulk trim)"),
+    ("skip", ("n",), "skip the track, in a bulk trim"),
     ("back", ("ESC",), "back"),
     ("quit", ("q",), "quit the app"),
 ])
@@ -812,12 +812,12 @@ def trim_editor(path: str, library: list | None = None) -> None:
     min_score = float(setting(cfg, "trim_sting_min_score"))
     head = _sting_suggestion(path, 'head', window_s, min_score)
     if head is not None and _confirm(
-            f"Found a matching opening sting from an earlier trim in this folder (in-point {timefmt.clock(head[0])}). Use it?",
+            f"An earlier trim in this folder found this opening sting, in at {timefmt.clock(head[0])}. Use it?",
             default=True):
         set_in(marks, head[0], frame_dur)
     tail = _sting_suggestion(path, 'tail', window_s, min_score)
     if tail is not None and _confirm(
-            f"Found a matching closing sting from an earlier trim in this folder (out-point {timefmt.clock(tail[0])}). Use it?",
+            f"An earlier trim in this folder found this closing sting, out at {timefmt.clock(tail[0])}. Use it?",
             default=True):
         set_out(marks, tail[0], frame_dur, track_length)
 

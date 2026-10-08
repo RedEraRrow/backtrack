@@ -129,13 +129,19 @@ last run's queue. In the player, `f` hides or shows the tab bar (also Settings �
 The player sits in boxes while the tab bar or a panel shows, at any window size, and edge to edge
 only with neither (`f` hides the bar). The
 boxes fill the window with no gaps between them: the art and the details in a box as wide as the art
-with the panels (`w`) in columns beside it when they get room enough there, else under it; and along the
+with the panels (`w`) in columns beside it wherever they fit without leaving the art much smaller
+(the player's box gives up width for them; a column on each side can differ in width, as can the
+panels stacked in one), else under it, as in a tall, narrow window; and along the
 bottom the controls, the progress bar, the times and the speed or sleep timer. In a short, wide
 window the art sits beside the details instead of over them, so it stays as big as it can be.
 In a tiny window it's just the transport: boxed in 3 to 5 rows, bare in 1 or 2 (and the tab bar and
 status line step aside under 6 rows). As it narrows the row gives things up in turn, never cutting
 any short: the bar, then the length (the position alone), then the time, then previous, then next,
-leaving play/pause, and last the box. The art is a square
+leaving play/pause, and last the box. Screens never show without their boxes: one in a window
+too small for them (under 10 rows, or 9 columns) gives way to that same transport, alone, until the
+window grows and it comes back as you left it. Meanwhile the transport's own keys work (play/pause,
+next, previous, seeking, volume) and `:` opens the command line; nothing else reaches the screen.
+The art is a square
 that fills its space (a cover that isn't square is cropped about its centre), in the player,
 Browse's preview and the tag editor's picture screens alike; an audiobook's booklet picture too.
 The people panel
@@ -237,8 +243,8 @@ by screen, with more than one key per action if you like), and every hint bar sh
 | `+` / `-` | Volume up / down |
 | `m` | Show or hide the track details line (year · genre · disc/track …); remembered. Also Settings → Track details in player |
 | `w` | Choose the panels: a box over the player to tick Lyrics, People, Queue and Chapters (one this track has nothing for says so). Its **Arrange panels…** moves them: `Tab` from panel to panel (the one moving is outlined in the accent), `↑` / `↓` up or down its column, `←` / `→` to the other side of the player, `↵` done. A wide window and a tall one each keep their own arrangement: wide, the panels are columns beside the player (either side, or both); tall, they're under it, side by side when there's room. Remembered |
-| `↑` / `↓` | With the queue panel showing: a cursor through the queue. `↵` plays the track at it, `J` / `K` move it up / down, `d` removes it, `x` shuffles what's coming, `c` clears what's coming, `u` undoes the last queue change |
-| `?` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[?] help`; in a text field, where `?` is typed, it says `[^/] help` and the key is Ctrl+/ (which works everywhere). Clicking the key in the corner works too. In the player it stays in the hint bar. Settings → Help toggle hides `[?] help` everywhere; `?` still works |
+| `↑` / `↓` | With the queue panel showing: a cursor through the queue (the mouse wheel or a trackpad over the panel moves it too). `↵` plays the track at it, `J` / `K` move it up / down, `d` removes it, `x` shuffles what's coming, `c` clears what's coming, `u` undoes the last queue change |
+| `?` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[?] help`; in a text field, where `?` is typed, it says `[^/] help` and the key is Ctrl+/ (which works everywhere). Clicking the key in the corner works too. In the player it stays in the hint bar. Settings → [?] help toggle hides `[?] help` everywhere; `?` still works |
 | `[` / `]` | Previous / next track |
 | `e` | Edit the playing track's tags |
 | `a` / `A` | Go to the playing track's album / artist in Browse (`Esc` from there goes up through Browse) |

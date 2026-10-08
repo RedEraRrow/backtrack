@@ -235,7 +235,7 @@ def validate_schedule_rows(rows: list, n_tracks: int) -> tuple:
             errors.append(f"row {i}: FROM/TO must both be track positions")
             continue
         if lo > hi:
-            errors.append(f"row {i}: FROM ({lo}) is after TO ({hi})")
+            errors.append(f"row {i}: FROM {lo} is after TO {hi}")
             continue
         if hi < 1 or lo > n_tracks:
             errors.append(f"row {i}: positions {lo}-{hi} are outside 1-{n_tracks}")

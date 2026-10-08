@@ -259,6 +259,16 @@ def _choose_panels(has: dict) -> None:
         player_ui.arrange_start()
 
 
+def _queue_wheel(key: str) -> bool:
+    """A wheel or trackpad scroll over the queue (or chapters) panel: its
+    cursor moves a row, as the arrow keys move it. Whether it was one."""
+    at = pc.wheel_at() if key in ('SCROLL_UP', 'SCROLL_DOWN') else None
+    if not (at and player_ui.in_queue(*at)):
+        return False
+    player_ui.move_queue_cursor(-1 if key == 'SCROLL_UP' else 1)
+    return True
+
+
 def _queue_key(key: str, session, queue: list, index: int, chapters: list | None = None) -> bool:
     """A queue-panel key (player_queue scope, live while the panel shows):
     move the cursor, or edit the queue at it through `session.edit` (this
@@ -307,9 +317,11 @@ def _out_of_view(session):
     if session is SESSION:
         SESSION.view_attached = False
     player_ui.view_chrome(False)
+    drop = pc.screen_backdrop(None)       # the screen it opens is a screen like any other, small windows and all
     try:
         yield
     finally:
+        drop()
         player_ui.view_chrome(True)
         session.acquire_view(my_token())
         if session is SESSION:
@@ -317,10 +329,10 @@ def _out_of_view(session):
 
 
 def _command_line_detached(session) -> bool:
-    """`:` in the player: the command line, out of the view. Whether it ran
-    (the player is then drawn again: its art is an image)."""
-    with _out_of_view(session):
-        return prompt.open_command_line() is not None
+    """`:` in the player: the command line, its box over the player; out of
+    the view only for a screen it opens. Whether it ran (the player is then
+    drawn again: its art is an image)."""
+    return prompt.open_command_line(around=lambda: _out_of_view(session)) is not None
 
 
 def _idle_view(woken, volume: int, own_tab: bool = False):
@@ -342,14 +354,16 @@ def _idle_view(woken, volume: int, own_tab: bool = False):
     if own_tab and saved_queue():
         ui.show_status(f"{keys.label('player.resume', first=True)}: resume where the last run left off",
                        tune.TOAST_MEDIUM_S)
+    _drop_backdrop = pc.screen_backdrop(None, small=True)   # it redraws itself at a new size, any size
     with raw_mode(sys.stdin):
+      try:
         while True:
             if woken():
                 return True
             if not own_tab and not has_other_windows():
                 return False
             size = ui.get_terminal_size()
-            if size != last_sig:
+            if size != last_sig or ui.consume_resize():   # a new size, or asked to (a box was over it)
                 prog_row, _c, _l, width, _b = draw_full_ui(
                     "", placeholder, IDLE_ART, size, is_paused=True, volume=volume)
                 update_progress_ui(prog_row, 0, 0, width)
@@ -371,6 +385,13 @@ def _idle_view(woken, volume: int, own_tab: bool = False):
                 last_sig = None
             elif key == 'FOCUS_IN':
                 last_sig = None
+            elif key == ':' and (opened := prompt.open_command_line()) is not None:
+                sys.stdout.write("\033[?1000h\033[?1006h")   # the command's screens had the mouse
+                if opened:
+                    ui.clear_screen()
+                    last_sig = None
+                else:                                          # just the box, put back: the art under it too
+                    player_ui.redraw_art_image()
             elif act == 'player.quit':
                 raise QuitToTerminal()
             elif pc.is_hints_key(key, key_free=True):
@@ -378,6 +399,8 @@ def _idle_view(woken, volume: int, own_tab: bool = False):
                 toggle_help()
                 last_sig = None
             time.sleep(_LOOP_TICK_S)
+      finally:
+        _drop_backdrop()
 
 
 def _empty_view() -> dict:
@@ -392,6 +415,68 @@ def _empty_view() -> dict:
         player_ui.view_chrome(False)
         ui.clear_screen()
     return {"status": "PLAYING"} if r is True else r
+
+
+_SEEK_STEPS = {'back_1': -1, 'fwd_1': 1, 'back_5': -5, 'fwd_5': 5, 'back_30': -30, 'fwd_30': 30}
+
+
+def _cramped_key(key: str) -> bool:
+    """A player transport key in the miniplayer, acted on: play/pause, next,
+    previous, the seek steps and volume. Whether it was one."""
+    from backtrack.playback import session as sess
+    act = (keys.action(key, 'player') or '').removeprefix('player.')
+    a = sess.active_session()
+    if act == 'playpause':
+        a.pause_toggle()
+    elif act in ('next', 'prev'):
+        a.next() if act == 'next' else a.prev()
+    elif act in _SEEK_STEPS:
+        a.seek(_SEEK_STEPS[act])
+    elif act in ('vol_up', 'vol_down'):
+        a.set_volume(max(0, min(100, a.get_volume() + (5 if act == 'vol_up' else -5))))
+        player_ui.volume_changed()
+    else:
+        return False
+    return True
+
+
+def cramped_view() -> None:
+    """A window too small for any screen's boxes: the miniplayer (the
+    player's tiny transport, boxed while it can be) until they fit again.
+    Its keys work (play/pause, next, previous) and `:`; nothing reaches the
+    screen it stands in for."""
+    from backtrack.playback.session import current_now_playing
+    fd = sys.stdin.fileno()
+    drawn: list = [None]
+    prog_row = [1]
+
+    def _draw() -> None:
+        np = current_now_playing() or {}
+        size, paused = ui.get_terminal_size(), bool(np.get('paused', True))
+        if (size, paused) != drawn[0]:
+            prog_row[0] = player_ui._draw_tiny(size, paused)[0]
+            drawn[0] = (size, paused)
+        player_ui.update_progress_ui(prog_row[0], float(np.get('elapsed') or 0.0),
+                                     float(np.get('duration') or 0.0), size[0])
+
+    def _redrawn() -> None:
+        drawn[0] = None
+        _draw()
+
+    drop = pc.screen_backdrop(_redrawn, small=True)      # the miniplayer is what's under `:` here
+    try:
+        while not pc.box_fits():
+            _draw()
+            if not pc._wait_for_keypress(_LOOP_TICK_S):
+                continue
+            key = pc._read_key(fd)
+            if key == ':':
+                if prompt.open_command_line() is not None:
+                    drawn[0] = None                      # the box, or a screen it opened, came and went
+            elif not _cramped_key(key):
+                prompt.consume_chrome(key, {})           # the app's transport keys; anything else does nothing
+    finally:
+        drop()
 
 
 def now_playing_tab() -> None:
@@ -457,6 +542,7 @@ def _client_view() -> dict:
     player_ui._ui_state['lyrics_pane'] = False
     player_ui.refresh_player_settings()
     player_ui.view_chrome(True)
+    _drop_backdrop = pc.screen_backdrop(None, small=True)   # it redraws itself at a new size, any size
     try:
         with raw_mode(sys.stdin):
             sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
@@ -484,6 +570,8 @@ def _client_view() -> dict:
                     return {"status": "DETACH"}
                 fp = np['file_path']
                 size = ui.get_terminal_size()
+                if ui.consume_resize():              # asked to lay out again (a box was over it)
+                    last_sig = None
                 player_ui.set_queue_context(np.get('titles') or [], int(np.get('index') or 0), np.get('queue') or [])
                 sig = (
                     fp,
@@ -560,6 +648,9 @@ def _client_view() -> dict:
                             else:
                                 _hk = player_ui.hint_click_key(_mr, _mc)
                                 key = _hk or ''
+                    if _ui_state.get('show_queue') and _queue_wheel(key):
+                        last_sig = None                # redrawn with the cursor where it moved
+                        continue
                     if _ui_state.get('show_queue') and _queue_key(
                             key, remote, np.get('queue') or [], int(np.get('index') or 0), chapters):
                         last_sig = None                # the host's edit arrives in the next snapshot
@@ -622,6 +713,7 @@ def _client_view() -> dict:
                         last_sig = None
                 time.sleep(_LOOP_TICK_S)
     finally:
+        _drop_backdrop()
         player_ui._ui_state['lyrics_pane'] = True
         player_ui.view_chrome(False)
         sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse on exit
@@ -769,6 +861,17 @@ def _player_view_loop() -> dict:
         _redraw_full()
         last_track_sig = SESSION.generation
 
+        def _relaid() -> None:
+            """The whole player at the current size: the frame, the controls
+            and the progress, as the loop draws them (under a box over it)."""
+            nonlocal last_size
+            last_size = ui.get_terminal_size()
+            _redraw_full()
+            update_ctrl_ui()
+            ms = mp.get_time()
+            update_progress_ui(prog_row, ms / 1000.0 if ms >= 0 else 0.0, duration, current_width, chapters,
+                               player_ui.timer_extra(SESSION.rate, SESSION.sleep_left()))
+        _drop_backdrop = pc.screen_backdrop(_relaid, small=True)   # the player lays out a small window itself
         try:
           while True:
             if not SESSION.is_active():
@@ -887,6 +990,9 @@ def _player_view_loop() -> dict:
                             key = _hk or ''
 
                 if _ui_state.get('show_queue'):
+                    if _queue_wheel(key):
+                        _redraw_full()
+                        continue
                     _t = SESSION.track()
                     if _queue_key(key, SESSION, _t.queue, _t.index, chapters):
                         _t = SESSION.track()
@@ -983,6 +1089,7 @@ def _player_view_loop() -> dict:
 
             time.sleep(_LOOP_TICK_S)
         finally:
+            _drop_backdrop()
             sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse on exit
             sys.stdout.flush()
 

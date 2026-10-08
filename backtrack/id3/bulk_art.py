@@ -124,14 +124,14 @@ def set_album_art_op(paths: list, library: list, header) -> None:
     # 1) Matching strategy. Each answer is kept in `state`, so a screen reopened
     # by walking back holds what it was left holding, including covers chosen by
     # hand in the preview, which survive the plan being rebuilt.
-    _MODES = ["Auto-detect (recommended)",
+    _MODES = ["Auto-detect",
               "One cover per disc / series / work",
               "Matching file name",
               "Track number / order",
-              "Name pattern (%token%)"]
-    _GROUPS = {"Auto (disc, else series, else work)": 'auto',
+              "Name pattern"]
+    _GROUPS = {"Auto: disc, else series, else work": 'auto',
                "Disc number": 'disc',
-               "Series / season (SxxExx)": 'season',
+               "Series or season, from SxxExx": 'season',
                "Work / grouping": 'work'}
     _POLICIES = ["Fill blanks only", "Overwrite existing"]
     state: dict = {'mode': _MODES[0], 'group': list(_GROUPS)[0], 'pattern': None,
@@ -160,7 +160,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
 
     def _ask_pattern():
         """The image-name pattern; only asked for pattern matching."""
-        if state['mode'] != "Name pattern (%token%)":
+        if state['mode'] != "Name pattern":
             return _SKIP
         picked = _cover_pattern_prompt(header)
         if picked is None:
@@ -232,7 +232,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             """Cell text for a track's planned cover: label, plus a "has art" badge if replacing."""
             img = plan.get(p)
             if not img:
-                return "none (d to choose)"
+                return "none, d chooses"
             label = cover_label(img, os.path.dirname(os.path.abspath(p)))
             if existing_art[p]:
                 return [(label, 'normal'), ('  · has art', 'static-dim')]
@@ -256,7 +256,7 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             state['manual'][p] = img        # remembered if this screen is revisited
             if img is None:
                 plan[p] = None
-                ch.cells = [os.path.basename(p), "none (d to choose)", '']
+                ch.cells = [os.path.basename(p), "none, d chooses", '']
                 ch.checked = False
             else:
                 plan[p] = img
@@ -338,11 +338,11 @@ def set_album_art_op(paths: list, library: list, header) -> None:
             if nk:
                 bits.append(f"{nk} ticked")
             elif n_match:
-                bits.append("0 ticked (existing art); Overwrite or Space/a to tick")
+                bits.append("0 ticked: they have art already. Overwrite, or Space or a, ticks them")
             return header(" · ".join(bits))()
 
         sel = prompt.select(
-            "Preview (↵ applies):",
+            "Preview, ↵ applies:",
             choices=preview_choices, columns=_COVER_PREVIEW_COLUMNS,
             header=_preview_header, multi=True,
             extra_hints={'tags.details': 'choose cover'}, on_inspect=_reassign,

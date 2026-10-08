@@ -90,6 +90,31 @@ class PanelsTest(unittest.TestCase):
         self.assertGreater(lyrics[2], player[3])                            # right of it
         self.assertEqual((people[2], lyrics[3]), (transport[2], transport[3]))   # edge to edge
 
+    def test_panels_go_beside_well_before_a_wide_window(self):
+        for cols, rows in ((80, 24), (100, 30)):                             # ordinary landscape windows
+            boxes, shape = self._boxes(cols, rows, [['lyrics', 'right'], ['people', 'right']], [])
+            self.assertEqual(shape, 'wide', (cols, rows))
+
+    def test_both_sides_share_by_what_they_hold_and_the_middle_gives_way(self):
+        boxes, shape = self._boxes(110, 30, [['lyrics', 'left'], ['people', 'right']], [])
+        self.assertEqual(shape, 'wide')
+        player, lyrics, people, transport = boxes[0], boxes[1], boxes[2], boxes[-1]
+        left_w, right_w = lyrics[3] - lyrics[2] + 1, people[3] - people[2] + 1
+        self.assertGreaterEqual(min(left_w, right_w), pu._PANEL_SIDE_MIN)
+        self.assertGreater(left_w, right_w)                                 # the lyrics want more than the people
+        self.assertEqual((lyrics[2], people[3]), (transport[2], transport[3]))   # edge to edge, no gap
+        self.assertEqual(player[2], lyrics[3] + 1 + ui.MARGIN_H)
+
+    def test_a_tall_narrow_window_keeps_them_under(self):
+        boxes, shape = self._boxes(70, 50, [['lyrics', 'right'], ['people', 'right']],
+                                   [['lyrics', 'left'], ['people', 'left']])
+        self.assertEqual(shape, 'tall')                                    # beside, the art would be much smaller
+
+    def test_stacked_panels_share_rows_by_what_they_hold(self):
+        stacked = dict((k, b - t + 1) for k, t, b in pu._stack(['lyrics', 'queue'], 1, 25, 0))
+        self.assertGreater(stacked['lyrics'], stacked['queue'])
+        self.assertEqual(sum(stacked.values()), 25)
+
     def test_a_tall_window_uses_its_own_arrangement(self):
         tall = [['lyrics', 'left'], ['people', 'right']]
         boxes, shape = self._boxes(90, 60, [['lyrics', 'left'], ['people', 'right']], tall)

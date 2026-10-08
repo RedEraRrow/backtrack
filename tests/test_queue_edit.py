@@ -215,6 +215,26 @@ class PlayerQueueKeysTest(unittest.TestCase):
     def press(self, key):
         return self.player._queue_key(key, self.session, self.queue, 1)
 
+    def test_a_title_too_long_for_its_border_is_just_the_name(self):
+        self.assertEqual(self.qp.queue_title(), "Queue · 2 of 5")
+        self.assertEqual(self.qp.queue_title(14), "Queue · 2 of 5")              # fits whole
+        self.assertEqual(self.qp.queue_title(13), "Queue")                       # not cut short: the name
+
+    def test_the_wheel_over_the_queue_moves_its_cursor(self):
+        from unittest import mock
+        from backbone.prompt import core as pc
+        self.qp._queue_area[0] = (10, 40, 20, 79)                        # where the list drew
+        self.addCleanup(lambda: self.qp._queue_area.__setitem__(0, None))
+        with mock.patch.object(pc, '_wheel_at', [(15, 60)]):
+            self.assertTrue(self.player._queue_wheel('SCROLL_DOWN'))
+            self.assertTrue(self.player._queue_wheel('SCROLL_DOWN'))
+            self.assertEqual(self.qp.queue_cursor(), 3)                   # from the playing track, two down
+            self.assertTrue(self.player._queue_wheel('SCROLL_UP'))
+            self.assertEqual(self.qp.queue_cursor(), 2)
+        with mock.patch.object(pc, '_wheel_at', [(5, 60)]):
+            self.assertFalse(self.player._queue_wheel('SCROLL_DOWN'))      # not over the queue: not its
+        self.assertFalse(self.player._queue_wheel('DOWN'))
+
     def test_cursor_then_edits_at_it(self):
         self.assertTrue(self.press('DOWN'))
         self.assertEqual(self.qp.queue_cursor(), 2)

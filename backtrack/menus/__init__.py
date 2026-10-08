@@ -12,9 +12,10 @@ def main_menu(library_ref: list, on_start=None) -> None:
     """Run the app as tabs, starting on Browse, until q (or Settings → Exit).
     `on_start()` runs first, on Browse (the offer to resume), so what it opens
     has the tabs too."""
-    from backtrack.playback.player import NOW_PLAYING_TAB
+    from backtrack.playback.player import NOW_PLAYING_TAB, cramped_view
     from backtrack.menus.command_line import command_line
-    prompt.set_command_line(lambda: command_line(library_ref))
+    prompt.set_command_line(lambda around=None: command_line(library_ref, around))
+    prompt.core.set_cramped_view(cramped_view)
     pending = [on_start]
 
     def browse() -> None:

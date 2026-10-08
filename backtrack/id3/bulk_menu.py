@@ -68,8 +68,8 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
         ui.show_status("No taggable tracks to renumber.")
         return
 
-    _MODES = ["Continuous (album-relative): 1…N across all discs",
-              "Per-disc (disc-relative): restart at 1 each disc"]
+    _MODES = ["Continuous: 1…N across all discs",
+              "Per disc: restart at 1 each disc"]
     state: dict = {'mode_sel': _MODES[0], 'apply_set': set()}
 
     def _ask_mode() -> bool:
@@ -99,7 +99,7 @@ def renumber_tracks_op(paths: list, library: list, header) -> None:
             for (pos, name, why), c in zip(bo.position_rows(plan), plan.changes)]
         sub = ui.plural(len(choices), "file") + (
             f" · {skipped_fmt} unsupported skipped" if skipped_fmt else "")
-        sel = prompt.select("Preview (↵ applies):", choices=choices,
+        sel = prompt.select("Preview, ↵ applies:", choices=choices,
                             columns=_RENUMBER_COLUMNS, header=header(sub), multi=True)
         if sel is None:
             return False
@@ -320,7 +320,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             "Set album art from files",
             "Assign by range / schedule",
             "Apply sort orders",
-            "Renumber tracks (disc ↔ continuous)",
+            "Renumber tracks",
             "Reflow disc numbering",
             "Remove single-disc numbering",
             "Strip stale length tags",
@@ -346,7 +346,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         "Set album art from files": "Set Album Art",
         "Assign by range / schedule": "Assign By Pattern",
         "Apply sort orders": "Apply Sort Orders",
-        "Renumber tracks (disc ↔ continuous)": "Renumber Tracks",
+        "Renumber tracks": "Renumber Tracks",
         "Reflow disc numbering": "Reflow Discs",
         "Remove single-disc numbering": "Strip Single Disc",
         "Strip stale length tags": "Strip Length Tags",
@@ -534,15 +534,15 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
                 source = prompt.select(
                     "Value source:",
-                    choices=["Enter a value", "Find & replace (regex)",
-                             "From file name / folder (regex)"],
+                    choices=["Enter a value", "Find and replace with a regex",
+                             "Regex on the file or folder name"],
                     header=_bulk_header())
                 if not source:
                     return
 
                 if source == "Enter a value":
                     target_val = prompt_for_value(first_tag, current_value=fallback_val)
-                elif source == "Find & replace (regex)":
+                elif source == "Find and replace with a regex":
                     pat = prompt.text("Regex to find in each value:")
                     if not pat:
                         return
@@ -556,7 +556,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                         return
                     set_spec = {'mode': 'replace', 'rx': rx, 'repl': repl}
                     target_val = "_regex_"   # sentinel so the None-guard below doesn't bail
-                else:  # From file name / folder (regex)
+                else:  # regex on the file or folder name
                     against = prompt.select("Match regex against:",
                                             choices=["File name", "Folder path"],
                                             header=_bulk_header())
@@ -686,7 +686,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             return _bulk_header(" · ".join(bits))()
 
         picked_rows = prompt.select(
-            "Preview (↵ applies):",
+            "Preview, ↵ applies:",
             choices=art_choices, columns=_COVER_PREVIEW_COLUMNS,
             header=_art_header, multi=True)
         if picked_rows is None:

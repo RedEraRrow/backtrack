@@ -63,7 +63,7 @@ def activity_centre() -> None:
                         key = ''
                     if key == '\x1b' or keys.action(key, 'list') in ('list.back', 'list.quit'):
                         break
-                time.sleep(0.08)
+                pc._wait_for_keypress(0.08)             # the shared tick: the miniplayer when too small
         finally:
             sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse
             sys.stdout.flush()

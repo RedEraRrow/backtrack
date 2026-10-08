@@ -10,6 +10,7 @@ from io import BytesIO
 
 from PIL import Image, ImageStat
 from backbone import ui
+from backbone.prompt import core as pc
 from backtrack.playback.player_geom import geom
 from backbone.log import log
 from backtrack.album_art import booklet_file, decode_image, fit_art, get_art, get_art_bytes, get_embedded_art, half_blocks, has_alpha
@@ -264,7 +265,9 @@ def _draw_inline_art(full_only: bool = False) -> None:
     repainted row erases whatever image was under it."""
     path = _inline_art['path']
     if not (path and geom.art_top and geom.art_width and geom.art_height):
+        pc.screen_picture_area('player art', None)
         return
+    pc.screen_picture_area('player art', (geom.art_top, geom.art_left + 1, geom.art_height, geom.art_width))
     if not full_only:
         _send_image(path, _INLINE_PREVIEW_PX)
     # The full-quality image waits for focus: a terminal reading a background

@@ -37,7 +37,7 @@ _EXT_TO_MIME: dict[str, str] = {
 keys.define("tags", "Tag editor", [
     ("add", ("a",), "add a tag, or a person"),
     ("trim", ("t",), "trim the audio"),
-    ("details", ("d",), "the row's details (description, cover, preview)"),
+    ("details", ("d",), "the row's details: description, cover, preview"),
 ], within=("list", "global"))
 
 
@@ -148,7 +148,7 @@ def pick_nearby_cover(file_path: str, *, tokens: dict | None = None,
         choices.append(prompt.Choice(title="No art for this file", value='__none__',
                                      cells=["No art for this file", '', '']))
 
-    msg = title or "Album art (top row is the best guess):"
+    msg = title or "Album art, best guess first:"
     hdr = header(ui.plural(len(ranked), "candidate")) if header else None
     sel = prompt.select(msg, choices=choices, columns=_COVER_PICK_COLUMNS,
                         header=hdr, index=cur_idx)
@@ -510,7 +510,7 @@ def _prompt_for_equalisation(current_value: Any) -> dict | None:
 def _prompt_for_rva2(current_value: Any) -> dict | None:
     """Interactive gain meter for a single-channel RVA2 frame."""
     cur = float(current_value.gain) if (current_value is not None and hasattr(current_value, 'gain')) else 0.0
-    gain = prompt.rva2_edit("Volume adjustment (master channel):", gain=cur)
+    gain = prompt.rva2_edit("Master volume adjustment:", gain=cur)
     if gain is None:
         return None
     return {'__rva2__': True, 'gain': gain}
@@ -683,7 +683,7 @@ def _prompt_for_compilation(current_value: Any) -> str | None:
     """Yes/No toggle for the TCMP compilation flag (stored as '1'/'0')."""
     cur = _current_text(current_value).strip()
     is_comp = cur not in ('', '0')
-    sel = prompt.select("Part of a compilation (various-artists album)?",
+    sel = prompt.select("Part of a various-artists compilation?",
                         choices=[prompt.Choice(title='Yes', value='1'),
                                  prompt.Choice(title='No', value='0')],
                         index=0 if is_comp else 1)
@@ -693,7 +693,7 @@ def _prompt_for_compilation(current_value: Any) -> str | None:
 def _prompt_for_rbuf(current_value: Any) -> dict | None:
     """Numeric editor for the RBUF recommended-buffer-size frame (bytes)."""
     cur = int(getattr(current_value, 'size', 0) or 0) if current_value is not None else 0
-    n = prompt.number_edit("Recommended buffer size (bytes):", value=cur, minimum=0)
+    n = prompt.number_edit("Recommended buffer size in bytes:", value=cur, minimum=0)
     if not isinstance(n, int):
         return None
     return {'__rbuf__': True, 'size': int(n)}

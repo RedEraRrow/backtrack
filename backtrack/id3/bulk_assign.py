@@ -264,7 +264,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
             bits.append(f"{skipped_fmt} non-ID3 skipped")
         return header(' · '.join(bits))()
 
-    sel = prompt.select("Preview (↵ applies):", choices=choices,
+    sel = prompt.select("Preview, ↵ applies:", choices=choices,
                         columns=_RENUMBER_COLUMNS, header=_frac_header, multi=True)
     if sel is None:
         return
@@ -360,9 +360,9 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
     def _modes() -> list:
         """The assignment modes this tag supports (schedules need a date frame)."""
         info = get_tag_info(state['tag'])
-        modes = ["Ranges (from-to → value)", "Every N tracks → value"]
+        modes = ["Ranges: from-to → value", "Every N tracks → value"]
         if info and info.format_spec == 'ISO8601':
-            modes += ["Date schedule", "Schedule per range (own start + interval)"]
+            modes += ["Date schedule", "Schedule per range: its own start and interval"]
         return modes
 
     def _ask_mode() -> bool:
@@ -576,7 +576,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
             return False
         sub = f"{tag_id} · {ui.plural(len(choices), 'file')}" + (
             f" · {n_mp4} non-ID3 skipped" if n_mp4 else "")
-        sel = prompt.select("Preview (↵ applies):", choices=choices,
+        sel = prompt.select("Preview, ↵ applies:", choices=choices,
                             columns=_PATTERN_COLUMNS, header=header(sub), multi=True)
         if sel is None:
             return False
