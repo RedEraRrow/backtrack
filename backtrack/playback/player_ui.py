@@ -50,8 +50,6 @@ keys.define("player", "Player", [
     ("faster", (">",), "faster, for audiobooks"),
     ("sleep", ("z", "Z"), "sleep timer"),
     ("chapter_time", ("t", "T"), "chapter or whole-file time"),
-    ("vol_up", ("+", "="), "volume up"),
-    ("vol_down", ("-", "_"), "volume down"),
     ("meta", ("m", "M"), "show or hide the details"),
     ("tabs", ("f", "F"), "show or hide the tab bar"),
     ("resume", ("r", "R"), "resume the last run's queue, with nothing playing"),
@@ -768,7 +766,7 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int,
     ]
     if _ui_state['debug']:                       # Diagnostics: checking end credits
         hint_args.append((L('player.near_end'), f'last {tune.NEAR_END_JUMP_S}s'))
-    hint_args += [(L('player.vol_up', 'player.vol_down', first=True), 'volume'), (L('player.meta'), 'meta')]
+    hint_args += [(L('volume.up', 'volume.down', first=True), 'volume'), (L('player.meta'), 'meta')]
     if nav.TABS:
         hint_args.append((L('player.tabs'), 'tabs'))
     if _ui_state.get('book'):

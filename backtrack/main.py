@@ -177,6 +177,10 @@ def _wire_playback() -> None:
             a.next()
         elif action == 'prev':
             a.prev()
+        elif action in ('vol_up', 'vol_down'):
+            a.set_volume(max(0, min(100, a.get_volume() + (5 if action == 'vol_up' else -5))))
+            from backtrack.playback.player_ui import volume_changed
+            volume_changed()                       # the level, for a moment, over whatever's showing
         elif action == 'time':
             from backtrack.playback.player_ui import toggle_chapter_time
             toggle_chapter_time()

@@ -435,8 +435,8 @@ def _cramped_key(key: str) -> bool:
         a.next() if act == 'next' else a.prev()
     elif act in _SEEK_STEPS:
         a.seek(_SEEK_STEPS[act])
-    elif act in ('vol_up', 'vol_down'):
-        a.set_volume(max(0, min(100, a.get_volume() + (5 if act == 'vol_up' else -5))))
+    elif keys.pressed(key, 'volume.up') or keys.pressed(key, 'volume.down'):
+        a.set_volume(max(0, min(100, a.get_volume() + (5 if keys.pressed(key, 'volume.up') else -5))))
         player_ui.volume_changed()
     else:
         return False
@@ -682,10 +682,10 @@ def _client_view() -> dict:
                     elif act == 'player.chapter_time' and chapters:
                         player_ui.toggle_chapter_time()
                         last_sig = None
-                    elif act == 'player.vol_up':
+                    elif keys.pressed(key, 'volume.up'):
                         vol_target = _step_volume(remote, vol_target, +5)
                         player_ui.volume_changed()
-                    elif act == 'player.vol_down':
+                    elif keys.pressed(key, 'volume.down'):
                         vol_target = _step_volume(remote, vol_target, -5)
                         player_ui.volume_changed()
                     elif act == 'player.back':
@@ -1050,10 +1050,10 @@ def _player_view_loop() -> dict:
                 elif act == 'player.chapter_time' and chapters:
                     player_ui.toggle_chapter_time()
                     update_ctrl_ui()
-                elif act == 'player.vol_up':
+                elif keys.pressed(key, 'volume.up'):
                     SESSION.set_volume(SESSION.get_volume() + 5)
                     player_ui.volume_changed()
-                elif act == 'player.vol_down':
+                elif keys.pressed(key, 'volume.down'):
                     SESSION.set_volume(SESSION.get_volume() - 5)
                     player_ui.volume_changed()
                 elif pc.is_hints_key(key, key_free=True):

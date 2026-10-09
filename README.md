@@ -242,7 +242,7 @@ by screen, with more than one key per action if you like), and every hint bar sh
 | `←` / `→` | Seek ∓5 s |
 | `j` / `l` | Seek ∓1 s |
 | `,` / `.` | Seek ∓30 s |
-| `+` / `-` | Volume up / down |
+| `+` / `-` | Volume up / down, here and on any list (the level shows for a moment over the middle of the screen); in a text field they're typed |
 | `m` | Show or hide the track details line (year · genre · disc/track …); remembered. Also Settings → Track details in player |
 | `w` | Choose the panels: a box over the player to tick Lyrics, People, Queue and Chapters (one this track has nothing for says so). Its **Arrange panels…** moves them: `Tab` from panel to panel (the one moving is outlined in the accent), `↑` / `↓` up or down its column, `←` / `→` to the other side of the player, `↵` done. A wide window and a tall one each keep their own arrangement: wide, the panels are columns beside the player (either side, or both); tall, they're under it, side by side when there's room. Remembered |
 | `↑` / `↓` | With the queue panel showing: a cursor through the queue (the mouse wheel or a trackpad over the panel moves it too). `↵` plays the track at it, `J` / `K` move it up / down, `d` removes it, `x` shuffles what's coming, `c` clears what's coming, `u` undoes the last queue change |
