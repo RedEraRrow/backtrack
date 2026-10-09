@@ -1,7 +1,6 @@
 """The chapter editor: one file's chapters, changed in memory and saved once
 (see chapter_edit), opened with e on a chapter row in browse."""
 from __future__ import annotations
-import os
 
 from backbone import keys, prompt, ui
 from backtrack import chapter_edit as ce

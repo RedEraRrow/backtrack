@@ -1,11 +1,9 @@
 """What every menu screen shares: headers, list columns, the settings-row
 the Browse categories, and small helpers for headers and saving."""
 from __future__ import annotations
-from backbone.ui import Colors as C
 from backbone import prompt
-from backbone import keys, ui
-from backtrack.config import load_config, update_config
-from backtrack.config import setting
+from backbone import keys
+from backtrack.config import update_config
 
 
 # Keys of the library's lists (browse, search results, history), passed to

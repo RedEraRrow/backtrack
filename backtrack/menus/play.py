@@ -10,7 +10,6 @@ from backtrack.music_library import album_tracks, drop_moved, is_audiobook, rand
 from backtrack.playback.player import music_player
 from backtrack.playback.session import AFTER_PICK, REPEAT_OFF, active_session, is_client, saved_queue
 from backtrack.id3.bulk_menu import bulk_id3_manager
-from backtrack.menus.common import _menu_header
 
 
 def play_queue(paths: list, mode: str = "linear", library: list | None = None) -> str | None:
