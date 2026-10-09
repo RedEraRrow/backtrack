@@ -93,6 +93,8 @@ _PLAYER_SHARE_TWO = 0.4         # and between a column of them each side
 _PLAYER_MIN_W = 28              # its inside with no art (no room for it)
 _BOX_MIN_BODY = 3               # rows over the transport box a box needs (its borders and a line)
 _BESIDE_TEXT = 24               # the details beside the art (a short, wide window) keep this many columns
+_DETAILS_W = 40                 # beside the panels, the player's box keeps this for the details, whatever the track's
+_DETAILS_MAX_W = 60             # the details beside the art get at most this
 _BESIDE_GAIN = 1.3              # the art goes beside the details only when that makes it this much bigger
 _PANEL_MIN_ROWS = 8             # under the player, the lyrics or the queue keep at least this
 
@@ -347,24 +349,26 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int,
     # What fits, giving way in turn and never cut short: the bar, then the
     # length (the position alone), then the time altogether.
     percent = max(0.0, min(elapsed / duration, 1.0)) if duration else 0.0
-    bar_width = container_w - len(full) - 4
+    caps = not _frame['boxed']
+    bar_width = container_w - len(full) - 2 - ui.progress_caps_width(caps)
     if bar_width >= 3:
-        bar, timer_text = ui.get_progress_bar(percent, bar_width, span), "  " + full
+        bar, timer_text = ui.get_progress_bar(percent, bar_width, span, caps), "  " + full
     else:
         bar, bar_width = "", 0
         timer_text = next((t for t in (full, elapsed_str) if ui.visual_len(t) <= container_w), "")
 
     # Remember where the bar landed so a click on it can be mapped back to a
-    # position: get_progress_bar brackets the cells, so cell 0 sits one column
-    # past the pad's '[' cap.
-    geom.prog_row, geom.prog_col, geom.prog_w = row, left_pad + 2, bar_width
+    # position: cell 0 sits just past get_progress_bar's left cap.
+    geom.prog_row, geom.prog_col, geom.prog_w = row, left_pad + 1 + len(ui.progress_caps(caps)[0]), bar_width
 
     # From the bar's own column, and blanked only to the container's end: the
     # box's border (and a panel beside) stay where they are.
     line = f"{bar}{timer_text}"
-    # Boxed, it stops at the box's inside (its border is the frame's); else
-    # it clears on to the margin.
-    reach = container_w + (0 if _frame['boxed'] and _frame['bar'] else ui.MARGIN_H)
+    # Boxed, it covers the box's inside up to the border, the blank before the
+    # border included (nothing else writes that cell, so whatever the screen
+    # before left there would stay); the border is the frame's. Else it
+    # clears on to the margin.
+    reach = container_w + (1 if _frame['boxed'] and _frame['bar'] else ui.MARGIN_H)
     out = pc.screen_span_paint(row, left_pad + 1, line + ' ' * max(0, reach - ui.visual_len(line)))
     for _r0, _r1, c0, c1 in (box for box in _frame['boxes'] if box[0] < row < box[1]) if _frame['boxed'] else ():
         out += pc.screen_span_paint(row, c0, f"{C.DIM}│{C.RESET}") + pc.screen_span_paint(row, c1, f"{C.DIM}│{C.RESET}")
@@ -861,8 +865,9 @@ def transport_click_action(row: int, col: int, ctrl_row: int) -> str | None:
 
 def progress_from_click(row: int, col: int) -> float | None:
     """If (row, col) lands on the horizontal progress bar, return the fraction of
-    the track that column represents (0.0-1.0); else None. The '[' and ']' caps
-    count as the two ends, so clicking either edge seeks to the start / end."""
+    the track that column represents (0.0-1.0); else None. The column either
+    side of the cells (a cap, if there are any) counts as that end, so clicking
+    just past either edge seeks to the start / end."""
     if geom.prog_row is None or geom.prog_col is None or geom.prog_w <= 0:
         return None
     if row != geom.prog_row:
@@ -901,7 +906,9 @@ def _credits_rule(width: int) -> str:
 
 def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
     """Build the left-column metadata lines (title, artist/album, and optional
-    extras like year/genre/track/disc) shown beside the album art."""
+    extras like year/genre/track/disc) shown beside the album art: always as
+    many rows as the settings allow (blanks for what this track lacks), so the
+    art keeps its size and place from track to track."""
     def _trim(text: str) -> str:
         """Truncate text to max_val_w with an ellipsis."""
         return ui.truncate_text(text, max(1, max_val_w), placeholder='…')
@@ -969,9 +976,9 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
         disc_subtitle = _txt('TSST')
         track, track_total = _frac('TRCK')
 
-        def _track_str(t: str, total: str) -> str:
+        def _track_str(t: str, total: str, label: str = "Track ") -> str:
             """TRCK in display form: 'Track 3 of 12', or 'Track 3' with no total."""
-            return f"Track {t} of {total}" if (t and total) else f"Track {t}"
+            return f"{label}{t} of {total}" if (t and total) else f"{label}{t}"
 
         def _disc_str(d: str, total: str) -> str:
             """TPOS in display form: 'Disc 1 of 2', or 'Disc 1' with no total."""
@@ -993,13 +1000,21 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
 
         # A movement number already says where the track sits in the work, so the
         # track number would only repeat it: show one or the other, never both.
-        if track and not movement:
+        # Short of room, the track number gives way first: its word, then itself.
+        track_at = len(details) if track and not movement else None
+        if track_at is not None:
             details.append(_track_str(track, track_total))
         if _ui_state['chapter_pos']:
             details.append(_ui_state['chapter_pos'])
 
-        if details:
-            lines.append(f"{C.DIM}{_trim(' · '.join(details))}{C.RESET}")
+        fallbacks = [details]
+        if track_at is not None:
+            fallbacks += [details[:track_at] + [_track_str(track, track_total, "")] + details[track_at + 1:],
+                          details[:track_at] + details[track_at + 1:]]
+        joined = [' · '.join(d) for d in fallbacks if d]
+        if joined:
+            fits = next((j for j in joined if ui.visual_len(j) <= max(1, max_val_w)), joined[-1])
+            lines.append(f"{C.DIM}{_trim(fits)}{C.RESET}")
 
         # Which documents the words on screen are coming from. A track can have a
         # script, a timed transcript, both or neither, and until this was shown the
@@ -1015,7 +1030,8 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
         fp = ui.truncate_text(file_path, max(1, max_val_w), placeholder='…', front=True)
         lines.append(f"{C.DIM}{fp}{C.RESET}")
 
-    return lines
+    rows = 2 + (1 + bool(_ui_state.get('debug')) if _ui_state['show_metadata'] else 0)
+    return lines + [""] * (rows - len(lines))
 
 
 def _align_art_lines(art_lines: list[str], cols: int) -> list[str]:
@@ -1192,8 +1208,7 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
         # The boxes tile the body with no gap: the player's box as wide as its art
         # with the panel's beside it, when that leaves the panel room enough; else
         # each box the full width, the panel's under the player's.
-        meta = _meta_left_lines(audio, file_path, 40)
-        meta_n, meta_w = len(meta), max((ui.visual_len(m) for m in meta), default=0)
+        meta_n = len(_meta_left_lines(audio, file_path, _DETAILS_W))
         # Beside the panel, the player's box at most its share: the art over the
         # details, or beside them when that makes it bigger; never narrower than
         # the details need.
@@ -1202,7 +1217,7 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
             (its inside width, art rows over the details, art rows beside
             them, whether beside, the details' width beside)."""
             s_rows = min(_art_room(body_h - 3 - meta_n), int(inner / aspect))
-            b_text = min(meta_w, inner - 2 - round(_MIN_ART_ROWS * aspect))
+            b_text = min(_DETAILS_W, inner - 2 - round(_MIN_ART_ROWS * aspect))
             b_rows = min(_art_room(body_h - 2), int((inner - 2 - b_text) / aspect)) if b_text >= _BESIDE_TEXT else 0
             by = b_rows >= max(_MIN_ART_ROWS, s_rows * _BESIDE_GAIN)
             used = (round(b_rows * aspect) + 2 + b_text if by
@@ -1284,8 +1299,10 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
         p_bot = body_bot if side or not panel else top + 1 + content_h
         c_top = top + 1 + max(0, (p_bot - top - 1 - content_h) // 2)
         if beside:                                                # the pair centred across the box
-            meta = _meta_left_lines(audio, file_path, min(box_in - 4 - art_cols, 60))
-            pair_w = art_cols + 2 + max((ui.visual_len(m) for m in meta), default=0)
+            # The details' column, not this track's details, so the art holds still.
+            text_col = min(box_in - 4 - art_cols, _DETAILS_MAX_W)
+            meta = _meta_left_lines(audio, file_path, text_col)
+            pair_w = art_cols + 2 + text_col
             left = p_l + 2 + max(0, (box_in - 2 - pair_w) // 2)
         else:
             left = p_l + 2 + (box_in - 2 - art_w) // 2           # centred across the box

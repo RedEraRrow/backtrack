@@ -491,7 +491,8 @@ def _draw_tap(B, avail, cursor, hit_map, indent, mode, n, out, play_pos, playing
     if total_s > 0:
         pct = min(play_pos / total_s, 1.0)
         _clock = f"{timefmt.clock(play_pos)} / {timefmt.clock(total_s)}"
-        bar = ui.get_progress_bar(pct, max(4, B - len(_clock) - 4))  # -4: bar's own [ ] + 2-space gap
+        caps = not _promptmod.box_fits()
+        bar = ui.get_progress_bar(pct, max(4, B - len(_clock) - 2 - ui.progress_caps_width(caps)), caps=caps)  # 2: gap before the clock
         out.append(f"{indent}{C.DIM}{bar}  {_clock}{C.RESET}")
     else:
         out.append("")
@@ -563,11 +564,12 @@ def _draw_audition(B, aud_editing, aud_now, avail, cursor, edit, hit_map, indent
     if total_s > 0:
         pct = min(play_pos / total_s, 1.0)
         _clock = f"{timefmt.clock(play_pos)} / {timefmt.clock(total_s)}"
-        _bar_w = max(4, B - len(_clock) - 4)   # -4: bar's own [ ] + 2-space gap
-        bar = ui.get_progress_bar(pct, _bar_w)
+        caps = not _promptmod.box_fits()
+        _bar_w = max(4, B - len(_clock) - 2 - ui.progress_caps_width(caps))   # 2: gap before the clock
+        bar = ui.get_progress_bar(pct, _bar_w, caps=caps)
         out.append(f"{indent}{C.DIM}{bar}  {_clock}{C.RESET}")
-        # Clickable: the bar's first cell sits one column past its '[' cap.
-        prog_geo = (len(out) - 1, ui.MARGIN_H + 2, _bar_w)
+        # Clickable: the bar's first cell sits just past its left cap.
+        prog_geo = (len(out) - 1, ui.MARGIN_H + 1 + len(ui.progress_caps(caps)[0]), _bar_w)
     else:
         out.append("")
 

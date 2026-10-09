@@ -167,7 +167,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     # for the rest (the join to the rounded corners is intentionally light), and
     # the chapter playing picked out as in the player.
     pct = (np['elapsed'] / np['duration']) if np['duration'] else 0.0
-    prog = ui.progress_cells(pct, box_w - 2, span, rest="─")
+    prog = ui.progress_cells(pct, box_w - 2, span)
     bot = f"{pad}{C.DIM}╰{C.RESET}{prog}{C.DIM}╯{C.RESET}"
 
     return [_clip_ansi_to_width(ln, width) for ln in (top, mid, bot)]

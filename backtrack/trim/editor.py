@@ -201,15 +201,15 @@ _edit_field_key = edit_key     # the one segmented-editor key handler (time_fiel
 
 def _progress_bar(width: int, track_length: float, marks: Marks, play_pos: float) -> str:
     """A full-width track bar in playback's own style
-    (`ui.get_progress_bar`'s dim brackets and heavy-block fill): the kept
+    (`ui.get_progress_bar`'s dim caps and heavy-block fill): the kept
     region (between the marks) filled like the elapsed portion of a normal
     playback bar, with a short accent tip at each cut point (`╺` in, `╸` out).
     The playhead inverts whatever cell it's over rather than adding a glyph."""
-    if width <= 2:
-        return f"{C.DIM}[{C.RESET}{' ' * max(0, width - 2)}{C.DIM}]{C.RESET}"
-    inner = width - 2
-    if track_length <= 0:
-        return f"{C.DIM}[{C.RESET}{' ' * inner}{C.DIM}]{C.RESET}"
+    caps = not _promptmod.box_fits()
+    left, right = ui.progress_caps(caps)
+    inner = max(0, width - ui.progress_caps_width(caps))
+    if inner == 0 or track_length <= 0:
+        return f"{C.DIM}{left}{C.RESET}{' ' * inner}{C.DIM}{right}{C.RESET}"
 
     def _pos(t: float) -> int:
         return max(0, min(inner - 1, int((t / track_length) * inner)))
@@ -238,7 +238,7 @@ def _progress_bar(width: int, track_length: float, marks: Marks, play_pos: float
             rendered.append(f"{styles[i]}{ch}{C.RESET}")
         else:
             rendered.append(ch)
-    return f"{C.DIM}[{C.RESET}{''.join(rendered)}{C.DIM}]{C.RESET}"
+    return f"{C.DIM}{left}{C.RESET}{''.join(rendered)}{C.DIM}{right}{C.RESET}"
 
 
 # ---------------------------------------------------------------------------

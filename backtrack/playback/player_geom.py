@@ -26,7 +26,7 @@ class _Geom:
         self.lyric_left: int | None = None
         self.lyric_width: int | None = None
         # Progress bar from the last update_progress_ui: its row, the 1-based
-        # column of its first cell (just past the '[' cap) and its width, so a
+        # column of its first cell (just past the left cap) and its width, so a
         # click on it becomes a seek.
         self.prog_row: int | None = None
         self.prog_col: int | None = None

@@ -53,6 +53,18 @@ class TinyPlayerTest(unittest.TestCase):
             self.assertEqual(bottom - top, 2)
             self.assertIn("1:01 / 12:34", row)
 
+    def test_the_transport_row_is_written_right_up_to_its_border(self):
+        """Nothing else writes the blank before the border: left unwritten,
+        whatever the screen before had there (another box's border) stays."""
+        from backbone.prompt import core
+        for cols, rows in ((60, 5), (60, 3), (34, 4)):
+            _row, frame = _draw(cols, rows)
+            top, bottom, _l, right = frame['boxes'][-1]                       # the transport's box
+            cells = core._cells.get(top + 1, [])
+            self.assertGreater(len(cells), right - 2, (cols, rows))
+            self.assertIsNot(cells[right - 2], core._UNKNOWN, (cols, rows))    # 0-based: the cell before the border
+            self.assertEqual(cells[right - 1][1], "│", (cols, rows))          # and the border itself kept
+
     def test_one_or_two_rows_drop_the_box(self):
         for rows in (1, 2):
             row, frame = _draw(60, rows)
@@ -65,7 +77,7 @@ class TinyPlayerTest(unittest.TestCase):
             row, frame = _draw(cols, 4)
             self.assertNotIn("…", row, cols)
             text = row.strip(" │╭╮╰╯─")
-            stage = ("bar" if "[" in text else "both times" if "/" in text else "position" if ":" in text
+            stage = ("bar" if any(c in text for c in "━╸─") else "both times" if "/" in text else "position" if ":" in text
                      else f"{frame['icons_n']} glyphs")
             if not seen or seen[-1] != stage:
                 seen.append(stage)
