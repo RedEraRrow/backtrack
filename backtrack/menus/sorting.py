@@ -7,7 +7,7 @@ from backtrack.music_library import (
     get_group_sort_key, sort_options, valid_levels, SORT_FIELDS, DEFAULT_SORT_LEVELS,
 )
 from backtrack.config import library_name
-from backtrack.menus.common import _SETTINGS_COLUMNS, _commit, _idx_of
+from backtrack.menus.common import _commit
 
 
 # --- Browse sort options -------------------------------------------------
@@ -54,7 +54,7 @@ def _pick_sort(current: str, options: list, header) -> str:
         for v, lbl in options
     ]
     sel = prompt.select("Sort by:", choices=choices, header=header,
-                        index=_idx_of(choices, current))
+                        index=prompt.index_of(choices, current))
     return sel or current
 
 
@@ -172,7 +172,7 @@ def _edit_chain(levels: list, header) -> list | None:
                 del chain[i]
                 cursor = max(0, min(i, len(chain) - 1))
             continue
-        cursor = _idx_of(choices, sel, cursor)
+        cursor = prompt.index_of(choices, sel, cursor)
         if sel == "__save__":
             return chain or [list(lv) for lv in DEFAULT_SORT_LEVELS]
         if sel == "__reset__":
@@ -196,4 +196,4 @@ def _pick_field(fields: list, header) -> str | None:
     kinds = {'album': "per album", 'track': "per track"}
     choices = [prompt.Choice(title=SORT_FIELDS[f][0], value=f,
                              cells=[SORT_FIELDS[f][0], kinds[SORT_FIELDS[f][1]]]) for f in fields]
-    return prompt.select("Sort by:", choices=choices, header=header, columns=_SETTINGS_COLUMNS)
+    return prompt.select("Sort by:", choices=choices, header=header, columns=prompt.SETTINGS_COLUMNS)

@@ -58,7 +58,7 @@ def _pick(keys, typed=None):
              patch.object(lists, '_wait_for_keypress', lambda t: True), \
              patch.object(lists, '_set_raw'), patch.object(lists, '_restore_term_attrs'), \
              patch.object(lists, '_get_term_attrs'), patch.object(lists, '_Widget', W), \
-             patch.object(settings.prompt, 'text', lambda *a, **k: typed), \
+             patch('backbone.prompt.text.text', lambda *a, **k: typed), \
              patch.object(lists.sys.stdin, 'fileno', lambda: 0):
             settings._pick_accent(cfg)
     finally:

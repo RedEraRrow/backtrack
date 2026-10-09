@@ -4,7 +4,6 @@ import os
 from backbone import prompt
 from backbone import keys, ui
 from backbone.nav import QuitToTerminal
-from backbone.ui import Colors as C
 from backtrack.music_library import (
     build_library, save_library_cache, start_background_sync, sort_options,
 )
@@ -12,7 +11,7 @@ from backtrack.history import get_history, clear_history
 from backtrack.config import load_config, music_dirs, set_music_dirs, library_name, update_config, changed_keys
 from backtrack.id3.tag_registry import TAG_REGISTRY
 from backtrack.menus.activity import activity_centre
-from backtrack.menus.common import BROWSE_CATEGORIES, DEFAULT_BROWSE_MENU, OFF_GLYPH, ON_GLYPH, _SETTINGS_COLUMNS, _commit, _idx_of, _menu_header, _space_toggles, _state_glyph, browse_menu_keys
+from backtrack.menus.common import BROWSE_CATEGORIES, DEFAULT_BROWSE_MENU, _commit, _menu_header, browse_menu_keys
 from backtrack.menus.sorting import _chain_summary, _pick_chain
 from backtrack.config import setting
 
@@ -102,11 +101,11 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
         _sub = f"{len(dirs)} director{'y' if len(dirs) == 1 else 'ies'}"
         choice = prompt.select("", choices=_choices,
                                header=_menu_header("Music Directories", _sub),
-                               columns=_SETTINGS_COLUMNS, index=_cursor)
+                               columns=prompt.SETTINGS_COLUMNS, index=_cursor)
         if not choice:
             return
 
-        _cursor = _idx_of(_choices, choice)
+        _cursor = prompt.index_of(_choices, choice)
 
         if choice == "__add__":
             new_root = prompt.path("Directory to add:")
@@ -143,7 +142,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
                 prompt.Choice(title="Media type…", value="media",
                               cells=["Media type…", "Audiobooks" if _is_books_dir(config, choice) else "Music"]),
                 prompt.Choice(title="Remove…", value="remove", cells=["Remove…", ""]),
-            ], columns=_SETTINGS_COLUMNS, header=_menu_header(name, choice))
+            ], columns=prompt.SETTINGS_COLUMNS, header=_menu_header(name, choice))
             if act == "name":
                 new = prompt.text("Name shown in Browse:", default=name)
                 if new is not None:
@@ -200,30 +199,11 @@ _SETTINGS_TOGGLES = {"history", "meta_editor", "lyrics_editor", "accent_art",
                      "player_meta", "player_tabs", "nerd_icons", "columns", "by_letter"}
 
 
-def _accent_swatch(value) -> list:
-    """A block of the colour itself, or a hatched gap when there is none."""
-    code = ui.accent_code(value)
-    return [(f"{code}████{C.RESET}", 'normal')] if code else [("░░░░", 'dim')]
-
-
-def _accent_name(value, name: str):
-    """The colour's name, written in that colour."""
-    code = ui.accent_code(value)
-    return [(f"{code}{name}{C.RESET}", 'normal')] if code else name
-
-
-_ACCENT_COLUMNS = [
-    prompt.Column(style='normal'),                  # swatch
-    prompt.Column(style='normal'),                  # name, in its own colour
-    prompt.Column(style='dynamic-dim', flex=True),  # ● on the one in use
-]
-
-
 def _accent_cells(config: dict, secondary: bool) -> list:
     """A swatch and name for one of the two accents as set (its default when unset or unknown)."""
     which, default = ('accent_colour_2', ui.DEFAULT_ACCENT2) if secondary else ('accent_colour', ui.DEFAULT_ACCENT)
     value = config.get(which) if ui.accent_code(config.get(which)) else default
-    return _accent_swatch(value) + ["  " + ui.accent_label(value)]
+    return prompt.accent_swatch(value) + ["  " + ui.accent_label(value)]
 
 
 def _pick_accents(config: dict) -> None:
@@ -233,7 +213,7 @@ def _pick_accents(config: dict) -> None:
         choice = prompt.select("", choices=[
             prompt.Choice(title="Primary", value="primary", cells=["Primary", _accent_cells(config, False)]),
             prompt.Choice(title="Secondary", value="secondary", cells=["Secondary", _accent_cells(config, True)]),
-        ], columns=_SETTINGS_COLUMNS, place=place,
+        ], columns=prompt.SETTINGS_COLUMNS, place=place,
             header=_menu_header("Accent colours", "primary: cursor and progress · secondary: borders and tabs"))
         if not choice:
             return
@@ -246,50 +226,17 @@ def _now_playing_path() -> str | None:
 
 
 def _pick_accent(config: dict, secondary: bool = False) -> None:
-    """Settings → Accent colour (or Second accent). Every colour is shown in
-    itself, and picking one applies it at once, so the screen around the list
-    is the preview; esc when it looks right. The terminal-theme colours follow
-    the terminal's palette."""
+    """Settings → Accent colour (or Second accent): picking one applies it at
+    once; esc when it looks right. Art mode puts the cover's colours back after."""
     which, default = ('accent_colour_2', ui.DEFAULT_ACCENT2) if secondary else ('accent_colour', ui.DEFAULT_ACCENT)
-    title = "Second accent" if secondary else "Accent colour"
-    place = prompt.ListPlace()
-    current = config.get(which) or default
-    place.value = '__custom__' if current.startswith('#') else current
-    while True:
-        current = config.get(which) or default
-        custom = current if current.startswith('#') else None
 
-        def _row(value, name: str, colour) -> prompt.Choice:
-            in_use = value == current or (value == '__custom__' and custom)
-            return prompt.Choice(title=name, value=value,
-                                 cells=[_accent_swatch(colour), _accent_name(colour, name),
-                                        ON_GLYPH if in_use else ""])
+    def _use(value: str) -> None:
+        config[which] = value
+        ui.set_accent(value, secondary)
 
-        choices: list = [prompt.separator("Your terminal's colours")]
-        for i, (key, name, _colour) in enumerate(ui.ACCENT_PRESETS):
-            if i == 6:
-                choices.append(prompt.separator("Fixed colours"))
-            choices.append(_row(key, name, key))
-        choices += [prompt.separator(), _row('__custom__', 'Custom colour…', custom)]
-
-        choice = prompt.select("", choices=choices, columns=_ACCENT_COLUMNS, place=place,
-                               header=_menu_header(title, ui.accent_label(current)))
-        if not choice:
-            from backtrack import accents
-            accents.apply(_now_playing_path(), config)   # art mode puts the cover's colours back
-            return
-        if choice == '__custom__':
-            typed = prompt.text("Hex colour:", default=custom or "", placeholder="#4FC3F7")
-            if typed is None:
-                continue
-            rgb = ui.parse_hex_colour(typed)
-            if rgb is None:
-                ui.show_status("That isn't a colour. Use #RRGGBB, like #4FC3F7.")
-                continue
-            choice = "#%02X%02X%02X" % rgb
-        config[which] = choice
-        ui.set_accent(choice, secondary)
-        ui.show_status(f"{title}: {ui.accent_label(choice)}")
+    prompt.pick_accent("Second accent" if secondary else "Accent colour", config.get(which) or default, _use)
+    from backtrack import accents
+    accents.apply(_now_playing_path(), config)
 
 
 _AFTER_PICK = {
@@ -310,13 +257,8 @@ def _option(config: dict, key: str, options: dict) -> str:
 
 
 def _pick_option(config: dict, key: str, options: dict, question: str, title: str) -> None:
-    """Choose one of a setting's fixed values; the current one is ticked."""
-    current = _option(config, key, options)
-    picked = prompt.select(
-        question,
-        choices=[prompt.Choice(title=label, value=value, cells=[label, ON_GLYPH if value == current else ""])
-                 for value, label in options.items()],
-        columns=_SETTINGS_COLUMNS, index=list(options).index(current), header=_menu_header(title))
+    """Choose one of a setting's fixed values; the current one is marked."""
+    picked = prompt.pick_option(question, options, _option(config, key, options), title)
     if picked:
         config[key] = picked
 
@@ -353,7 +295,7 @@ def handle_settings(library_ref: list) -> None:
 
         def _bool(key: str) -> str:
             """Right-column glyph for an on/off setting."""
-            return _state_glyph(setting(config, key))
+            return prompt.state_glyph(setting(config, key))
 
         _tasks = len(ui.BACKGROUND_TASKS)
         _prefs = len(config.get("tag_name_preferences") or {})
@@ -365,7 +307,7 @@ def handle_settings(library_ref: list) -> None:
             ("lead_in",      "Lyric lead-in…",       f"{float(config['lyric_lead_in']):g}s"),
             ("after_pick",   "After a picked track…", _AFTER_PICK[_option(config, "after_pick", _AFTER_PICK)]),
             ("queue_end",    "When the queue ends…", _QUEUE_END[_option(config, "queue_end", _QUEUE_END)]),
-            ("key_hints",    "[?] help toggle", _state_glyph(prompt.help_toggle_shown())),
+            ("key_hints",    "[?] help toggle", prompt.state_glyph(prompt.help_toggle_shown())),
             ("key_bindings", "Key bindings…",        _key_bindings_state()),
             ("inline_art",   "Image album art in iTerm2", _bool("art_inline_images")),
             ("player_meta",  "Track details in player", _bool("player_show_metadata")),
@@ -376,7 +318,7 @@ def handle_settings(library_ref: list) -> None:
              _accent_cells(config, False)[:1] + [" "] + _accent_cells(config, True)[:1]
              + ["  " + _accent_cells(config, False)[1].strip() + " · " + _accent_cells(config, True)[1].strip()]),
             ("accent_art",   "Colours from album art", _bool("accent_from_art")),
-            ("columns",      "Browse in columns · v", _state_glyph(prompt.columns_shown())),
+            ("columns",      "Browse in columns · v", prompt.state_glyph(prompt.columns_shown())),
             ("scroll_bpm",   "Scrolling text speed…", f"{setting(config, 'scroll_bpm'):g} bpm"),
             prompt.separator("Library"),
             ("music_dirs",   "Music directories…",   ui.plural(len(music_dirs(config)), "folder")),
@@ -412,11 +354,11 @@ def handle_settings(library_ref: list) -> None:
         choice = prompt.select(
             "",
             choices=_choices,
-            columns=_SETTINGS_COLUMNS,
+            columns=prompt.SETTINGS_COLUMNS,
             header=_menu_header("Settings"),
             index=_cursor,
             extra_hints={"list.toggle": "toggle"},
-            **_space_toggles(_SETTINGS_TOGGLES),
+            **prompt.space_toggles(_SETTINGS_TOGGLES),
         )
 
         if not choice:
@@ -425,12 +367,12 @@ def handle_settings(library_ref: list) -> None:
             choice = choice[1]
 
         # Stay on the row that was just acted on, rather than jumping to the top.
-        _cursor = _idx_of(_choices, choice, _cursor)
+        _cursor = prompt.index_of(_choices, choice, _cursor)
 
         def _toggled(key: str, note: str = "") -> None:
             """Flip an on/off setting and report its new state the same way everywhere."""
             config[key] = not setting(config, key)
-            glyph = _state_glyph(config[key])
+            glyph = prompt.state_glyph(config[key])
             ui.show_status(f"{_labels[choice]} {glyph}{note}")
 
         if choice == "activity":
@@ -595,18 +537,18 @@ def _edit_browse_menu(config: dict) -> None:
         shown = browse_menu_keys(config)
         hidden = [k for k in BROWSE_CATEGORIES if k not in shown]
         choices: list = [prompt.Choice(title=BROWSE_CATEGORIES[k][0], value=k,
-                                       cells=[BROWSE_CATEGORIES[k][0], ON_GLYPH]) for k in shown]
+                                       cells=[BROWSE_CATEGORIES[k][0], prompt.ON_GLYPH]) for k in shown]
         if hidden:
             choices.append(prompt.separator("Hidden"))
             choices += [prompt.Choice(title=BROWSE_CATEGORIES[k][0], value=k,
-                                      cells=[BROWSE_CATEGORIES[k][0], OFF_GLYPH]) for k in hidden]
+                                      cells=[BROWSE_CATEGORIES[k][0], prompt.OFF_GLYPH]) for k in hidden]
         choices += [prompt.separator(), prompt.Choice(title="Reset to default", value="__reset__")]
         if follow:
-            cursor, follow = _idx_of(choices, follow, cursor), None
-        sel = prompt.select("", choices=choices, columns=_SETTINGS_COLUMNS,
+            cursor, follow = prompt.index_of(choices, follow, cursor), None
+        sel = prompt.select("", choices=choices, columns=prompt.SETTINGS_COLUMNS,
                             header=_menu_header("Browse menu", f"{len(shown)} of {len(BROWSE_CATEGORIES)} shown"),
                             index=cursor, extra_hints={"list.toggle": "show/hide"}, on_move=_move,
-                            **_space_toggles(set(BROWSE_CATEGORIES)))
+                            **prompt.space_toggles(set(BROWSE_CATEGORIES)))
         if not sel:
             return
         if sel == "__reset__":

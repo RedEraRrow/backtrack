@@ -17,7 +17,7 @@ from backtrack.id3.browser import inspect_tag_loop
 from backtrack.id3.bulk_menu import bulk_id3_manager
 from backtrack.menus.chapters import chapter_editor
 from backtrack.menus import browse_columns as cols
-from backtrack.menus.common import BROWSE_CATEGORIES, _ALBUM_COLUMNS, _TRACK_COLUMNS, _commit, _idx_of, _menu_header, browse_menu_keys
+from backtrack.menus.common import BROWSE_CATEGORIES, _ALBUM_COLUMNS, _TRACK_COLUMNS, _commit, _menu_header, browse_menu_keys
 from backtrack.menus.play import (
     CHAPTER_SEP, _edit_paths, _list_actions, _list_result, _queue_shortcut_kwargs, _sorted_paths,
     play_chapter, play_picked, play_queue,
@@ -642,14 +642,14 @@ def handle_browse(library_ref: list, scope: str | None = None) -> str | None:
         )
         if not choice:
             break
-        _cursor = _idx_of(_opts, choice)
+        _cursor = prompt.index_of(_opts, choice)
         if choice == "libraries":
             _browse_libraries(library_ref)
         else:
             jump = browse_menu(library_ref, choice, scope=scope,
                                trail=[prompt.Trail([o.title for o in _opts], keys, choice, 0)])
             if jump is not None:
-                _cursor = _idx_of(_opts, jump.value)   # back to the categories, at the one clicked
+                _cursor = prompt.index_of(_opts, jump.value)   # back to the categories, at the one clicked
     return None
 
 
@@ -664,7 +664,7 @@ def _browse_libraries(library_ref: list) -> str | None:
                                choose_label="Open")
         if not choice:
             return None
-        _cursor = _idx_of(choices, choice)
+        _cursor = prompt.index_of(choices, choice)
         _name = library_name(cfg, choice)
         NAV_STACK.append(_name)
         try:

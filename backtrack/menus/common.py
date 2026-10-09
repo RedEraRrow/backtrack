@@ -1,5 +1,5 @@
 """What every menu screen shares: headers, list columns, the settings-row
-glyphs, the Browse categories, and small helpers for cursors and saving."""
+the Browse categories, and small helpers for headers and saving."""
 from __future__ import annotations
 from backbone.ui import Colors as C
 from backbone import prompt
@@ -38,15 +38,6 @@ _ALBUM_COLUMNS = [
 ]
 
 
-def _idx_of(choices: list, value, default: int = 0) -> int:
-    """Index of the choice whose value == `value` (for restoring the cursor on back)."""
-    for i, c in enumerate(choices):
-        cv = c.value if isinstance(c, prompt.Choice) else c
-        if cv == value:
-            return i
-    return default
-
-
 def _menu_header(title: str, subtitle: str | None = None):
     """The header for prompt.select's header= parameter: the screen's name, in
     its box's top border (with a subtitle, the box's first line).
@@ -79,34 +70,6 @@ def _disc_track_cell(song: dict) -> str:
     trk = trk.zfill(2)
     multi = (disc and disc not in ('0', '1')) or (total_discs and total_discs not in ('0', '1'))
     return f"{disc}·{trk}" if multi and disc else trk
-
-
-# Settings rows carry their current state in a right-hand column, so every
-# setting can be read without changing it: a tick/cross for the on/off ones, the
-# value itself for the rest. Labels are sentence case, like every other screen.
-_SETTINGS_COLUMNS = [
-    prompt.Column(style='primary'),                 # label, sized to its content
-    prompt.Column(style='dynamic-dim', flex=True),  # state, left-aligned just after
-]
-
-
-# The on/off pair: filled and hollow, not a tick and a cross: ✘ reads as
-# *invalid* rather than *off*. ● and ○ differ only in fill, which is exactly
-# the difference.
-ON_GLYPH, OFF_GLYPH = "●", "○"
-
-
-def _state_glyph(value) -> str:
-    """Tick or cross for a boolean setting's current state."""
-    return ON_GLYPH if value else OFF_GLYPH
-
-
-def _space_toggles(values) -> dict:
-    """select() kwargs making space flip the rows in `values` (the on/off
-    ones): select() returns ("__space__", row), and space does nothing on any
-    other row."""
-    return {"on_inspect": lambda v: ("__space__", v) if v in values else None,
-            "inspect_key": "list.toggle"}
 
 
 # Browse categories: key → (label, field grouped by, drills into an album list
