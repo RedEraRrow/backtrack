@@ -6,7 +6,7 @@ from __future__ import annotations
 from backbone import prompt, ui
 from backbone.ui import Colors as C
 from backtrack.music_library import (
-    album_credit, chapter_label, format_label, format_tag_values, to_num, track_title, year_of,
+    album_credit, chapter_label, format_label, format_tag_values, is_audiobook, to_num, track_title, year_of,
 )
 from backtrack.album_art import artist_image, round_portrait
 from backtrack.playback.player_art import _SHAPES, AVATAR_ART, IDLE_ART, _art_fit, fill_art, image_cells
@@ -99,7 +99,8 @@ def track_details(t: dict) -> tuple:
     year = year_of(t.get('date') or t.get('year'))
     album = " · ".join(x for x in (t.get('album') or '', str(year) if year else '') if x)
     track, disc = int(to_num(t.get('track'))), int(to_num(t.get('disc')))
-    where = " · ".join(x for x in (f"Track {track}" if track else '', f"Disc {disc}" if disc > 1 else '') if x)
+    multi = disc > 1 or to_num(t.get('total_discs')) > 1          # disc 1 of 2 says so too
+    where = " · ".join(x for x in (f"Track {track}" if track else '', f"Disc {disc}" if disc and multi else '') if x)
     dur = ui.format_time(int(t['duration'])) if t.get('duration') else ''
     lines = [track_title(t['path'], t), format_tag_values(t.get('artist') or ''), album, where, dur,
              format_label(t), t.get('copyright') or '']
@@ -117,6 +118,16 @@ def chapter_details(t: dict, i: int) -> tuple:
     return t['path'], [x for x in lines if x]
 
 
+def listed_size(tracks: list, cfg: dict | None = None) -> str:
+    """How many rows opening `tracks` lists: a book's chapters, where its
+    files list them in their place, else its tracks."""
+    chapters = [len(t.get('chapters') or []) if t.get('chapters') and is_audiobook(t['path'], cfg) else 0
+                for t in tracks]
+    if not any(chapters):
+        return ui.plural(len(tracks), "track")
+    return ui.plural(sum(n or 1 for n in chapters), "chapter")
+
+
 def tracks_details(name: str, tracks: list, person: bool = False, credit: bool = False) -> tuple:
     """An album or a group: its name, years, size, length and format, and with
     `credit` (an album: a genre or a year has no one artist) who it's by.
@@ -127,7 +138,7 @@ def tracks_details(name: str, tracks: list, person: bool = False, credit: bool =
     years = sorted({y for y in (year_of(t.get('date') or t.get('year')) for t in tracks) if y})
     span = (f"{years[0]}" if len(years) == 1 else f"{years[0]}–{years[-1]}") if years else ""
     albums = len({(t.get('album'), t.get('album_artist')) for t in tracks})
-    size = ui.plural(len(tracks), "track") + (f" · {ui.plural(albums, 'album')}" if albums > 1 else "")
+    size = listed_size(tracks) + (f" · {ui.plural(albums, 'album')}" if albums > 1 else "")
     total = sum(t.get('duration') or 0 for t in tracks)
     formats = {format_label({**t, 'bitrate': 0}) for t in tracks} - {""}   # VBR differs per track
     rights = {t.get('copyright') or "" for t in tracks}

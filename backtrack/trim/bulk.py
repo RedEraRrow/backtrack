@@ -43,7 +43,7 @@ import time
 from dataclasses import dataclass, field
 
 
-from backtrack.playback.libvlc import vlc as _vlc  # noqa: E402,F401 (None without libvlc)
+from backtrack.playback.libvlc import vlc as _vlc, media_for  # noqa: E402,F401 (None without libvlc)
 _HAS_VLC = _vlc is not None
 
 
@@ -210,9 +210,9 @@ def _build_strip(paths: list[str], state: dict[str, _TrackState], idx: int) -> l
         has_in = s.marks.in_snapped is not None
         has_out = s.marks.out_snapped is not None
         if i == idx:
-            glyphs.append(f"{C.ACCENT}{C.BOLD}●{C.RESET}")
+            glyphs.append(f"{C.BOLD}{C.ACCENT}●{C.RESET}")
         elif s.done and has_in and has_out:
-            glyphs.append(f"{C.PRIMARY}✔{C.RESET}")
+            glyphs.append(f"{C.STRONG}✔{C.RESET}")
         elif has_in or has_out:
             glyphs.append(f"{C.ACCENT}◐{C.RESET}")
         else:
@@ -344,7 +344,7 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
         try:
             inst = _vlc.Instance('--no-video', '--quiet')
             mp_i = inst.media_player_new()          # type: ignore[union-attr]
-            mp_i.set_media(inst.media_new(reference_path))  # type: ignore[union-attr]
+            mp_i.set_media(media_for(inst, reference_path))  # type: ignore[union-attr]
             mp = mp_i
         except (AttributeError, OSError):
             mp = None

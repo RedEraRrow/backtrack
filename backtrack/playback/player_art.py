@@ -15,6 +15,7 @@ from backtrack.playback.player_geom import geom
 from backbone.log import log
 from backtrack.album_art import booklet_file, decode_image, fit_art, get_art, get_art_bytes, get_embedded_art, half_blocks, has_alpha
 from backtrack.config import setting
+from backtrack import tuning as tune
 
 
 ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
@@ -24,6 +25,19 @@ ART_MAX_WIDTH = 200  # viu rendering degrades above this width on most terminals
 # this many columns narrower, so it doesn't sit in thin, lopsided margins. Only
 # the note: a cover is never cropped to reach full width (see _art_fit).
 _ART_SNAP_TO_FULL = 4
+
+
+def _kept(cache: dict, key, limit: int, make):
+    """cache[key], made by `make()` the first time. Past `limit` entries the
+    one used longest ago goes, so going back over what was just shown (a list
+    scrolled up again) finds it still there."""
+    if key in cache:
+        cache[key] = cache.pop(key)          # now the most recently used
+        return cache[key]
+    if len(cache) >= limit:
+        del cache[next(iter(cache))]
+    cache[key] = made = make()
+    return made
 
 
 _art_cache: dict = {}
@@ -40,12 +54,9 @@ def _get_art_cached(file_path: str, width: int, booklet: bool = False) -> str:
     except OSError:
         mtime = 0.0
     key = (file_path, width, mtime, booklet, ui.cell_aspect())
-    if key not in _art_cache:
-        if len(_art_cache) > 64:             # every width a drag passes through
-            _art_cache.clear()
-        _art_cache[key] = (get_embedded_art(file_path, width, preferred_desc='Booklet', preferred_type=6)
-                           if booklet else get_art(file_path, width=width))
-    return _art_cache[key]
+    return _kept(_art_cache, key, 64,                 # every width a drag passes through
+                 lambda: (get_embedded_art(file_path, width, preferred_desc='Booklet', preferred_type=6)
+                          if booklet else get_art(file_path, width=width)))
 
 
 # --- Real-image album art (iTerm2 inline images), opt-in -----------------------
@@ -82,15 +93,9 @@ def art_image_incomplete() -> bool:
 _inline_art_cache: dict = {}             # (path, mtime, cols, rows, px, cell) → (base64, byte count)
 
 
-_INLINE_PX_PER_COL = 10                  # image pixels per cell column: sharp on a Retina
-
-
-                                         # screen, a fraction of a full-size cover to send
-_INLINE_CHUNK = 16 * 1024                # a full image goes out in pieces this size, so a
-
-
-                                         # resize mid-send can cut it short (_send_image)
-_INLINE_PREVIEW_PX = 3                   # the quick first image: ~1/16 the pixels
+_INLINE_PX_PER_COL = tune.ART_INLINE_PX_PER_COL
+_INLINE_CHUNK = tune.ART_INLINE_CHUNK
+_INLINE_PREVIEW_PX = tune.ART_INLINE_PREVIEW_PX
 
 
 _inline_cfg: dict = {}                   # the setting, cached on config.json's mtime
@@ -130,17 +135,15 @@ def _cover_decoded(file_path: str) -> tuple | None:
         key = (file_path, os.path.getmtime(file_path))
     except OSError:
         return None
-    if key not in _decoded_cache:
-        if len(_decoded_cache) > 4:            # decoded covers are large: keep a few
-            _decoded_cache.clear()
+    def make():
         raw = get_art_bytes(file_path)
         img = decode_image(raw) if raw else None
         if img is not None:
             # A 4000-pixel cover is shrunk once, here, to a working size still
             # above anything the player shows; every later step works on that.
             img.thumbnail((_WORKING_PX, _WORKING_PX), Image.Resampling.BOX)
-        _decoded_cache[key] = (raw, img) if raw else None
-    return _decoded_cache[key]
+        return (raw, img) if raw else None
+    return _kept(_decoded_cache, key, 8, make)       # decoded covers are large: keep a few
 
 
 def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
@@ -153,12 +156,10 @@ def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
         key = (file_path, os.path.getmtime(file_path), cols, rows, px, ui.cell_aspect())
     except OSError:
         return None
-    if key not in _inline_art_cache:
-        if len(_inline_art_cache) > 24:
-            _inline_art_cache.clear()
+    def make():
         dec = _cover_decoded(file_path)
-        _inline_art_cache[key] = _encoded_picture(dec[0], dec[1], cols, rows, px) if dec else None
-    return _inline_art_cache[key]
+        return _encoded_picture(dec[0], dec[1], cols, rows, px) if dec else None
+    return _kept(_inline_art_cache, key, 64, make)
 
 
 def _encoded_picture(raw: bytes, img, cols: int, rows: int, px: int) -> tuple[str, int] | None:
@@ -183,78 +184,88 @@ def _encoded_picture(raw: bytes, img, cols: int, rows: int, px: int) -> tuple[st
                              Image.Resampling.BOX)
         buf = BytesIO()
         if transparent:
-            img.save(buf, "PNG")
+            img.save(buf, "PNG", compress_level=1)      # quick: it's sent once, not stored
         else:
             img.save(buf, "JPEG", quality=70 if px == _INLINE_PREVIEW_PX else 85)
         data = buf.getvalue()
     return (base64.b64encode(data).decode('ascii'), len(data)) if data else None
 
 
-_mean_cache: dict = {}                   # (path, mtime) → the cover's average colour
+_mean_cache: dict = {}                   # (path, mtime) → (average colour, has transparency)
 
 
-# Art-derived accents: how colourful a cover colour must be to count, and the
-# lightness and saturation the chosen ones are set to, so they read on a dark
-# terminal whatever the cover was like.
-_ART_MIN_SATURATION = 0.2
-_ART_LIGHTNESS = 0.62
-_ART_SATURATION = (0.5, 0.9)
-_ART_MIN_HUE_GAP = 0.08                  # a second accent this far round the wheel, at least
+# Art-derived accents: colours as they are in the cover, the most prominent
+# colourful ones (area first, colourfulness after), changed only as far as
+# they must be to read on the terminal's background (ui.readable).
+_ART_MIN_SATURATION = tune.ART_ACCENT_MIN_SATURATION
+_ART_MIN_HUE_GAP = tune.ART_ACCENT_MIN_HUE_GAP
+_ART_PALETTE = tune.ART_ACCENT_PALETTE
 _accents_cache: dict = {}
 
 
 def art_accents(file_path: str) -> tuple[str, str] | None:
-    """Two accents ("#RRGGBB") from a file's cover: its most prominent colourful
-    colour, and a second of a clearly different hue (the first's opposite when
-    the cover has only one). None when there's no cover or it's all greys."""
+    """Two accents ("#RRGGBB") from a file's cover, both colours that are in
+    it: the most prominent colourful one, and the next of a clearly different
+    hue, else the next of any (else a lighter or darker tone of the first).
+    Each is only made as much lighter or darker as it has to be to read on the
+    terminal's background. None when there's no cover or it's all greys."""
     import colorsys
     decoded = _cover_decoded(file_path)
     if not decoded or decoded[1] is None:
         return None
-    key = (file_path, id(decoded[1]))
+    back = ui.terminal_background()
+    key = (file_path, id(decoded[1]), back)
     if key not in _accents_cache:
         if len(_accents_cache) > 32:
             _accents_cache.clear()
-        small = decoded[1].copy()
+        small = decoded[1].convert("RGB")
         small.thumbnail((64, 64))
-        q = small.quantize(colors=8)
+        q = small.quantize(colors=_ART_PALETTE)
         pal = q.getpalette() or []
         found = []
-        for count, idx in sorted(q.getcolors() or [], reverse=True):
-            h, l, s = colorsys.rgb_to_hls(*(c / 255 for c in pal[idx * 3:idx * 3 + 3]))
-            if s >= _ART_MIN_SATURATION and 0.12 < l < 0.92:
-                found.append((count * s, h, s))
+        for count, idx in q.getcolors() or []:
+            rgb = tuple(pal[idx * 3:idx * 3 + 3])
+            h, l, s = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+            if s >= _ART_MIN_SATURATION and 0.06 < l < 0.96:
+                found.append((count * (0.35 + s), h, "#%02X%02X%02X" % rgb))
         if not found:
             _accents_cache[key] = None
         else:
             found.sort(reverse=True)
-            _w, h1, s1 = found[0]
+            _w, h1, first = found[0]
             gap = lambda h: min(abs(h - h1), 1 - abs(h - h1))   # noqa: E731
-            other = next((f for f in found[1:] if gap(f[1]) >= _ART_MIN_HUE_GAP), None)
-            h2, s2 = (other[1], other[2]) if other else ((h1 + 0.5) % 1, s1)
-
-            def tone(h: float, s: float) -> str:
-                r, g, b = colorsys.hls_to_rgb(h, _ART_LIGHTNESS, min(max(s, _ART_SATURATION[0]), _ART_SATURATION[1]))
-                return "#%02X%02X%02X" % (round(r * 255), round(g * 255), round(b * 255))
-            _accents_cache[key] = (tone(h1, s1), tone(h2, s2))
+            other = next((f for f in found[1:] if gap(f[1]) >= _ART_MIN_HUE_GAP), None) or \
+                next(iter(found[1:]), None)
+            if other:
+                second = other[2]
+            else:                                            # one colour: a tone of it, further from the background
+                hh, ll, ss = colorsys.rgb_to_hls(*(c / 255 for c in ui.parse_hex_colour(first)))
+                ll = min(1.0, ll + 0.2) if not ui.background_is_light() else max(0.0, ll - 0.2)
+                second = "#%02X%02X%02X" % tuple(round(v * 255) for v in colorsys.hls_to_rgb(hh, ll, ss))
+            _accents_cache[key] = (ui.readable(first, back), ui.readable(second, back))
     return _accents_cache[key]
 
 
 def _cover_mean(file_path: str) -> tuple[int, int, int] | None:
     """The cover's average colour (r, g, b), or None when it can't be decoded,
     in which case the text art is the fallback."""
+    facts = _cover_facts(file_path)
+    return facts[0] if facts else None
+
+
+def _cover_facts(file_path: str) -> tuple | None:
+    """(the cover's average colour, whether it has transparency), kept long
+    after the decoded picture is let go: a list showing covers asks for both
+    on every move."""
     try:
         key = (file_path, os.path.getmtime(file_path))
     except OSError:
         return None
-    if key not in _mean_cache:
-        if len(_mean_cache) > 64:
-            _mean_cache.clear()
+    def make():
         dec = _cover_decoded(file_path)
         img = dec[1] if dec else None
-        _mean_cache[key] = (None if img is None else
-                            tuple(int(v) for v in ImageStat.Stat(img).mean[:3]))
-    return _mean_cache[key]
+        return None if img is None else (tuple(int(v) for v in ImageStat.Stat(img).mean[:3]), has_alpha(dec[0]))
+    return _kept(_mean_cache, key, 256, make)
 
 
 def _draw_inline_art(full_only: bool = False) -> None:
@@ -267,7 +278,8 @@ def _draw_inline_art(full_only: bool = False) -> None:
     if not (path and geom.art_top and geom.art_width and geom.art_height):
         pc.screen_picture_area('player art', None)
         return
-    pc.screen_picture_area('player art', (geom.art_top, geom.art_left + 1, geom.art_height, geom.art_width))
+    pc.screen_picture_area('player art', (geom.art_top, geom.art_left + 1, geom.art_height, geom.art_width),
+                           redraw_art_image)          # sent again when a box over it goes
     if not full_only:
         _send_image(path, _INLINE_PREVIEW_PX)
     # The full-quality image waits for focus: a terminal reading a background
@@ -322,15 +334,13 @@ def fill_art(path: str, cols: int, rows: int) -> list[str]:
         key = (path, os.path.getmtime(path), cols, rows, ui.cell_aspect())
     except OSError:
         return []
-    if key not in _fill_cache:
-        if len(_fill_cache) > 32:
-            _fill_cache.clear()
+    def make():
         dec = _cover_decoded(path)
         img = (decode_image(dec[0], keep_alpha=True) if dec and has_alpha(dec[0])
                else dec[1].convert("RGBA") if dec and dec[1] is not None else None)
-        _fill_cache[key] = (half_blocks(_fill_or_fit(img, cols, rows)).splitlines()
-                            if img is not None and cols > 0 and rows > 0 else [])
-    return _fill_cache[key]
+        return (half_blocks(_fill_or_fit(img, cols, rows)).splitlines()
+                if img is not None and cols > 0 and rows > 0 else [])
+    return _kept(_fill_cache, key, 64, make)
 
 
 def square_art(path: str, cols: int, rows: int, pre_art: str | None) -> list[str]:
@@ -359,14 +369,13 @@ def image_cells(path: str, cols: int, rows: int) -> tuple[list[str], str] | None
     there's no picture to show; the text art is then the fallback."""
     if not inline_art_enabled():
         return None
-    mean = _cover_mean(path)
-    data = _inline_art_data(path, cols, rows, _INLINE_PX_PER_COL) if mean else None
+    facts = _cover_facts(path)
+    data = _inline_art_data(path, cols, rows, _INLINE_PX_PER_COL) if facts else None
     if not data:
         return None
     # Under a picture with transparency (a round portrait) the cells stay
     # blank, or its corners would show them.
-    dec = _cover_decoded(path)
-    blank = dec is not None and has_alpha(dec[0])
+    mean, blank = facts
     cells = ([" " * cols] if blank else [f"\033[48;2;{mean[0]};{mean[1]};{mean[2]}m{' ' * cols}\033[0m"]) * rows
     return cells, _image_head(data[1], cols, rows) + data[0] + "\a"
 

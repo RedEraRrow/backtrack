@@ -11,3 +11,17 @@ try:
 except (Exception, SystemExit) as exc:      # noqa: BLE001 (see above)
     vlc = None
     LOAD_ERROR = f"{type(exc).__name__}: {exc}"
+
+
+def media_for(instance, path: str):
+    """`path` as media for `instance` to play, every player and editor alike.
+
+    An MP3 is read through ffmpeg's demuxer, not VLC's own: VLC's seeks in a
+    variable-bitrate MP3 land by its coarse seek table (a hundred points over
+    the whole file) and then report the time asked for, so after a resume, a
+    skip or a seek the clock was seconds away from what's heard, and lyrics
+    and timings with it. ffmpeg's land where they say they do."""
+    media = instance.media_new(path)
+    if path.lower().endswith('.mp3'):
+        media.add_option(':demux=avformat')
+    return media

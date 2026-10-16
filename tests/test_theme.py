@@ -1,4 +1,5 @@
-"""Accent colours: chosen in Settings, or taken from the playing track's cover."""
+"""The theme: chosen in Settings, or Album art, with its accents taken from
+the playing track's cover; and the cover pictures themselves."""
 import colorsys
 import os
 import shutil
@@ -11,7 +12,7 @@ from PIL import Image
 
 from _media import make_audio, needs_ffmpeg
 from backbone import ui
-from backtrack import accents
+from backtrack import theme
 from backtrack.id3 import tag_writer as tw
 from backtrack.playback import player_art
 
@@ -40,20 +41,38 @@ class ArtAccentsTest(unittest.TestCase):
         tw.write_cover(path, _png(*colours), 'image/png')
         return path
 
-    def test_two_readable_colours_of_different_hues(self):
-        first, second = player_art.art_accents(self._with_cover('c', (200, 30, 30), (200, 30, 30), (30, 60, 200)))
-        h1, l1, _ = colorsys.rgb_to_hls(*(int(first[i:i + 2], 16) / 255 for i in (1, 3, 5)))
-        h2, l2, _ = colorsys.rgb_to_hls(*(int(second[i:i + 2], 16) / 255 for i in (1, 3, 5)))
-        self.assertLess(min(h1, 1 - h1), 0.05)                       # red, the biggest band, first
-        self.assertAlmostEqual(h2, 0.63, delta=0.05)                 # then the blue
-        self.assertAlmostEqual(l1, player_art._ART_LIGHTNESS, delta=0.02)
+    def _hls(self, colour):
+        return colorsys.rgb_to_hls(*(v / 255 for v in ui.parse_hex_colour(colour)))
+
+    def test_the_covers_own_colours_biggest_first(self):
+        with mock.patch.object(ui, 'terminal_background', lambda: "#000000"):
+            first, second = player_art.art_accents(self._with_cover('c', (255, 160, 0), (255, 160, 0), (90, 200, 255)))
+        self.assertEqual((first, second), ("#FFA000", "#5AC8FF"))     # readable already: exactly as in the cover
+
+    def test_too_dark_is_lightened_only_as_far_as_it_must_be(self):
+        with mock.patch.object(ui, 'terminal_background', lambda: "#000000"):
+            first, second = player_art.art_accents(self._with_cover('d', (140, 20, 20), (140, 20, 20), (20, 40, 140)))
+        for got, was in ((first, "#8C1414"), (second, "#14288C")):
+            self.assertGreaterEqual(ui.contrast_ratio(got, "#000000"), 4.5)
+            self.assertLess(ui.contrast_ratio(got, "#000000"), 4.9)               # no further than it must
+            self.assertAlmostEqual(self._hls(got)[0], self._hls(was)[0], delta=0.01)   # the cover's hue
+            self.assertAlmostEqual(self._hls(got)[2], self._hls(was)[2], delta=0.03)   # and saturation
+
+    def test_on_a_light_terminal_they_darken(self):
+        with mock.patch.object(ui, 'terminal_background', lambda: "#FFFFFF"), \
+             mock.patch.object(ui, 'background_is_light', lambda: True):
+            first, _second = player_art.art_accents(self._with_cover('l', (255, 220, 60)))
+        self.assertGreaterEqual(ui.contrast_ratio(first, "#FFFFFF"), 4.5)
+        self.assertAlmostEqual(self._hls(first)[0], self._hls("#FFDC3C")[0], delta=0.01)
 
     def test_a_grey_cover_gives_none(self):
         self.assertIsNone(player_art.art_accents(self._with_cover('g', (90, 90, 90), (200, 200, 200))))
 
-    def test_one_colour_gets_its_opposite(self):
-        first, second = player_art.art_accents(self._with_cover('o', (30, 60, 200)))
+    def test_one_colour_gives_two_tones_of_it_not_its_opposite(self):
+        with mock.patch.object(ui, 'terminal_background', lambda: "#000000"):
+            first, second = player_art.art_accents(self._with_cover('o', (30, 60, 200)))
         self.assertNotEqual(first, second)
+        self.assertAlmostEqual(self._hls(first)[0], self._hls(second)[0], delta=0.01)
 
     def test_a_cover_fills_its_box_whatever_its_shape(self):
         import re
@@ -102,19 +121,25 @@ class ArtAccentsTest(unittest.TestCase):
 
     def test_apply_follows_the_setting(self):
         path = self._with_cover('a', (200, 30, 30))
-        art = {'accent_colour': 'green', 'accent_colour_2': 'cyan', 'accent_from_art': True}
-        fixed = {**art, 'accent_from_art': False}
+        terminal = ui.theme_codes('terminal')
+        art = {'theme': theme.ALBUM_ART, 'accent_colour': 'blue', 'accent_colour_2': 'yellow'}
         try:
-            accents.apply(path, art)
-            self.assertNotEqual(ui.Colors.ACCENT, ui.accent_code('green'))
-            accents.apply(path, fixed)
-            self.assertEqual((ui.Colors.ACCENT, ui.Colors.ACCENT2), (ui.accent_code('green'), ui.accent_code('cyan')))
-            accents.apply(None, art)                                  # nothing playing: the chosen ones
-            self.assertEqual(ui.Colors.ACCENT, ui.accent_code('green'))
+            theme.apply(path, art)
+            self.assertNotEqual(ui.Colors.ACCENT, ui.TERMINAL_ACCENTS['blue'][1])    # the cover's
+            self.assertEqual(ui.Colors.OK, terminal['OK'])                           # the rest Terminal's
+            self.assertEqual(ui.Colors.ACCENT, ui.theme_codes('terminal', theme.overrides(theme.ALBUM_ART, path))['ACCENT'])
+            theme.apply(None, art)                                    # nothing playing: the chosen accents
+            self.assertEqual((ui.Colors.ACCENT, ui.Colors.ACCENT2),
+                             (ui.TERMINAL_ACCENTS['blue'][1], ui.TERMINAL_ACCENTS['yellow'][1]))
+            theme.apply(path, {**art, 'theme': 'terminal'})           # Terminal: the chosen accents
+            self.assertEqual(ui.Colors.ACCENT, ui.TERMINAL_ACCENTS['blue'][1])
+            theme.apply(path, {**art, 'theme': 'matrix'})             # a fixed theme: its own
+            self.assertEqual(ui.Colors.ACCENT, ui.theme_codes('matrix')['ACCENT'])
+            theme.apply(None, {'theme': 'terminal', 'accent_colour': 'rose'})   # not one of the terminal's
+            self.assertEqual(ui.Colors.ACCENT, ui.TERMINAL_ACCENTS['green'][1])
         finally:
-            ui.set_accent(ui.DEFAULT_ACCENT)
-            ui.set_accent(ui.DEFAULT_ACCENT2, secondary=True)
-
+            ui.set_terminal_accents(*ui.DEFAULT_ACCENTS)
+            ui.set_theme(ui.DEFAULT_THEME)
 
 if __name__ == "__main__":
     unittest.main()

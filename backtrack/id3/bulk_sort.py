@@ -1,5 +1,6 @@
 """Bulk sort orders: filling the sort tags, with the split and people review screens."""
 from __future__ import annotations
+import os
 import re
 import mutagen
 from backtrack.id3.tag_formats import kind as tag_kind, load_id3
@@ -276,7 +277,7 @@ def apply_sort_orders(paths: list, library: list, header) -> None:
     def _scan(overwrite: bool) -> dict:
         """Read the selection into (sort_tag, raw) → paths."""
         entries: dict = {}
-        for p in mp3s:
+        for p in ui.progress_iter(mp3s, "Reading tags", name=os.path.basename):
             try:
                 audio = load_id3(p)
             except (OSError, ValueError, mutagen.MutagenError):  # type: ignore[reportPrivateImportUsage]

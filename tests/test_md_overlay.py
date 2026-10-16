@@ -38,7 +38,7 @@ def _md(text):
 
 class SpokenTextTest(unittest.TestCase):
     def test_sarcasm_marker_is_spoken_punctuation_not_a_direction(self):
-        # "(!)" has no letters, so it stays on the line and raises no ✦ overlay.
+        # "(!)" has no letters, so it stays on the line and raises no § overlay.
         self.assertEqual(lt.inline_stage_dirs("Oh, well done(!)"), [])
         self.assertEqual(lt.spoken_text("Oh, well done(!)"), "Oh, well done(!)")
 
@@ -373,13 +373,16 @@ class DirectionTimingTest(unittest.TestCase):
             w['end'] += shift
         return _chunks_from_segments(segs + [tail], path, track_duration=60.0)
 
-    def test_long_note_in_a_short_gap_rides_the_line(self):
-        # It rides in `pre`, not `cues`: the note introduces the line it lands on,
-        # so it reads above the words rather than under them.
-        chunks, _times = self._run(self.LONG, 0.5)
-        self.assertFalse(any(c['is_stage'] for c in chunks))
-        self.assertTrue(any(self.LONG[:20] in cue
-                            for c in chunks for cue in c.get('pre', [])))
+    def test_long_note_in_a_short_gap_borrows_from_the_lines_around_it(self):
+        # Never folded into a line: its own beat, taking up to half the line
+        # before, then up to half the line after.
+        chunks, times = self._run(self.LONG, 0.5)
+        beat = [(c, w) for c, w in zip(chunks, times) if c['is_stage']]
+        self.assertEqual(len(beat), 1)
+        self.assertEqual(times[0], (0.0, 1.0))                     # the 2s line keeps its first half
+        self.assertEqual(beat[0][1], (1.0, 3.5))
+        nxt = next(w for c, w in zip(chunks, times) if c['text'].startswith('Six'))
+        self.assertEqual(nxt[0], 3.5)                              # the next starts half way in
 
     def test_long_note_with_room_gets_its_own_beat(self):
         chunks, times = self._run(self.LONG, 20.0)
@@ -391,6 +394,76 @@ class DirectionTimingTest(unittest.TestCase):
         chunks, _times = self._run("he sighs", 0.9)
         self.assertTrue(any(c['is_stage'] for c in chunks))
 
+
+class MidLineDirectionTest(unittest.TestCase):
+    """A direction in the middle of a line splits it there: an action is placed
+    between the halves as the speaker's, a tone note is the rest of the line's aside."""
+
+    def _chunks(self, script, *lines, kinds=None):
+        return _chunks_from_segments(_segs(*lines), _md(script), track_duration=30.0, kinds=kinds)[0]
+
+    def test_kinds_by_wording(self):
+        for tone in ("he drifts back into his own accent", "To Carolyn", "Quietly", "In a whisper",
+                     "He impersonates a machine gun.", "trying to sound like Douglas"):
+            self.assertEqual(lt.direction_kind(tone), 'tone', tone)
+        for action in ("He laughs uproariously.", "he sighs", "the car door closes", "Long pause",
+                       "he makes a high-pitched panicked whining sound"):
+            self.assertEqual(lt.direction_kind(action), 'action', action)
+        self.assertEqual(lt.direction_kind("he sighs", {'he sighs': 'tone'}), 'tone')
+
+    def test_tone_note_is_the_aside_of_the_rest_of_the_line(self):
+        said = [c for c in self._chunks("**MARTIN** *(French accent)*: Bonjour mes amis *(he drifts back into his own accent)* and hello.\n",
+                                        "Bonjour mes amis and hello.") if c['text']]
+        self.assertEqual([(c['text'], c['stage_dir'], c['speaker']) for c in said],
+                         [("Bonjour mes amis", "French accent", "MARTIN"),
+                          ("and hello.", "he drifts back into his own accent", "MARTIN")])
+
+    def test_action_sits_between_the_halves_as_the_speakers(self):
+        chunks = self._chunks("**ARTHUR**: Like a bear! *(He laughs.)* Oh, I might use that.\n",
+                              "Like a bear! Oh, I might use that.")
+        said = [c['text'] for c in chunks if c['text']]
+        self.assertEqual(said, ["Like a bear!", "Oh, I might use that."])
+        beat = [c for c in chunks if c['is_stage']]                   # its own beat, the speaker's
+        self.assertEqual([(c['stage_dir'], c['speaker']) for c in beat], [("He laughs.", "ARTHUR")])
+        self.assertLess(chunks.index(beat[0]), [c['text'] for c in chunks].index("Oh, I might use that."))
+
+    def test_overridden_kind_is_taken(self):
+        said = [c for c in self._chunks("**ARTHUR**: Like a bear! *(He laughs.)* Oh, I might use that.\n",
+                                        "Like a bear! Oh, I might use that.", kinds={'he laughs': 'tone'}) if c['text']]
+        self.assertEqual(said[1]['stage_dir'], "He laughs.")
+
+    def test_opening_tone_note_joins_the_lines_own(self):
+        said = [c for c in self._chunks("**DOUGLAS**: *(in a normal voice)* Not a goodie.\n", "Not a goodie.") if c['text']]
+        self.assertEqual(said[0]['stage_dir'], "in a normal voice")
+
+
+    def test_tone_note_ending_a_line_is_the_aside_of_the_words_before_it(self):
+        said = [c for c in self._chunks("**BENEDICT** *(cheerfully)*: For the BBC! *(In Spanish accent)*\n**ARTHUR**: Brilliant.\n",
+                                        "For the BBC!", "Brilliant.") if c['text']]
+        self.assertEqual(said[0]['stage_dir'], "cheerfully; In Spanish accent")
+        self.assertEqual(said[1]['stage_dir'], "")
+        self.assertFalse(any(c['is_stage'] for c in self._chunks(
+            "**BENEDICT**: For the BBC! *(In Spanish accent)*\n", "For the BBC!")))
+
+    def test_a_note_on_how_it_is_said_is_about_the_word_before_it(self):
+        said = [c for c in self._chunks("**CAROLYN**: You mean Wrath. *(She pronounces it 'roth.')* Of course there is.\n",
+                                        "You mean Wrath. Of course there is.", kinds={"she pronounces it roth": "tone"}) if c['text']]
+        self.assertEqual([(c['text'], c['stage_dir']) for c in said],
+                         [("You mean Wrath.", "She pronounces it 'roth.'"), ("Of course there is.", "")])
+
+    def test_a_line_that_is_only_a_tone_note_is_still_its_own_beat(self):
+        chunks = self._chunks("**ARTHUR**: Hello.\n**MARTIN**: *(screaming in terror)*\n**ARTHUR**: Oh.\n", "Hello.", "Oh.")
+        self.assertEqual([c['stage_dir'] for c in chunks if c['is_stage']], ["screaming in terror"])
+
+    def test_a_committed_direction_is_matched_to_its_nearest_copy(self):
+        # "He sighs." written mid-line first and on its own line later: the
+        # committed one after the last line is the standalone one, not the first written.
+        path = _md("**MARTIN**: One two. *(He sighs.)* Three four.\n**DOUGLAS**: Five six.\n*(He sighs.)*\n**MARTIN**: Seven.\n")
+        segs = _segs("One two. Three four.", "Five six.", "Seven.")
+        segs.insert(2, {'kind': 'stage_dir', 'text': 'He sighs.', 'start': segs[1]['end'], 'end': segs[1]['end'] + 1})
+        _ov, _q, links = build_md_overlay(segs, path)
+        self.assertNotIn(2, links)                                   # standalone: nobody's line
+        self.assertTrue(any(o['kind'] == 'stage_dir' and o.get('within') for o in _ov))  # the mid-line one still splits
 
 if __name__ == '__main__':
     unittest.main()

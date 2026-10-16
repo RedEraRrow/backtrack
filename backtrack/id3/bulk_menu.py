@@ -209,6 +209,35 @@ def strip_length_tags_op(paths: list, library: list, header) -> None:
 
 
 
+def import_lyrics_op(paths: list, library: list, header) -> None:
+    """Screens for bo.plan_import_lyrics."""
+    plan = bo.plan_import_lyrics(paths)
+    if plan.message:
+        ui.show_status(plan.message)
+        return
+    preview_and_apply(plan, library, header, bo.import_lyrics_writer, "Imported lyrics into",
+                      count=ui.plural(len(plan.changes), "track"), changing="with a lyrics file",
+                      unchanged=lambda c: "no lyrics file", skipped=plan.skipped,
+                      columns=_STRIP_LENGTH_COLUMNS, positions=False)
+
+
+def export_lyrics_op(paths: list, library: list, header) -> None:
+    """Pick a file type, then screens for bo.plan_export_lyrics."""
+    from backtrack.lyrics import files as lyric_files
+    fmt = prompt.select("Save lyrics as:", header=header(),
+                        choices=[prompt.Choice(title=f".{k}  {ui.Colors.DIM}{v}{ui.Colors.RESET}", value=k)
+                                 for k, v in lyric_files.FORMATS.items()])
+    if not fmt:
+        return
+    plan = bo.plan_export_lyrics(paths, fmt)
+    if plan.message:
+        ui.show_status(plan.message)
+        return
+    preview_and_apply(plan, library, header, bo.export_lyrics_writer, "Saved lyrics for",
+                      count=ui.plural(len(plan.changes), "track"), changing="with lyrics",
+                      unchanged=lambda c: "no lyrics", columns=_STRIP_LENGTH_COLUMNS, positions=False)
+
+
 def _operation_verb(operation: str) -> str:
     """The verb of a bulk operation name, without the object it acts on:
     ``"Delete Tags"`` -> ``"delete"``, ``"Set Common Value"`` -> ``"set common value"``.
@@ -247,7 +276,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     # on screen but lossy: editing must start from the frame itself.
     tag_first_frame: dict = {}
 
-    for path in album_tracks:
+    for path in ui.progress_iter(album_tracks, "Reading tags", name=os.path.basename):
         # The ID3-based operations below are MP3-only; non-MP3s are skipped
         # quietly rather than raising (use "Derive from filename" for
         # cross-format writes).
@@ -275,8 +304,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                 elif hasattr(raw, 'text'):
                     # Rendered for the screen (values are stored with ';').
                     full_text = format_value_list(list(raw.text))
-                    lines = [line for line in full_text.replace("\r\n", "\n").split("\n")]
-                    val = "\\".join(lines)
+                    val = ui.one_line(full_text, "\\")
                 else:
                     val = str(raw)
                 tag_values.setdefault(k, []).append(val)
@@ -324,6 +352,8 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             "Reflow disc numbering",
             "Remove single-disc numbering",
             "Strip stale length tags",
+            "Import lyrics from files",
+            "Export lyrics to files…",
         ]
         if _trim.HAS_FFMPEG:
             # Hidden rather than offered and failing at the keypress.
@@ -350,6 +380,8 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         "Reflow disc numbering": "Reflow Discs",
         "Remove single-disc numbering": "Strip Single Disc",
         "Strip stale length tags": "Strip Length Tags",
+        "Import lyrics from files": "Import Lyrics",
+        "Export lyrics to files…": "Export Lyrics",
         "Trim tracks…": "Trim Tracks",
         "Measure loudness / set ReplayGain…": "Apply ReplayGain",
         "Set picture type": "Set Picture Type",
@@ -398,6 +430,12 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     if operation == "Reflow Discs":
         reflow_discs_op(album_tracks, library, _bulk_header)
         return
+    if operation == "Import Lyrics":
+        import_lyrics_op(album_tracks, library, _bulk_header)
+        return
+    if operation == "Export Lyrics":
+        export_lyrics_op(album_tracks, library, _bulk_header)
+        return
 
     if not all_tag_counts and operation not in ("Add New Tag",):
         ui.show_status("No tags found.")
@@ -418,13 +456,13 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
     def _value_summary(tag) -> str:
         """Summarize a tag's values across the selection: single value, "{n values}", or a type label."""
         if tag.startswith('APIC'):
-            return "‹image›"
+            return ui.stand_in("image")
         if tag.startswith(('TMCL', 'TIPL')):
             vals = tag_values.get(tag, [])
             unique = set(vals)
-            return f"‹{vals[0]}›" if len(unique) == 1 else "‹varies›"
+            return vals[0] if len(unique) == 1 else ui.stand_in("varies")
         if tag.startswith('SYLT'):
-            return "‹synced lyrics›"
+            return ui.stand_in("synced lyrics")
 
         vals = tag_values.get(tag, [])
         if not vals:
@@ -652,11 +690,11 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         def _art_action(p: str):
             """What this track's art will become, as preview cells."""
             if operation == "Delete Tags":
-                return ("remove art", 'has art' if had_art[p] else 'none')
+                return ("remove art", 'has art' if had_art[p] else ui.stand_in('none'))
             if new_apic_frame is not None:
                 return ("embed cover", 'replaces art' if had_art[p] else 'adds art')
             if new_apic_desc is not None:
-                return (f"description → {new_apic_desc or '(blank)'}",
+                return (f"description → {new_apic_desc or ui.stand_in('blank')}",
                         '' if had_art[p] else 'no art')
             if new_apic_type is not None:
                 label = picture_type_name(new_apic_type)
@@ -664,7 +702,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             return ("no change", '')
 
         art_choices = []
-        for p in mp3s:
+        for p in ui.progress_iter(mp3s, "Reading covers", name=os.path.basename):
             what, note = _art_action(p)
             # Only a replace can act on a track with no art yet; the description
             # and type edits need an existing frame to edit.
@@ -712,7 +750,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
 
     count_modified = 0
     count_other_fmt = 0
-    for path in album_tracks:
+    for path in ui.progress_iter(album_tracks, "Writing tags", name=os.path.basename):
         # These operations are ID3/MP3-only; skip other formats without erroring.
         if tag_kind(path) != 'id3':
             count_other_fmt += 1

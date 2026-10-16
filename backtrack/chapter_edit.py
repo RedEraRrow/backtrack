@@ -14,11 +14,10 @@ from mutagen.mp4 import MP4
 
 from backbone.log import log
 from backtrack.id3.tag_formats import kind as tag_kind, open_tags
+from backtrack import tuning as tune
 
-# How close two chapter starts may sit, in seconds, and how far a rewritten
-# file's length may drift from the original's before it's rejected.
-_MIN_GAP_S = 0.1
-_LENGTH_TOLERANCE_S = 0.5
+_MIN_GAP_S = tune.CHAPTER_MIN_GAP_S
+_LENGTH_TOLERANCE_S = tune.CHAPTER_LENGTH_TOLERANCE_S
 
 
 # --- the edits -----------------------------------------------------------------

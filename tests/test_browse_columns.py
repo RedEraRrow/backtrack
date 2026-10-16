@@ -46,6 +46,13 @@ class ColumnsTest(unittest.TestCase):
         mixed = cols.tracks_details("G", [{**_t(1), 'copyright': c}, {**_t(2), 'copyright': "© Other"}])[1]
         self.assertFalse(any("℗" in x or "©" in x for x in mixed))           # a group's many: none
 
+    def test_disc_shows_only_when_there_is_more_than_one(self):
+        where = lambda **k: cols.track_details({**_t(3), **k})[1]
+        self.assertIn("Track 3 · Disc 1", where(disc="1", total_discs="2"))
+        self.assertIn("Track 3", where(disc="1", total_discs="1"))
+        self.assertNotIn("Track 3 · Disc 1", where(disc="1", total_discs="1"))
+        self.assertIn("Track 3 · Disc 2", where(disc="2"))
+
     def test_the_preview_lists_what_opening_lists(self):
         songs = [_t(1, disc="1"), _t(1, disc="2"), _t(1, album="B")]
         self.assertEqual(browse._preview_of(songs, True, {})[1], ["A", "B"])

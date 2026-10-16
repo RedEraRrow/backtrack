@@ -15,6 +15,7 @@ from backbone import prompt
 from backtrack.lyrics.editor import lyrics_editor
 from backtrack.lyrics.sync_doc import find_lyrics
 from backtrack.lyrics import formats as _lyrics
+from backtrack.lyrics import files as lyric_files
 from backtrack.trim import engine as _trim
 from backtrack.trim.editor import trim_editor
 from mutagen.id3 import ID3
@@ -577,23 +578,147 @@ def _open_apic_preview(apic_frame: APIC) -> bool:
 
 
 
-def _import_from_lrc(file_path: str, tag_id: str) -> None:
-    """Ask for an LRC file and import it; the writing itself is `lyrics.import_lrc`."""
-    default_lrc = os.path.splitext(file_path)[0] + ".lrc"
-    # prompt.path, not prompt.text: this is a filesystem location, so it gets
-    # Tab-completion against the directory listing like every other path field.
-    lrc_path = prompt.path("LRC file path:", default=default_lrc)
-    if not lrc_path or not os.path.exists(lrc_path):
-        ui.show_status("File not found." if lrc_path else "Cancelled.")
-        return
+# What a tag can be read from and written to, besides lyrics (lyric_files.FORMATS):
+# extension → what's in such a file.
+_TEXT_FORMATS = {'txt': "Plain text"}
+_PEOPLE_FORMATS = {'txt': "Plain text: a \"role: name\" line each",
+                   'csv': "CSV: a role column and a name column"}
 
-    written, count = _lyrics.import_lrc(file_path, lrc_path)
-    if not written:
-        ui.show_status("No usable lines in LRC file.")
-    elif tag_id.startswith('SYLT') and written == 'USLT':
-        ui.show_status("This LRC has no timestamps to import.")
+
+def _tag_formats(tag_id: str, category: str) -> dict | None:
+    """The file types `tag_id` can be imported from and exported to; None for
+    a tag it makes no sense for (a picture has its own Manage)."""
+    if tag_id.startswith(('USLT', 'SYLT')):
+        return lyric_files.FORMATS
+    if category == 'people':
+        return _PEOPLE_FORMATS
+    if category == 'multiline text':
+        return _TEXT_FORMATS
+    return None
+
+
+def _tag_file_name(file_path: str, tag_id: str, fmt: str) -> str:
+    """The file a tag goes to by default, beside the track: lyrics as
+    `<name>.lrc` (what players look for), anything else as `<name>.<tag>.<fmt>`."""
+    stem = os.path.splitext(file_path)[0]
+    if tag_id.startswith(('USLT', 'SYLT')):
+        return f"{stem}.{fmt}"
+    return f"{stem}.{tag_id.split(':')[0].lower()}.{fmt}"
+
+
+def _lyric_rows(frame) -> list:
+    """A lyrics frame's lines as (text, ms), ms None for unsynced words."""
+    if frame.FrameID == 'SYLT':
+        return [(text, ms) for text, ms in frame.text]
+    text = _lyrics.normalize_lyric_newlines(str(frame.text))
+    return [(line.strip(), None) for line in text.split("\n") if line.strip()]
+
+
+def _export_tag(file_path: str, tag_id: str, frame, category: str) -> None:
+    """Save one tag's contents to a file: its type picked when there's a choice."""
+    import csv
+    import io
+    formats = _tag_formats(tag_id, category) or {}
+    if len(formats) == 1:
+        fmt = next(iter(formats))
     else:
-        ui.show_status(f"Imported {count} lines to {written}.")
+        fmt = prompt.select("Save as:", choices=[prompt.Choice(title=f".{k}  {C.DIM}{v}{C.RESET}", value=k)
+                                                 for k, v in formats.items()])
+        if not fmt:
+            return
+    target = prompt.path("Save to:", default=_tag_file_name(file_path, tag_id, fmt))
+    if not target:
+        ui.show_status("Cancelled.")
+        return
+    target = os.path.expanduser(target)
+    if os.path.exists(target) and not prompt.confirm(f"Replace {os.path.basename(target)}?"):
+        ui.show_status("Cancelled.")
+        return
+    if tag_id.startswith(('USLT', 'SYLT')):
+        rows = _lyric_rows(frame)
+        text, count = lyric_files.render(rows, fmt, file_path), len(rows)
+    elif category == 'people':
+        pairs = [list(p) for p in getattr(frame, 'people', [])]
+        if fmt == 'csv':
+            buf = io.StringIO()
+            csv.writer(buf).writerows([["role", "name"], *pairs])
+            text = buf.getvalue().rstrip("\n")
+        else:
+            text = people_to_text(pairs)
+        count = len(pairs)
+    else:
+        text = "\n".join(str(t) for t in frame.text) if isinstance(frame.text, list) else str(frame.text)
+        count = len(text.splitlines())
+    try:
+        with open(target, 'w', encoding='utf-8') as handle:
+            handle.write(text + "\n")
+    except OSError as exc:
+        ui.show_error(f"couldn't save {os.path.basename(target)}: {exc.strerror or exc}")
+        return
+    ui.show_status(f"Saved {ui.plural(count, 'credit' if category == 'people' else 'line')} "
+                   f"to {os.path.basename(target)}.")
+
+
+def _import_tag(file_path: str, audio, tag_id: str, category: str) -> bool:
+    """Fill one tag (replacing what it holds, if it's there) from a file:
+    lyrics from any lyrics, subtitle or Whisper JSON file (lyric_files.READS:
+    a SYLT tag takes the timed lines, a USLT the words), credits from .txt or
+    .csv, text from .txt. Whether the file changed."""
+    import csv
+    formats = _tag_formats(tag_id, category) or {}
+    lyrics = tag_id.startswith(('USLT', 'SYLT'))
+    beside = [_tag_file_name(file_path, tag_id, fmt) for fmt in formats]
+    default = ((lyric_files.sidecar(file_path) if lyrics else None)
+               or next((f for f in beside if os.path.isfile(f)), beside[0]))
+    source = prompt.path("Read from:", default=default)
+    if not source:
+        ui.show_status("Cancelled.")
+        return False
+    source = os.path.expanduser(source)
+    if not os.path.isfile(source):
+        ui.show_status("File not found.")
+        return False
+    readable = lyric_files.READS if lyrics else formats
+    if os.path.splitext(source)[1].lower().lstrip('.') not in readable:
+        ui.show_error(f"this tag reads {', '.join('.' + k for k in readable)} files")
+        return False
+    if tag_id in audio and not prompt.confirm(f"Replace {display_tag_id(tag_id)} with {os.path.basename(source)}?"):
+        return False
+    try:
+        if lyrics:
+            base, desc, lang = parse_composite_tag_id(tag_id)
+            written, count = lyric_files.import_file(file_path, source, into=base, desc=desc, lang=lang or 'eng')
+            if written:
+                ui.show_status(f"Imported {ui.plural(count, 'line')} into {display_tag_id(tag_id)}.")
+            elif base == 'SYLT' and lyric_files.read_file(source):
+                ui.show_status("That file has no timings, and a SYLT tag needs them: import it into USLT.")
+            else:
+                ui.show_status("No usable lines in that file.")
+            return bool(written)
+        with open(source, encoding='utf-8-sig', errors='replace') as handle:
+            raw = handle.read()
+        if category == 'people':
+            if source.lower().endswith('.csv'):
+                rows = [r for r in csv.reader(raw.splitlines()) if r and any(c.strip() for c in r)]
+                if rows and [c.strip().lower() for c in rows[0][:2]] == ["role", "name"]:
+                    rows = rows[1:]
+                value = [[(r[0] if len(r) > 1 else "").strip(), r[-1].strip()] for r in rows]
+            else:
+                value = people_from_text(raw)
+        else:
+            value = raw.rstrip("\n")
+        frame = create_frame(tag_id, value) if value else None
+        if frame is None:
+            ui.show_status("Nothing in that file fits this tag.")
+            return False
+        audio.delall(tag_id)
+        audio.add(frame)
+        save_id3(audio, file_path)
+    except OSError as exc:
+        ui.show_error(f"couldn't read {os.path.basename(source)}: {exc.strerror or exc}")
+        return False
+    ui.show_status(f"Imported {os.path.basename(source)} into {display_tag_id(tag_id)}.")
+    return True
 
 
 # Cover-art actions: (value, label, dim note). Plain sentence-case labels, "…"
@@ -651,14 +776,14 @@ def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0, title: str = "") 
     facts_w = inner - cols - 3
     facts = [f"{C.DIM}{k:<7}{C.RESET}{ui.truncate_text(v, max(1, facts_w - 7))}"
              for k, v in _apic_fact_rows(apic_frame)] if facts_w >= _FACTS_MIN_W else []
-    side = [f" {C.DIM}│{C.RESET} " + (facts[i] if i < len(facts) else "") for i in range(rows)] if facts else []
+    side = [f" {C.FRAME}│{C.RESET} " + (facts[i] if i < len(facts) else "") for i in range(rows)] if facts else []
     pad = " " * ui.MARGIN_H
     name = f" {ui.truncate_text(title, max(1, inner - 2))} " if title else ""
-    lines = ([f"{pad}{C.DIM}╭─{C.RESET}{C.PRIMARY}{C.BOLD}{name}{C.RESET}"
-              f"{C.DIM}{'─' * (inner + 1 - ui.visual_len(name))}╮{C.RESET}"]
-             + [f"{pad}{C.DIM}│{C.RESET} {row}{' ' * (inner - ui.visual_len(row))} {C.DIM}│{C.RESET}"
+    lines = ([f"{pad}{C.FRAME}╭─{C.RESET}{C.ACCENT2}{name}{C.RESET}"
+              f"{C.FRAME}{'─' * (inner + 1 - ui.visual_len(name))}╮{C.RESET}"]
+             + [f"{pad}{C.FRAME}│{C.RESET} {row}{' ' * (inner - ui.visual_len(row))} {C.FRAME}│{C.RESET}"
                 for row in (line + (side[i] if side else "") for i, line in enumerate(art))]
-             + [f"{pad}{C.DIM}╰{'─' * (inner + 2)}╯{C.RESET}"]
+             + [f"{pad}{C.FRAME}╰{'─' * (inner + 2)}╯{C.RESET}"]
              + [""] * _ART_BREATHING_ROWS)
     # The image over the art's cells: under the top border, inside "│ ".
     pictures = [(1, len(pad) + 2, rows, (path, cols), image[1], cols)] if image else []
@@ -829,7 +954,7 @@ def _edit_apic_tag(audio_obj: ID3, tag_name: str, apic_frame: APIC,
                 ui.show_error(f"couldn't save the image: {e}")
 
         elif action == 'remove':
-            if prompt.confirm(f"Remove {display_tag_id(key)}? Cannot be undone."):
+            if prompt.confirm(f"Remove {display_tag_id(key)}? It can't be undone."):
                 audio_obj.delall(key)
                 ui.show_status("Image removed.")
                 return True
@@ -1021,6 +1146,11 @@ def inspect_tag_loop(
             base_id, _, _ = parse_composite_tag_id(tag_id)
             info = get_tag_info(base_id)
 
+            if base_id in ('SYLT', 'USLT'):
+                # Lyrics come from a file (the lyric editor times them afterwards).
+                if _import_tag(file_path, audio, tag_id, get_tag_category(base_id)):
+                    _refresh_entry(file_path, library, library_metadata)
+                continue
             if info:
                 value = prompt_for_value(base_id, current_value=_prompt_sort_order(base_id, audio),
                                          file_path=file_path)
@@ -1060,18 +1190,15 @@ def inspect_tag_loop(
                     # closure is defined before that list is built.
                     return _art_lines_boxed(raw_val, 1 + 2 + 6 + 4 + 2, tag_title)
                 cols = ui.get_terminal_width() - 2 * ui.MARGIN_H - 4      # inside the box
-                people = getattr(raw_val, 'people', [])
-                cw = max(12, (cols - 2) // 2)
-                lines = [f"{C.DIM}{'ROLE':<{cw}}  NAME{C.RESET}", f"{'─' * cw}  {'─' * (cols - cw - 2)}"]
-                lines += [f"{ui.truncate_text(role, cw):<{cw}}  {ui.truncate_text(name, cols - cw - 2)}"
-                          for role, name in people[:8]]
+                people = [list(p) for p in getattr(raw_val, 'people', [])]
+                lines = prompt.table_lines(("ROLE", "NAME"), people, cols, count=8)   # as the editor shows them
                 if len(people) > 8:
-                    lines.append(f"{C.DIM}… +{len(people) - 8} more{C.RESET}")
+                    lines.append(f" {C.DIM}… +{len(people) - 8} more{C.RESET}")
                 return prompt.box_lines(lines, cols + 4, len(lines) + 2, tag_title)
 
             actions = ["Copy", "Paste", "Edit", "Rename", "Delete"]
-            if category in ('lyrics',) and choice.startswith(('USLT', 'SYLT')):
-                actions.insert(0, "Import LRC")
+            if _tag_formats(choice, category):
+                actions[:0] = ["Import…", "Export…"]
             if category == 'image':
                 actions.remove("Edit")
                 actions.insert(0, "Manage")
@@ -1087,9 +1214,13 @@ def inspect_tag_loop(
                     _save(audio)
                 break
 
-            elif action == "Import LRC":
-                _import_from_lrc(file_path, choice)
+            elif action == "Import…":
+                if _import_tag(file_path, audio, choice, category):
+                    _refresh_entry(file_path, library, library_metadata)
                 break
+
+            elif action == "Export…":
+                _export_tag(file_path, choice, raw_val, category)
 
             elif action == "Copy":
                 if category == 'people':
@@ -1173,8 +1304,8 @@ def _inspect_kv_loop(file_path: str, library_metadata: dict | None, library: lis
             text = prompt.multiline(f"{key}:", "\n".join(values))
             return None if text is None else [text.rstrip("\n")]
         if len(values) > 1:
-            rows = prompt.list_edit(f"{key}:", [[v] for v in values], ("VALUE",))
-            return None if rows is None else [r[0] for r in rows]
+            rows = prompt.list_edit(f"{key}:", list(values), ("VALUE",))
+            return None if rows is None else [str(r) for r in rows]
         new = prompt.text(f"{key}:", default=values[0] if values else "")
         return None if new is None else [new]
 
@@ -1204,11 +1335,11 @@ def _inspect_kv_loop(file_path: str, library_metadata: dict | None, library: lis
         rows = [_filepath_row(),
                 prompt.Choice(title="Cover art", value="__cover__",
                               cells=[[("Cover art", 'primary'), (" (picture)", 'dynamic-dim')], "",
-                                     "embedded" if tw.has_cover(file_path) else "none"]),
+                                     "embedded" if tw.has_cover(file_path) else ui.stand_in("none")]),
                 prompt.separator()]
         for key, values in items.items():
             label = tf.label_for(kind, key)
-            summary = "; ".join(v.replace("\n", "\\") for v in values)
+            summary = "; ".join(ui.one_line(v, "\\") for v in values)
             rows.append(prompt.Choice(title=key, value=key, cells=[
                 [(key, 'primary'), (f" ({label})" if label else "", 'dynamic-dim')], "", summary]))
 

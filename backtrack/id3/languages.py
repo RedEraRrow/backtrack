@@ -85,3 +85,35 @@ _FIRST = ('eng', 'fre', 'ger', 'spa', 'ita', 'por', 'dut', 'swe', 'nor', 'dan', 
 _names = dict(entry.split(" ", 1) for entry in _ALL.replace("\n", "|").split("|") if entry)
 LANGUAGES = tuple((c, _names[c]) for c in (*_FIRST, *sorted(set(_names) - set(_FIRST))))
 CODES = frozenset(_names)
+
+# ISO 639-1 (a locale's language, "en" of en_GB) → the 639-2 codes for it: the
+# bibliographic form and, where it differs, the terminological one. Either may
+# be in a tag.
+_TWO = """
+aa aar|ab abk|af afr|ak aka|am amh|an arg|ar ara|as asm|av ava|ay aym|az aze|ba bak|be bel|bg bul
+bi bis|bm bam|bn ben|bo tib bod|br bre|bs bos|ca cat|ce che|ch cha|co cos|cr cre|cs cze ces|cu chu
+cv chv|cy wel cym|da dan|de ger deu|dv div|dz dzo|ee ewe|el gre ell|en eng|eo epo|es spa|et est
+eu baq eus|fa per fas|ff ful|fi fin|fj fij|fo fao|fr fre fra|fy fry|ga gle|gd gla|gl glg|gn grn
+gu guj|gv glv|ha hau|he heb|hi hin|ho hmo|hr hrv|ht hat|hu hun|hy arm hye|hz her|ia ina|id ind
+ie ile|ig ibo|ii iii|ik ipk|io ido|is ice isl|it ita|iu iku|ja jpn|jv jav|ka geo kat|kg kon|ki kik
+kj kua|kk kaz|kl kal|km khm|kn kan|ko kor|kr kau|ks kas|ku kur|kv kom|kw cor|ky kir|la lat|lb ltz
+lg lug|li lim|ln lin|lo lao|lt lit|lu lub|lv lav|mg mlg|mh mah|mi mao mri|mk mac mkd|ml mal|mn mon
+mr mar|ms may msa|mt mlt|my bur mya|na nau|nb nob|nd nde|ne nep|ng ndo|nl dut nld|nn nno|no nor
+nr nbl|nv nav|ny nya|oc oci|oj oji|om orm|or ori|os oss|pa pan|pi pli|pl pol|ps pus|pt por|qu que
+rm roh|rn run|ro rum ron|ru rus|rw kin|sa san|sc srd|sd snd|se sme|sg sag|si sin|sk slo slk|sl slv
+sm smo|sn sna|so som|sq alb sqi|sr srp|ss ssw|st sot|su sun|sv swe|sw swa|ta tam|te tel|tg tgk|th tha
+ti tir|tk tuk|tl tgl|tn tsn|to ton|tr tur|ts tso|tt tat|tw twi|ty tah|ug uig|uk ukr|ur urd|uz uzb
+ve ven|vi vie|vo vol|wa wln|wo wol|xh xho|yi yid|yo yor|za zha|zh chi zho|zu zul
+"""
+_by_two = {e.split()[0]: tuple(e.split()[1:]) for e in _TWO.replace("\n", "|").split("|") if e}
+
+
+def system_codes() -> tuple:
+    """The 639-2 codes for the language this system is set to (from LC_ALL,
+    LC_MESSAGES or LANG, as en_GB.UTF-8), () when it says none (C, POSIX)."""
+    import os
+    for var in ('LC_ALL', 'LC_MESSAGES', 'LANG'):
+        value = os.environ.get(var, '')
+        if value and value not in ('C', 'POSIX') and not value.startswith('C.'):
+            return _by_two.get(value.split('_')[0].split('.')[0].lower(), ())
+    return ()

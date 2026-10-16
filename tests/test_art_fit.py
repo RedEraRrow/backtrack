@@ -39,5 +39,19 @@ class ArtFitTest(unittest.TestCase):
             self.assertAlmostEqual(92 / (len(lines) * aspect), 2.0, delta=0.1)
 
 
+class ArtistImageTest(unittest.TestCase):
+
+    def test_found_above_a_disc_folder(self):
+        import os, tempfile
+        from backtrack.album_art import artist_image
+        with tempfile.TemporaryDirectory() as root:
+            disc = os.path.join(root, "Pink Floyd", "The Wall", "CD1")
+            os.makedirs(disc)
+            open(os.path.join(root, "Pink Floyd", "The Wall", "Cover.png"), "wb").close()
+            open(os.path.join(root, "Pink Floyd", "Artist.png"), "wb").close()
+            self.assertEqual(artist_image([os.path.join(disc, "01.mp3")]),
+                             os.path.join(root, "Pink Floyd", "Artist.png"))
+
+
 if __name__ == '__main__':
     unittest.main()

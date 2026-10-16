@@ -1,129 +1,108 @@
-"""The player's panels: which show (w), and where, for each shape of window
-(Arrange): their order down a column, the side of the player they're on."""
-import io
-import sys
+"""The player's newer panels: what each reads from the tags, and which a track has."""
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
-from backbone import ui
-from backtrack.playback import player_art as pa
-from backtrack.playback import player_ui as pu
+from mutagen.id3 import COMM, ID3, TCOM, TCOP, TEXT, TIPL, TPUB
 
-
-class _Frame:
-    people = [["vocals", "Ann"], ["guitar", "Bo"]]
-
-
-class _Audio:
-    def getall(self, key):
-        return {"TMCL": [_Frame()], "TIPL": [_Frame()], "USLT": ["words"]}.get(key, [])
-
-    def get(self, key):
-        return None
+from backtrack.playback import panels, player_ui
 
 
 class PanelsTest(unittest.TestCase):
-    def setUp(self):
-        self.saved = patch('backtrack.config.update_config')
-        self.saved.start()
-        pu._ui_state.update(panels={'wide': [], 'tall': []}, arranging=None)
+    def tags(self):
+        a = ID3()
+        a.add(TCOM(encoding=3, text=["Fred E. Ahlert"]))
+        a.add(TEXT(encoding=3, text=["Roy Turk"]))
+        a.add(TCOP(encoding=3, text=["2015 Pozzitive"]))
+        a.add(TPUB(encoding=3, text=["BBC"]))
+        a.add(COMM(encoding=3, lang='eng', desc='', text=["A rogue lemon."]))
+        a.add(COMM(encoding=3, lang='eng', desc='iTunNORM', text=["0000 0001"]))
+        return a
 
-    def tearDown(self):
-        self.saved.stop()
-        pu._ui_state.update(panels={'wide': [], 'tall': []}, arranging=None)
+    def test_credits_come_from_their_own_tags(self):
+        self.assertEqual(panels.tag_credits(self.tags()), [('composer', 'Fred E. Ahlert'), ('lyricist', 'Roy Turk')])
 
-    def test_switching_on_adds_to_both_shapes_and_off_takes_away(self):
-        pu.set_panels(['lyrics', 'people'])
-        self.assertEqual(pu._ui_state['panels']['wide'], [['lyrics', 'right'], ['people', 'right']])
-        self.assertEqual(pu._ui_state['panels']['tall'], [['lyrics', 'right'], ['people', 'right']])
-        self.assertTrue(pu._ui_state['show_lyrics'] and pu._ui_state['show_credits'])
-        pu._ui_state['panels']['tall'][0][1] = 'left'                     # an arrangement survives
-        pu.set_panels(['lyrics'])
-        self.assertEqual(pu._ui_state['panels']['tall'], [['lyrics', 'left']])
-        self.assertFalse(pu._ui_state['show_credits'])
+    def test_people_take_them_too_unless_turned_off(self):
+        a = self.tags()
+        a.add(TIPL(encoding=3, people=[['producer', 'David Tyler']]))
+        with mock.patch.dict(player_ui._ui_state, people_all=True):
+            self.assertIn(('composer', 'Fred E. Ahlert'), player_ui.people_of(a)[1])
+        with mock.patch.dict(player_ui._ui_state, people_all=False):
+            self.assertEqual(player_ui.people_of(a)[1], [('producer', 'David Tyler')])
 
-    def test_chapters_take_the_keys_only_without_a_queue(self):
-        pu.set_panels(['chapters'])
-        self.assertTrue(pu.chapters_listed())
-        pu.set_panels(['chapters', 'queue'])
-        self.assertFalse(pu.chapters_listed())
+    def test_notes_leave_out_itunes_bookkeeping(self):
+        self.assertEqual(panels.notes(self.tags()), [("", "A rogue lemon.")])
 
-    def test_arranging_moves_the_panel_in_this_shape_only(self):
-        pu.set_panels(['lyrics', 'people', 'queue'])
-        pu._frame.update(panel_order=['lyrics', 'people', 'queue'], shape='wide')
-        pu._ui_state['arranging'] = 'lyrics'
-        for key in ('DOWN', 'LEFT', 'TAB'):
-            self.assertTrue(pu.arrange_key(key))
-        wide = pu._ui_state['panels']['wide']
-        self.assertEqual(wide, [['people', 'right'], ['lyrics', 'left'], ['queue', 'right']])
-        self.assertEqual(pu._ui_state['arranging'], 'people')
-        self.assertEqual(pu._ui_state['panels']['tall'][0], ['lyrics', 'right'])      # the other shape kept
-        self.assertTrue(pu.arrange_key('x'))                                # nothing else while arranging
-        self.assertTrue(pu.arrange_key('ENTER'))
-        self.assertIsNone(pu._ui_state['arranging'])
-        self.assertFalse(pu.arrange_key('UP'))                              # done: keys are the player's again
+    def test_several_comments_are_headed_and_one_language_each(self):
+        from backbone import ui
+        a = ID3()
+        for lang, desc, text in (('deu', 'Description', "Eine Zitrone."), ('eng', 'Description', "A lemon."),
+                                 ('xxx', 'Recording', "Live, 2011."), ('fra', 'Recording', "En direct.")):
+            a.add(COMM(encoding=3, lang=lang, desc=desc, text=[text]))
+        with mock.patch('backtrack.id3.languages.system_codes', return_value=('ger', 'deu')):
+            self.assertEqual(panels.notes(a), [("Description", "Eine Zitrone."), ("Recording", "Live, 2011.")])
+        with mock.patch('backtrack.id3.languages.system_codes', return_value=()):
+            lines = [ui.strip_ansi(l) for l in panels.notes_lines(a, 30, 10)]
+        self.assertEqual(lines, ["Description", "A lemon.", "", "Recording", "Live, 2011."])
 
-    def test_a_column_stacks_with_no_gap_and_drops_what_wont_fit(self):
-        stack = pu._stack(['people', 'lyrics', 'queue'], 5, 30, 6)
-        self.assertEqual([k for k, *_ in stack], ['people', 'lyrics', 'queue'])
-        self.assertEqual((stack[0][1], stack[-1][2]), (5, 30))
-        self.assertTrue(all(b[1] == a[2] + 1 for a, b in zip(stack, stack[1:])))
-        self.assertEqual(stack[0][2] - stack[0][1] + 1, 6)                  # the people what they need
-        self.assertEqual([k for k, *_ in pu._stack(['lyrics', 'queue'], 1, 5, 6)], ['lyrics'])
-        self.assertEqual(pu._stack(['people'], 1, 20, 6), [('people', 1, 20)])   # alone: stretched
+    def test_info_names_the_copyright_and_label(self):
+        with mock.patch.object(panels, '_plays', return_value=(0, '')):
+            pairs = dict((k, v) for k, v in panels.info_pairs(self.tags(), '/nowhere.mp3') if k)
+        self.assertEqual(pairs['Copyright'], "© 2015 Pozzitive")
+        self.assertEqual(pairs['Label'], "BBC")
 
-    def _boxes(self, cols, rows, wide, tall):
-        pu._ui_state.update(panels={'wide': wide, 'tall': tall}, arranging=None, lyrics_pane=True)
-        with patch.object(ui, 'get_terminal_size', lambda *a: (cols, rows)), \
-             patch.object(ui, 'tab_rows', lambda: 2), \
-             patch.object(pa, 'inline_art_enabled', lambda: False), \
-             patch.object(pu, '_meta_left_lines', lambda *a: ["Title", "Artist"]), \
-             patch.object(sys, 'stdout', io.StringIO()):
-            pu._draw_default_ui("", _Audio(), pa.IDLE_ART, (cols, rows))
-        return list(pu._frame['boxes']), pu._frame['shape']
+    def test_a_track_with_nothing_has_no_credits_notes_or_booklet(self):
+        has = panels.has(ID3(), '/nowhere.mp3')
+        self.assertFalse(has['credits'] or has['notes'] or has['booklet'])
+        self.assertTrue(has['info'])
 
-    def test_a_wide_window_puts_panels_either_side(self):
-        boxes, shape = self._boxes(200, 40, [['people', 'left'], ['lyrics', 'right']], [])
-        player, people, lyrics, transport = boxes[0], boxes[1], boxes[2], boxes[-1]
-        self.assertEqual(shape, 'wide')
-        self.assertLess(people[3], player[2])                               # left of the player
-        self.assertGreater(lyrics[2], player[3])                            # right of it
-        self.assertEqual((people[2], lyrics[3]), (transport[2], transport[3]))   # edge to edge
-
-    def test_panels_go_beside_well_before_a_wide_window(self):
-        for cols, rows in ((80, 24), (100, 30)):                             # ordinary landscape windows
-            boxes, shape = self._boxes(cols, rows, [['lyrics', 'right'], ['people', 'right']], [])
-            self.assertEqual(shape, 'wide', (cols, rows))
-
-    def test_both_sides_share_by_what_they_hold_and_the_middle_gives_way(self):
-        boxes, shape = self._boxes(110, 30, [['lyrics', 'left'], ['people', 'right']], [])
-        self.assertEqual(shape, 'wide')
-        player, lyrics, people, transport = boxes[0], boxes[1], boxes[2], boxes[-1]
-        left_w, right_w = lyrics[3] - lyrics[2] + 1, people[3] - people[2] + 1
-        self.assertGreaterEqual(min(left_w, right_w), pu._PANEL_SIDE_MIN)
-        self.assertGreater(left_w, right_w)                                 # the lyrics want more than the people
-        self.assertEqual((lyrics[2], people[3]), (transport[2], transport[3]))   # edge to edge, no gap
-        self.assertEqual(player[2], lyrics[3] + 1 + ui.MARGIN_H)
-
-    def test_a_tall_narrow_window_keeps_them_under(self):
-        boxes, shape = self._boxes(70, 50, [['lyrics', 'right'], ['people', 'right']],
-                                   [['lyrics', 'left'], ['people', 'left']])
-        self.assertEqual(shape, 'tall')                                    # beside, the art would be much smaller
-
-    def test_stacked_panels_share_rows_by_what_they_hold(self):
-        stacked = dict((k, b - t + 1) for k, t, b in pu._stack(['lyrics', 'queue'], 1, 25, 0))
-        self.assertGreater(stacked['lyrics'], stacked['queue'])
-        self.assertEqual(sum(stacked.values()), 25)
-
-    def test_a_tall_window_uses_its_own_arrangement(self):
-        tall = [['lyrics', 'left'], ['people', 'right']]
-        boxes, shape = self._boxes(90, 60, [['lyrics', 'left'], ['people', 'right']], tall)
-        self.assertEqual(shape, 'tall')
-        player, lyrics, people = boxes[0], boxes[1], boxes[2]
-        self.assertGreater(lyrics[0], player[1])                            # under the player
-        self.assertEqual(lyrics[0], people[0])                              # side by side
-        self.assertLess(lyrics[3], people[2])
+    def test_meters_and_bars_fit_their_box(self):
+        import numpy as np
+        from backbone import ui
+        lines = panels._bars(np.full(45, 200, np.uint8), 30, 6, 1.0, {})
+        self.assertEqual(len(lines), 6)
+        self.assertTrue(all(ui.visual_len(l) == 30 for l in lines))
+        for l in panels._meters(np.array([200, 180, 240, 230], np.uint8), 30, 5, {}):
+            self.assertLessEqual(ui.visual_len(l), 30)
 
 
-if __name__ == "__main__":
+    def test_booklet_pages_come_from_its_folder_in_name_order(self):
+        import os, shutil, tempfile
+        d = tempfile.mkdtemp()
+        try:
+            track = os.path.join(d, 'CD1', '01.mp3')
+            os.makedirs(os.path.dirname(track))
+            open(track, 'w').close()
+            os.makedirs(os.path.join(d, 'Booklet'))
+            for name in ('page 10.jpg', 'page 2.jpg', 'notes.txt'):
+                open(os.path.join(d, 'Booklet', name), 'w').close()
+            open(os.path.join(d, 'Cover.jpg'), 'w').close()
+            pages = [os.path.basename(p) for p in panels.booklet_pages(track)]
+            self.assertEqual(pages, ['page 2.jpg', 'page 10.jpg'])
+        finally:
+            shutil.rmtree(d)
+
+
+    def test_last_play_is_the_one_before_this_and_when_it_began(self):
+        import datetime
+        rows = [("2026-10-16 09:00:00", "600s", "/a.mp3"), ("2026-10-15 20:10:00", "600s", "/a.mp3"),
+                ("2026-10-15 19:00:00", "60s", "/b.mp3")]
+        now_started = datetime.datetime(2026, 10, 16, 8, 0).timestamp()      # the 09:00 one ended after this began
+        panels._plays.cache_clear()
+        with mock.patch('backtrack.history.get_history', return_value=rows):
+            self.assertEqual(panels._plays('/a.mp3', 1.0, now_started), (2, "2026-10-15 20:00"))
+
+
+    def test_credits_greyed_as_a_repeat_only_when_people_has_nothing_else(self):
+        a = self.tags()
+        with mock.patch.dict(player_ui._ui_state, people_all=True):
+            self.assertEqual(player_ui.panel_notes(a), {'credits': "repeat data"})
+            self.assertFalse(player_ui.track_has(a, '/nowhere.mp3', True, False)['credits'])
+            a.add(TIPL(encoding=3, people=[['producer', 'David Tyler']]))
+            self.assertEqual(player_ui.panel_notes(a), {})
+        with mock.patch.dict(player_ui._ui_state, people_all=False):
+            self.assertEqual(player_ui.panel_notes(self.tags()), {})
+            self.assertTrue(player_ui.track_has(self.tags(), '/nowhere.mp3', False, False)['credits'])
+
+
+if __name__ == '__main__':
     unittest.main()

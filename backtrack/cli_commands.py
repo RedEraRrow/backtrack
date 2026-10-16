@@ -15,6 +15,7 @@ from backtrack.cli import Arg, Cmd, Ctx, Flag
 from backbone import output as out
 from backbone.prompt import core as pc
 from backbone import timefmt, ui
+from backtrack.lyrics.files import FORMATS as _LYRIC_FORMATS
 from backtrack.config import setting
 from backtrack.id3.tag_formats import kind as tag_kind, load_id3
 from backbone.log import quietly
@@ -183,7 +184,7 @@ def _library_verify(ctx: Ctx) -> int:
         return out.OK
     out.table('verify', bad, [
         pc.Column(style='primary', flex=True),
-        pc.Column(style='accent'),
+        pc.Column(style='error'),
     ], cells=lambda r: [r['path'], r['problem']])
     out.note(f"{len(bad)} of {len(ctx.library)} tracks have a problem.")
     return out.FAIL
@@ -476,7 +477,7 @@ def _tag_rows(path: str) -> list[dict]:
     if tag_kind(path) != 'id3':
         from backtrack.id3 import tag_formats as tf
         return [{'path': path, 'tag': key, 'name': tf.label_for(tag_kind(path), key),
-                 'value': "; ".join(v.replace("\n", "\\") for v in values)}
+                 'value': "; ".join(ui.one_line(v, "\\") for v in values)}
                 for key, values in tf.kv_items(tf.open_tags(path)[0])]
     audio = load_id3(path)
     rows = []
@@ -1256,7 +1257,7 @@ def _play(ctx: Ctx) -> int:
                                'mode': ctx.args.repeat})
             out.record('session', {'playing': True, 'title': titles[0],
                                    'path': paths[0], 'queue_length': len(paths)},
-                       human=f"  ▸ {titles[0]}")
+                       human=f"  ▶ {titles[0]}")
             return out.OK
         finally:
             link.close()
@@ -1357,7 +1358,7 @@ def _queue_show(ctx: Ctx) -> int:
         out.table('queue', rows, [
             pc.Column(style='dynamic-dim', min_width=3),
             pc.Column(style='primary', flex=True),
-        ], cells=lambda r: [('▸' if r['current'] else str(r['position'])),
+        ], cells=lambda r: [('▶' if r['current'] else str(r['position'])),
                             r['title']])
         return out.OK
     finally:
@@ -1381,19 +1382,11 @@ def _one_target(ctx: Ctx, what: str = "track"):
 
 def _lyric_lines(path: str) -> tuple[list, str]:
     """A track's lyrics as `(rows, source)`: timed SYLT first, else USLT (an
-    m4a's, FLAC's or Ogg file's embedded lyrics read the same way, through the
-    player's view of its tags); no rows for a file without any."""
-    from backtrack.lyrics import formats as ly
-    from backtrack.playback.session import player_tags
-
-    audio = player_tags(path)
-    timed = ly._parse_sylt(audio)
-    if timed:
-        return ([{'path': path, 'time_ms': ms, 'text': text}
-                 for text, ms in timed], 'SYLT')
-    plain = ly._parse_uslt(audio)
-    return ([{'path': path, 'time_ms': None, 'text': text}
-             for text, _ms in plain], 'USLT')
+    m4a's, FLAC's or Ogg file's embedded lyrics read the same way); no rows
+    for a file without any."""
+    from backtrack.lyrics import files as lyric_files
+    rows, source = lyric_files.track_lyrics(path)
+    return [{'path': path, 'time_ms': ms, 'text': text} for text, ms in rows], source
 
 
 def _ms(value) -> str:
@@ -1423,26 +1416,26 @@ def _lyrics_show(ctx: Ctx) -> int:
 
 
 def _lyrics_import(ctx: Ctx) -> int:
-    """Import lyrics from an .lrc file into SYLT (timed) or USLT (untimed)."""
-    from backtrack.lyrics import formats as ly
+    """Import lyrics from any file lyrics.files reads: into SYLT when timed,
+    else USLT."""
+    from backtrack.lyrics import files as lyric_files
     from backtrack.music_library import refresh_library_entry
 
     path, code = _one_target(ctx)
     if path is None:
         return code
     if not ctx.args.source:
-        return out.fail(out.USAGE, "No .lrc file given.",
-                        hint='pass --from track.lrc')
+        return out.fail(out.USAGE, "No lyrics file given.",
+                        hint='pass --from track.lrc (or .srt, .txt)')
     source = os.path.abspath(os.path.expanduser(ctx.args.source))
     if not os.path.exists(source):
-        return out.fail(out.NOT_FOUND, "No such .lrc file.", path=source)
+        return out.fail(out.NOT_FOUND, "No such lyrics file.", path=source)
 
     if tag_kind(path) != 'id3':
         return out.fail(out.FAIL, "Lyrics can only be imported into MP3, WAV or AIFF files.", path=path)
-    entries = ly.parse_lrc_file(source)
-    if not entries:
-        return out.fail(out.FAIL, "Nothing readable in that .lrc file.",
-                        path=source)
+    entries = lyric_files.read_file(source)
+    if not any(text for text, _ms in entries):
+        return out.fail(out.FAIL, "Nothing readable in that lyrics file.", path=source)
     timed = any(ms is not None for _text, ms in entries)
 
     if ctx.dry_run():
@@ -1451,10 +1444,9 @@ def _lyrics_import(ctx: Ctx) -> int:
                          f"{'SYLT' if timed else 'USLT'}")
         return out.OK
 
-    tag_id, count = ly.import_lrc(path, source)
+    tag_id, count = lyric_files.import_file(path, source)
     if not tag_id:
-        return out.fail(out.FAIL, "Nothing readable in that .lrc file.",
-                        path=source)
+        return out.fail(out.FAIL, "Nothing readable in that lyrics file.", path=source)
     with quietly():
         refresh_library_entry(ctx.library, path)
     out.record('lyrics', {'path': path, 'tag': tag_id, 'lines': count},
@@ -1463,35 +1455,18 @@ def _lyrics_import(ctx: Ctx) -> int:
 
 
 def _lyrics_export(ctx: Ctx) -> int:
-    """Write a track's lyrics out as .lrc, .srt or plain text."""
+    """Write a track's lyrics out in one of lyrics.files.FORMATS."""
+    from backtrack.lyrics import files as lyric_files
+
     path, code = _one_target(ctx)
     if path is None:
         return code
-    rows, source = _lyric_lines(path)
+    rows, source = lyric_files.track_lyrics(path)
     if not rows:
         return out.fail(out.NOT_FOUND, "That track has no lyrics.", path=path)
 
     fmt = ctx.args.format
-    if fmt == 'lrc':
-        # The standard header, which players (rmpc among them) match a file to its song by.
-        from backtrack.music_library import library_entry
-        e = library_entry(path)
-        dur = int(e.get('duration') or 0)
-        head = [f"[{tag}:{e[key]}]" for tag, key in (('ar', 'artist'), ('al', 'album'), ('ti', 'title'))
-                if e.get(key) and not str(e[key]).startswith('Unknown ')]
-        head += [f"[length:{dur // 60:02d}:{dur % 60:02d}]"] if dur else []
-        text = "\n".join(head + [f"{_ms(r['time_ms'])}{r['text']}" for r in rows])
-    elif fmt == 'srt':
-        parts = []
-        for i, row in enumerate(rows, 1):
-            start = int(row['time_ms'] or 0)
-            end = int(rows[i]['time_ms']) if i < len(rows) and rows[i]['time_ms'] \
-                else start + 3000
-            parts.append(f"{i}\n{timefmt.srt(start / 1000)} --> {timefmt.srt(end / 1000)}\n{row['text']}\n")
-        text = "\n".join(parts)
-    else:
-        text = "\n".join(r['text'] for r in rows)
-
+    text = lyric_files.render(rows, fmt, path)
     stem = os.path.splitext(os.path.basename(path))[0]
     directory = (ctx.args.output or ctx.config.get('cli_output_dir')
                  or os.path.dirname(path))
@@ -1540,6 +1515,40 @@ def _lyrics_verify(ctx: Ctx) -> int:
                           'segments': len(segments), 'flagged': len(flags)},
                human=f"  {len(segments)} segments, {len(flags)} flagged.")
     return out.FAIL if flags else out.OK
+
+
+def _lyrics_pack(ctx: Ctx) -> int:
+    """Pack each track's script and transcript (and any unwritten editor
+    working copy) into a .bkts beside it. The loose files are left alone."""
+    from backtrack.lyrics import bkts, formats as ly
+    from backtrack.lyrics.sync_doc import _sidecar_path
+
+    paths = _targets_or_filter(ctx)
+    if not paths:
+        return out.fail(out.USAGE, "No track given.", hint="pass a path or pipe one in")
+    code = out.OK
+    for path in paths:
+        md_path = ly._find_markdown_for_audio(path, packed=False)
+        json_path = ly._find_timing_files_for_audio(path, packed=False)[1]
+        working = _sidecar_path(json_path) if json_path else None
+        working = working if working and os.path.isfile(working) else None
+        body = {'path': path, 'script': md_path or '', 'transcript': json_path or ''}
+        if bkts.archive_for(path):
+            out.record('lyrics', {**body, 'status': 'exists'}, human=f"  Already packed: {path}")
+            continue
+        if not (md_path and json_path):
+            out.record('lyrics', {**body, 'status': 'missing'},
+                       human=f"  No {'transcript' if md_path else 'script'} to pack beside {path}")
+            code = out.FAIL
+            continue
+        if ctx.dry_run():
+            out.event('plan', path=path, detail=f"would pack {os.path.basename(md_path)} and "
+                                                f"{os.path.basename(json_path)}")
+            continue
+        archive = bkts.pack(path, md_path, json_path, working)
+        out.record('lyrics', {**body, 'status': 'packed', 'archive': archive, 'working': bool(working)},
+                   human=f"  Packed {os.path.basename(archive)}" + (" (with the editor's working copy)" if working else ""))
+    return code
 
 
 # --- trim -------------------------------------------------------------------
@@ -2154,21 +2163,25 @@ TREE = [
         Cmd('show', "Print a track's lyrics", run=_lyrics_show, emits='lyrics',
             args=[Arg('target', 'Track file', nargs='*')],
             example='backtrack lyrics show track.mp3'),
-        Cmd('import', 'Import lyrics from an .lrc file', run=_lyrics_import,
+        Cmd('import', 'Import lyrics from a lyrics, subtitle or Whisper JSON file', run=_lyrics_import,
             emits='lyrics', args=[Arg('target', 'Track file', nargs='*')],
-            flags=[Flag('--from', 'The .lrc file to read', short='-f',
+            flags=[Flag('--from', 'The file to read (.lrc, .srt, .vtt, .json, .ass, .ssa or .txt)', short='-f',
                         metavar='FILE', store_as='source')],
             example='backtrack lyrics import track.mp3 --from track.lrc'),
-        Cmd('export', 'Write lyrics out as .lrc, .srt or plain text',
+        Cmd('export', 'Write lyrics out as .lrc, .srt, .vtt, Whisper .json or plain text',
             run=_lyrics_export, emits='lyrics',
             args=[Arg('target', 'Track file', nargs='*')],
             flags=[Flag('--format', 'What to write', short='-f', default='lrc',
-                        choices=('lrc', 'srt', 'txt'))],
+                        choices=tuple(_LYRIC_FORMATS))],
             example='backtrack lyrics export track.mp3 --format srt'),
         Cmd('verify', "Check a track's script against its transcript",
             run=_lyrics_verify, emits='lyrics',
             args=[Arg('target', 'Track file', nargs='*')],
             example='backtrack lyrics verify episode.mp3'),
+        Cmd('pack', "Pack each track's script and transcript into a .bkts beside it",
+            run=_lyrics_pack, emits='lyrics',
+            args=[Arg('target', 'Track file', nargs='*')],
+            example='backtrack lyrics pack *.mp3'),
     ]),
 
     Cmd('trim', 'Cut tracks losslessly, and undo it', children=[

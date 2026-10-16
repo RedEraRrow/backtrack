@@ -12,12 +12,12 @@ import time
 import uuid
 from types import SimpleNamespace
 
-from backtrack.playback.libvlc import LOAD_ERROR as _VLC_LOAD_ERROR, vlc
+from backtrack.playback.libvlc import LOAD_ERROR as _VLC_LOAD_ERROR, vlc, media_for
 from backtrack import tuning as tune
 from mutagen.id3 import ID3
 
 from backtrack.history import log_listening_history
-from backtrack import accents, books
+from backtrack import books, theme
 from backtrack.id3.tag_formats import kind as tag_kind, load_id3, open_tags, parse_gain, texts
 from backtrack.music_library import (chapter_at, drop_moved, get_song_duration,
                                     is_audiobook, library_entry, track_title, first_text)
@@ -29,6 +29,7 @@ _VLC_STATE_PAUSED = getattr(getattr(vlc, 'State', None), 'Paused', None)
 _VLC_STATE_ERROR = getattr(getattr(vlc, 'State', None), 'Error', None)
 _VLC_STATE_ENDED = getattr(getattr(vlc, 'State', None), 'Ended', None)
 _VLC_STATE_STOPPED = getattr(getattr(vlc, 'State', None), 'Stopped', None)
+_VLC_STATE_PLAYING = getattr(getattr(vlc, 'State', None), 'Playing', None)
 
 _VLC_PLAY_SETTLE_S = tune.VLC_PLAY_SETTLE_S
 _TICK_INTERVAL_S = tune.TICK_INTERVAL_S
@@ -48,11 +49,11 @@ AFTER_PICK = ('stop', 'list', 'queue')
 
 # Queue edits that change the queue itself, so undo can take them back.
 _UNDOABLE = ('add', 'play_picked', 'move', 'remove', 'clear_upcoming', 'shuffle_upcoming')
-_UNDO_DEPTH = 20
+_UNDO_DEPTH = tune.UNDO_DEPTH
 
 # The queue is kept between runs (Resume on the home menu): saved after every
-# edit and track change, on stop, and this often while playing.
-_SAVE_QUEUE_EVERY_S = 10
+# edit and track change, on stop, and every SAVE_QUEUE_EVERY_S while playing.
+_SAVE_QUEUE_EVERY_S = tune.SAVE_QUEUE_EVERY_S
 
 
 def _queue_file():
@@ -320,6 +321,7 @@ class PlaybackSession:
         # token), or None. Enforces "one player view at a time" across windows.
         self.view_holder: str | None = None
         self._lock = threading.RLock()
+        self._clock = [0.0, 0.0, -1]         # elapsed()'s own clock: base seconds, when, VLC's last reading (ms)
         self._tick_thread: threading.Thread | None = None
         self._tick_stop = threading.Event()
         self._server = None                  # ipc.SessionServer once advertised (#14)
@@ -401,7 +403,7 @@ class PlaybackSession:
                 duration = 0.0
 
             inst = self._ensure_instance()
-            media = inst.media_new(path)
+            media = media_for(inst, path)
             if start_at:
                 media.add_option(f"start-time={start_at:.2f}")
             if self.mp is None:
@@ -413,7 +415,7 @@ class PlaybackSession:
             self.audio = audio
             self.entry = library_entry(path)
             with quietly():
-                accents.apply(path)              # art mode: this cover's colours
+                theme.apply(path)              # art mode: this cover's colours
             self.chapters = self.entry.get('chapters') or []
             self.is_book = is_audiobook(path)
             self.rate = books.rate_for(path) if self.is_book else 1.0
@@ -563,7 +565,7 @@ class PlaybackSession:
             self.duration = 0.0
             self.generation += 1
             with quietly():
-                accents.apply()                  # nothing playing: the chosen colours
+                theme.apply()                  # nothing playing: the chosen colours
 
     def shutdown(self) -> None:
         """Fully tear down the session (on app exit): stop audio and restore stderr."""
@@ -656,11 +658,32 @@ class PlaybackSession:
         return self._volume
 
     def elapsed(self) -> float:
-        """Elapsed seconds into the current track (0 if not playing)."""
+        """Elapsed seconds into the current track (0 if not playing), smooth.
+
+        VLC's own reading moves only about four times a second, in uneven
+        steps, so read raw it is up to a quarter-second off what's heard and
+        lyrics change late or early. While playing, the clock runs on its own
+        from the system clock at the playback rate, eased a little towards
+        each new VLC reading (CLOCK_EASE), and starts again from VLC's reading
+        after a jump (CLOCK_JUMP_S: a seek, a stall) or while paused."""
         if self.mp is None:
             return 0.0
         ms = self.mp.get_time()
-        return ms / 1000.0 if ms >= 0 else 0.0
+        if ms < 0:
+            return 0.0
+        now, clock = time.monotonic(), self._clock         # [base seconds, at, last reading]
+        rate = self.rate or 1.0
+        if self.mp.get_state() != _VLC_STATE_PLAYING or clock[2] < 0:
+            clock[:] = [ms / 1000.0, now, ms]
+            return ms / 1000.0
+        if ms != clock[2]:
+            error = ms / 1000.0 - (clock[0] + (now - clock[1]) * rate)
+            if abs(error) > tune.CLOCK_JUMP_S:
+                clock[:] = [ms / 1000.0, now, ms]
+                return ms / 1000.0
+            clock[0] += error * tune.CLOCK_EASE
+            clock[2] = ms
+        return clock[0] + (now - clock[1]) * rate
 
     def latest_at(self) -> float:
         """When the current state was sampled: 'now' for the live local player.

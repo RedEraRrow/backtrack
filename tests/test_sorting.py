@@ -72,6 +72,24 @@ class SortTracksTest(unittest.TestCase):
         self.assertEqual(ml.sort_albums(['B', 'A'], albums, CFG, levels=levels), ['A', 'B'])
 
 
+class GroupSortKeyTest(unittest.TestCase):
+    CFG = {**CFG, 'sort_use_tags': True}
+
+    def key(self, name, songs, category):
+        return ml.get_group_sort_key(name, songs, category, self.CFG)
+
+    def test_a_composer_sorts_by_their_tag_and_an_act_as_billed(self):
+        self.assertEqual(self.key('Roger Waters', [{'composer': 'Roger Waters',
+                                                    'Composer Sort Order': 'Waters, Roger'}], 'composer'),
+                         'waters, roger')
+        self.assertEqual(self.key('Bob Marley', [{'composer': 'Bob Marley'}], 'composer'), 'bob marley')
+
+    def test_a_person_sorts_by_a_tag_from_any_credit_else_surname_first(self):
+        tagged = [{'artist': 'John Finnemore', 'Performer Sort Order': 'Finnemore, John'}]
+        self.assertEqual(self.key('John Finnemore', tagged, 'people'), 'finnemore, john')
+        self.assertEqual(self.key('Roger Allam', [{}], 'people'), 'allam, roger')
+
+
 class AlbumShuffleTest(unittest.TestCase):
     def test_albums_move_as_whole_runs_in_track_order(self):
         from backtrack.menus import play as menus

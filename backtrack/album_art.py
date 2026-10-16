@@ -6,6 +6,7 @@ from io import BytesIO
 from PIL import Image
 
 from backbone import ui
+from backtrack.id3.cover_matcher import is_disc_dir
 from backtrack.id3.tag_formats import AUDIO_EXTENSIONS, embedded_cover
 
 
@@ -224,14 +225,19 @@ def _booklet_file(path: str, _mtime: float) -> str | None:
 
 def artist_image(paths: list) -> str | None:
     """An artist's own picture, from the folder their albums are in
-    (Artist/Album/track: Artist/artist.jpg, folder.jpg or poster.jpg), or an
-    artist.jpg beside the tracks themselves."""
-    for path in paths[:20]:
-        album_dir = os.path.dirname(path)
+    (Artist/Album/track or Artist/Album/CD1/track: Artist/artist.jpg,
+    folder.jpg or poster.jpg), or an artist.jpg beside the tracks themselves."""
+    for album_dir in dict.fromkeys(_album_dir(p) for p in paths):
         found = folder_image(os.path.dirname(album_dir)) or folder_image(album_dir, ("artist",))
         if found:
             return found
     return None
+
+
+def _album_dir(path: str) -> str:
+    """The album folder a track sits in, above a per-disc folder (CD1…)."""
+    folder = os.path.dirname(path)
+    return os.path.dirname(folder) if is_disc_dir(os.path.basename(folder)) else folder
 
 
 def get_art(file_path: str, width: int = 100) -> str:

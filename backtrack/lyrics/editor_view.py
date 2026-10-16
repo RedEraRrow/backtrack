@@ -8,10 +8,11 @@ from backbone.prompt.core import _cols
 from backbone.prompt.core import _hint_pin_target, _visible_rows
 from backbone import prompt as _promptmod
 from backtrack.lyrics.formats import _apply_markdown_formatting
-from backtrack.lyrics.md_overlay import _sd_scope, _is_framed
+from backtrack.lyrics.md_overlay import _sd_scope, _is_framed, mid_line_direction
 from backtrack.lyrics.time_fields import _render_edit_fields
 from backtrack.lyrics.sync_doc import SOURCE_TRANSCRIPT
 from backbone import timefmt
+from backtrack import tuning as tune
 
 
 # Audio is optional: without python-vlc the editor still edits, it just can't play.
@@ -60,6 +61,7 @@ keys.define("lyrics_lines", "Lyrics editor: lines", [
     ("overlay", ("m",), "import or remove the markdown"),
     ("commit_dirs", ("M",), "commit stage directions"),
     ("credits", ("c",), "add credits"),
+    ("export", ("E",), "export as a SYLT tag or lyrics file, for transcripts"),
     ("speaker_split", ("S",), "split by speaker, for transcripts"),
     ("review", ("R",), "review issues"),
     ("review_dirs", ("D",), "review directions"),
@@ -126,13 +128,9 @@ def shown_hint_pairs() -> list:
     return list(_shown_pairs)
 
 
-_AUD_CLIP   = 1.0    # audition: seconds played at a line's start, and at its end
-
-
-_AUD_STEP   = 0.05   # audition: fine whole-line move per arrow press
-
-
-_AUD_COARSE = 0.25   # audition: coarser whole-line move per , / . press
+_AUD_CLIP = tune.LYRIC_AUDITION_CLIP_S
+_AUD_STEP = tune.LYRIC_AUDITION_STEP_S
+_AUD_COARSE = tune.LYRIC_AUDITION_COARSE_S
 
 
 _DUR_W = 6    # "123.4s" right-justified
@@ -221,7 +219,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
     # the returned list (== its offset below the widget anchor + top_margin()), so the
     # click handler never has to reverse-engineer the layout: only rows that carry
     # a selectable item (a seg in SEG, a word in WORD) get an entry.  Speaker
-    # banners, ✦ stage-direction overlays and blank spacers are absent, so clicks
+    # banners, § stage-direction overlays and blank spacers are absent, so clicks
     # on them are correctly ignored.
     hit_map: dict[int, int] = {}
 
@@ -319,6 +317,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
         is_sdir   = cur_kind == "stage_dir"
         _md_label = 'remove md' if md_overlay is not None else 'import md'
         _has_sdir = bool(md_overlay) and any(ov['kind'] == 'stage_dir' for ov in md_overlay)
+        _dir_above = mid_line_direction(md_overlay, cursor) is not None
         if review:
             pairs = [(K('lyrics_lines.review_next', 'lyrics_lines.review_prev'), 'next/prev')]
             if is_sdir:
@@ -342,15 +341,15 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
                       (K('lyrics_lines.dead_air'), 'dead air'), (K('lyrics_lines.delete'), 'del'),
                       (K('lyrics_lines.label'), 'label'), (K('lyrics_lines.air_dir'), 'air↔dir'),
                       (K('lyrics_lines.fill_gaps'), 'fill gaps'), (K('lyrics_lines.overlay'), _md_label)]
-            if is_sdir:
-                pairs.append((K('lyrics_lines.kind'), 'kind'))
+            if is_sdir or _dir_above:
+                pairs.append((K('lyrics_lines.kind'), 'kind' if is_sdir else 'tone↔action'))
             if _has_sdir: pairs.append((K('lyrics_lines.commit_dirs'), 'commit stage dirs'))
             pairs += [(K('lyrics_lines.credits'), 'credits'), (K('lyrics_lines.mark'), 'mark')]
             if _HAS_VLC: pairs.append((K('lyrics.play'), 'preview'))
             pairs.append((K('lyrics.save'), 'save working'))
             if source == SOURCE_TRANSCRIPT:
                 pairs += [(K('lyrics.verify'), 'verify md'), (K('lyrics_lines.speaker_split'), 'split by line'),
-                          (K('lyrics.write'), 'write file')]
+                          (K('lyrics.write'), 'write file'), (K('lyrics_lines.export'), 'export')]
             pairs += [(K('lyrics_lines.split'), 'split line'), (K('lyrics_lines.review'), 'review issues'),
                       (K('lyrics_lines.review_dirs'), 'review directions'), (K('lyrics_lines.review_long'), 'long lines')]
             if undo_depth: pairs.append((K('lyrics.undo'), f'undo ×{undo_depth}'))
@@ -368,6 +367,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             else:
                 pairs += [(K('lyrics.edit'), 'edit'), (K('lyrics_lines.join'), 'join'), _move]
                 if source == SOURCE_TRANSCRIPT: pairs.append((K('lyrics_lines.words'), 'words'))
+                if _dir_above: pairs.append((K('lyrics_lines.kind'), 'tone↔action'))
             if _has_sdir: pairs.append((K('lyrics_lines.commit_dirs'), 'commit stage dirs'))
             pairs += [(K('lyrics_lines.split'), 'split'), (K('lyrics_lines.review'), 'review'),
                       (K('lyrics_lines.review_dirs'), 'dirs'), (K('lyrics_lines.review_long'), 'long'),
@@ -453,12 +453,12 @@ def _draw_tap(B, avail, cursor, hit_map, indent, mode, n, out, play_pos, playing
 
     def _tap_line(seg, bold: bool = False, arrow: bool = False) -> str:
         """Render one prev/current/next line of the TAP-mode readout."""
-        ptr = f"{indent}{C.ACCENT}▶{C.RESET} " if arrow else indent + "  "
+        ptr = f"{indent}{C.ACCENT}›{C.RESET} " if arrow else indent + "  "
         if seg is None:
             return f"{ptr} {C.DIM}──{C.RESET}"
         ts_v = timefmt.clock(seg['start']) if seg.get("start") is not None else " " * 9
         ts   = f"{C.DIM}{ts_v}{C.RESET}"
-        col  = C.BOLD + C.PRIMARY if bold else C.DIM
+        col  = C.BOLD + C.STRONG if bold else C.DIM
         budget = max(4, B - 3 - 9 - 3)   # ptr(3) + ts(9) + gaps(3)
         txt  = ui.truncate_text(seg["text"].strip(), budget)
         return f"{ptr} {ts}   {col}{txt}{C.RESET}"
@@ -515,7 +515,7 @@ def _draw_audition(B, aud_editing, aud_now, avail, cursor, edit, hit_map, indent
         """Render one prev/current/next line of the AUDITION-mode readout."""
         if seg is None:
             return f"{indent}"
-        col = C.BOLD + C.PRIMARY if bold else C.DIM
+        col = C.BOLD + C.STRONG if bold else C.DIM
         txt = ui.truncate_text(seg.get("text", "").strip() or "(…)", max(4, B - 6))
         return f"{indent}   {col}{txt}{C.RESET}"
 
@@ -523,12 +523,12 @@ def _draw_audition(B, aud_editing, aud_now, avail, cursor, edit, hit_map, indent
     # or, when editing, the inline segmented MM:SS.mmm editor for this line.
     if aud_editing:
         s_d, e_d = _render_edit_fields(edit)
-        marks = f"{C.ACCENT}✎{C.RESET}  start {s_d}    end {e_d}"
+        marks = f"start {s_d}    end {e_d}"
     else:
         def _mark(lbl, val, on) -> str:
             """Render one 'label value' marker, accented when `on` (the clip currently playing)."""
             v = timefmt.clock(val)
-            c = C.ACCENT + C.BOLD if on else C.DIM
+            c = C.BOLD + C.ACCENT if on else C.DIM
             return f"{c}{lbl} {v}{C.RESET}"
         marks = (f"{_mark('start', s_t, aud_now == 'start')}"
                  f"    {C.DIM}·{C.RESET}    {_mark('end', e_t, aud_now == 'end')}")
@@ -582,7 +582,7 @@ def _draw_audition(B, aud_editing, aud_now, avail, cursor, edit, hit_map, indent
 def _edit_footer(cursor, edit, footer, md_overlay, mode, review, segs, selected, show_hints, source, undo_depth):
     """The timestamp editor and its hints, added to the footer while EDIT is open."""
     s_d, e_d = _render_edit_fields(edit)
-    footer.append(f"  {C.ACCENT}✎{C.RESET}  start  {s_d}    end  {e_d}")
+    footer.append(f"  start  {s_d}    end  {e_d}")
     footer.extend(_hint_lines(
         [('tab/⇧tab', 'field'), ('←→', 'cursor'), ('↑↓', 'adjust'),
          (K('lyrics_edit.playhead'), 'playhead'), ('↵', 'apply'), ('esc', 'cancel')]))
@@ -608,11 +608,11 @@ def _draw_words(_compose, _rhs, cursor, hit_map, indent, out, seg_cursor, segs, 
         ptr     = f"{C.ACCENT}›{C.RESET}" if is_cur else " "
         start_d = f"{C.DIM}{timefmt.clock(s_t)}{C.RESET}" if s_t is not None else " " * 9
         prefix  = f"{ptr}   {start_d}  "   # ptr + 3sp fills the chk slot → offset 15
-        flags   = [(C.YELLOW, "⚠ overlap")] if overlap else []
+        flags   = [(C.WARN, "! overlap")] if overlap else []
         rhs_d, rhs_w = _rhs(s_t, e_t, is_cur, flags)
         hit_map[len(out)] = i
         out.append(_compose(prefix, item.get('word', '').strip(),
-                             C.PRIMARY if is_cur else "", rhs_d, rhs_w))
+                             C.STRONG if is_cur else "", rhs_d, rhs_w))
     below = n_items - (vp + vis)
     out.append(f"{indent}{C.DIM}↓  {below} below{C.RESET}" if below > 0 else "")
     return vp
@@ -632,7 +632,7 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
     for ov in ov_map.get(len(segs), []):
         display_items.append({'type': 'overlay', 'data': ov})
 
-    # Isolated stage directions (floating ✦ overlays) get a blank line before
+    # Isolated stage directions (floating § overlays) get a blank line before
     # and after so they hover as a separate beat, not glued to the dialogue.
     def _is_float_sd(it: dict) -> bool:
         """True if display item is a floating (uncommitted) stage-direction overlay."""
@@ -644,7 +644,7 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
     while _i < _n:
         if _is_float_sd(display_items[_i]):
             # Hug the speaker banner when one sits directly above (a wordless
-            # noise line, e.g. MARTIN then ✦ (exasperated noise)); otherwise a
+            # noise line, e.g. MARTIN then § (exasperated noise)); otherwise a
             # blank fences the direction off as its own beat.
             if not _is_banner(spaced[-1] if spaced else None):
                 spaced.append({'type': 'blank'})
@@ -729,14 +729,14 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
                 out.append(f"{indent}{head} {C.DIM}{rule}{C.RESET}")
             else:
                 # Isolated stage direction (uncommitted overlay): left-aligned
-                # with a single ✦ and italic text, blank-fenced above and below
-                # so it still reads as its own beat.  Its ✦ sits in the same
+                # with a single § and italic text, blank-fenced above and below
+                # so it still reads as its own beat.  Its § sits in the same
                 # column as a committed cue's, so floating and committed cues line up.
                 _sd = ui.truncate_text(f"({ov['text'].strip()})",
                                              max(4, B - PREFIX_W - 2))
-                # A floating overlay is never the current line, so its ✦ is dim
-                # (accent stays reserved for the current row).
-                out.append(f"{indent}{' ' * PREFIX_W}{C.DIM}✦{C.RESET} "
+                # A floating overlay is never the current line, so its § is dim
+                # (accent stays reserved for the current row). ~ marks a tone note.
+                out.append(f"{indent}{' ' * PREFIX_W}{C.DIM}{'~' if ov.get('tone') else '§'}{C.RESET} "
                            f"{C.DIM}{C.ITALIC}{_sd}{C.RESET}")
         else:
             si  = it['si']
@@ -762,16 +762,16 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
                         word_overlap = True; break
 
             ptr  = f"{C.ACCENT}›{C.RESET}" if is_cur else " "
-            chk  = f"{C.ACCENT}✔{C.RESET}" if is_sel else " "
+            chk  = f"{C.OK}✔{C.RESET}" if is_sel else " "
 
             flags: list[tuple[str, str]] = []
-            if overlap:      flags.append((C.YELLOW, "⚠ overlap"))
-            if word_overlap: flags.append((C.YELLOW, "⚠ words"))
+            if overlap:      flags.append((C.WARN, "! overlap"))
+            if word_overlap: flags.append((C.WARN, "! words"))
             if md_quality is not None and not is_air and not is_sdir:
                 _mq = md_quality.get(si)
                 if _mq is not None:
                     if _mq['score'] == 0.0:    flags.append((C.DIM,    "? md"))
-                    elif _mq['score'] < 0.75:  flags.append((C.YELLOW, "≈ md"))
+                    elif _mq['score'] < 0.75:  flags.append((C.WARN, "≈ md"))
 
             start_d = f"{C.DIM}{timefmt.clock(s_t)}{C.RESET}" if s_t is not None else " " * 9
             prefix  = f"{ptr} {chk} {start_d}  "
@@ -779,17 +779,17 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
 
             if is_air or is_sdir:
                 scope = _sd_scope(seg) if is_sdir else ''
-                sym   = ('~' if scope == 'tone' else '✦') if is_sdir else '◌'
+                sym   = ('~' if scope == 'tone' else '§') if is_sdir else '·'
                 _lbl  = seg.get('text', '').strip()
                 disp0 = f"({_lbl})" if _lbl else ("(…)" if is_sdir else "silence")
                 sym_c = C.ACCENT if is_cur else C.DIM
                 if is_sdir and s_t is not None:
                     # A *timed* stage direction is a placed beat; the italic
-                    # label sets it apart from plain silence (◌) and from an
+                    # label sets it apart from plain silence (·) and from an
                     # untimed cue still awaiting its moment.
-                    lbl_c = f"{C.PRIMARY if is_cur else C.DIM}{C.ITALIC}"
+                    lbl_c = f"{C.STRONG if is_cur else C.DIM}{C.ITALIC}"
                 else:
-                    lbl_c = C.PRIMARY if is_cur else C.DIM
+                    lbl_c = C.STRONG if is_cur else C.DIM
                 # inline / tone sit indented under the words; external is a
                 # framed section (below).
                 sd_pad  = '   ' if (is_sdir and scope in ('inline', 'tone')) else ''
@@ -830,7 +830,7 @@ def _draw_lines(B, HEADER, PREFIX_W, _compose, _rhs, avail, cursor, footer, hit_
                 raw     = (_mq['md_text'] if (_use_md and _mq) else seg.get('text', '')).strip()
                 # Words are the anchor: bright/bold on the current row, normal
                 # elsewhere.  Markdown emphasis renders as styling, not literal *.
-                out.append(_compose(prefix, raw, C.PRIMARY if is_cur else "",
+                out.append(_compose(prefix, raw, C.STRONG if is_cur else "",
                                     rhs_disp, rhs_w, fmt=True))
 
     segs_below = sum(1 for it in display_items[_last_shown + 1:] if it['type'] == 'seg')

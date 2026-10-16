@@ -54,6 +54,13 @@ def _is_framed(seg: dict) -> bool:
     return k == 'dead_air' or (k == 'stage_dir' and _sd_scope(seg) == 'external')
 
 
+def mid_line_direction(overlay: list | None, si: int) -> dict | None:
+    """The mid-line direction shown just above segment `si`, the one the lyric
+    editor's kind key flips between tone and action; None if there isn't one."""
+    return next((ov for ov in overlay or [] if ov['kind'] == 'stage_dir'
+                 and ov['before_si'] == si and ov.get('tone') is not None), None)
+
+
 def _is_note(raw: str) -> bool:
     """True for a music-note token: '♪', or '♪.' where the script punctuated it.
     It carries no comparison token of its own, so it is only ever placed by the
@@ -69,7 +76,7 @@ def _reading_time(text: str) -> float:
     return round(max(tune.LYRIC_READ_MIN_S, words / tune.LYRIC_READ_WPS), 3)
 
 
-def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
+def build_md_overlay(segs: list[dict], md_path: str, kinds: dict | None = None) -> tuple[list, dict, dict]:
     """Overlay the MD script onto the JSON segments via ONE word-level alignment.
 
     The JSON and MD are the same spoken words (modulo punctuation / hyphens / ♪).
@@ -80,16 +87,21 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
     A segment whose words span two MD lines shows both (and is a split candidate).
 
     Returns (overlay, quality, links):
-      overlay: [{kind:'speaker'|'stage_dir', text, before_si, stage?, line?, lean?}],
+      overlay: [{kind:'speaker'|'stage_dir', text, before_si, stage?, line?,
+                 tone?, within?}],
                 display only.  A speaker banner's `line` is the MD line it labels
                 (None for a banner raised over a stage direction), so a consumer
                 can scope the speaker to exactly the segs `links` pins to it
-                instead of carrying it forward indefinitely.  A direction's `lean`
-                ('prev'/'next') says which side of its boundary it is ABOUT, for a
-                consumer that cannot give it a beat of its own; standalone
-                directions (their own MD line) lean 'next' by default.
+                instead of carrying it forward indefinitely.
+                A mid-line direction also carries its `line`, whether it is
+                `tone` (how the words after it are spoken, by
+                `text.direction_kind` and the editor's `kinds` overrides) and,
+                when it falls inside one segment, `within`: [(si, k, gap_from,
+                at)], the cut before that segment's k-th MD word, the end of the
+                word before and the start of the word after.
       quality: si → {score, md_text} for every dialogue seg the MD explains.
-      links:   si → line_id, the seg's MD line, recorded by the caller as line_ref.
+      links:   si → line_id, the seg's MD line, recorded by the caller as line_ref;
+               a committed mid-line direction's too.
     """
     import bisect
     from collections import Counter, OrderedDict, defaultdict
@@ -116,11 +128,17 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
             banner_stage = ""
         else:
             banner_stage = item.stage_dir              # inline dir → shown on the banner
-        line_meta[lid] = {'speaker': spk, 'stage': banner_stage}
+        n_words = 0
         for rw in _spoken_text(item.text).split():
             md_words.append((rw, lid))
+            n_words += 1
         for pos, dtext in _inline_stage_dirs(item.text):
+            if pos == 0 and n_words and _lt.direction_kind(dtext, kinds) == 'tone':
+                # A manner note opening the words is the line's own aside.
+                banner_stage = "; ".join(x for x in (banner_stage, dtext) if x)
+                continue
             inline_dirs.append({'text': dtext, 'line': lid, 'pos': pos})
+        line_meta[lid] = {'speaker': spk, 'stage': banner_stage}
         lid += 1
 
     def _score(a: str, b: str) -> float:
@@ -157,11 +175,14 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
                            [js_words[ji][0] for _, ji in js_ctoks],
                            [md_words[mi][0] for _, mi in md_ctoks])
     md_seg: list = [None] * len(md_words)     # seg each MD word aligned to (content only)
+    md_ref: list = [None] * len(md_words)     # (seg, word index) it aligned to
     # `placement=True`: a word the transcript heard differently still belongs to the
     # segment it was heard in.  Left out, it falls back to riding with the words
     # before it on its line and lands a segment early whenever it opens one.
     for jt, mt, _tag in _lt.pair_tokens(ops, placement=True):
-        md_seg[md_ctoks[mt][1]] = js_words[js_ctoks[jt][1]][1]
+        _rw, _si, _wi = js_words[js_ctoks[jt][1]]
+        md_seg[md_ctoks[mt][1]] = _si
+        md_ref[md_ctoks[mt][1]] = (_si, _wi)
 
     # ── Resolve every MD word to a seg, one line at a time ─────────────────────
     line_mis: dict = OrderedDict()            # line_id → [md_word_index...] in order
@@ -236,6 +257,20 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
     # segment holding the preceding words.  They join stage_dirs so the same
     # commit/reconcile path applies.
     placed_on_line: set = set()               # (line_id, text) already given a spot
+
+    def _cut(si: int, mis: list, pos: int) -> tuple | None:
+        """(si, k, gap_from, at) for a cut before the line's pos-th word inside
+        segment si, timed by the nearest aligned words either side; None when
+        the segment has no word timings to cut by."""
+        ws = segs[si].get('words') or []
+        before = next((md_ref[m] for m in reversed(mis[:pos]) if md_ref[m] and md_ref[m][0] == si), None)
+        after = next((md_ref[m] for m in mis[pos:] if md_ref[m] and md_ref[m][0] == si), None)
+        if not (ws and before and after and before[1] < after[1]):
+            return None
+        gap_from, at = ws[before[1]].get('end'), ws[after[1]].get('start')
+        if gap_from is None or at is None:
+            return None
+        return (si, seg_mis[si].index(mis[pos]), float(min(gap_from, at)), float(at))
     for d in inline_dirs:
         mis     = line_mis.get(d['line'], [])
         pos     = d['pos']
@@ -246,15 +281,20 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
         # MARTIN banner. (For a direction on its own line's own speaker, the context
         # check below suppresses a redundant banner.)
         _spk = line_meta.get(d['line'], {}).get('speaker', '')
-        # Which side of the boundary the direction is ABOUT.  One that follows
-        # spoken words is describing those words ('*(She pronounces it "roth.")*'
-        # after the word it refers to), so a consumer with nowhere to put a beat of
-        # its own must fall back to the line just gone, not the line coming up.
-        # One that opens its line describes what happens before the speaker starts.
-        _lean = 'prev' if pos > 0 else 'next'
+        # Tone only with words still to say: `Cremona *(intrigue)*.` has a full stop left, no words.
+        words_after = any(_norm_words(md_words[m][0]) for m in mis[pos:])
+        mid = {'line': d['line']}
+        if 0 < pos:
+            mid['tone'] = _lt.direction_kind(d['text'], kinds) == 'tone'
+            if not words_after or _lt.points_back(d['text']):
+                mid['back'] = True           # about the words before it
         if next_si is not None and next_si != prev_si:
             placed_on_line.add((d['line'], d['text']))
-            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'anchor_si': next_si, 'speaker': _spk, 'lean': _lean})
+            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'anchor_si': next_si, 'speaker': _spk, **mid})
+        elif prev_si is not None and next_si == prev_si and _cut(prev_si, mis, pos):
+            # Inside one segment: the player splits it there (`within`).
+            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'anchor_si': prev_si + 1, 'speaker': _spk,
+                               'within': [_cut(prev_si, mis, pos)], **mid})
         elif prev_si is not None:
             # No boundary here to hang it on, so it falls PAST the segment holding
             # its line.  When the same direction is already placed on this line
@@ -264,9 +304,9 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
             if (d['line'], d['text']) in placed_on_line:
                 continue
             placed_on_line.add((d['line'], d['text']))
-            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'anchor_si': prev_si + 1, 'speaker': _spk, 'lean': _lean})
+            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'anchor_si': prev_si + 1, 'speaker': _spk, **mid})
         else:
-            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'speaker': _spk, 'lean': _lean})
+            stage_dirs.append({'text': d['text'], 'before_line': d['line'], 'speaker': _spk, **mid})
 
     # ── Emit overlay: speaker banner per MD line + standalone stage directions ──
     line_first_seg: dict = {}                 # line_id → first seg (in order) covering it
@@ -299,8 +339,23 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
                                       'stage': line_meta[l].get('stage', ''),
                                       'line': l, 'before_si': si}))
 
+    covered = sorted(line_first_seg)
+
+    def _place(sd: dict) -> int:
+        """The segment a direction is shown before: a mid-line one's boundary,
+        else the first segment of its line (no segment: the next line's, else the end)."""
+        if sd.get('anchor_si') is not None:
+            return min(sd['anchor_si'], len(segs))
+        L = sd['before_line']
+        if L in line_first_seg:
+            return line_first_seg[L]
+        k = bisect.bisect_left(covered, L)
+        return line_first_seg[covered[k]] if k < len(covered) else len(segs)
+
     # Standalone stage directions: a committed stage_dir seg / labelled dead_air
-    # claims the matching one by text so it isn't shown both as a seg AND a ✦.
+    # claims the matching one by text so it isn't shown both as a seg AND a §.
+    # The nearest of that text: a script that says "He sighs." twice has two,
+    # and the first committed one is not necessarily the first written.
     materialized: set = set()
     mat_seg: dict = {}                        # stage_dir idx → committed seg index
     for _si, _seg in enumerate(segs):
@@ -309,11 +364,11 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
         sn = _norm(_seg.get('_md_text') or _seg.get('text', ''))
         if not sn:
             continue
-        for idx, sd in enumerate(stage_dirs):
-            if idx not in materialized and _norm(sd['text']) == sn:
-                materialized.add(idx)
-                mat_seg[idx] = _si
-                break
+        same = [idx for idx, sd in enumerate(stage_dirs) if idx not in materialized and _norm(sd['text']) == sn]
+        if same:
+            idx = min(same, key=lambda i: abs(_place(stage_dirs[i]) - _si))
+            materialized.add(idx)
+            mat_seg[idx] = _si
 
     # Speaker in effect just before a seg position: the last dialogue line above
     # it. Used to decide when a direction needs its own banner (a different
@@ -339,7 +394,6 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
         dialogue around it already does."""
         return bool(spk) and spk != _ctx_spk(pos) and spk != _banner_at.get(pos)
 
-    covered = sorted(line_first_seg)
     for idx, sd in enumerate(stage_dirs):
         _spk = sd.get('speaker', '')
         if idx in materialized:
@@ -347,44 +401,42 @@ def build_md_overlay(segs: list[dict], md_path: str) -> tuple[list, dict, dict]:
             # DIFFERENT speaker than the surrounding dialogue (a wordless
             # `MARTIN: *(noise)*` committed between ARTHUR lines), still banner it.
             _msi = mat_seg.get(idx)
+            if _msi is not None and 'line' in sd:
+                links[_msi] = sd['line']      # a mid-line direction: its line's, like its words
             if _msi is not None and _needs_banner(_spk, _msi):
                 items.append((_msi, -1, {'kind': 'speaker', 'text': _spk,
                                          'stage': '', 'line': None, 'before_si': _msi}))
             continue
-        if sd.get('anchor_si') is not None:   # mid-line dir pinned to a seg boundary
-            bsi = min(sd['anchor_si'], len(segs))
-            # An inline direction belongs to its speaker's line, so it sits AFTER
-            # the banner (order 2), e.g. a line that opens with *(a noise)*: the
-            # noise reads under MARTIN, not orphaned above the MARTIN banner.
-            order = 2
-        else:
-            L = sd['before_line']
-            if L in line_first_seg:
-                bsi = line_first_seg[L]
-            else:                             # its line has no seg → next covered line, else end
-                k = bisect.bisect_left(covered, L)
-                bsi = line_first_seg[covered[k]] if k < len(covered) else len(segs)
-            order = 0                          # a standalone direction sits above the banner
+        bsi = _place(sd)
+        # An inline direction belongs to its speaker's line, so it sits AFTER the
+        # banner (order 2), e.g. a line that opens with *(a noise)*: the noise
+        # reads under MARTIN, not orphaned above the MARTIN banner. A standalone
+        # direction sits above the banner (order 0).
+        order = 2 if sd.get('anchor_si') is not None else 0
         # Banner the direction's speaker above it when that speaker differs from
         # the surrounding dialogue (suppresses a redundant banner on its own line).
         if _needs_banner(_spk, bsi):
             items.append((bsi, -1, {'kind': 'speaker', 'text': _spk,
                                     'stage': '', 'line': None, 'before_si': bsi}))
-        items.append((bsi, order, {'kind': 'stage_dir', 'text': sd['text'],
-                                   'lean': sd.get('lean', 'next'), 'before_si': bsi}))
+        item = {'kind': 'stage_dir', 'text': sd['text'], 'before_si': bsi}
+        item.update({k: sd[k] for k in ('line', 'tone', 'back', 'within', 'speaker') if k in sd and 'line' in sd})
+        items.append((bsi, order, item))
 
     # order at a tie: 0 standalone stage dir → 1 speaker banner → 2 inline stage dir
     items.sort(key=lambda t: (t[0], t[1]))
     # Two identical beats at one anchor say nothing the first does not.  A line the
     # transcript kept whole (`*(Ding)* Ding! *(Ding)* Ding! *(Ding)* Ding!`) has no
     # seg boundary to hang the repeats on, so they all fall to the same place and
-    # stack up as three identical ✦ rows against the line after.
+    # stack up as three identical § rows against the line after.
+    # A repeat cut inside a segment still splits it there: its cut joins the first's.
     overlay: list = []
-    seen: set = set()
+    seen: dict = {}
     for si, _order, it in items:
         key = (si, it['kind'], it['text'])
         if key in seen:
+            if it.get('within') and 'within' in seen[key]:
+                seen[key]['within'] = seen[key]['within'] + it['within']
             continue
-        seen.add(key)
+        seen[key] = it
         overlay.append(it)
     return overlay, quality, links

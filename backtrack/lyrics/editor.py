@@ -27,7 +27,7 @@ re-enter later to resume on whatever is outstanding):
   nearest the middle (or the middle if none), redistributing words and timing.
 
 Stage directions (on a stage-direction row in SEG): press x to cycle the kind:
-  inline    ✦ indented under the words (a mid-phrase beat)
+  inline    § indented under the words (a mid-phrase beat)
   tone      ~ same indent, a tonal / pronunciation note (e.g. drawn-out speech)
   external  a framed section (scene/sound, or another person's aside); who and
             when are left to be read from the text and context.
@@ -42,7 +42,8 @@ from backbone.prompt.core import _Widget, _read_key, _wait_for_keypress, _set_ra
 from backbone.prompt import text as _prompt_text
 from backbone.prompt.core import add_hint_click_cells, _visible_rows
 from backbone import prompt as _promptmod
-from backbone.files import write_text_atomic, backup_copy
+from backbone.files import backup_copy
+from backtrack.lyrics import bkts
 from backbone.log import log, quietly
 
 # The MD↔JSON alignment is shared with the playback lyric display so the two
@@ -57,6 +58,7 @@ from backtrack.lyrics.sync_doc import (
 from backtrack.lyrics.verify import _split_candidates, _split_seg_at, _verify_matchup
 from backtrack import tuning as tune
 from backtrack.lyrics.editor_view import EDIT, SEG, TAP, WORD, _AUD_CLIP, _clip, _draw, _vlc, shown_hint_pairs
+from backtrack.playback.libvlc import media_for
 from backtrack.lyrics.editor_keys import _QUIT, _KeyHandlers
 
 
@@ -118,7 +120,7 @@ class _Session(_KeyHandlers):
                 os.dup2(devnull, 2); os.close(devnull)
                 inst = _vlc.Instance('--no-video', '--quiet')
                 mp_i = inst.media_player_new()           # type: ignore[union-attr]
-                mp_i.set_media(inst.media_new(self.mp3_path)) # type: ignore[union-attr]
+                mp_i.set_media(media_for(inst, self.mp3_path)) # type: ignore[union-attr]
                 os.dup2(old_fd, 2); os.close(old_fd)
                 self.mp = mp_i
             except (AttributeError, OSError):
@@ -135,7 +137,7 @@ class _Session(_KeyHandlers):
         """
         parts: list[str] = []
         if self.aux.get('jpath'):
-            parts.append(os.path.basename(self.aux['jpath']))
+            parts.append(bkts.label(self.aux['jpath']))
         if self.aux.get('from_sidecar'):
             parts.append('diverged working copy' if self.aux.get('drift') else 'working copy')
         if self.source == SOURCE_SYLT:
@@ -166,7 +168,7 @@ class _Session(_KeyHandlers):
         start_s = max(0.0, start_s)
         self.mp.set_time(int(start_s * 1000))
         if not self.mp.is_playing():
-            self.mp.play(); time.sleep(0.15)
+            self.mp.play(); time.sleep(tune.EDITOR_PLAY_SETTLE_S)
         self.playing    = True
         self.play_until = float('inf') if dur is None else time.time() + dur
         self.play_pos   = start_s
@@ -223,7 +225,8 @@ class _Session(_KeyHandlers):
         (segs, MD): rebuilding is always safe and never duplicates, because
         committed stage_dir segs are reconciled inside build_md_overlay."""
         if self.md_path:
-            self.md_overlay, self.md_quality, _links = _build_md_overlay(self.segs, self.md_path)
+            self.md_overlay, self.md_quality, _links = _build_md_overlay(
+                self.segs, self.md_path, self.aux.get('meta', {}).get('direction_kinds'))
             for _si, _lid in _links.items():   # record durable alignment on segs
                 if _lid is not None:
                     self.segs[_si]['line_ref'] = _lid
@@ -337,7 +340,7 @@ class _Session(_KeyHandlers):
             return True
         _restore_term_attrs(self.fd, self.old)
         sys.stdout.write("\033[?1000l\033[?1006l")
-        _ans = _prompt_text("Leave without saving? [y/N]")
+        _ans = _prompt_text("Leave without saving? (y/N)")
         _set_raw(self.fd)
         sys.stdout.write("\033[?1000h\033[?1006h")
         self.w.anchor_reset()
@@ -395,9 +398,9 @@ class _Session(_KeyHandlers):
             _ensure_ids(self.segs, self.aux['meta'])
             sdata = {'version': 1, 'source_json': os.path.basename(self.aux['jpath']),
                      'meta': self.aux['meta'], 'segments': self.segs}
-            write_text_atomic(self.aux['sidecar'], json.dumps(sdata, indent=2, ensure_ascii=False))
-            ui.show_status(
-                f"Saved to {os.path.basename(self.aux['sidecar'])}: press W to write transcript.json")
+            bkts.save(self.aux['sidecar'], json.dumps(sdata, indent=2, ensure_ascii=False))
+            ui.show_status(f"Saved the working copy in {bkts.label(self.aux['sidecar'])}: "
+                           f"press W to write the transcript")
             self.dirty = False; self.undo_stack.clear()
             return
         else:
@@ -448,17 +451,23 @@ class _Session(_KeyHandlers):
             return False
         spoken = [s for s in self.segs if s.get('kind') not in ('stage_dir', 'dead_air', 'credit')]
         container['segments']      = [_clean_seg(s) for s in spoken]
+        # The tone/action choices made with the kind key, which the player reads.
+        container.pop('direction_kinds', None)
+        if self.aux['meta'].get('direction_kinds'):
+            container['direction_kinds'] = self.aux['meta']['direction_kinds']
         container['word_segments'] = [
             {'word': w.get('word', ''), 'start': w.get('start'),
              'end': w.get('end'), 'score': w.get('score')}
             for seg in spoken for w in seg.get('words', [])
         ]
         # The originals are kept as .bak (the last commit's), and each file is
-        # written whole or not at all.
-        backup_copy(jpath)
-        backup_copy(jpath[:-5] + '.srt')
-        write_text_atomic(jpath, json.dumps(container, indent=2, ensure_ascii=False))
-        write_text_atomic(jpath[:-5] + '.srt', _rebuild_srt(self.segs))
+        # written whole or not at all. A .bkts is backed up whole, and has no .srt.
+        packed = bkts.source_of(jpath)
+        backup_copy(packed or jpath)
+        bkts.save(jpath, json.dumps(container, indent=2, ensure_ascii=False))
+        if not packed:
+            backup_copy(jpath[:-5] + '.srt')
+            bkts.save(jpath[:-5] + '.srt', _rebuild_srt(self.segs))
         self.aux['meta']['source_fp'] = _file_fp(jpath)   # we now match the original
         # Rewrite the working copy (.sync.json) so the editor resumes with its
         # stage directions and dead air intact; playback ignores it and
@@ -467,7 +476,7 @@ class _Session(_KeyHandlers):
             _ensure_ids(self.segs, self.aux['meta'])
             sdata = {'version': 1, 'source_json': os.path.basename(jpath),
                      'meta': self.aux['meta'], 'segments': self.segs}
-            write_text_atomic(jpath[:-5] + '.sync.json', json.dumps(sdata, indent=2, ensure_ascii=False))
+            bkts.save(self.aux['sidecar'], json.dumps(sdata, indent=2, ensure_ascii=False))
         except Exception as exc:
             log.warning("couldn't write %s.sync.json: %s", jpath[:-5], exc)
             ui.show_error(f"committed, but couldn't write the .sync.json: {exc}")
@@ -502,7 +511,7 @@ class _Session(_KeyHandlers):
             self.w.render(rendered)
             for _i in range(len(rendered) - len(foot), len(rendered)):
                 add_hint_click_cells(hint_cells, rendered[_i], _i, pairs)
-            if not _wait_for_keypress(0.2):
+            if not _wait_for_keypress(tune.KEY_POLL_INTERVAL_S):
                 continue
             k = _read_key(self.fd)
             if k.startswith('MOUSE_CLICK:') and self.w.row is not None:
@@ -529,7 +538,7 @@ class _Session(_KeyHandlers):
         if not _mdp:
             ui.show_status("No transcript.md found to verify against."); return
         rep = _verify_matchup(self.segs, _mdp)
-        _rp = self.aux['jpath'][:-5] + '.verify.txt'
+        _rp = os.path.splitext(self.mp3_path)[0] + '.verify.txt'
         try:
             with open(_rp, 'w', encoding='utf-8') as f:   # plain text (colour stripped)
                 f.write("\n".join(ui.strip_ansi(l) for l in rep['lines']) + "\n")
@@ -589,7 +598,7 @@ class _Session(_KeyHandlers):
             f"Split {ui.plural(n, 'segment')} to one script beat each, {remain} remaining.")
 
     def do_recategorise(self, si: int) -> None:
-        """Flip the beat at `si` between dead air (◌) and a stage direction (✦),
+        """Flip the beat at `si` between dead air (·) and a stage direction (§),
         preserving timings.  A direction needs descriptive text, so promoting
         blank silence prompts for it.  Shared by the 'k' key and the click path."""
         _seg = self.segs[si] if (self.segs and 0 <= si < len(self.segs)) else None
@@ -815,7 +824,7 @@ class _Session(_KeyHandlers):
                 if self.need_redraw:
                     self._redraw()
 
-                if not _wait_for_keypress(0.05):
+                if not _wait_for_keypress(tune.KEY_POLL_INTERVAL_S):
                     continue
                 key = _read_key(self.fd)
                 self.need_redraw = True

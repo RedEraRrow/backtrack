@@ -146,7 +146,7 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     left_styled, _left_used = _fit_segments(left_segs, left_budget)
 
     pad = ' ' * mh
-    top = f"{pad}{C.DIM}╭{'─' * (box_w - 2)}╮{C.RESET}"
+    top = f"{pad}{C.FRAME}╭{'─' * (box_w - 2)}╮{C.RESET}"
 
     # The clock and the closing border are placed by absolute column (CSI G)
     # rather than by counting what precedes them. Everything left of the clock
@@ -159,15 +159,15 @@ def format_now_playing_bar(width: int) -> list[str] | None:
     time_col = pipe_col - 1 - len(right)
     if chapters:
         ui.set_footer_time_cols((time_col, time_col + len(right) - 1))
-    mid = (f"{pad}{C.DIM}│{C.RESET} {left_styled}"
+    mid = (f"{pad}{C.FRAME}│{C.RESET} {left_styled}"
            f"\033[{time_col}G{C.DIM}{right}{C.RESET}"
-           f"\033[{pipe_col}G{C.DIM}│{C.RESET}")
+           f"\033[{pipe_col}G{C.FRAME}│{C.RESET}")
 
     # Progress along the bottom border: heavy ━ for the elapsed fraction, light ─
     # for the rest (the join to the rounded corners is intentionally light), and
     # the chapter playing picked out as in the player.
     pct = (np['elapsed'] / np['duration']) if np['duration'] else 0.0
     prog = ui.progress_cells(pct, box_w - 2, span)
-    bot = f"{pad}{C.DIM}╰{C.RESET}{prog}{C.DIM}╯{C.RESET}"
+    bot = f"{pad}{C.FRAME}╰{C.RESET}{prog}{C.FRAME}╯{C.RESET}"
 
     return [_clip_ansi_to_width(ln, width) for ln in (top, mid, bot)]

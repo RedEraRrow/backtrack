@@ -269,26 +269,26 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
             # Matched for timing (the word IS said), but the script and the
             # transcript disagree about how to write it, and that is worth seeing.
             n_elision += (k2 - k1)
-            detail = f"{C.DIM}{heard}{C.RESET}  {C.ACCENT}→{C.RESET}  {C.PRIMARY}{script}{C.RESET}"
+            detail = f"{C.DIM}{heard}{C.RESET}  {C.ACCENT}→{C.RESET}  {C.STRONG}{script}{C.RESET}"
             lines.append(_row(t, '≈', 'ELIDED', C.ACCENT, f"L{md_toks[k1][1]}", detail))
         elif tag == 'delete':
             n_extra += (i2 - i1)
-            lines.append(_row(t, '+', 'EXTRA', C.CYAN, '', f"{C.PRIMARY}{heard}{C.RESET}"))
+            lines.append(_row(t, '+', 'EXTRA', C.INFO, '', f"{C.STRONG}{heard}{C.RESET}"))
         elif tag == 'insert':
             n_missing += (k2 - k1)
             loc = f"{md_toks[k1][2] or '?'} · L{md_toks[k1][1]}"
-            lines.append(_row(t, '-', 'MISSING', C.YELLOW, loc, f"{C.PRIMARY}{script}{C.RESET}"))
+            lines.append(_row(t, '-', 'MISSING', C.WARN, loc, f"{C.STRONG}{script}{C.RESET}"))
         else:
             n_changed += max(i2 - i1, k2 - k1)
-            detail = f"{C.DIM}{heard}{C.RESET}  {C.ACCENT}→{C.RESET}  {C.PRIMARY}{script}{C.RESET}"
-            lines.append(_row(t, '~', 'CHANGED', C.MAGENTA, f"L{md_toks[k1][1]}", detail))
+            detail = f"{C.DIM}{heard}{C.RESET}  {C.ACCENT}→{C.RESET}  {C.STRONG}{script}{C.RESET}"
+            lines.append(_row(t, '~', 'CHANGED', C.NOTE, f"L{md_toks[k1][1]}", detail))
 
     split, unplaced, suggested = _split_candidates(segs, md_path)
     split_lines = []
     for c in split:
         # Header row, then one indented row per MD line showing the ACTUAL words
         # from that line inside the merged segment (the context, not just names).
-        split_lines.append(_row(segs[c['seg']].get('start'), '⇄', 'SPLIT', C.GREEN,
+        split_lines.append(_row(segs[c['seg']].get('start'), '⇄', 'SPLIT', C.OK,
                                 f"seg {c['seg']}", ""))
         ws   = segs[c['seg']].get('words', [])
         cuts = [0] + list(c['boundaries']) + [len(ws)]
@@ -299,7 +299,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
             if not txt:
                 continue
             split_lines.append(
-                f"           {C.CYAN}{spk[:17]:<17}{C.RESET} {C.PRIMARY}{txt}{C.RESET}")
+                f"           {C.INFO}{spk[:17]:<17}{C.RESET} {C.STRONG}{txt}{C.RESET}")
 
     for ln, pos, text in suggested:
         # Placeable, but the script has not finished a thought there. Worth a beat
@@ -310,7 +310,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
     for ln, pos, text in unplaced:
         # The script puts a direction between two words the transcript does not
         # have a boundary for: it dropped or reworded the word it sits against.
-        split_lines.append(_row(None, '✦', 'UNPLACED', C.YELLOW, f"L{ln} w{pos}",
+        split_lines.append(_row(None, '§', 'UNPLACED', C.WARN, f"L{ln} w{pos}",
                                 f"{C.DIM}({text}){C.RESET}"))
 
     total_js, total_md = len(js_toks), len(md_toks)
@@ -324,11 +324,11 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
         f"{C.BOLD}VERIFY · JSON ↔ MD word matchup{C.RESET}"
         f"   {C.DIM}(punctuation ignored · hyphens = spaces){C.RESET}",
         f"{C.BOLD}{rate}%{C.RESET} matched  {C.DIM}({n_equal}/{total_md} words){C.RESET}    "
-        f"{C.YELLOW}- {n_missing} missing{C.RESET}   {C.CYAN}+ {n_extra} extra{C.RESET}   "
-        f"{C.MAGENTA}~ {n_changed} changed{C.RESET}   {C.GREEN}⇄ {len(split)} to split{C.RESET}"
+        f"{C.WARN}- {n_missing} missing{C.RESET}   {C.INFO}+ {n_extra} extra{C.RESET}   "
+        f"{C.NOTE}~ {n_changed} changed{C.RESET}   {C.OK}⇄ {len(split)} to split{C.RESET}"
         + (f"   {C.ACCENT}≈ {n_elision} elided{C.RESET}" if n_elision else "")
         + (f"   {C.DIM}· {len(suggested)} mid-line{C.RESET}" if suggested else "")
-        + (f"   {C.YELLOW}✦ {len(unplaced)} unplaced{C.RESET}" if unplaced else ""),
+        + (f"   {C.WARN}§ {len(unplaced)} unplaced{C.RESET}" if unplaced else ""),
         "",
     ]
     body = list(lines)
@@ -340,7 +340,7 @@ def _verify_matchup(segs: list, md_path: str) -> dict:
                     f"way through{C.RESET}")
         body += split_lines
     if not body:
-        header.append(f"{C.GREEN}✔ every spoken word matches, and every segment is "
+        header.append(f"{C.OK}✔ every spoken word matches, and every segment is "
                       f"one script beat.{C.RESET}")
     return {'lines': header + body, 'summary': summary}
 

@@ -12,11 +12,13 @@ from backbone.prompt import text as _prompt_text
 from backbone.prompt.core import FOOTER_ACTIONS, footer_click_action
 from backbone import prompt as _promptmod
 from backbone.prompt import chrome as _prompt_chrome
-from backtrack.lyrics.md_overlay import _SD_SCOPES, _sd_scope, build_md_overlay as _build_md_overlay
+from backtrack.lyrics import bkts, text as _lt
+from backtrack.lyrics.md_overlay import _SD_SCOPES, _sd_scope, mid_line_direction
 from backtrack.lyrics.time_fields import _EDIT_END, _EDIT_START, _ts_parts
 from backtrack.lyrics.sync_doc import SOURCE_TRANSCRIPT, _make_stage_dir
 from backtrack.lyrics.verify import _make_dead_air
 from backtrack.lyrics.editor_view import AUDITION, EDIT, SEG, TAP, WORD, _AUD_COARSE, _AUD_STEP, _HAS_VLC
+from backbone.log import log
 from backbone.nav import QuitToTerminal
 from backtrack import tuning as tune
 
@@ -306,6 +308,8 @@ class _KeyHandlers:
             self.selected.symmetric_difference_update({self.cursor})
         elif line and name == 'credits':
             return self._add_credits()
+        elif line and name == 'export' and self.source == SOURCE_TRANSCRIPT:
+            return self._export()
         elif line and name == 'dead_air':
             return self._add_gap()
         elif line and name == 'delete':
@@ -377,7 +381,7 @@ class _KeyHandlers:
         sys.stdout.write("\033[?1000l\033[?1006l")
         _ans = _prompt_text(
             f"Write spoken words in Whisper format to "
-            f"{os.path.basename(self.aux['jpath'])}? (y/N)")
+            f"{bkts.label(self.aux['jpath'])}? (y/N)")
         _set_raw(self.fd)
         sys.stdout.write("\033[?1000h\033[?1006h")
         self.w.anchor_reset()
@@ -385,7 +389,65 @@ class _KeyHandlers:
             ui.show_status("Cancelled.")
         elif self.do_commit():  # writes transcript.json + refreshes fingerprint;
             self.do_save()      # False (with its reason shown) if it couldn't
-            ui.show_status(f"Written to {os.path.basename(self.aux['jpath'])} + .srt.")
+            ui.show_status(f"Written to {bkts.label(self.aux['jpath'])}.")
+
+    def _export(self) -> object:
+        """E: the dialogue as it shows (speakers, manner, stage directions, these
+        segments, saved or not) written as the track's SYLT tag or a lyrics file
+        beside it; or a .bkts's script and transcript as loose files."""
+        from backtrack.lyrics import files as lyric_files
+        from backtrack.lyrics.formats import _find_markdown_for_audio, save_sylt_entries
+        md = self.md_path or _find_markdown_for_audio(self.mp3_path)
+        if not md:
+            ui.show_status("There's no script to take speakers and directions from.")
+            return None
+        packed = bkts.source_of(self.aux['jpath'])
+        options = {'sylt': "SYLT tag on this track",
+                   **{fmt: f".{fmt} beside the track ({desc})" for fmt, desc in lyric_files.FORMATS.items()},
+                   **({'unpack': "Its script and transcript, as loose .md and .json"} if packed else {})}
+        _restore_term_attrs(self.fd, self.old)
+        sys.stdout.write("\033[?1000l\033[?1006l")
+        try:
+            what = _promptmod.pick_option("Export the lyrics as:", options, None, "Export")
+            if not what:
+                return None
+            stem = os.path.splitext(self.mp3_path)[0]
+            if what == 'unpack':
+                targets = [(stem + '.md', md), (stem + '.json', self.aux['jpath'])]
+                there = [t for t, _src in targets if os.path.exists(t)]
+                if there and not (_prompt_text(f"Replace {' and '.join(os.path.basename(t) for t in there)}? (y/N)")
+                                  or "").strip().lower().startswith("y"):
+                    return None
+                for target, src in targets:
+                    with open(src, encoding='utf-8') as fh:
+                        text = fh.read()
+                    with open(target, 'w', encoding='utf-8') as fh:
+                        fh.write(text)
+                ui.show_status(f"Wrote {os.path.basename(stem)}.md and .json"
+                               + (": edits not yet written with W aren't in them" if self.dirty else ""))
+                return None
+            rows = lyric_files.dialogue_rows(self.segs, md, self.aux.get('meta', {}).get('direction_kinds'))
+            if what == 'sylt':
+                if load_id3(self.mp3_path).getall('SYLT') and not (
+                        _prompt_text("Replace the track's synced lyrics (SYLT)? (y/N)") or "").strip().lower().startswith("y"):
+                    return None
+                save_sylt_entries(self.mp3_path, rows)
+                ui.show_status(f"Wrote {ui.plural(len(rows), 'line')} to the SYLT tag.")
+                return None
+            target = f"{stem}.{what}"
+            if os.path.exists(target) and not (
+                    _prompt_text(f"Replace {os.path.basename(target)}? (y/N)") or "").strip().lower().startswith("y"):
+                return None
+            written, n = lyric_files.export_file(self.mp3_path, what, rows=rows)
+            ui.show_status(f"Wrote {ui.plural(n, 'line')} to {os.path.basename(written)}.")
+        except Exception as exc:
+            log.warning("export from the lyric editor failed: %s", exc)
+            ui.show_error(f"couldn't export: {exc}")
+        finally:
+            _set_raw(self.fd)
+            sys.stdout.write("\033[?1000h\033[?1006h")
+            self.w.anchor_reset()
+        return None
 
     def _add_credits(self) -> object:
         """c: append the composer and lyricist tags as credit lines (shown, never exported)."""
@@ -481,9 +543,18 @@ class _KeyHandlers:
             ui.show_status("Cursor is not on a dead air or stage direction segment.")
 
     def _cycle_direction(self) -> object:
-        """x: cycle the stage direction under the cursor through inline / tone / external."""
+        """x: cycle the stage direction under the cursor through inline / tone /
+        external; on a line, flip the mid-line direction just above it between
+        tone and action."""
         _sd = self.segs[self.cursor] if (self.segs and self.cursor < len(self.segs)) else None
-        if not (_sd and _sd.get('kind') == 'stage_dir'):
+        _mid = mid_line_direction(self.md_overlay, self.cursor)
+        if not (_sd and _sd.get('kind') == 'stage_dir') and _mid:
+            kinds = self.aux.setdefault('meta', {}).setdefault('direction_kinds', {})
+            kinds[_lt.norm(_mid['text'])] = 'action' if _mid['tone'] else 'tone'
+            self.dirty = True
+            self.refresh_overlay()
+            ui.show_status(f"({_mid['text']}): {'action' if _mid['tone'] else 'tone'}")
+        elif not (_sd and _sd.get('kind') == 'stage_dir'):
             ui.show_status("The cursor isn't on a stage direction.")
         else:
             _next = _SD_SCOPES[(_SD_SCOPES.index(_sd_scope(_sd)) + 1) % len(_SD_SCOPES)]
@@ -491,7 +562,7 @@ class _KeyHandlers:
             self.segs[self.cursor] = {**_sd, 'scope': _next}
             self.dirty = True
             self.refresh_overlay()
-            ui.show_status(f"Direction: {_next}")
+            ui.show_status(f"Stage direction is now {_next}")
 
     def _fill_gaps(self) -> object:
         """r: fill the gaps between timed lines with dead air, and time any untimed
@@ -529,9 +600,9 @@ class _KeyHandlers:
                     _play_from = max(0.0, _gap_start - 0.3)
                     self.mp.set_time(int(_play_from * 1000))
                     if not self.mp.is_playing():
-                        self.mp.play(); time.sleep(0.15)
+                        self.mp.play(); time.sleep(tune.EDITOR_PLAY_SETTLE_S)
                 _lbl = _prompt_text(
-                    f"Gap of {_gap}s: stage direction? (blank = silence, skip = ignore):")
+                    f"A {_gap}s gap. Stage direction? (blank for silence, skip to leave it):")
                 if self.mp is not None and self.mp.is_playing():
                     self.mp.pause()
                 if _lbl is not None and _lbl.strip().lower() != 'skip':
@@ -566,16 +637,14 @@ class _KeyHandlers:
                 ui.show_status("No transcript.md found next to this file.")
             else:
                 try:
-                    self.md_overlay, self.md_quality, _links = _build_md_overlay(self.segs, _md_path)
-                    for _si, _lid in _links.items():   # record durable alignment
-                        if _lid is not None:
-                            self.segs[_si]['line_ref'] = _lid
                     self.md_path    = _md_path
+                    self.refresh_overlay()
                     self.viewport   = 0
                     ui.show_status(
                         f"Overlay: {len(self.md_overlay)} annotations from {os.path.basename(_md_path)}"
                     )
                 except Exception as _exc:
+                    self.md_path = None
                     ui.show_error(f"couldn't load the transcript overlay: {_exc}")
 
     def _commit_directions(self) -> object:

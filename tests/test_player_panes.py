@@ -21,8 +21,8 @@ class _Audio:
 
 
 class PanesTest(unittest.TestCase):
-    def _boxes(self, cols, rows):
-        both = [['people', 'right'], ['lyrics', 'right']]
+    def _boxes(self, cols, rows, both=None):
+        both = both or [['people', 'right'], ['lyrics', 'right']]
         pu._ui_state.update(panels={'wide': [list(x) for x in both], 'tall': [list(x) for x in both]},
                             arranging=None, lyrics_pane=True)
         with patch.object(ui, 'get_terminal_size', lambda *a: (cols, rows)), \
@@ -30,6 +30,7 @@ class PanesTest(unittest.TestCase):
              patch.object(pa, 'inline_art_enabled', lambda: False), \
              patch.object(pu, '_meta_left_lines', lambda *a: ["Title", "Artist"]), \
              patch.object(sys, 'stdout', io.StringIO()):
+            pu._lyric_src.update(track="", files=["embedded USLT"])   # the lyrics the player loaded
             pu._draw_default_ui("", _Audio(), pa.IDLE_ART, (cols, rows))
         return list(pu._frame['boxes'])
 
@@ -105,3 +106,38 @@ class PeopleCutTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlacesTest(unittest.TestCase):
+    """Bands across the whole width, and panels above or below the art."""
+    _boxes = PanesTest._boxes
+
+    def test_a_band_spans_the_width_over_the_player_and_its_columns(self):
+        player, *panels, transport = self._boxes(150, 44, [['lyrics', 'top'], ['people', 'right']])
+        band = next(b for b in panels if b[0] < player[0])
+        self.assertEqual((band[2], band[3]), (transport[2], transport[3]))        # the full width
+        self.assertEqual(player[0], band[1] + 1)                                 # the player under it
+        self.assertTrue(any(b[2] > player[3] for b in panels))                   # the column still beside it
+
+    def test_a_panel_above_the_art_sits_in_the_players_column(self):
+        player, *panels, transport = self._boxes(150, 44, [['people', 'above'], ['lyrics', 'right']])
+        above = next(b for b in panels if b[1] < player[0])
+        self.assertEqual((above[2], above[3]), (player[2], player[3]))
+        self.assertEqual(above[1] + 1, player[0])
+
+    def test_arrange_moves_along_the_places(self):
+        pu._ui_state.update(panels={'wide': [['people', 'right'], ['lyrics', 'right']], 'tall': []},
+                            arranging='lyrics')
+        pu._frame.update(panel_order=['people', 'lyrics'], shape='wide')
+        with patch.object(pu, '_panels_changed', lambda: None):
+            pu.arrange_key('DOWN')                     # last in its column: out into the bottom band
+            self.assertIn(['lyrics', 'bottom'], pu._ui_state['panels']['wide'])
+            pu.arrange_key('UP')                       # up from the bottom band: below the player
+            self.assertIn(['lyrics', 'below'], pu._ui_state['panels']['wide'])
+            pu.arrange_key('UP')                       # past the player: above it
+            self.assertIn(['lyrics', 'above'], pu._ui_state['panels']['wide'])
+            pu.arrange_key('LEFT')                     # out of the player's column: the left one
+            self.assertIn(['lyrics', 'left'], pu._ui_state['panels']['wide'])
+            pu.arrange_key('RIGHT')                    # towards the player: below it
+            self.assertIn(['lyrics', 'below'], pu._ui_state['panels']['wide'])
+        pu._ui_state['arranging'] = None

@@ -50,7 +50,7 @@ _DISC_DIR_RE = re.compile(r'^(cd|dis[ck]|dvd|vol(?:ume)?|part|side)\s*[._-]?\s*\
                           re.IGNORECASE)
 
 
-def _is_disc_dir(name: str) -> bool:
+def is_disc_dir(name: str) -> bool:
     """Whether ``name`` looks like a per-disc subfolder (CD1, Disc 2, DVD1, …)."""
     return bool(_DISC_DIR_RE.match(name.strip()))
 
@@ -127,7 +127,7 @@ def find_images(directory: str) -> list[str]:
 
     directory = os.path.abspath(directory)
     _scan(directory)
-    if _is_disc_dir(os.path.basename(directory)):
+    if is_disc_dir(os.path.basename(directory)):
         _scan(os.path.dirname(directory))          # album folder above CD1/CD2/…
     return found
 

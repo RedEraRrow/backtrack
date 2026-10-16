@@ -33,11 +33,26 @@ class LyricPaneLayoutTest(unittest.TestCase):
                  B(5, 10, speaker='Ann', aside='quietly', line=0, text='Two.'),
                  B(10, 15, speaker='Ann', aside='quietly', line=0, text='Three.')]
         rows = _frame(lyric_pane.Timeline(beats, 15.0))
-        said = [r for r in rows if '│' in r]
+        said = [r for r in rows if '│' in r and r.split('│')[1].strip()]
         self.assertEqual([r.split('│')[1].strip() for r in said], ['One.', 'Two.', 'Three.'])
         self.assertEqual(sum('Ann' in r for r in rows), 1)
         self.assertTrue(said[1].startswith('Ann'))                   # beside the current one
         self.assertTrue(any(r.startswith('(quietly)') for r in rows))  # the aside stays up
+
+    def test_a_long_aside_wraps_and_keeps_the_divider(self):
+        beats = [lyric_pane.Beat(0, 5, speaker='Ann', line=0, text='Hi.',
+                                 aside='putting on an appallingly bad French accent')]
+        rows = [r for r in _frame(lyric_pane.Timeline(beats, 5.0)) if r.strip()]
+        self.assertIn('accent)', ' '.join(r.split('│')[0] for r in rows))
+        self.assertTrue(all('│' in r for r in rows))
+
+    def test_a_tone_change_shows_its_note_under_the_line_so_far(self):
+        B = lyric_pane.Beat
+        beats = [B(0, 5, speaker='Ann', aside='French accent', line=0, text='Bonjour.'),
+                 B(5, 10, speaker='Ann', aside='back to her own', line=0, text='Hello.')]
+        rows = _frame(lyric_pane.Timeline(beats, 10.0))
+        self.assertEqual(sum('Ann' in r for r in rows), 1)
+        self.assertTrue(any(r.startswith('(back to her own)') for r in rows))
 
     def test_separate_lines_each_name_their_speaker(self):
         B = lyric_pane.Beat

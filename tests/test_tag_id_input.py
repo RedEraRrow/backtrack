@@ -14,7 +14,7 @@ class TagIdTest(unittest.TestCase):
             self.assertEqual(th.normalise_tag_id(typed), form)
 
     def test_bad_ids_say_why(self):
-        for typed, says in (("TIT", "four"), ("ZZZZ", "isn't a frame"), ("SYLT", "can't be typed in"),
+        for typed, says in (("TIT", "four"), ("ZZZZ", "isn't a frame"), ("GEOB", "can't be typed in"),
                             ("TXXX", "needs a description"), ("TPE2:x", "has no description"),
                             ("TPE2::eng", "has no language"), ("COMM[english]", "isn't a language code"), ("COMM:x:xyz", "isn't a language code"),
                             ("CO MM", "not a tag ID")):
@@ -31,7 +31,8 @@ class TagIdTest(unittest.TestCase):
 
     def test_suggestions_follow_where_youre_typing(self):
         self.assertIn(("TMOO", "Mood"), th.suggest_tag_ids("tm"))
-        self.assertNotIn("SYLT", [v for v, _n in th.suggest_tag_ids("SY")])           # nothing it would refuse
+        self.assertNotIn("GEOB", [v for v, _n in th.suggest_tag_ids("GE")])           # nothing it would refuse
+        self.assertIn("SYLT", [v for v, _n in th.suggest_tag_ids("SY")])              # filled from a lyrics file
         self.assertIn("TXXX:Mood", [v for v, _n in th.suggest_tag_ids("TXXX:mo")])
         self.assertIn("TXXX:Energy", [v for v, _n in th.suggest_tag_ids("TXXX:", {'TXXX': ["Energy"]})])
         self.assertIn(("COMM:Notes:fre", "French"), th.suggest_tag_ids("COMM:Notes:fr"))
@@ -43,9 +44,9 @@ class TagIdTest(unittest.TestCase):
         self.assertEqual(th.suggest_tag_ids("mood"), [])
 
     def test_only_keys_heading_for_a_good_id_get_typed(self):
-        for t in ["T", "TPE2", "txxx:", "TXXX:Mood", "COMM:Notes:en", "COMM[eng]", "COMM:x:eus"]:
+        for t in ["T", "TPE2", "txxx:", "TXXX:Mood", "COMM:Notes:en", "COMM[eng]", "COMM:x:eus", "SYLT", "SYLT:Karaoke:eng"]:
             self.assertTrue(th.could_be_tag_id(t), t)
-        for t in [" T", "ZZ", "mood", "TPE2:", "TPE2[", "TXXX:Mood:", "COMM:x:engl", "COMM[eng]x", "COMM[e]", "SYLT", "COMM:x:xy", "COMM[qq"]:
+        for t in [" T", "ZZ", "mood", "TPE2:", "TPE2[", "TXXX:Mood:", "COMM:x:engl", "COMM[eng]x", "COMM[e]", "GEOB", "COMM:x:xy", "COMM[qq"]:
             self.assertFalse(th.could_be_tag_id(t), t)
         self.assertFalse(th.could_be_tag_key("A=", "vorbis"))
         self.assertTrue(th.could_be_tag_key("----:com:MOOD", "mp4"))

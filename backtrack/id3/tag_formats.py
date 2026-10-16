@@ -508,24 +508,31 @@ def _vorbis_pictures(f) -> list:
     return pics
 
 
-def embedded_cover(path: str, preferred_desc: str | None = None,
-                   preferred_type: int | None = None) -> bytes | None:
-    """The picture embedded in an audio file (an ID3 APIC, an MP4 covr, a FLAC
-    or Ogg picture): the one described `preferred_desc`, else of `preferred_type`,
-    else the first. None when it has none."""
+def embedded_pictures(path: str) -> list:
+    """Every picture embedded in an audio file (ID3 APICs, MP4 covrs, FLAC or
+    Ogg pictures) as (data, picture type, description), in file order; [] when
+    it has none or can't be read."""
     k = kind(path)
     try:
         if k == 'id3':
-            tags = load_id3(path)
-            pics = [(f.data, f.type, f.desc) for f in tags.getall('APIC')]
-        elif k == 'mp4':
-            pics = [(bytes(c), 3, '') for c in (MP4(path).tags or {}).get('covr') or []]
-        elif k == 'vorbis':
+            return [(f.data, f.type, f.desc) for f in load_id3(path).getall('APIC')]
+        if k == 'mp4':
+            return [(bytes(c), 3, '') for c in (MP4(path).tags or {}).get('covr') or []]
+        if k == 'vorbis':
             f = mutagen.File(path)
-            pics = [(p.data, p.type, p.desc) for p in (_vorbis_pictures(f) if f else [])]
-        else:
-            return None
+            return [(p.data, p.type, p.desc) for p in (_vorbis_pictures(f) if f else [])]
     except (OSError, ValueError, mutagen.MutagenError):
+        pass
+    return []
+
+
+def embedded_cover(path: str, preferred_desc: str | None = None,
+                   preferred_type: int | None = None) -> bytes | None:
+    """The picture embedded in an audio file (embedded_pictures): the one
+    described `preferred_desc`, else of `preferred_type`, else the first. None
+    when it has none."""
+    pics = embedded_pictures(path)
+    if not pics:
         return None
     chosen = _pick(pics, preferred_desc, preferred_type)
     return bytes(chosen[0]) if chosen and chosen[0] else None

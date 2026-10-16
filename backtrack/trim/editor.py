@@ -26,7 +26,7 @@ import sys
 import time
 from dataclasses import dataclass
 
-from backtrack.playback.libvlc import vlc as _vlc  # noqa: E402,F401 (None without libvlc)
+from backtrack.playback.libvlc import vlc as _vlc, media_for  # noqa: E402,F401 (None without libvlc)
 _HAS_VLC = _vlc is not None
 
 from mutagen.id3 import ID3
@@ -48,10 +48,10 @@ from backtrack import tuning as tune
 # Same shape as AUDITION's nudge scheme (editor_view's _AUD_* steps): a coarse step
 # on ',' and '.', and a fine step that here is one frame rather than a fixed
 # 0.05s, probed per file, since frame length varies with sample rate.
-_COARSE_STEP = 0.25
-_JOIN_LEAD = 1.0     # seconds of "about to be cut" heard before the in-point
-_JOIN_TAIL = 1.0     # seconds of "just cut" heard after the out-point
-_TAIL_PREVIEW = 5.0  # window played by "up to the out-point"
+_COARSE_STEP = tune.TRIM_COARSE_STEP_S
+_JOIN_LEAD = tune.TRIM_JOIN_LEAD_S
+_JOIN_TAIL = tune.TRIM_JOIN_TAIL_S
+_TAIL_PREVIEW = tune.TRIM_TAIL_PREVIEW_S
 
 
 # ---------------------------------------------------------------------------
@@ -223,11 +223,11 @@ def _progress_bar(width: int, track_length: float, marks: Marks, play_pos: float
         lo = in_i if in_i is not None else 0
         hi = out_i if out_i is not None else inner - 1
         for i in range(lo, hi + 1):
-            cells[i] = '━'; styles[i] = C.PRIMARY
+            cells[i] = '━'; styles[i] = C.STRONG
     if in_i is not None:
-        cells[in_i] = '╺'; styles[in_i] = f"{C.ACCENT}{C.BOLD}"
+        cells[in_i] = '╺'; styles[in_i] = f"{C.BOLD}{C.ACCENT}"
     if out_i is not None:
-        cells[out_i] = '╸'; styles[out_i] = f"{C.ACCENT}{C.BOLD}"
+        cells[out_i] = '╸'; styles[out_i] = f"{C.BOLD}{C.ACCENT}"
 
     play_i = _pos(play_pos)
     rendered = []
@@ -451,7 +451,7 @@ def _run_marking_screen(
             os.dup2(devnull, 2); os.close(devnull)
             inst = _vlc.Instance('--no-video', '--quiet')
             mp_i = inst.media_player_new()           # type: ignore[union-attr]
-            mp_i.set_media(inst.media_new(path))     # type: ignore[union-attr]
+            mp_i.set_media(media_for(inst, path))     # type: ignore[union-attr]
             os.dup2(old_fd, 2); os.close(old_fd)
             mp = mp_i
         except (AttributeError, OSError):
@@ -466,7 +466,7 @@ def _run_marking_screen(
         start_s = max(0.0, start_s)
         mp.set_time(int(start_s * 1000))
         if not mp.is_playing():
-            mp.play(); time.sleep(0.15)
+            mp.play(); time.sleep(tune.EDITOR_PLAY_SETTLE_S)
         playing = True
         play_until = float('inf') if dur is None else time.time() + dur
         play_pos = start_s
@@ -563,9 +563,9 @@ def _run_marking_screen(
     def _mark_line(label: str, key: str, m: Marks) -> str:
         req = m.in_requested if key == 'in' else m.out_requested
         snap = m.in_snapped if key == 'in' else m.out_snapped
-        marker = f"{C.ACCENT}▸{C.RESET} " if active == key else "  "
+        marker = f"{C.ACCENT}›{C.RESET} " if active == key else "  "
         if req is None:
-            return f"{indent}{marker}{label}: {C.DIM}not set{C.RESET}"
+            return f"{indent}{marker}{label}: {C.DIM}{ui.stand_in('not set')}{C.RESET}"
         return f"{indent}{marker}{label}: {timefmt.clock(req)} → snapped {C.BOLD}{timefmt.clock(snap)}{C.RESET}"
 
     def _render() -> tuple[list[str], int, int, dict]:
@@ -592,7 +592,7 @@ def _run_marking_screen(
         cols = ui.get_terminal_width()
         avail = max(10, cols - 2 * ui.MARGIN_H - (4 if _promptmod.box_fits() else 0))   # inside the box
         timer_plain = f" {timefmt.clock(play_pos)} / {timefmt.clock(track_length)}"
-        play_glyph = f"{C.ACCENT}▸{C.RESET} " if playing else "  "
+        play_glyph = f"{C.ACCENT}▶{C.RESET} " if playing else "  "
         bar_width = max(10, avail - len(timer_plain) - 2)
         prog_row = len(out)
         bar = _progress_bar(bar_width, track_length, marks, play_pos)
@@ -601,7 +601,7 @@ def _run_marking_screen(
 
         if edit is not None:
             start_str, end_str = _render_edit_fields(edit)
-            out.append(f"{indent}{C.ACCENT}✎{C.RESET}  in  {start_str}    out  {end_str}")
+            out.append(f"{indent}in  {start_str}    out  {end_str}")
             out.append("")
 
         cells: dict = {}
@@ -640,7 +640,7 @@ def _run_marking_screen(
                 w.render(lines)
                 need_redraw = False
 
-            if not _wait_for_keypress(0.05):
+            if not _wait_for_keypress(tune.KEY_POLL_INTERVAL_S):
                 continue
             key = _read_key(fd)
             need_redraw = True

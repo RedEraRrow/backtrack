@@ -4,7 +4,7 @@ import time
 
 from backtrack.config import load_config, music_dirs, set_music_dirs, setting, update_config
 from backbone.log import log, configure as log_setup, quietly
-from backtrack import accents
+from backtrack import theme
 from backtrack.playback.session import SESSION
 from backtrack.music_library import (
     build_library, load_library_cache, save_library_cache,
@@ -119,7 +119,7 @@ def _run(config: dict) -> None:
     ui.clear_screen()
     roots = music_dirs(config)
     if not roots:
-        picked = prompt.path("Select your Music Directory:")
+        picked = prompt.path("Your music directory:")
         roots = [os.path.abspath(os.path.expanduser(picked))] if picked else []
 
     roots = [r for r in roots if os.path.isdir(r)]
@@ -178,9 +178,8 @@ def _wire_playback() -> None:
         elif action == 'prev':
             a.prev()
         elif action in ('vol_up', 'vol_down'):
-            a.set_volume(max(0, min(100, a.get_volume() + (5 if action == 'vol_up' else -5))))
-            from backtrack.playback.player_ui import volume_changed
-            volume_changed()                       # the level, for a moment, over whatever's showing
+            from backtrack.playback.player_ui import step_volume
+            step_volume(a, action == 'vol_up')     # the level, for a moment, over whatever's showing
         elif action == 'time':
             from backtrack.playback.player_ui import toggle_chapter_time
             toggle_chapter_time()
@@ -222,7 +221,7 @@ def _run_app() -> None:
     config = load_config()
     log_setup(bool(setting(config, "debug")))
     ui.set_marquee_bpm(setting(config, "scroll_bpm"))
-    accents.apply()
+    theme.apply()
     _wire_keyboard()
     _wire_playback()
     ui.enter_alt_screen()

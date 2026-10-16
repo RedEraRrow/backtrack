@@ -66,7 +66,7 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
 
     mp3s = [p for p in paths if tag_kind(p) == 'id3']
     per_file: dict = {}
-    for p in mp3s:
+    for p in ui.progress_iter(mp3s, "Reading credits", name=os.path.basename):
         pl = _read_people(p, tag_id)
         if pl is not None:
             per_file[p] = pl
@@ -98,7 +98,7 @@ def bulk_people_editor(paths: list, tag_id: str, library: list, header) -> None:
             choices.append(prompt.Choice(title=f"{r['role']} → {r['name']}", value=i,
                                          cells=[r['role'] or '-', r['name'] or '-', state]))
         choices.append(prompt.separator())
-        choices.append(prompt.Choice(title="＋  Add person to all files…", value="__add__"))
+        choices.append(prompt.Choice(title="+  Add person to all files…", value="__add__"))
         choices.append(prompt.Choice(title="✔ Save changes", value="__save__"))
 
         sub = f"{ui.plural(total, 'file')} · Enter a row to edit/remove"
@@ -183,7 +183,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
     """Edit a fraction tag (``n/N``: TRCK / TPOS / MVIN) across many files.
 
     Whichever half the selection already agrees on is seeded and editable; the
-    half that differs between files is shown as a dim ``──  (varies)`` and, left
+    half that differs between files is shown as a dim ``‹varies›`` and, left
     alone, keeps each file's own value.  So you can set one common disc total
     across tracks whose disc *numbers* differ (or renumber the discs while
     leaving mixed totals intact) without the editor flattening the other half to
@@ -196,7 +196,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
     mp3s = [p for p in paths if tag_kind(p) == 'id3']
     skipped_fmt = len(paths) - len(mp3s)
     existing: dict = {}
-    for p in mp3s:
+    for p in ui.progress_iter(mp3s, "Reading tags", name=os.path.basename):
         try:
             audio = load_id3(p)
         except (mutagen.id3.ID3NoHeaderError, OSError, ValueError, mutagen.MutagenError):  # type: ignore[reportPrivateImportUsage]
@@ -225,8 +225,8 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
             frozenset({'total'}): 'the totals differ, the number is shared',
             frozenset({'current', 'total'}): 'numbers and totals both differ',
             }[frozenset(varies)]
-    res = prompt.fraction_edit(f"{label} across {ui.plural(len(existing), 'file')}: {note}:",
-                               tag=base_id, value=seed, varies=varies)
+    res = prompt.fraction_edit(label, tag=base_id, value=seed, varies=varies,
+                               note=f"{ui.plural(len(existing), 'file')}: {note}.")
     if res is None or res is prompt.MODE_TOGGLE:
         return
     new_cur, new_tot = res.get('current'), res.get('total')
@@ -274,7 +274,7 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
         return
 
     count = errors = 0
-    for p in ordered:
+    for p in ui.progress_iter(ordered, "Writing tags", name=os.path.basename):
         if p not in apply_set:
             continue
         try:
@@ -302,17 +302,6 @@ def bulk_fraction_editor(paths: list, tag_id: str, library: list, header) -> Non
 # Preview columns for the pattern assignment: position · file · assigned value.
 # Position is just a list index, so it drops first; file and the assigned value
 # (the pending change) are kept.
-# Per-range schedule table. START holds a whole "YYYY-MM-DD HH:MM:SS" (19 cols)
-# at any terminal width; FROM/TO/EVERY/STEP are short and shrink around it.
-_SCHEDULE_COL_MINS = (4, 4, 19, 5, 5)
-
-
-# The numeric columns sit at their minimums and START gets just enough for a
-# whole stamp; whatever the terminal has left over falls into the last column as
-# trailing space, where it reads as a margin rather than a gap mid-row.
-_SCHEDULE_COL_RATIOS = (4, 4, 21, 5, 46)
-
-
 _PATTERN_COLUMNS = [
     prompt.Column(style='dynamic-dim', align='right', max_width=4, priority=1),
     prompt.Column(style='primary', flex=True),
@@ -328,7 +317,7 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
     # the per-disc seeding are position-based, so ordering from a stale cache
     # would point every range at the wrong tracks.
     merged = []
-    for p in paths:
+    for p in ui.progress_iter(paths, "Reading numbers", name=os.path.basename):
         s = dict(by_path.get(p, {'path': p}))
         s['path'] = p
         pairs = tw.read_number_pairs(p)
@@ -397,9 +386,9 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
         mode = state['mode']
         assignments: dict = {}
         if mode.startswith("Ranges"):
-            rows = prompt.list_edit(f"Ranges for {tag_id} (positions 1-{n}; range no. as "
-                                    f"{{n}} 3 / {{r}} III / {{en}} Three):",
-                                    state['rows'], ("FROM", "TO", "VALUE"))
+            rows = prompt.list_edit(f"Ranges for {tag_id}", state['rows'], ("FROM", "TO", "VALUE"),
+                                    note=f"Positions 1 to {n}. In VALUE, {{n}} is the range's number as 3, "
+                                         f"{{r}} as III and {{en}} as Three.")
             if not rows:
                 return False
             state['rows'] = rows              # kept, in case this is walked back to
@@ -441,15 +430,14 @@ def assign_by_pattern(paths: list, library: list, header) -> None:
                 return ['track', 'disc'] if col == 4 else []
 
             rows = prompt.list_edit(
-                f"Per-range {tag_id} schedule, a row per disc ({shown}); "
-                f"type digits into START, EVERY = days, STEP = track/disc:",
+                f"{tag_id} schedule per range",
                 state['sched'] or seeded, ("FROM", "TO", "START", "EVERY", "STEP"),
+                note=f"A row per disc ({shown}). Type the digits of START; EVERY is in days; "
+                     f"STEP is track or disc.",
                 col_hints=_sched_hints,
-                # START edits as a split date/time field and is given the width to
-                # show a whole stamp; the short numeric columns give way to it.
-                col_types={2: 'timestamp'},
-                col_mins=_SCHEDULE_COL_MINS,
-                col_ratios=_SCHEDULE_COL_RATIOS)
+                # START edits as a split date/time field, always wide enough for
+                # a whole stamp; the short numeric columns give way to it.
+                col_types={2: 'timestamp'})
             if not rows:
                 return False
             state['sched'] = rows             # kept, in case this is walked back to

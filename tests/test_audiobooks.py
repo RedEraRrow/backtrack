@@ -5,6 +5,8 @@ import shutil
 import tempfile
 import time
 import unittest
+
+from backtrack import tuning as tune
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -217,7 +219,7 @@ class SleepTimerTest(unittest.TestCase):
 
     def test_cycles_through_every_setting(self):
         seen = [self.s.cycle_sleep() for _ in range(7)]
-        self.assertEqual(seen, [15, 30, 45, 60, 'chapter', None, 15])
+        self.assertEqual(seen, [*tune.SLEEP_MINUTES, 'chapter', None, tune.SLEEP_MINUTES[0]])
 
     def test_fades_then_pauses(self):
         self.s.mp = _MP()

@@ -38,7 +38,7 @@ RATE_STEP = 0.1
 # Sleep timer: the lengths a key press cycles through (then end of chapter),
 # how long the volume fades before it pauses, and how far ahead of a chapter or
 # track end it pauses, so VLC can't move on to the next one first.
-SLEEP_MINUTES = (15, 30, 45, 60)
+SLEEP_MINUTES = (15, 30, 60, 90)
 SLEEP_FADE_S = 5.0
 SLEEP_END_EARLY_S = 0.5
 # Hex characters of a uuid4 kept as a session / process id. Short enough to sit
@@ -48,6 +48,11 @@ ID_SLICE_LEN = 8
 # tries × interval is the total grace period (~2.5 s).
 HANDOFF_POLL_TRIES = 25
 HANDOFF_POLL_INTERVAL_S = 0.1
+# Queue edits undo can take back, at most.
+UNDO_DEPTH = 20
+# The queue is saved between runs after every edit and track change, on stop,
+# and this often while playing.
+SAVE_QUEUE_EVERY_S = 10
 
 # --- local IPC (multi-window sessions) --------------------------------------
 
@@ -82,6 +87,13 @@ TOAST_LONG_S = 2.5
 from backbone.ui import STATUS_S, STATUS_WARNING_S  # noqa: E402,F401
 # The 'e' key's jump to near the end of a track (Diagnostics only).
 NEAR_END_JUMP_S = 35
+# The seek keys: seconds each moves, by action (player.<name>).
+SEEK_STEPS_S = {'back_1': -1, 'fwd_1': 1, 'back_5': -5, 'fwd_5': 5, 'back_30': -30, 'fwd_30': 30}
+# One press of a volume key, in percent. Presses this close together step from
+# the level the last one asked for (a joined window hears the host's level
+# only with its next snapshot), so quick presses add up.
+VOLUME_STEP = 5
+VOLUME_PRESS_WINDOW_S = 1.0
 
 # --- search ranking ---------------------------------------------------------
 
@@ -100,6 +112,27 @@ SEARCH_PLAY_COUNT_CAP = 20
 SEARCH_PLAY_COUNT_WEIGHT = 0.05
 # Multiplier applied to a recently-played track's fine score.
 SEARCH_RECENCY_BOOST = 1.15
+# Share of the typo tier's score staked on the edits looking like typing slips:
+# at 1.0 a wholly unexplained edit would score nothing.
+SEARCH_TYPO_SLIP_DISCOUNT = 0.35
+# How implausible each kind of edit is as a typing slip, 0 (a finger landing one
+# key over) to 1 (an unrelated letter). A dropped or doubled keystroke sits in
+# between: a common slip, but no evidence the query was aimed at this word.
+SEARCH_SLIP_ADJACENT = 0.0
+SEARCH_SLIP_INDEL = 0.6
+SEARCH_SLIP_RANDOM = 1.0
+# A subsequence match counts only this long and this dense (matched letters
+# over the span they're spread across).
+SEARCH_SUBSEQ_MIN_LEN = 3
+SEARCH_SUBSEQ_MIN_DENSITY = 0.5
+# Weight of an entity's group size against match quality when ranking them.
+SEARCH_ENTITY_SIZE = 50.0
+# Results listed per section (artists, albums, ...) before "more".
+SEARCH_SECTION_CAP = 4
+# Below this many characters, only entities are listed. Short prefixes match a
+# huge number of tracks and almost none of them usefully; the artist or album
+# you are heading for is nearly always what you meant by "jo".
+SEARCH_ENTITY_ONLY_UNTIL = 3
 
 # --- lyrics timing ----------------------------------------------------------
 
@@ -117,16 +150,18 @@ LYRIC_AIR_THRESHOLD_S = 2.0
 # then sits on screen through a two-second silence looking like it has already been
 # spoken. A short fixed anticipation reads as punctual either side of it.
 LYRIC_LEAD_IN_S = 0.35
+# The playback clock (session.elapsed) runs on its own between VLC's uneven
+# quarter-second readings: each new reading pulls it this fraction of the way
+# to agreeing, and one this far out is a jump (a seek, a stall) taken at once.
+CLOCK_EASE = 0.15
+CLOCK_JUMP_S = 0.75
 # Assumed reading rate for a stage direction shown as its own beat, in words per
 # second, and the floor below which even a one-word note is too quick to register.
 # Reading is about twice as fast as speech; 4 w/s is 240 wpm, ordinary silent reading.
 LYRIC_READ_WPS = 4.0
 LYRIC_READ_MIN_S = 0.8
-# How much of a direction's reading time the silence has to cover before the
-# direction is given that silence as a beat of its own. Below it, the direction
-# rides along as a cue on the neighbouring line instead, where it stays up for as
-# long as that line does: a 40-word transcriber's note flashed through a half-
-# second gap is unreadable, and unreadable is worse than late.
+# How much of a direction's reading time its own beat is given. When the silence
+# it sits in is shorter, the rest is borrowed from the end of the beat before.
 LYRIC_SD_READ_FRACTION = 0.75
 # The last SYLT entry has no following timestamp, so it is given this long.
 LYRIC_FABRICATED_END_MS = 5000
@@ -145,3 +180,46 @@ PANE_QUEUE_MIN_ROWS = 3
 
 # How long the volume shows (over the middle of the screen) after it changes.
 VOLUME_SHOWN_S = 1.5
+
+# --- player art -------------------------------------------------------------
+
+# The cover as an image: pixels sent per cell column (sharp on a Retina screen,
+# a fraction of a full-size cover), those of the quick first image (~1/16 the
+# pixels), and the size of the pieces a full image goes out in, so a resize
+# mid-send can cut it short.
+ART_INLINE_PX_PER_COL = 10
+ART_INLINE_PREVIEW_PX = 3
+ART_INLINE_CHUNK = 16 * 1024
+# Accents taken from the cover (the Album art theme): the least colourful a
+# colour may be to count, how far round the wheel a second one must be, and how
+# many colours the cover is reduced to, to find them.
+ART_ACCENT_MIN_SATURATION = 0.2
+ART_ACCENT_MIN_HUE_GAP = 0.08
+ART_ACCENT_PALETTE = 16
+
+# --- editors (lyrics, trim, chapters) ---------------------------------------
+
+# After telling VLC to play, before seeking: it ignores a seek until playing.
+EDITOR_PLAY_SETTLE_S = 0.15
+# Lyrics audition: seconds played at a line's start, and at its end, and how far
+# a whole line moves per arrow press, and per , / . press.
+LYRIC_AUDITION_CLIP_S = 1.0
+LYRIC_AUDITION_STEP_S = 0.05
+LYRIC_AUDITION_COARSE_S = 0.25
+# Trim: the coarse nudge (the fine one is one frame), seconds heard either side
+# of a join, and the window "up to the out-point" plays.
+TRIM_COARSE_STEP_S = 0.25
+TRIM_JOIN_LEAD_S = 1.0
+TRIM_JOIN_TAIL_S = 1.0
+TRIM_TAIL_PREVIEW_S = 5.0
+# Chapters: how close two starts may sit, and how far a rewritten file's length
+# may drift from the original's before it's rejected.
+CHAPTER_MIN_GAP_S = 0.1
+CHAPTER_LENGTH_TOLERANCE_S = 0.5
+
+# --- library and feeds ------------------------------------------------------
+
+# How often the library is checked against the disk while the app runs.
+LIBRARY_SYNC_INTERVAL_S = 30
+# How long to wait for a podcast feed or an enclosure before giving up.
+FEED_FETCH_TIMEOUT_S = 30.0

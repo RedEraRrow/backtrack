@@ -42,14 +42,12 @@ class Beat:
     kind: str = LINE
     speaker: str = ''          # who is talking
     line: int = -1             # the script line it is part of (-1: none), shared by its segments
-    aside: str = ''            # the script's manner note for the whole line
+    aside: str = ''            # the manner it's spoken in: the line's note, or a mid-line tone note since
     text: str = ''             # what they say, markdown intact
-    before: tuple = ()         # directions that introduce it
-    after: tuple = ()          # directions that interrupt or follow it
 
     @property
     def blank(self) -> bool:
-        return not (self.text or self.before or self.after or self.speaker)
+        return not (self.text or self.speaker)
 
 
 @dataclass(frozen=True)
@@ -69,23 +67,23 @@ class Geometry:
 
 
 def handover(start: float, end: float, next_start: float, keep_whole: bool,
-             floor: float = 0.0) -> float:
+             floor: float = 0.0, lead: float = tune.LYRIC_LEAD_IN_S) -> float:
     """The instant the next beat takes over from one running start-end.
 
-    It sits a short run-up (LYRIC_LEAD_IN_S) before `next_start`, because a line
-    arriving exactly on its first word arrives too late to read. The run-up comes
+    It sits a short run-up (`lead`: Settings → Show lyrics early by) before
+    `next_start`, as a line arriving exactly on its first word can arrive too
+    late to read; 0 puts every line on its first word. The run-up comes
     out of any silence first, then out of this beat's own tail, which stays on
     screen dimmed and never gives up more than half of itself. A direction
     (`keep_whole`) gives up nothing: it is short, it is what's being read, and the
     line after it needs no run-up. Never earlier than `floor`.
     """
-    lead = tune.LYRIC_LEAD_IN_S
     earliest = end if keep_whole else end - min(lead, (end - start) / 2)
     earliest = max(earliest, start, floor)
     return max(floor, min(next_start, max(earliest, next_start - lead)))
 
 
-def _tile(beats: list[Beat], duration: float) -> list[Beat]:
+def _tile(beats: list[Beat], duration: float, lead: float = tune.LYRIC_LEAD_IN_S) -> list[Beat]:
     """Turn a sorted run of beats into a tiling of the track.
 
     The boundary between two beats is ONE number (the instant the second takes
@@ -101,7 +99,7 @@ def _tile(beats: list[Beat], duration: float) -> list[Beat]:
 
     bounds = [0.0]                                  # the track starts somewhere
     for i, b in enumerate(beats[:-1]):
-        bounds.append(handover(b.start, b.end, beats[i + 1].start, b.kind == DIRECTION, bounds[-1]))
+        bounds.append(handover(b.start, b.end, beats[i + 1].start, b.kind == DIRECTION, bounds[-1], lead))
     bounds.append(max(duration, beats[-1].end, bounds[-1]))
 
     return [Beat(**{**b.__dict__, 'start': bounds[i], 'end': bounds[i + 1]})
@@ -111,8 +109,8 @@ def _tile(beats: list[Beat], duration: float) -> list[Beat]:
 class Timeline:
     """A track's beats, tiled, with the one lookup everything uses."""
 
-    def __init__(self, beats: list[Beat], duration: float = 0.0):
-        self.beats = _tile(beats, duration)
+    def __init__(self, beats: list[Beat], duration: float = 0.0, lead: float = tune.LYRIC_LEAD_IN_S):
+        self.beats = _tile(beats, duration, lead)
         self._ends = [b.end for b in self.beats]
         # Song lyrics name no one: their words then take the speaker column too.
         self.has_speakers = any(b.speaker for b in self.beats)
@@ -133,7 +131,8 @@ class Timeline:
 
 # --- building one from each source ------------------------------------------
 
-def from_chunks(chunks: list[dict], times: list[tuple], duration: float) -> Timeline:
+def from_chunks(chunks: list[dict], times: list[tuple], duration: float,
+                lead: float = tune.LYRIC_LEAD_IN_S) -> Timeline:
     """From DialoguePlaybackState's chunks."""
     beats = []
     for c, (a, b) in zip(chunks, times):
@@ -141,15 +140,13 @@ def from_chunks(chunks: list[dict], times: list[tuple], duration: float) -> Time
         beats.append(Beat(start=float(a), end=float(b), kind=kind,
                           speaker=(c.get('speaker') or '').strip(),
                           line=int(c.get('line', -1)),
-                          aside=(c.get('stage_dir') or '').strip() if kind != DIRECTION else '',
+                          aside=(c.get('stage_dir') if kind != DIRECTION else c.get('aside') or '').strip(),
                           text=(c.get('stage_dir') if kind == DIRECTION
-                                else c.get('text') or '').strip(),
-                          before=tuple(c.get('pre') or ()),
-                          after=tuple(c.get('cues') or ())))
-    return Timeline(beats, duration)
+                                else c.get('text') or '').strip()))
+    return Timeline(beats, duration, lead)
 
 
-def from_sylt(entries: list[tuple], duration: float) -> Timeline:
+def from_sylt(entries: list[tuple], duration: float, lead: float = tune.LYRIC_LEAD_IN_S) -> Timeline:
     """From SYLT: timestamped lines, so each runs until the next one starts."""
     beats = []
     for i, (text, ms) in enumerate(entries):
@@ -157,28 +154,101 @@ def from_sylt(entries: list[tuple], duration: float) -> Timeline:
         end = (entries[i + 1][1] / 1000.0 if i + 1 < len(entries)
                else start + tune.LYRIC_FABRICATED_END_MS / 1000.0)
         beats.append(Beat(start=start, end=end, text=(text or '').strip()))
-    return Timeline(beats, duration)
+    return Timeline(beats, duration, lead)
 
 
-def from_uslt(lines: list[str], line_times: list[tuple], duration: float) -> Timeline:
+def from_uslt(lines: list[str], line_times: list[tuple], duration: float,
+              lead: float = tune.LYRIC_LEAD_IN_S) -> Timeline:
     """From USLT: unsynced lyrics paced over the track by word count."""
     beats = [Beat(start=float(a), end=float(b), text=(t or '').strip())
              for t, (a, b) in zip(lines, line_times)]
-    return Timeline(beats, duration)
+    return Timeline(beats, duration, lead)
+
+
+def timeline_for(path: str, audio, duration: float, source: str = 'auto',
+                 lead: float = tune.LYRIC_LEAD_IN_S) -> tuple:
+    """This track's lyrics as one timeline, from where the `lyrics_source`
+    setting says (lyrics.files.SOURCES); (the timeline or None, what it was
+    read from, whether its timing is a guess). Whichever it is, it becomes the
+    same beats, so nothing downstream asks which kind of lyrics these are.
+
+    Where each comes from, richest first: a transcript beside the track (.md,
+    timed by its .json) knows speakers and directions; synced lyrics (SYLT, or
+    a .lrc, subtitles or Whisper .json beside the track) know real timings; unsynced words (USLT, a
+    .txt) only the words, paced across the track."""
+    import os
+    from backbone.log import quietly
+    from backtrack.lyrics import bkts, files as lyric_files, formats as ly
+
+    def transcript():
+        state = ly.DialoguePlaybackState(path, track_duration=duration)
+        if not state.is_active():
+            return None
+        guess = state.timing_source == 'estimated'
+        if guess and source == 'synced':
+            return None
+        return (from_chunks(state.expanded_chunks, state.line_times, duration, lead),
+                list(dict.fromkeys(bkts.label(p) for p in (state.md_path, state.json_path) if p)), guess)
+
+    beside: list = []
+
+    def file_lines() -> tuple:
+        """The lyrics file beside the track and its lines, read once."""
+        if not beside:
+            found = lyric_files.sidecar(path)
+            lines = []
+            if found:
+                with quietly():
+                    lines = [(t, ms) for t, ms in lyric_files.read_file(found) if t]
+            beside.append((found, lines))
+        return beside[0]
+
+    def paced(words: list, name: str) -> tuple:
+        return from_uslt(words, ly.build_uslt_line_times(words, duration), duration, lead), [name], True
+
+    def file_synced():
+        found, lines = file_lines()
+        timed = sorted(((t, ms) for t, ms in lines if ms is not None), key=lambda e: e[1])
+        return (from_sylt(timed, duration, lead), [os.path.basename(found)], False) if timed else None
+
+    def file_words():
+        found, lines = file_lines()
+        if not lines or any(ms is not None for _t, ms in lines):
+            return None                                     # none, or timed (file_synced's)
+        return paced([t for t, _ms in lines], os.path.basename(found))
+
+    def sylt():
+        timed = ly._parse_sylt(audio) if audio else []
+        return (from_sylt(timed, duration, lead), ['embedded SYLT'], False) if timed else None
+
+    def uslt():
+        words = [line for line, _ in ly._parse_uslt(audio)] if audio else []
+        return paced(words, 'embedded USLT') if words else None
+
+    order = {
+        'files':    (transcript, file_synced, file_words, sylt, uslt),
+        'embedded': (sylt, uslt),
+        'synced':   (transcript, sylt, file_synced),
+    }.get(source, (transcript, sylt, file_synced, uslt, file_words))
+    for get in order:
+        found = get()
+        if found:
+            return found
+    return None, [], False
 
 
 # --- drawing -----------------------------------------------------------------
 
-def _speaker_rows(beat: Beat, width: int, active: bool) -> list[str]:
-    """The speaker column: name, and the script's manner note under it."""
+def _speaker_rows(beat: Beat, width: int, active: bool, named: bool = True) -> list[str]:
+    """The speaker column: name, and the manner note under it, wrapped. Not
+    `named`, the note alone: a tone change partway through a line already named."""
+    from backtrack.lyrics.formats import _dir_rows
     if not beat.speaker:
         return []
     name = C.BOLD + ui.truncate_text(beat.speaker, width) + C.RESET
-    rows = [name if active else f"{C.DIM}{ui.truncate_text(beat.speaker, width)}{C.RESET}"]
-    if beat.aside:
-        rows.append(f"{C.DIM}{C.ITALIC}"
-                    f"{ui.truncate_text('(' + beat.aside + ')', width)}{C.RESET}")
-    return rows
+    rows = [name if active else f"{C.DIM}{ui.truncate_text(beat.speaker, width)}{C.RESET}"] if named else []
+    # clipped too: a single word wider than the column can't wrap
+    return rows + [ui.clip_ansi(r, width) for r in _dir_rows(beat.aside, width, C.DIM)]
 
 
 def _labels_line(timeline: Timeline, shown: list[int], cur: int, idx: int) -> bool:
@@ -192,25 +262,24 @@ def _labels_line(timeline: Timeline, shown: list[int], cur: int, idx: int) -> bo
     return idx == (cur if cur in run else run[0])
 
 
-def _text_rows(beat: Beat, width: int, active: bool) -> list[str]:
-    """The text column: what is introduced, what is said, what interrupts.
+def _tone_changes(timeline: Timeline, idx: int) -> bool:
+    """Whether beat `idx` is spoken in a different manner from the part of its
+    line before it (a mid-line tone note), so its aside shows unnamed."""
+    beats, line = timeline.beats, timeline.beats[idx].line
+    j = idx - 1
+    while j >= 0 and beats[j].line < 0:
+        j -= 1
+    return line >= 0 and j >= 0 and beats[j].line == line and bool(beats[idx].aside) \
+        and beats[j].aside != beats[idx].aside
 
-    In that order, always. A direction that introduces a line reads above it
-    (the chime sounds before the announcement), and one that interrupts reads
-    below. Getting this backwards put the effect before its cause.
-    """
+
+def _text_rows(beat: Beat, width: int, active: bool) -> list[str]:
+    """The text column: what is said, or the direction that is this beat."""
     from backtrack.lyrics.formats import _dir_rows, _md_rows
     base = '' if active else C.DIM
-    rows: list[str] = []
-    for d in beat.before:
-        rows += _dir_rows(d, width, base, active)
     if beat.kind == DIRECTION:
-        rows += _dir_rows(beat.text, width, base, active)
-    elif beat.text:
-        rows += _md_rows(beat.text, width, base=base, active=active) or ['']
-    for d in beat.after:
-        rows += _dir_rows(d, width, base, active)
-    return rows
+        return _dir_rows(beat.text, width, base, active)
+    return (_md_rows(beat.text, width, base=base, active=active) or ['']) if beat.text else []
 
 
 def frame(timeline: Timeline, elapsed: float, geom: Geometry) -> list[str]:
@@ -244,7 +313,11 @@ def frame(timeline: Timeline, elapsed: float, geom: Geometry) -> list[str]:
                 body.append('')
             continue
         active = idx == cur
-        left = _speaker_rows(beat, spk_w, active) if spk_w and _labels_line(timeline, shown, cur, idx) else []
+        left = []
+        if spk_w and _labels_line(timeline, shown, cur, idx):
+            left = _speaker_rows(beat, spk_w, active)
+        elif spk_w and _tone_changes(timeline, idx):
+            left = _speaker_rows(beat, spk_w, active, named=False)
         right = _text_rows(beat, txt_w, active)
         rows = max(len(left), len(right))
         if active:
@@ -252,7 +325,7 @@ def frame(timeline: Timeline, elapsed: float, geom: Geometry) -> list[str]:
         for r in range(rows):
             lhs = left[r] if r < len(left) else ''
             rhs = right[r] if r < len(right) else ''
-            bar = f"{C.DIM}│{C.RESET}" if rhs else ' '
+            bar = f"{C.FRAME}│{C.RESET}" if right else ' '
             gutter = ' ' * max(1, spk_w + 2 - ui.visual_len(lhs)) if spk_w else ''
             body.append(f"{lhs}{gutter}{bar} {rhs}")
         body.append('')

@@ -6,7 +6,6 @@ from __future__ import annotations
 import os
 
 from backbone import prompt, ui
-from backbone.nav import NAV_STACK
 from backtrack.config import library_name, load_config, music_dirs, setting
 from backtrack.menus.common import _menu_header
 from backtrack.menus.play import (
@@ -29,7 +28,8 @@ def handle_directory(library_ref: list) -> None:
             _folder(library_ref, roots[0], names[roots[0]], [], 0)
             return
         pick = prompt.select("", choices=[prompt.Choice(title=names[d], value=d) for d in roots],
-                             header=_menu_header("Directory"), place=place, choose_label="Open")
+                             header=_menu_header("Directory"), place=place, choose_label="Open",
+                             allow_back=False)          # the tab's top: back goes nowhere
         if not pick:
             return
         jump = _folder(library_ref, pick, names[pick], [prompt.Trail(list(names.values()), roots, pick, 0)], 1)
@@ -84,48 +84,44 @@ def _folder(library_ref: list, path: str, name: str, trail: list, depth: int) ->
     audio files. As a column browser, `trail` is the folders above it; a click
     on one of their rows comes back as the JumpTo returned, for the level it
     names to take."""
-    NAV_STACK.append(name)
     place = prompt.ListPlace()
-    try:
-        while True:
-            cfg = load_config()
-            library = library_ref[0]
-            subs, files = _listing(path, cfg)
-            under = _under(library, path, subs)
-            rows = ([prompt.Choice(title=f"{os.path.basename(s)}/", value=s) for s in subs]
-                    + [prompt.Choice(title=os.path.basename(f), value=f) for f in files])
-            if not rows:
-                ui.show_status(f"No folders or audio files in {name}.")
-                return None
-            everything = [t['path'] for s in subs for t in under[s]] + files
-            show_editor = setting(cfg, "show_metadata_editor")
-            folder_paths = {s: [t['path'] for t in under[s]] for s in subs}
+    while True:
+        cfg = load_config()
+        library = library_ref[0]
+        subs, files = _listing(path, cfg)
+        under = _under(library, path, subs)
+        rows = ([prompt.Choice(title=f"{os.path.basename(s)}/", value=s) for s in subs]
+                + [prompt.Choice(title=os.path.basename(f), value=f) for f in files])
+        if not rows:
+            ui.show_status(f"No folders or audio files in {name}.")
+            return None
+        everything = [t['path'] for s in subs for t in under[s]] + files
+        show_editor = setting(cfg, "show_metadata_editor")
+        folder_paths = {s: [t['path'] for t in under[s]] for s in subs}
 
-            def edit(value):
-                return _edit_paths(library, folder_paths.get(value) or [value], value)
+        def edit(value):
+            return _edit_paths(library, folder_paths.get(value) or [value], value)
 
-            pick = prompt.select(
-                "", choices=rows, header=_menu_header(name), place=place, trail=trail,
-                actions=_list_actions(show_editor), choose_label="Open",
-                on_inspect=edit if show_editor else None, inspect_key='library.edit',
-                extra_hints={"library.edit": "edit"} if show_editor else None,
-                **_queue_shortcut_kwargs(library, group_paths=folder_paths, list_paths=everything),
-            )
-            if isinstance(pick, prompt.JumpTo):
-                return pick                      # a folder above: theirs
-            if not pick:
-                return None
-            if _list_result(pick, library, lambda: everything, lambda: None):
-                continue
-            if pick in under:
-                here = prompt.Trail([os.path.basename(v) for v in subs + files], subs + files, pick, depth)
-                jump = _folder(library_ref, pick, os.path.basename(pick), trail + [here], depth + 1)
-                if jump is not None and jump.depth != depth:
-                    return jump
-                if jump is not None:
-                    place.value = jump.value     # back here, at the one clicked
-            elif pick in files:
-                play_picked(files, files.index(pick), library)
-    finally:
-        if NAV_STACK and NAV_STACK[-1] == name:
-            NAV_STACK.pop()
+        pick = prompt.select(
+            "", choices=rows, header=_menu_header(name), place=place, trail=trail,
+            actions=_list_actions(show_editor), choose_label="Open",
+            allow_back=depth > 0,                    # one library: its folder is the tab's top
+            on_inspect=edit if show_editor else None, inspect_key='library.edit',
+            extra_hints={"library.edit": "edit"} if show_editor else None,
+            **_queue_shortcut_kwargs(library, group_paths=folder_paths, list_paths=everything),
+        )
+        if isinstance(pick, prompt.JumpTo):
+            return pick                      # a folder above: theirs
+        if not pick:
+            return None
+        if _list_result(pick, library, lambda: everything, lambda: None):
+            continue
+        if pick in under:
+            here = prompt.Trail([os.path.basename(v) for v in subs + files], subs + files, pick, depth)
+            jump = _folder(library_ref, pick, os.path.basename(pick), trail + [here], depth + 1)
+            if jump is not None and jump.depth != depth:
+                return jump
+            if jump is not None:
+                place.value = jump.value     # back here, at the one clicked
+        elif pick in files:
+            play_picked(files, files.index(pick), library)

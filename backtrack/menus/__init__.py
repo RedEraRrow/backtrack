@@ -34,7 +34,6 @@ def main_menu(library_ref: list, on_start=None) -> None:
 
 
 def _now_playing() -> None:
-    """Now playing: the player (the empty one while nothing plays), until it's
-    left, back to the tab before."""
+    """Now playing: the player (the empty one while nothing plays)."""
     from backtrack.playback.player import now_playing_tab
     now_playing_tab()

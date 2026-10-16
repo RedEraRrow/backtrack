@@ -11,6 +11,7 @@ from backtrack.id3.bulk_menu import bulk_id3_manager
 from backtrack.menus.common import _disc_track_cell, _menu_header
 from backtrack.menus.play import _PLAY_ACTIONS, _list_actions, _play_list, _queue_shortcut_kwargs, _sorted_paths, play_picked
 from backtrack.config import setting
+from backtrack import tuning as tune
 
 
 # Search scope cycled with ^F in the live search screen (default: all fields).
@@ -121,13 +122,10 @@ _SECTIONS = (('artist', 'ARTISTS', 'artist'), ('album', 'ALBUMS', 'album'),
              ('genre', 'GENRES', 'genre'), ('people', 'PEOPLE', 'person'))
 
 
-_SECTION_CAP = 4
+_SECTION_CAP = tune.SEARCH_SECTION_CAP
 
 
-# Below this many characters, only entities are listed. Short prefixes match a
-# huge number of tracks and almost none of them usefully; the artist or album
-# you are heading for is nearly always what you meant by "jo".
-_ENTITY_ONLY_UNTIL = 3
+_ENTITY_ONLY_UNTIL = tune.SEARCH_ENTITY_ONLY_UNTIL
 
 
 def _entity_cells(ent, tokens: list) -> list:

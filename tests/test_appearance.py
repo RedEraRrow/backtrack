@@ -1,47 +1,20 @@
-"""Accent colour (presets, custom hex, the Settings picker) and the player's
-remembered track-details line."""
+"""The theme (the Settings picker, and settings written before themes) and
+the player's remembered track-details line."""
 import io
-import os
+import json
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from backtrack import config
 from backbone import ui as u
 
 
-class AccentTest(unittest.TestCase):
-    def tearDown(self):
-        u.set_accent(u.DEFAULT_ACCENT)
-
-    def test_codes(self):
-        with patch.dict(os.environ, {'COLORTERM': 'truecolor'}):
-            self.assertEqual(u.accent_code('green'), '\033[1;32m')         # the terminal's own green
-            self.assertEqual(u.accent_code('#FFB000'), '\033[1;38;2;255;176;0m')
-            self.assertEqual(u.accent_code('#fb0'), '\033[1;38;2;255;187;0m')
-        with patch.dict(os.environ, {'COLORTERM': ''}):
-            self.assertEqual(u.accent_code('amber'), '\033[1;38;5;214m')  # nearest of 256
-        for bad in (None, 'nope', '#12', '#GGGGGG', ''):
-            self.assertIsNone(u.accent_code(bad), bad)
-
-    def test_set_accent_falls_back_and_respects_no_colour(self):
-        u.set_accent('#nonsense')
-        self.assertEqual(u.Colors.ACCENT, '\033[1;32m')
-        u.set_colour(False)
-        try:
-            u.set_accent('red')
-            self.assertEqual(u.Colors.ACCENT, '')
-        finally:
-            u.set_colour(True)
-        self.assertEqual(u.Colors.ACCENT, '\033[1;31m')
-
-    def test_labels(self):
-        self.assertEqual([u.accent_label(v) for v in ('rose', '#ab12cd', None, 'junk')],
-                         ['Rose', '#AB12CD', 'Green', 'Green'])
-
-
-def _pick(keys, typed=None):
-    """Drive Settings → Accent colour with scripted keys; returns the config."""
+def _pick(keys, screen='_pick_theme'):
+    """Drive Settings → Theme (or another of its screens) with scripted keys;
+    returns the config."""
     from backbone.prompt import lists
     from backtrack.menus import settings
 
@@ -51,16 +24,18 @@ def _pick(keys, typed=None):
         def clear(self): pass
         def anchor_reset(self): pass
     feed = iter(keys)
-    cfg = {'accent_colour': 'green'}
+    cfg = {'theme': 'terminal'}
+    saved = _pick.saved = []
     real, sys.stdout = sys.stdout, io.StringIO()
     try:
         with patch.object(lists, '_read_key', lambda fd: next(feed)), \
              patch.object(lists, '_wait_for_keypress', lambda t: True), \
              patch.object(lists, '_set_raw'), patch.object(lists, '_restore_term_attrs'), \
              patch.object(lists, '_get_term_attrs'), patch.object(lists, '_Widget', W), \
-             patch.object(sys.modules['backbone.prompt.text'], 'text', lambda *a, **k: typed), \
+             patch.object(settings, '_now_playing_path', lambda: None), \
+             patch.object(settings, '_commit', lambda cfg, *keys: saved.append({k: cfg[k] for k in keys})), \
              patch.object(lists.sys.stdin, 'fileno', lambda: 0):
-            settings._pick_accent(cfg)
+            getattr(settings, screen)(cfg)
     finally:
         sys.stdout = real
     return cfg
@@ -68,16 +43,46 @@ def _pick(keys, typed=None):
 
 class PickerTest(unittest.TestCase):
     def tearDown(self):
-        u.set_accent(u.DEFAULT_ACCENT)
+        u.set_terminal_accents(*u.DEFAULT_ACCENTS)
+        u.set_theme(u.DEFAULT_THEME)
 
-    def test_picking_a_preset_applies_it(self):
-        cfg = _pick(['DOWN', 'ENTER', 'ESC'])                   # Green → Red
+    def test_picking_a_theme_applies_it(self):
+        cfg = _pick(['DOWN', 'ENTER', 'ESC'])                   # Terminal → Teletext
+        self.assertEqual(cfg['theme'], 'teletext')
+        self.assertEqual(u.Colors.ACCENT, u.theme_codes('teletext')['ACCENT'])
+        self.assertEqual(_pick.saved, [{'theme': 'teletext'}])     # saved as it's picked, not on leaving
+
+    def test_terminals_accent_is_picked_from_the_terminals_colours(self):
+        cfg = _pick(['ENTER', 'DOWN', 'ENTER', 'ESC', 'ESC'], '_pick_accents')   # Accent: Green → Red
         self.assertEqual(cfg['accent_colour'], 'red')
-        self.assertEqual(u.Colors.ACCENT, '\033[1;31m')
+        self.assertEqual(u.Colors.ACCENT, u.TERMINAL_ACCENTS['red'][1])
+        self.assertEqual(_pick.saved, [{'accent_colour': 'red'}])
 
-    def test_custom_colour_is_normalised_and_bad_input_changes_nothing(self):
-        self.assertEqual(_pick(['END', 'ENTER', 'ESC'], typed='4fc3f7')['accent_colour'], '#4FC3F7')
-        self.assertEqual(_pick(['END', 'ENTER', 'ESC'], typed='blue-ish')['accent_colour'], 'green')
+    def test_album_art_is_offered_last(self):
+        self.assertEqual(_pick(['END', 'ENTER', 'ESC'])['theme'], 'album_art')
+
+
+class OldSettingsTest(unittest.TestCase):
+    """A config written before themes: colours from album art becomes the
+    Album art theme; anything else, Terminal."""
+
+    def load(self, saved: dict) -> dict:
+        path = Path(tempfile.mkdtemp()) / "config.json"
+        path.write_text(json.dumps(saved))
+        with patch.object(config, 'CONFIG_FILE', path):
+            return config.load_config()
+
+    def test_art_mode_becomes_the_album_art_theme(self):
+        self.assertEqual(self.load({'accent_colour': 'rose', 'accent_from_art': True})['theme'], 'album_art')
+
+    def test_a_chosen_accent_becomes_terminal(self):
+        self.assertEqual(self.load({'accent_colour': 'rose', 'accent_from_art': False})['theme'], 'terminal')
+
+    def test_a_much_older_theme_is_replaced(self):
+        self.assertEqual(self.load({'theme': {'accent': '\033[1;31m'}, 'accent_from_art': False})['theme'], 'terminal')
+
+    def test_a_theme_already_chosen_stays(self):
+        self.assertEqual(self.load({'theme': 'amber', 'accent_from_art': True})['theme'], 'amber')
 
 
 class PlayerDetailsTest(unittest.TestCase):

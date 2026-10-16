@@ -10,7 +10,14 @@ DEFAULT_CONFIG = {
     # doing that" rather than "what is playing".
     "debug": False,
     "history_enabled": True,
+    # The lyric editor's tap compensation: a tapped timing is moved this much
+    # earlier, for the moment it takes to react (Settings → Tap lead-in).
     "lyric_lead_in": 2.0,
+    # How early the player shows each line before it's sung (Settings → Show
+    # lyrics early by): a moment to start reading. 0 puts it on its first word.
+    "lyrics_show_early": 0.35,
+    # Where the player's lyrics come from: a lyrics.files.SOURCES key.
+    "lyrics_source": "auto",
     # How fast truncated names scroll: a column per beat.
     "scroll_bpm": 100,
     "music_directories": [],
@@ -47,13 +54,13 @@ DEFAULT_CONFIG = {
     # Album art in the player as a real image rather than text blocks. iTerm2
     # only (elsewhere the text art is used regardless). Experimental.
     "art_inline_images": False,
-    # The accent colour: a ui.ACCENT_PRESETS key, or "#RRGGBB".
+    # The theme: a backbone ui.THEMES key, or "album_art" (Terminal, with its
+    # accents taken from the playing track's cover; see theme.py).
+    "theme": "terminal",
+    # Terminal's two accents (and Album art's with no colourful cover): names
+    # from backbone's ui.TERMINAL_ACCENTS, the terminal's own colours.
     "accent_colour": "green",
-    # The second accent (panel borders, the active tab), the same way.
     "accent_colour_2": "cyan",
-    # Take both accents from the playing track's album art instead (the two
-    # above when nothing plays or the cover is all greys).
-    "accent_from_art": False,
     # The player's track details line (year, genre, disc/track…), which `m`
     # shows or hides; remembered between plays.
     "player_show_metadata": True,
@@ -65,6 +72,8 @@ DEFAULT_CONFIG = {
     # The player's transport buttons as Material Design icons, which only a
     # Nerd Font has; off uses the Unicode media symbols every font falls back to.
     "player_nerd_font_icons": False,
+    "player_people_all_credits": True,
+    "player_visualiser": "bars",
     # Playback volume, 0-100. Owned by the player session: restored at launch and
     # written back whenever it changes.
     "volume": 100,
@@ -132,6 +141,12 @@ def load_config() -> dict:
 
     with open(CONFIG_FILE, "r") as f:
         cfg = json.load(f)
+
+    # Written before themes (or by a much older version, whose "theme" was a
+    # dict of codes): colours from album art is now the Album art theme; a
+    # chosen accent colour has no theme to go to, so it's Terminal.
+    if not isinstance(cfg.get("theme"), str):
+        cfg["theme"] = "album_art" if cfg.get("accent_from_art") else "terminal"
 
     for key, value in DEFAULT_CONFIG.items():
         cfg.setdefault(key, value)

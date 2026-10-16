@@ -22,9 +22,7 @@ _TIER = {
 
 # "Solid" (contiguous) tiers. Each solid token adds a large band so any exact
 # substring match sorts above purely-fuzzy (subsequence/typo) results.
-# Share of the typo tier's score staked on the edits looking like typing slips
-# (see _lev): at 1.0 a wholly unexplained edit would score nothing.
-_TYPO_SLIP_DISCOUNT = 0.35
+_TYPO_SLIP_DISCOUNT = tune.SEARCH_TYPO_SLIP_DISCOUNT
 
 _SOLID = {'exact', 'prefix', 'word', 'substring'}
 _SOLID_BAND = tune.SEARCH_SOLID_BAND
@@ -97,12 +95,9 @@ def use_layout(rows: tuple[str, ...]) -> None:
 
 
 
-# How implausible each kind of edit is as a typing slip, 0 (a finger landing one
-# key over) to 1 (an unrelated letter). A dropped or doubled keystroke sits in
-# between: a common slip, but no evidence the query was aimed at this word.
-_SLIP_ADJACENT = 0.0
-_SLIP_INDEL    = 0.6
-_SLIP_RANDOM   = 1.0
+_SLIP_ADJACENT = tune.SEARCH_SLIP_ADJACENT
+_SLIP_INDEL = tune.SEARCH_SLIP_INDEL
+_SLIP_RANDOM = tune.SEARCH_SLIP_RANDOM
 
 # Slip rides in the fraction of each DP cost, well below the 1.0 an edit costs,
 # so a cell still compares by edit count first and only then by plausibility,
@@ -207,8 +202,8 @@ def _typo(value_lower: str, token: str):
 #
 # Requiring the match to *begin* at a word boundary is not sufficient on its
 # own: the Sark title starts its run on "Sark". Density is what separates them.
-_SUBSEQ_MIN_LEN = 3
-_SUBSEQ_MIN_DENSITY = 0.5
+_SUBSEQ_MIN_LEN = tune.SEARCH_SUBSEQ_MIN_LEN
+_SUBSEQ_MIN_DENSITY = tune.SEARCH_SUBSEQ_MIN_DENSITY
 
 
 def _starts_word(value_lower: str, i: int) -> bool:
@@ -479,7 +474,7 @@ ENTITY_FIELDS = ('artist', 'album', 'composer', 'lyricist', 'genre', 'people')
 # comparably good matches the bigger group wins; that is the whole point of
 # collapsing them.
 _ENTITY_QUALITY = tune.SEARCH_ENTITY_QUALITY
-_ENTITY_SIZE = 50.0
+_ENTITY_SIZE = tune.SEARCH_ENTITY_SIZE
 
 
 

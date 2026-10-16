@@ -113,7 +113,7 @@ _REVIEW_PHASE_NAME = {
 
 
 def _seg_overlap(segs: list, si: int) -> bool:
-    """The seg starts before the previous one ends (the ⚠ overlap flag)."""
+    """The seg starts before the previous one ends (the ! overlap flag)."""
     if si <= 0:
         return False
     s = segs[si].get('start')
@@ -122,7 +122,7 @@ def _seg_overlap(segs: list, si: int) -> bool:
 
 
 def _seg_word_timing_error(seg: dict) -> bool:
-    """A word inside the line ends after the next word starts (the ⚠ words flag)."""
+    """A word inside the line ends after the next word starts (the ! words flag)."""
     if seg.get('kind') in ('dead_air', 'stage_dir'):
         return False
     ws = seg.get('words') or []
@@ -260,6 +260,8 @@ def _load(mp3_path: str) -> tuple[list, str, dict] | None:
             data = json.load(f)
         segs = data['segments']
         meta: dict = {'source_fp': _file_fp(jpath)}
+        if data.get('direction_kinds'):
+            meta['direction_kinds'] = data['direction_kinds']
         _ensure_ids(segs, meta)       # bootstrap ids on first open
         return segs, SOURCE_TRANSCRIPT, {'jpath': jpath, 'sidecar': sc, 'data': data,
                                          'meta': meta, 'mp3': mp3_path,

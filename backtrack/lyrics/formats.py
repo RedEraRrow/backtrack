@@ -499,7 +499,7 @@ def expand_dialogue_into_sentences(
             expanded_chunks.append({
                 'parent_idx': idx, 'speaker': '',
                 'stage_dir': line.stage_dir, 'text': '',
-                'cues': [], 'is_stage': True, 'is_air': False,
+                'is_stage': True, 'is_air': False,
             })
             time_windows.append((gap_start, gap_end))
             # Don't advance total_elapsed: stage directions don't consume time.
@@ -533,7 +533,7 @@ def expand_dialogue_into_sentences(
                 expanded_chunks.append({
                     'parent_idx': idx, 'line': idx, 'speaker': line.speaker,
                     'stage_dir': line.stage_dir, 'text': sub_s,
-                    'cues': [], 'is_stage': False, 'is_air': False,
+                    'is_stage': False, 'is_air': False,
                 })
                 time_windows.append((chunk_start, chunk_end))
                 total_elapsed = chunk_end
@@ -572,7 +572,7 @@ def expand_dialogue_into_sentences(
             if gap > _AIR_THRESHOLD:
                 final_chunks.append({
                     'parent_idx': -1, 'speaker': '', 'stage_dir': '',
-                    'text': '', 'cues': [], 'is_stage': False, 'is_air': True,
+                    'text': '', 'is_stage': False, 'is_air': True,
                 })
                 final_times.append((final_times[-1][1], twin[0]))
         final_chunks.append(chunk)
@@ -601,12 +601,6 @@ _LRC_TIMESTAMP_RE = re.compile(r'\[(\d+):(\d+)(?:[.:](\d{1,3}))?\]')
 _LRC_META_RE = re.compile(r'^\s*\[(ti|ar|al|by|offset|re|ve)\s*:.+\]\s*$', re.I)
 
 
-def parse_lrc_file(lrc_path: str) -> list[tuple[str, int | None]]:
-    """Parse an LRC file into (text, timestamp_ms) lines, skipping metadata tags like [ti:...]."""
-    with open(lrc_path, "r", encoding="utf-8") as f:
-        return parse_lrc_text(f.read())
-
-
 def parse_lrc_text(raw: str) -> list[tuple[str, int | None]]:
     """LRC text (a file's, or lyrics kept in a tag) as (text, timestamp_ms) lines;
     an untimed line has None."""
@@ -628,39 +622,6 @@ def parse_lrc_text(raw: str) -> list[tuple[str, int | None]]:
         else:
             entries.append((text, None))
     return entries
-
-
-def import_lrc(audio_path: str, lrc_path: str) -> tuple[str, int]:
-    """Write an .lrc file's lines into `audio_path`. Returns `(tag, lines)`.
-
-    Timed lines become a SYLT frame; an .lrc with no timestamps becomes USLT.
-    `('', 0)` means there was nothing usable in the file.
-
-    The editor's *Import LRC* asks for the path and then does exactly this, so
-    the two cannot disagree about what an .lrc turns into.
-    """
-    from mutagen.id3 import USLT  # type: ignore[reportPrivateImportUsage]
-
-    from backtrack.id3.tag_handler import load_id3, save_id3
-
-    entries = parse_lrc_file(lrc_path)
-    if not entries:
-        return '', 0
-
-    timed = [(text, int(ts)) for text, ts in entries if ts is not None and text]
-    if timed:
-        save_sylt_entries(audio_path, timed)
-        return 'SYLT', len(timed)
-
-    text = "\n".join(t for t, _ in entries if t)
-    if not text.strip():
-        return '', 0
-    audio = load_id3(audio_path)
-    frame = USLT(encoding=3, lang='eng', desc='', text=text)
-    audio.delall(frame.HashKey)             # just this frame: other lyrics frames stay
-    audio.add(frame)
-    save_id3(audio, audio_path)
-    return 'USLT', len([t for t, _ in entries if t])
 
 
 def save_sylt_entries(file_path: str, sylt_entries: list[tuple[str, int]],
@@ -695,9 +656,13 @@ def _parse_uslt(audio) -> list[tuple[str, int]]:
 
 
 
-def _find_markdown_for_audio(audio_path: str) -> str | None:
-    """The script beside a track: `<stem>.md`, `<stem>.dialogue.md`, else
-    `transcript.md`; None if none exists."""
+def _find_markdown_for_audio(audio_path: str, packed: bool = True) -> str | None:
+    """The track's script: from its .bkts (unless `packed` is False), else
+    `<stem>.md`, `<stem>.dialogue.md` or `transcript.md` beside it; None if
+    there's none."""
+    from backtrack.lyrics import bkts
+    if packed and (inside := bkts.member(audio_path, bkts.SCRIPT)):
+        return inside
     base = Path(audio_path).stem
     parent = Path(audio_path).parent
 
@@ -709,10 +674,11 @@ def _find_markdown_for_audio(audio_path: str) -> str | None:
     return None
 
 
-def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | None]:
+def _find_timing_files_for_audio(audio_path: str, packed: bool = True) -> tuple[str | None, str | None]:
     """Find SRT and/or JSON timing files next to or beneath the audio file.
 
     Search order (JSON):
+      0. the track's .bkts (unless `packed` is False)
       1. `<stem>.json`, `<stem>_timings.json` or `transcript.json` beside the track
       2. Subdirectories: any *.json whose stem matches the audio stem OR whose
          name contains "timings"
@@ -723,8 +689,9 @@ def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | Non
     base = Path(audio_path).stem
     parent = Path(audio_path).parent
 
+    from backtrack.lyrics import bkts
     srt_path = None
-    json_path = None
+    json_path = bkts.member(audio_path, bkts.TRANSCRIPT) if packed else None
 
     # SRT: same dir first, then subdirectories by stem
     srt_candidate = parent / f"{base}.srt"
@@ -740,7 +707,7 @@ def _find_timing_files_for_audio(audio_path: str) -> tuple[str | None, str | Non
     # can be named like a transcript without being one: an anchor transcription
     # sitting in `timings/` matches by stem, and taking it would quietly cost the
     # track its real timings.
-    for name in [f"{base}.json", f"{base}_timings.json", "transcript.json"]:
+    for name in ([] if json_path else [f"{base}.json", f"{base}_timings.json", "transcript.json"]):
         candidate = parent / name
         if candidate.exists() and load_transcript(candidate):
             json_path = str(candidate)
@@ -973,18 +940,18 @@ def _match_md_to_timings(md_lines: list[DialogueLine], word_timings: list[dict],
             line.end = line_end
 
 
-# A queued stage direction needs at least this much silence before the next line
-# to be worth its own beat on screen.  Below it the direction is describing
-# something happening *during* the speech (a bell still dinging, a name being
-# struggled over), so it rides along on the line itself instead of stealing a beat
-# from it.  Set from the gap distribution of real scripts, where the large
-# majority of directions sit in a clear pause and a handful overlap.
+# The least time a stage direction's own beat is given, however short its note.
 _SD_MIN_GAP = 0.35
 _SD_READ_FRACTION = tune.LYRIC_SD_READ_FRACTION
 
 
-def _chunks_from_segments(segs: list[dict], md_path: str,
-                          track_duration: float = 0.0) -> tuple[list[dict], list[tuple[float, float]]]:
+def _read_need(reading_time: float) -> float:
+    """How long a direction's own beat is given to be read."""
+    return max(_SD_MIN_GAP, reading_time * _SD_READ_FRACTION)
+
+
+def _chunks_from_segments(segs: list[dict], md_path: str, track_duration: float = 0.0,
+                          kinds: dict | None = None) -> tuple[list[dict], list[tuple[float, float]]]:
     """Build playback chunks from a timed transcript, overlaid with the MD script.
 
     The transcript owns the timing; the MD owns everything the timing cannot
@@ -994,20 +961,30 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
     editor renders from, so the player and the editor can never disagree about a
     line's speaker, text or directions.
 
-    A queued direction is given the silence it sits in as its own beat; one with
-    no silence to occupy is attached to the following line (see `_SD_MIN_GAP`).
+    Every direction is a beat of its own, in the silence it sits in, borrowing
+    from the beat before when that silence is too short to read it (`_flush`).
     Any silence still unclaimed and longer than `_AIR_THRESHOLD` becomes a dead-air
     beat, so no line is left on screen, or shown early, while nobody is speaking.
     `track_duration` extends that to the run-out after the last line; 0 means
     unknown, which leaves the run-out alone.
 
+    A direction in the middle of a line splits the line there, its halves the
+    same speaker's. An action between them is placed like any other direction,
+    in the pause if it holds one and is that speaker's; a tone note becomes the
+    aside of the rest of the line. `kinds` is the editor's tone/action choices.
+
     Returns (chunks, line_times) in the shape `lyric_pane.from_chunks` expects.
     """
-    overlay, quality, links = build_md_overlay(segs, md_path)
+    overlay, quality, links = build_md_overlay(segs, md_path, kinds)
 
     ov_map: dict[int, list] = {}
+    cuts: dict[int, list] = {}            # seg → [(k, gap_from, at, text, tone, line)]: splits inside it
     for ov in overlay:
-        ov_map.setdefault(ov['before_si'], []).append(ov)
+        if ov.get('within'):
+            for si, k, gap_from, at in ov['within']:
+                cuts.setdefault(si, []).append((k, gap_from, at, ov['text'].strip(), ov.get('tone'), ov.get('line'), ov.get('back')))
+        else:
+            ov_map.setdefault(ov['before_si'], []).append(ov)
 
     # Who speaks each MD line, and the line's own aside.  Attribution is looked up
     # per segment through `links` (the alignment's seg → MD line pin) rather than
@@ -1019,73 +996,74 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
     for ov in overlay:
         if ov['kind'] == 'speaker' and ov.get('line') is not None:
             speaker_of_line[ov['line']] = (ov['text'], ov.get('stage', '') or '')
+    for ov in overlay:                    # a line with no words, `**MARTIN**: *(screams)*`, is still his
+        if ov['kind'] == 'stage_dir' and ov.get('line') is not None and ov.get('speaker'):
+            speaker_of_line.setdefault(ov['line'], (ov['speaker'], ''))
 
     chunks: list[dict] = []
     times: list[tuple[float, float]] = []
-    pending: list[tuple[str, str]] = []   # (text, lean) awaiting a silence to show in
+    pending: list[tuple[str, int | None]] = []   # (text, line) awaiting a place to show
+    tone_of_line: dict[int, str] = {}     # a line's aside since a mid-line tone note
+
+    def _aside(line) -> str:
+        """The manner the line's words are spoken in at this point."""
+        return tone_of_line.get(line, speaker_of_line.get(line, ('', ''))[1]) if line is not None else ''
+
+    held_to = [0.0]                       # a direction's beat runs on into the next to here
 
     def _emit(chunk: dict, window: tuple[float, float]) -> None:
-        """Append a chunk and its time window."""
+        """Append a chunk and its time window, starting it late if the direction
+        before borrowed from it (never more than half of it)."""
+        start, end = window
+        if held_to[0] > start:
+            start = min(held_to[0], start + (end - start) / 2)
+            times[-1] = (times[-1][0], start)
+            held_to[0] = 0.0
         chunks.append(chunk)
-        times.append(window)
+        times.append((start, end))
 
     def _prev_end() -> float:
         """End of the last emitted window (0.0 before anything is emitted)."""
         return times[-1][1] if times else 0.0
 
-    def _stage(text: str) -> dict:
-        """A direction shown as its own beat."""
+    def _stage(text: str, line: int | None = None) -> dict:
+        """A direction shown as its own beat: a mid-line one (`line`) as its
+        speaker's, between the halves of what they say."""
+        owner = {} if line is None else {'line': line, 'speaker': speaker_of_line.get(line, ('', ''))[0],
+                                         'aside': _aside(line)}
         return {'parent_idx': -1, 'speaker': '', 'stage_dir': text,
-                'text': '', 'cues': [], 'is_stage': True, 'is_air': False}
+                'text': '', 'is_stage': True, 'is_air': False, **owner}
 
-    def _flush(next_start: float | None) -> list[str]:
-        """Place queued directions in the silence before `next_start`.
+    def _flush(next_start: float | None) -> None:
+        """Give each queued direction a beat of its own before `next_start`.
 
-        With enough silence each gets a beat of its own.  Without it the direction
-        becomes a CUE on the line it belongs with: an extra bracketed row in the
-        text column, the way the editor floats one, rather than a note hung off the
-        speaker: '*(She pronounces it "roth.")*' describes one word, not the whole
-        line, and the speaker column is reserved for the MD banner's own aside
-        ('**NAME** (exasperated): …'), which really is a whole-line manner note.
-
-        `lean == 'prev'` (a mid-line note sitting after the words it refers to)
-        attaches to the line just gone; the rest are returned for the line ahead.
+        A direction is never part of another beat. It takes the silence ahead
+        of it, shared out by reading time so a long note gets longer, and when
+        that's too short to read it borrows the rest from the end of the beat
+        before, never more than half of it, as the lyric pane's run-up does,
+        and then from the start of the beat after.
         """
         nonlocal pending
         if not pending:
-            return []
-        held = pending
-        pending = []
+            return
+        held, pending = pending, []
+        weights = [_reading_time(text) for text, _line in held]
+        t = _prev_end()
         if next_start is None:                       # nothing follows: show them out
-            t = _prev_end()
-            for text, _lean in held:
-                span = _reading_time(text)
-                _emit(_stage(text), (t, t + span))
-                t += span
-            return []
-        gap = next_start - _prev_end()
-        weights = [_reading_time(text) for text, _ in held]
-        # A beat of its own is only worth having if the silence can hold it long
-        # enough to READ. A flat minimum gap gave a forty-word transcriber's note
-        # the same half second as '(sighs)' and flashed it past; short of that, the
-        # direction rides the neighbouring line and stays up as long as it does.
-        if gap >= max(_SD_MIN_GAP, sum(weights) * _SD_READ_FRACTION):
-            # Share the silence out by reading time so a long direction gets longer.
-            total = sum(weights) or 1.0
-            t = _prev_end()
-            for (text, _lean), w in zip(held, weights):
-                span = gap * (w / total)
-                _emit(_stage(text), (t, t + span))
-                t += span
-            return []
-        forward: list[str] = []
-        for text, lean in held:
-            back = chunks[-1] if chunks else None
-            if lean == 'prev' and back is not None and not back['is_air'] and not back['is_stage']:
-                back['cues'].append(text)
-            else:
-                forward.append(text)
-        return forward
+            next_start = t + sum(weights)
+        want = _read_need(sum(weights))
+        short = want - (next_start - t)
+        if short > 0 and times:
+            s0, e0 = times[-1]
+            t = e0 - min(short, (e0 - s0) / 2)
+            times[-1] = (s0, t)
+        end = max(next_start, t + want)               # still short: into the beat after
+        total, t0 = sum(weights) or 1.0, t
+        for (text, line), w in zip(held, weights):
+            span = (end - t0) * (w / total)
+            _emit(_stage(text, line), (t, t + span))
+            t += span
+        held_to[0] = end if end > next_start else 0.0
 
     def _air_if_silent(next_start: float) -> None:
         """Blank the display through silence that nothing else claimed.
@@ -1107,13 +1085,44 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
             times[-1] = (times[-1][0], next_start)      # one continuous run
         elif next_start - start > _AIR_THRESHOLD:
             _emit({'parent_idx': -1, 'speaker': '', 'stage_dir': '',
-                   'text': '', 'cues': [], 'is_stage': False, 'is_air': True},
+                   'text': '', 'is_stage': False, 'is_air': True},
                   (start, next_start))
+
+    def _tone_back(line: int, text: str) -> bool:
+        """A tone note about the words before it (ending its line, or on how
+        "it" was said) becomes their aside, back to the line's start or its
+        last tone change, after the header's own note if there is one. Words
+        after it are spoken as before. False when no words of the line come
+        before it (a line that is only the note), to show it as a beat."""
+        cur = _aside(line)
+        new = text if line in tone_of_line or not cur else f"{cur}; {text}"
+        said = False
+        for c in reversed(chunks):
+            if c['is_air']:
+                continue
+            if c.get('line') != line or (not c['is_stage'] and c['stage_dir'] != cur):
+                break
+            c['stage_dir' if not c['is_stage'] else 'aside'] = new
+            said = said or not c['is_stage']
+        return said
+
+    def _queue(ov: dict) -> None:
+        """A direction met at a segment boundary: a tone note sets the manner of
+        the rest of its line, or of the line it ends; anything else waits for a
+        place to show."""
+        text = ov['text'].strip()
+        if ov.get('tone') and ov.get('back'):
+            if not _tone_back(ov['line'], text):
+                pending.append((text, ov.get('line')))
+        elif ov.get('tone'):
+            tone_of_line[ov['line']] = text
+        else:
+            pending.append((text, ov.get('line')))
 
     for si, seg in enumerate(segs):
         for ov in ov_map.get(si, []):
             if ov['kind'] == 'stage_dir':
-                pending.append((ov['text'].strip(), ov.get('lean', 'next')))
+                _queue(ov)
 
         s_start = seg.get('start')
         s_end = seg.get('end')
@@ -1126,39 +1135,56 @@ def _chunks_from_segments(segs: list[dict], md_path: str,
             continue
         window = (float(s_start), float(s_end))
 
-        # A direction with no silence ahead of it rides along on this beat.
-        carried = _flush(float(s_start))
         # Directions get first claim on a silence; whatever is left goes dead.
+        _flush(float(s_start))
         _air_if_silent(float(s_start))
 
         if kind == 'dead_air':
-            # Silence, unless a direction is riding along, and then it is silence
-            # with something to say about it.
-            _emit({**_stage(carried[0] if carried else ''), 'parent_idx': si,
-                   'cues': carried[1:], 'is_stage': bool(carried),
-                   'is_air': not carried}, window)
+            _emit({**_stage(''), 'parent_idx': si, 'is_stage': False, 'is_air': True}, window)
         elif kind == 'stage_dir':
             label = seg.get('text', '').strip().strip('()')
-            _emit({**_stage(label), 'parent_idx': si, 'cues': carried}, window)
+            line = links.get(si)
+            scope = seg.get('scope')
+            tone = scope == 'tone' if scope else _lt.direction_kind(label, kinds) == 'tone'
+            # Tone only with more of its line still to say, as for one not committed.
+            said_next = next((links.get(j) for j in range(si + 1, len(segs))
+                              if segs[j].get('kind') not in ('stage_dir', 'dead_air')), None)
+            back = said_next != line or _lt.points_back(label)
+            if line is not None and tone and back and _tone_back(line, label):
+                continue                        # committed, about the words before it
+            if line is not None and tone and said_next == line:
+                tone_of_line[line] = label      # committed mid-line tone note: the manner from here
+                continue
+            if window[1] - window[0] < _read_need(_reading_time(label)):   # too short to read: placed like any other
+                pending.append((label, line))
+                continue
+            _emit({**_stage(label, line), 'parent_idx': si}, window)
         else:
             mq = quality.get(si) or {}
             text = (mq.get('md_text') or seg.get('text', '')).strip()
             line = links.get(si)
-            speaker, stage = speaker_of_line.get(line, ('', '')) if line is not None else ('', '')
-            # `stage_dir` is the MD banner's aside and belongs to the speaker;
-            # `cues` are directions about the words, shown in the text column.
-            # `carried` introduces this line: the bing bong before the
-            # announcement, the door before whoever walks through it. It reads
-            # above the words, not under them. A direction that leaned 'prev' was
-            # attached to the line just gone by `_flush` and stays under that one.
-            _emit({'parent_idx': si, 'line': -1 if line is None else line,
-                   'speaker': speaker, 'stage_dir': stage,
-                   'text': text, 'cues': [], 'pre': carried,
-                   'is_stage': False, 'is_air': False}, window)
+            speaker = speaker_of_line.get(line, ('', ''))[0] if line is not None else ''
+
+            def _say(words: str, part: tuple[float, float]) -> None:
+                # `stage_dir` is the aside, the manner the words are spoken in.
+                _emit({'parent_idx': si, 'line': -1 if line is None else line,
+                       'speaker': speaker, 'stage_dir': _aside(line),
+                       'text': words, 'is_stage': False, 'is_air': False}, part)
+
+            words, k0, t0 = text.split(), 0, window[0]
+            for k, gap_from, at, dtext, tone, dline, back in sorted(cuts.get(si, [])):
+                if k > k0:
+                    _say(" ".join(words[k0:k]), (t0, max(t0, gap_from)))
+                    k0, t0 = k, max(t0, gap_from)
+                _queue({'text': dtext, 'tone': tone, 'line': dline, 'back': back})
+                _flush(max(t0, at))
+                _air_if_silent(max(t0, at))
+                t0 = max(t0, at)
+            _say(" ".join(words[k0:]), (t0, window[1]))
 
     for ov in ov_map.get(len(segs), []):             # trailing overlay items
         if ov['kind'] == 'stage_dir':
-            pending.append((ov['text'].strip(), ov.get('lean', 'next')))
+            _queue(ov)
     _flush(None)
     if track_duration > 0:
         _air_if_silent(float(track_duration))        # the run-out after the last line
@@ -1229,7 +1255,7 @@ class DialoguePlaybackState:
                                 # transcript, speakers / directions / script text
                                 # and emphasis from the markdown.
                                 self.expanded_chunks, self.line_times = _chunks_from_segments(
-                                    json_segments, md_path, track_duration)
+                                    json_segments, md_path, track_duration, jcontainer.get('direction_kinds'))
                                 self.load_error = None
                                 self.timing_source = 'transcript'
                                 loaded_from_segments = True   # skip the MD re-timing path
@@ -1269,7 +1295,7 @@ class DialoguePlaybackState:
             self.line_times.insert(pos, (a_s, a_e))
             self.expanded_chunks.insert(pos, {
                 'parent_idx': -1, 'speaker': '', 'stage_dir': '',
-                'text': '', 'cues': [], 'is_stage': False, 'is_air': True,
+                'text': '', 'is_stage': False, 'is_air': True,
             })
         # Also merge any explicit stage-direction beats so playback matches the
         # editor's standalone directions. Insert them as `is_stage` chunks
@@ -1281,7 +1307,7 @@ class DialoguePlaybackState:
             self.line_times.insert(pos, (s_s, s_e))
             self.expanded_chunks.insert(pos, {
                 'parent_idx': -1, 'speaker': '', 'stage_dir': s_txt,
-                'text': '', 'cues': [], 'is_stage': True, 'is_air': False,
+                'text': '', 'is_stage': True, 'is_air': False,
             })
 
     def is_active(self) -> bool:

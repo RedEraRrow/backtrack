@@ -1,5 +1,6 @@
 """Library scanning, metadata extraction, grouping, sort, and background sync."""
 from __future__ import annotations
+import functools
 import os
 import json
 import re
@@ -22,7 +23,7 @@ from backtrack import tuning as tune
 
 
 VALID_AUDIO_EXTENSIONS = AUDIO_EXTENSIONS
-SYNC_INTERVAL_SECONDS = 30
+SYNC_INTERVAL_SECONDS = tune.LIBRARY_SYNC_INTERVAL_S
 
 # Bump whenever `_get_default_metadata` gains a field or an extractor learns a new
 # tag: cached entries carrying an older version are re-read on the next sync even
@@ -563,24 +564,23 @@ def build_library(directories, ignore_hidden: bool = False) -> list:
     Returns:
         List of track metadata dictionaries
     """
-    library = []
+    from backbone import ui
     # Absolute paths, so stored track paths stay valid no matter what the working
     # directory is when the library is later loaded. Roots may nest (one inside
     # another), so a path already seen is skipped rather than scanned twice.
-    seen: set[str] = set()
+    # Listed first (quick), then read, so the read can show how far it's got.
+    paths: dict[str, str] = {}
     for directory in as_dir_list(directories):
         for root, _, files in os.walk(directory):
             for file in files:
-                if not file.lower().endswith(VALID_AUDIO_EXTENSIONS):
-                    continue
-                full_path = os.path.join(root, file)
-                key = os.path.normcase(full_path)
-                if key in seen:
-                    continue
-                seen.add(key)
-                meta = get_metadata(full_path)
-                if not (ignore_hidden and meta.get('grouping') == 'HIDDEN'):
-                    library.append(meta)
+                if file.lower().endswith(VALID_AUDIO_EXTENSIONS):
+                    full_path = os.path.join(root, file)
+                    paths.setdefault(os.path.normcase(full_path), full_path)
+    library = []
+    for full_path in ui.progress_iter(list(paths.values()), "Reading the library", name=os.path.basename):
+        meta = get_metadata(full_path)
+        if not (ignore_hidden and meta.get('grouping') == 'HIDDEN'):
+            library.append(meta)
     return library
 
 
@@ -894,7 +894,13 @@ _SORT_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
     'album_artist': (('album_artist', 'Album Artist Sort Order'),
                      ('artist', 'Performer Sort Order')),
     'album':        (('album', 'Album Sort Order'),),
+    'composer':     (('composer', 'Composer Sort Order'),),
+    'people':       (('artist', 'Performer Sort Order'), ('album_artist', 'Album Artist Sort Order'),
+                     ('composer', 'Composer Sort Order')),
 }
+# Credits with no sort tag of their own: a name there is a person's, so with no
+# tag anywhere it sorts surname first.
+_PERSON_CATEGORIES = ('people', 'lyricist')
 
 
 def _sort_text(value: str) -> str:
@@ -939,7 +945,8 @@ def get_group_sort_key(display_name: str, songs: list, category: str,
     Priority:
         1. Explicit sort-order tag (TSOP/TSO2/TSOA), matched to this group by
            position within a multi-value credit, unless sort tags are off
-        2. Display name through `sort_text` (leading words dropped, case and
+        2. For a person with no tag (People, Lyricists): surname first
+        3. Display name through `sort_text` (leading words dropped, case and
            accents folded)
     """
     opts = sort_options(cfg)
@@ -947,7 +954,16 @@ def get_group_sort_key(display_name: str, songs: list, category: str,
         tagged = _tagged_sort_key(display_name, songs, category)
         if tagged:
             return tagged
+        if category in _PERSON_CATEGORIES:
+            return _sort_text(_person_sort(display_name))
     return sort_text(display_name, opts)
+
+
+@functools.lru_cache(maxsize=4096)
+def _person_sort(name: str) -> str:
+    """A person's name surname first, as the sort-order tools would write it."""
+    from backtrack.id3.browser import _sort_single_name
+    return (_sort_single_name(name) or [name])[0]
 
 
 # --- Sorting ------------------------------------------------------------------

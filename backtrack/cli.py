@@ -470,11 +470,11 @@ class _Captured(io.StringIO):
 def run_in_app(line: str, library: list) -> tuple[int, str]:
     """Run a command typed at the app's `:` line, as after `backtrack`, on the
     app's library and its own session. Returns (exit code, its output, without
-    colour). The app's colours, accents and output mode are put back after."""
+    colour). The app's colours, theme and output mode are put back after."""
     import shlex
     from contextlib import redirect_stderr, redirect_stdout
     from backbone import ui
-    from backtrack import accents, cli_commands
+    from backtrack import cli_commands, theme
     from backtrack.playback.session import current_now_playing
     try:
         argv = shlex.split(line)
@@ -496,7 +496,7 @@ def run_in_app(line: str, library: list) -> tuple[int, str]:
         out._json, out._quiet = was[0], was[1]
         ui.set_colour(was[2])
         np = current_now_playing()
-        accents.apply(np.get('file_path') if np else None)
+        theme.apply(np.get('file_path') if np else None)
     return code, ui.strip_ansi(buf.getvalue())
 
 
@@ -521,7 +521,8 @@ def main(argv: list, library: list | None = None) -> int:
     if library is not None:
         ctx._library = library
     from backbone import ui
-    ui.set_accent(ctx.config.get('accent_colour'))
+    from backtrack import theme
+    theme.apply(None, ctx.config)
     _resolve_defaults(args, getattr(args, '_cmd', None), ctx.config
                       if getattr(args, '_cmd', None) else {})
 

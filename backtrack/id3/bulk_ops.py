@@ -15,6 +15,7 @@ either side of them.
 """
 from __future__ import annotations
 
+import functools
 import os
 from dataclasses import dataclass, field
 from typing import Callable
@@ -26,6 +27,7 @@ from backtrack import bulk_pattern as bp
 from backtrack.id3 import tag_writer as tw
 from backtrack.id3.tag_handler import apply_bulk_edit, load_id3, picture_type_name, save_id3
 from backtrack.music_library import refresh_library_entry, first_text
+from backbone import ui
 from backbone.log import quietly
 
 
@@ -98,7 +100,7 @@ def _gather(paths: list, reader: Callable[[str], dict],
     one group and wrote a single continuous run over every disc.
     """
     songs = []
-    for p in paths:
+    for p in ui.progress_iter(paths, "Reading tags", name=os.path.basename):
         if not accepts(p):
             continue
         try:
@@ -108,6 +110,37 @@ def _gather(paths: list, reader: Callable[[str], dict],
     return songs, len(paths) - len(songs)
 
 
+def _shows_progress(verb: str, count: Callable[..., int]):
+    """A bulk writer that, given no `on_event` (the app's own screens; the CLI
+    passes its own), shows a progress box over the screen, moved on as each
+    file is done, so a long write is never a screen that just sits there.
+    `count(*args, **kwargs)` is how many files the call will report on."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def run(*args, on_event=None, **kwargs):
+            total = count(*args, **kwargs) if on_event is None else 0
+            if total < 2:
+                return fn(*args, on_event=on_event, **kwargs)
+            done = [0]
+
+            def tick(_kind, change, _detail):
+                done[0] += 1
+                ui.print_inline_progress(f"{verb} · {os.path.basename(change.path)}", done[0] / total)
+            ui.print_inline_progress(verb, 0.0)
+            try:
+                return fn(*args, on_event=tick, **kwargs)
+            finally:
+                ui.clear_inline_progress()
+        return run
+    return wrap
+
+
+def _changes_count(plan, _library, _writer, *, selected=None, **_kw) -> int:
+    sel = selected if selected is not None else {c.path for c in plan.changed}
+    return sum(1 for c in plan.changes if c.path in sel)
+
+
+@_shows_progress("Writing tags", _changes_count)
 def apply_changes(plan: Plan, library: list, writer: Callable[[Change], object], *,
                   selected: set | None = None,
                   on_event: Callable[[str, Change, str], None] | None = None) -> Applied:
@@ -346,6 +379,65 @@ def strip_length_writer(change: Change) -> None:
     save_id3(audio, change.path)
 
 
+def plan_import_lyrics(paths: list) -> Plan:
+    """Each track's lyrics file beside it (`<name>.lrc`, else a subtitle or
+    Whisper .json, else `.txt`: lyric_files.sidecar) read into its tags: timed lines as SYLT, the words alone as USLT.
+    MP3, WAV and AIFF only (the lyrics frames are ID3's)."""
+    from backtrack.lyrics import files as lyric_files
+    tagged = [p for p in paths if tw.format_kind(p) == 'id3']
+    changes = []
+    for path in ui.progress_iter(tagged, "Looking for lyrics files", name=os.path.basename):
+        source = lyric_files.sidecar(path)
+        why = ""
+        if source:
+            with quietly():
+                entries = [(t, ms) for t, ms in lyric_files.read_file(source) if t]
+                if entries:
+                    frame = 'SYLT' if any(ms is not None for _t, ms in entries) else 'USLT'
+                    why = f"{os.path.basename(source)} → {frame} · {len(entries)} lines"
+        changes.append(Change(path=path, why=why, fields={'from': source}))
+    plan = Plan(changes=changes, skipped=len(paths) - len(tagged))
+    if not tagged:
+        plan.message = "Lyrics go into MP3, WAV or AIFF files, and there are none here."
+    elif not plan.changed:
+        plan.message = "No lyrics files beside these tracks (<name>.lrc, .vtt, .srt, .json, .ass or .txt)."
+    return plan
+
+
+def import_lyrics_writer(change: Change) -> None:
+    """Read one `plan_import_lyrics` change's file into its track."""
+    from backtrack.lyrics import files as lyric_files
+    if not lyric_files.import_file(change.path, change.fields['from'])[0]:
+        raise ValueError("nothing usable in the lyrics file")
+
+
+def plan_export_lyrics(paths: list, fmt: str) -> Plan:
+    """Each track's lyrics (SYLT, else USLT; any format's tags) written beside
+    it as `<name>.<fmt>`."""
+    from backtrack.lyrics import files as lyric_files
+    changes = []
+    for path in ui.progress_iter(paths, "Reading lyrics", name=os.path.basename):
+        with quietly():
+            rows, source = lyric_files.track_lyrics(path)
+        why = ""
+        if rows:
+            target = os.path.splitext(path)[0] + f".{fmt}"
+            why = (f"{len(rows)} {source} lines → {os.path.basename(target)}"
+                   + (" (replaces it)" if os.path.exists(target) else ""))
+        changes.append(Change(path=path, why=why, fields={'format': fmt}))
+    plan = Plan(changes=changes)
+    if not plan.changed:
+        plan.message = "None of these tracks has lyrics."
+    return plan
+
+
+def export_lyrics_writer(change: Change) -> None:
+    """Write one `plan_export_lyrics` change's lyrics file."""
+    from backtrack.lyrics import files as lyric_files
+    if not lyric_files.export_file(change.path, change.fields['format'])[0]:
+        raise ValueError("no lyrics to write")
+
+
 def read_picture_types(paths: list) -> tuple[list, int]:
     """Every MP3 in `paths` that has embedded art, with the types it carries.
 
@@ -354,7 +446,7 @@ def read_picture_types(paths: list) -> tuple[list, int]:
     what to change it to, so the read happens before the question, not after.
     """
     art = []
-    for path in paths:
+    for path in ui.progress_iter(paths, "Reading covers", name=os.path.basename):
         if tw.format_kind(path) != 'id3':
             continue
         try:
@@ -533,6 +625,7 @@ def derive_writer(derived: dict, apply_fields: set, overwrite: bool) -> Callable
 # and raw ID3 frames.
 # ---------------------------------------------------------------------------
 
+@_shows_progress("Renaming", lambda pairs, *_a, **_k: len(pairs))
 def rename_files(pairs: list, library: list, *,
                  on_event: Callable[[str, Change, str], None] | None = None) -> Applied:
     """Rename `(old, new)` pairs collision-safely, keeping the library in step.
@@ -580,6 +673,8 @@ def rename_files(pairs: list, library: list, *,
     return out
 
 
+@_shows_progress("Embedding covers", lambda covers, *_a, selected=None, **_k: sum(
+    1 for p, image in covers.items() if image and (selected is None or p in selected)))
 def apply_covers(covers: dict, library: list, *, overwrite: bool = False,
                  selected: set | None = None,
                  on_event: Callable[[str, Change, str], None] | None = None) -> Applied:
@@ -624,6 +719,7 @@ def apply_covers(covers: dict, library: list, *, overwrite: bool = False,
     return out
 
 
+@_shows_progress("Writing tags", lambda per_path, *_a, **_k: len(per_path))
 def apply_frame_writes(per_path: dict, library: list, *,
                        overwrite: bool = True,
                        on_event: Callable[[str, Change, str], None] | None = None) -> Applied:

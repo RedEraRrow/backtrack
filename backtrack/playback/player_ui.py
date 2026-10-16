@@ -54,6 +54,9 @@ keys.define("player", "Player", [
     ("tabs", ("f", "F"), "show or hide the tab bar"),
     ("resume", ("r", "R"), "resume the last run's queue, with nothing playing"),
     ("panel", ("w", "W"), "choose and arrange the panels"),
+    ("visualiser", ("v", "V"), "the visualiser's next style"),
+    ("page_prev", ("{",), "previous booklet page"),
+    ("page_next", ("}",), "next booklet page"),
     ("back", ("b", "B", "ESC"), "back, keep playing"),
     ("stop", ("s", "S"), "stop"),
     ("quit", ("q", "Q"), "quit the app"),
@@ -84,8 +87,12 @@ _WIDE_SPLIT_GUTTER = 3
 # they float under the controls rather than hug the edge.
 _LYRICS_INSET_FRAC = 0.2
 _PANEL_SIDE_MIN = 24            # a column of panels beside (or under) the player keeps at least this many columns
-_PANEL_WANT = {'lyrics': 56, 'queue': 44, 'chapters': 40, 'people': 40}   # what each shares spare width by
-_PANEL_ROWS_WEIGHT = {'lyrics': 3, 'queue': 2, 'chapters': 2}               # and spare rows, stacked in a column
+_PANEL_WANT = {'lyrics': 56, 'queue': 44, 'chapters': 40, 'people': 40,   # what each shares spare width by
+               'visualiser': 48, 'credits': 40, 'info': 44, 'notes': 48,
+               'booklet': 48}
+_PANEL_ROWS_WEIGHT = {'lyrics': 3, 'queue': 2, 'chapters': 2,               # and spare rows, stacked in a column
+                      'visualiser': 2, 'credits': 2, 'info': 2, 'notes': 2,
+                      'booklet': 3}
 _MID_MIN_TEXT = 20              # the player's box shrinks for the panels no narrower than this inside
 _SIDE_ART_SHARE = 0.75          # panels beside the player unless its art there is smaller than this share of under
 _PLAYER_SHARE = 0.5             # beside the panels, the player's box takes at most this share
@@ -97,6 +104,8 @@ _DETAILS_W = 40                 # beside the panels, the player's box keeps this
 _DETAILS_MAX_W = 60             # the details beside the art get at most this
 _BESIDE_GAIN = 1.3              # the art goes beside the details only when that makes it this much bigger
 _PANEL_MIN_ROWS = 8             # under the player, the lyrics or the queue keep at least this
+_BAND_ROWS = 8                  # a full-width band (or a panel above or below the art) of a panel that isn't fitted
+_MID_MIN_H = 10                 # the bands leave the player's row at least this
 
 # The boxed player's frame (_draw_boxed_ui): whether the last frame was boxed,
 # its boxes (top, bottom, left, right; screen rows and columns) and their
@@ -118,13 +127,13 @@ def _frame_borders(only: int | None = None) -> dict:
     for box in _frame['boxes']:
         r0, r1, c0, c1 = box
         title = _frame['titles'].get(box, "")
-        edge = C.ACCENT2 if box == _frame.get('focus') else C.DIM       # the panel being arranged
+        edge = C.ACCENT2 if box == _frame.get('focus') else C.FRAME     # the panel being arranged
         for r in range(r0, r1 + 1):
             if (only is not None and r != only) or (only is None and r == _frame['prog_row']):
                 continue
             if r == r0:
                 name = f" {ui.truncate_text(title, max(1, c1 - c0 - 6))} " if title else ""
-                cell = (f"\033[{r};{c0}H{edge}╭─{C.RESET}{C.PRIMARY}{C.BOLD}{name}{C.RESET}"
+                cell = (f"\033[{r};{c0}H{edge}╭─{C.RESET}{C.ACCENT2}{name}{C.RESET}"
                         f"{edge}{'─' * max(0, c1 - c0 - 2 - ui.visual_len(name))}╮{C.RESET}")
             elif r == r1:
                 cell = f"\033[{r};{c0}H{edge}╰{'─' * (c1 - c0 - 1)}╯{C.RESET}"
@@ -280,7 +289,7 @@ def timer_extra(rate: float = 1.0, sleep_left: float | None = None) -> str:
     if rate and rate != 1.0:
         out += f"  ×{rate:g}"
     if sleep_left is not None:
-        out += f"  ☾ {ui.format_time(int(sleep_left))}"
+        out += f"  ◐ {ui.format_time(int(sleep_left))}"
     return out
 
 
@@ -371,7 +380,7 @@ def update_progress_ui(row: int, elapsed: float, duration: float, width: int,
     reach = container_w + (1 if _frame['boxed'] and _frame['bar'] else ui.MARGIN_H)
     out = pc.screen_span_paint(row, left_pad + 1, line + ' ' * max(0, reach - ui.visual_len(line)))
     for _r0, _r1, c0, c1 in (box for box in _frame['boxes'] if box[0] < row < box[1]) if _frame['boxed'] else ():
-        out += pc.screen_span_paint(row, c0, f"{C.DIM}│{C.RESET}") + pc.screen_span_paint(row, c1, f"{C.DIM}│{C.RESET}")
+        out += pc.screen_span_paint(row, c0, f"{C.FRAME}│{C.RESET}") + pc.screen_span_paint(row, c1, f"{C.FRAME}│{C.RESET}")
     sys.stdout.write(out)               # cell by cell: nothing else on the row is disturbed
     sys.stdout.flush()
 
@@ -396,11 +405,10 @@ def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4)
         label = f"{role.title()}: {name}" if is_named else name
         if len(label) > max_w - 3:
             label = label[:max_w - 4] + "…"
-        prefix = f" • {label}"
-        lines.append(prefix)
+        lines.append(f" {label}")
 
     if total > cap:
-        lines.append(f"{C.DIM} • + {total - cap} more…{C.RESET}")
+        lines.append(f"{C.DIM} + {total - cap} more…{C.RESET}")
 
     return lines
 
@@ -429,7 +437,7 @@ def volume_text(width: int) -> str:
         return f"{C.DIM}♪{C.RESET} {v}%"
     bw = _volume_bar_w(width)
     filled = round(bw * v / 100)
-    return (f"{C.DIM}♪{C.RESET} {C.PRIMARY}{'━' * filled}{C.RESET}{C.DIM}{'─' * (bw - filled)}{C.RESET}"
+    return (f"{C.DIM}♪{C.RESET} {C.STRONG}{'━' * filled}{C.RESET}{C.DIM}{'─' * (bw - filled)}{C.RESET}"
             f" {v:>3}%")
 
 
@@ -444,6 +452,24 @@ def volume_changed() -> None:
     else:                                              # no room for a box: the level alone
         lines = [volume_text(1)]
     pc.screen_float(lines, tune.VOLUME_SHOWN_S)
+
+
+_volume_asked: list = [None]     # (level, time) of the last step asked for
+
+
+def step_volume(session, up: bool) -> int:
+    """A press of a volume key: `session`'s volume (this window's, or the
+    host's it has joined) a step up or down, and shown. A joined window only
+    hears the host's level with its next snapshot, so a press soon after the
+    last steps from the level that one asked for: five quick presses are
+    five steps, not one. Returns the level asked for."""
+    now = time.monotonic()
+    last = _volume_asked[0]
+    base = last[0] if last and now - last[1] < tune.VOLUME_PRESS_WINDOW_S else session.get_volume()
+    level = session.set_volume(base + (tune.VOLUME_STEP if up else -tune.VOLUME_STEP))
+    _volume_asked[0] = (level, now)
+    volume_changed()
+    return level
 
 
 def toggle_metadata() -> None:
@@ -468,9 +494,8 @@ def toggle_tabs() -> None:
 
 
 def view_chrome(open_: bool) -> None:
-    """The app's chrome while a player view is open: no breadcrumb (it's its
-    own place, not a menu level), and the tab bar as `f` last left it."""
-    ui.hide_breadcrumb(open_)
+    """The app's chrome while a player view is open: the tab bar as `f` last
+    left it."""
     if not open_:
         pc.screen_release()                  # the lyrics' cells are every screen's again
         pc.screen_picture_area('player art', None)
@@ -488,7 +513,107 @@ def toggle_help() -> None:
     """Show or hide the hint bar: the app-wide switch, so every screen follows."""
     pc.toggle_hints()
 # The panels the player can show beside (or under) itself, in the order `w` lists them.
-PANELS = (('lyrics', "Lyrics"), ('people', "People"), ('queue', "Queue"), ('chapters', "Chapters"))
+PANELS = (('lyrics', "Lyrics"), ('people', "People"), ('queue', "Queue"), ('chapters', "Chapters"),
+          ('visualiser', "Visualiser"), ('credits', "Credits"), ('info', "Info"), ('notes', "Notes"), ('booklet', "Booklet"))
+# Where a panel can go: full-width bands, the columns beside the player, and
+# its own column above and below its art and details.
+PLACES = ('top', 'left', 'above', 'below', 'right', 'bottom')
+_VERTICAL = ('top', 'above', 'below', 'bottom')                # ↑ / ↓ move a panel along these
+_LIVE_PANELS = ('visualiser',)                       # repainted every tick (panels.LIVE)
+
+# This track, as the newer panels need it (set_track_context): its length,
+# its sound once the visualiser shows, its booklet page.
+_track_ctx: dict = {'path': '', 'duration': 0.0, 'sound': None, 'page': 0, 'started': 0.0}
+
+
+def set_track_context(path: str, duration: float) -> None:
+    """What the panels need of the track now playing (the player, on each load)."""
+    if path != _track_ctx['path']:
+        _track_ctx.update(page=0, started=time.time())    # when this play began, for Info's last play before it
+    _track_ctx.update(path=path, duration=duration, sound=None)
+
+
+def live_context() -> dict:
+    """What the visualiser draws from (panels.Live.paint)."""
+    from backtrack.playback import sound
+    snd = _track_ctx['sound']
+    if snd is None and 'visualiser' in shown_panels():
+        snd = _track_ctx['sound'] = sound.for_track(_track_ctx['path'], _track_ctx['duration'])
+    if snd is not None and snd.done:                 # this one's ready: the next in the queue, so it's seamless
+        paths, at = queue_pane._queue_ctx['paths'], queue_pane._queue_ctx['index']
+        nxt = paths[at + 1] if 0 <= at < len(paths) - 1 else None
+        if nxt and nxt != _track_ctx.get('prefetched'):
+            _track_ctx['prefetched'] = nxt
+            from backtrack.music_library import library_entry
+            sound.prefetch(nxt, float((library_entry(nxt) or {}).get('duration') or 0.0))
+    return {'sound': snd, 'style': _ui_state.get('visualiser', 'bars')}
+
+
+def people_of(audio) -> tuple[list, list]:
+    """The People panel's (cast, crew): TMCL and TIPL, and with Settings →
+    People: all credit tags, the composer, lyricist and the rest from their
+    own tags too, among the crew."""
+    from backtrack.playback import panels
+    cast, crew = _get_people(audio, 'TMCL'), _get_people(audio, 'TIPL')
+    if _ui_state.get('people_all', True):
+        crew += [c for c in panels.tag_credits(audio) if c not in crew]
+    return cast, crew
+
+
+def credits_repeat(audio) -> bool:
+    """Whether the Credits panel would only repeat People: People takes the
+    credit tags (the setting) and has no TMCL or TIPL people of its own."""
+    return bool(_ui_state.get('people_all', True) and audio is not None
+                and not (_get_people(audio, 'TMCL') or _get_people(audio, 'TIPL')))
+
+
+def track_has(audio, file_path: str, has_cast: bool, has_lyrics: bool) -> dict:
+    """Every panel, and whether this track has anything for it: one answer for
+    the layout, `w`'s list and whether the player is boxed. Credits that would
+    only repeat People count as nothing."""
+    from backtrack.playback import panels
+    has = {'lyrics': has_lyrics, 'people': has_cast, 'queue': has_queue(),
+           'chapters': bool(_chapter_titles()), **panels.has(audio, file_path)}
+    if has['credits'] and credits_repeat(audio):
+        has['credits'] = False
+    return has
+
+
+def panel_notes(audio) -> dict:
+    """Why a panel this track has data for is greyed in `w`'s list."""
+    from backtrack.playback import panels
+    return {'credits': "repeat data"} if audio is not None and panels.tag_credits(audio) and credits_repeat(audio) else {}
+
+
+def cycle_visualiser() -> str:
+    """The visualiser's next style (bars, oscilloscope, meters), saved."""
+    from backtrack.playback.panels import VIS_STYLES
+    style = VIS_STYLES[(VIS_STYLES.index(_ui_state.get('visualiser', 'bars')) + 1) % len(VIS_STYLES)]
+    _ui_state['visualiser'] = style
+    try:
+        from backtrack.config import update_config
+        update_config({'player_visualiser': style})
+    except Exception as exc:
+        log.warning("couldn't save player_visualiser: %s", exc)
+    return style
+
+
+def turn_page(step: int) -> bool:
+    """The booklet's next (1) or previous (-1) page; False when it's showing none."""
+    from backtrack.playback import panels
+    if 'booklet' not in (_frame.get('panel_order') or []):
+        return False
+    n = len(panels.booklet_pages(_track_ctx['path']))
+    _track_ctx['page'] = (_track_ctx['page'] + step) % max(1, n)
+    return True
+
+
+def page_click(row: int, col: int) -> int | None:
+    """A click on the booklet: 1 on its right half, -1 on its left, else None."""
+    box = (_frame.get('panel_boxes') or {}).get('booklet')
+    if box and box[0] < row < box[1] and box[2] < col < box[3]:
+        return 1 if col > (box[2] + box[3]) // 2 else -1
+    return None
 
 
 def shown_panels() -> list[str]:
@@ -544,10 +669,12 @@ _ARRANGE_FIRST = '__first__'       # Arrange asked for: the first panel the next
 
 
 def arrange_key(key: str) -> bool:
-    """A key while arranging: Tab / Shift-Tab to the next / previous panel,
-    ↑ ↓ to move it up or down its column, ← → to the other side of the
-    player (or the other column under it), Enter or Esc to finish (saved).
-    The arrangement moved is this window shape's. Whether it was one."""
+    """A key while arranging: Tab / Shift-Tab to the next / previous panel.
+    ↑ ↓ move it up or down: within its place, and past the end of one into the
+    next, top band → above the player → below it → bottom band (from a column,
+    out into the band at that end). ← → move it between the left column, the
+    player's own column and the right one. Enter or Esc to finish (saved). The
+    arrangement moved is this window shape's. Whether it was one."""
     kind = _ui_state['arranging']
     if kind is None:
         return False
@@ -560,13 +687,24 @@ def arrange_key(key: str) -> bool:
     elif key in ('TAB', 'BACKTAB'):
         _ui_state['arranging'] = order[(order.index(kind) + (1 if key == 'TAB' else -1)) % len(order)]
     elif key in ('UP', 'DOWN'):
-        side = arr[at][1]
-        same = [i for i, (_k, s) in enumerate(arr) if s == side]
-        j = same.index(at) + (-1 if key == 'UP' else 1)
+        place, up = arr[at][1], key == 'UP'
+        same = [i for i, (_k, s) in enumerate(arr) if s == place]
+        j = same.index(at) + (-1 if up else 1)
         if 0 <= j < len(same):
             arr[at], arr[same[j]] = arr[same[j]], arr[at]
+        else:                                                    # past the end of its place: into the next
+            nxt = ('top' if up else 'bottom') if place in ('left', 'right') else \
+                _VERTICAL[max(0, min(len(_VERTICAL) - 1, _VERTICAL.index(place) + (-1 if up else 1)))]
+            if nxt != place:
+                arr.pop(at)
+                # Moving up it comes in last of its new place; moving down, first.
+                arr.insert(len(arr) if up else 0, [kind, nxt])
     elif key in ('LEFT', 'RIGHT'):
-        arr[at][1] = 'left' if key == 'LEFT' else 'right'
+        place = arr[at][1]
+        if place in ('above', 'below', 'top', 'bottom'):
+            arr[at][1] = 'left' if key == 'LEFT' else 'right'
+        elif (place == 'left') == (key == 'RIGHT'):              # from a column towards the player
+            arr[at][1] = 'below'
     else:
         return True                              # every other key waits while arranging
     return True
@@ -590,9 +728,11 @@ def refresh_player_settings() -> None:
         _ui_state['show_metadata'] = bool(setting(cfg, 'player_show_metadata'))
         _ui_state['show_tabs'] = bool(setting(cfg, 'player_show_tabs'))
         _ui_state['nerd_icons'] = bool(setting(cfg, 'player_nerd_font_icons'))
+        _ui_state['people_all'] = bool(setting(cfg, 'player_people_all_credits'))
+        _ui_state['visualiser'] = setting(cfg, 'player_visualiser')
         saved = cfg.get('player_panels') or {}
         _ui_state['panels'] = {shape: [[k, side] for k, side in (saved.get(shape) or [])
-                                       if k in dict(PANELS) and side in ('left', 'right')]
+                                       if k in dict(PANELS) and side in PLACES]
                                for shape in ('wide', 'tall')}
         kinds = shown_panels()
         _ui_state['show_lyrics'] = 'lyrics' in kinds
@@ -666,10 +806,10 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
         label = f"{role}: {name}"
         if len(label) > max_w - 3:
             label = label[:max_w - 4] + "…"
-        lines.append(f" ⚙ {label}")
+        lines.append(f" {label}")
 
     if total > limit:
-        lines.append(f"{C.DIM} ⚙ + {total - limit} more…{C.RESET}")
+        lines.append(f"{C.DIM} + {total - limit} more…{C.RESET}")
 
     return lines
 
@@ -901,7 +1041,7 @@ def _movement_roman(s: str) -> str:
 
 def _credits_rule(width: int) -> str:
     """The divider between the credits and the lyrics under them."""
-    return f"{C.DIM}{'─' * max(0, width)}{C.RESET}"
+    return f"{C.FRAME}{'─' * max(0, width)}{C.RESET}"
 
 
 def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
@@ -1024,7 +1164,7 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
             src = ' · '.join(_lyric_src['files']) or 'none found'
             est = _lyric_src['estimated']
             txt = _trim(f"lyrics: {src}" + (" · estimated, will drift" if est else ""))
-            lines.append(f"{C.ACCENT if est else C.DIM}{txt}{C.RESET}")
+            lines.append(f"{C.WARN if est else C.DIM}{txt}{C.RESET}")
 
     if not lines:
         fp = ui.truncate_text(file_path, max(1, max_val_w), placeholder='…', front=True)
@@ -1127,8 +1267,32 @@ def _people_lines(cast: list, crew: list, width: int, rows: int) -> list[str]:
         line = ui.clip_ansi(line, col_w) if ui.visual_len(line) > col_w else line
         return line + " " * max(0, col_w - ui.visual_len(line))
     columns = [entries[:per], entries[per:]] if two else [entries]
-    return [f" {C.DIM}│{C.RESET} ".join(cell(*col[k]) if k < len(col) else " " * col_w for col in columns).rstrip()
+    return [f" {C.FRAME}│{C.RESET} ".join(cell(*col[k]) if k < len(col) else " " * col_w for col in columns).rstrip()
             for k in range(per)]
+
+
+def _static_panel(kind: str, audio, file_path: str, width: int, rows: int, box: tuple, titles: dict,
+                  top: int, left: int) -> list[str]:
+    """A panel drawn with the frame: its lines in width × rows, its title set."""
+    from backtrack.playback import panels
+    titles[box] = dict(PANELS)[kind]
+    if kind == 'credits':
+        return _people_lines([], panels.tag_credits(audio), width, rows)
+    if kind == 'info':
+        return panels.lines_of(panels.info_pairs(audio, file_path, _track_ctx['started']), width, rows)
+    if kind == 'notes':
+        return panels.notes_lines(audio, width, rows)
+    pages = panels.booklet_pages(file_path)
+    if not pages:
+        return []
+    at = _track_ctx['page'] % len(pages)
+    titles[box] = f"Booklet {at + 1}/{len(pages)}"
+    cols, prows = panels.page_box(pages[at], width, rows)
+    cells, escape = panels.page_lines(pages[at], cols, prows)
+    pad_l, pad_t = (width - cols) // 2, (rows - prows) // 2
+    if escape:
+        _frame['images'].append((top + pad_t, left + pad_l, escape))
+    return [""] * pad_t + [" " * pad_l + line for line in cells]
 
 
 def _chapter_titles() -> list:
@@ -1136,25 +1300,37 @@ def _chapter_titles() -> list:
     return _chapter_ctx['titles']
 
 
-def _stack(kinds: list, y0: int, y1: int, people_rows: int) -> list:
+# Panels whose content is a fixed set of lines: they take the rows those need,
+# and the rest (lyrics, the queue, the visualiser, the booklet) share what's left.
+_FITTED = ('people', 'credits', 'info', 'notes')
+
+
+def _stack(kinds: list, y0: int, y1: int, fit) -> list:
     """A column of panels stacked down rows y0..y1, no gap left: (kind, top,
-    bottom) each. The people get the rows they need; the others share the
-    rest; a column of only the people stretches them. Panels that would get
-    fewer than 3 rows (a box and a line) wait, from the last."""
+    bottom) each. A fitted panel gets the rows `fit(kind)` says its lines need
+    (box included), never so many the others go short; the others share the
+    rest by weight. A column of only fitted panels gives its spare rows to the
+    last. Panels that would get fewer than 3 rows (a box and a line) wait,
+    from the last."""
     kinds = list(kinds)
     while kinds:
         h = y1 - y0 + 1
-        flex = [k for k in kinds if k != 'people']
+        flex = [k for k in kinds if k not in _FITTED]
         size = {}
-        if 'people' in kinds:
-            size['people'] = min(people_rows, h - 3 * len(flex)) if flex else h
+        room = h - 3 * len(flex)                                  # what the fitted ones may take
+        for k in (k for k in kinds if k in _FITTED):
+            size[k] = max(3, min(fit(k), room))
+            room -= size[k]
         rest = h - sum(size.values())
-        weights = [_PANEL_ROWS_WEIGHT.get(k, 2) for k in flex]
-        for k, wt in zip(flex, weights):
-            size[k] = rest * wt // sum(weights)
-        for k in flex[:rest - sum(size[k] for k in flex)]:   # what rounding left: one each from the top
-            size[k] += 1
-        if all(v >= 3 for v in size.values()):
+        if flex:
+            weights = [_PANEL_ROWS_WEIGHT.get(k, 2) for k in flex]
+            for k, wt in zip(flex, weights):
+                size[k] = rest * wt // sum(weights)
+            for k in flex[:rest - sum(size[k] for k in flex)]:   # what rounding left: one each from the top
+                size[k] += 1
+        elif kinds:
+            size[kinds[-1]] += rest                               # nothing to share it: the last takes it
+        if all(v >= 3 for v in size.values()) and sum(size.values()) <= h:
             break
         kinds.pop()
     out, y = [], y0
@@ -1165,7 +1341,7 @@ def _stack(kinds: list, y0: int, y1: int, people_rows: int) -> list:
 
 
 def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_paused: bool, volume: int,
-                   cast_people: list, crew_people: list, has_cast: bool, has_lyrics: bool):
+                   cast_people: list, crew_people: list, has_cast: bool, has_lyrics: bool, has: dict):
     """The player in boxes, under the tab bar or with a panel showing: the art
     and the details in a box only as wide as the art; the panel's boxes (the
     people over the lyrics, or the queue) beside it in a wide window, else
@@ -1176,11 +1352,9 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
     frame_buffer = ["\033[H\033[3J\033[J"]
     emit = frame_buffer.append
     # The panels this track has something for, as each shape arranges them.
-    has = {'lyrics': has_lyrics, 'people': has_cast, 'queue': has_queue(),
-           'chapters': bool(_chapter_titles())}
+    live: dict = {}                                   # the moving panels' regions, for panels.LIVE
     arrange = {shape: [(k, s) for k, s in _ui_state['panels'][shape] if has.get(k)]
                for shape in ('wide', 'tall')}
-    panel = bool(arrange['wide'])
     is_uslt = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
 
     # Bottom up: the hints, under them nothing; over them the transport box.
@@ -1205,20 +1379,55 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
     # hints): that one alone, still boxed.
     if body_h >= _BOX_MIN_BODY:
 
-        # The boxes tile the body with no gap: the player's box as wide as its art
-        # with the panel's beside it, when that leaves the panel room enough; else
-        # each box the full width, the panel's under the player's.
+        # The boxes tile the body with no gap. A panel's place: a full-width band
+        # at the top or bottom; in a column left or right of the player; or in
+        # the player's own column, above or below its art and details. A wide
+        # window has columns when they fit; else (a tall window, or no column
+        # panels) the player is full width, its column panels banded with the
+        # rest, and any left / right ones under it, in two columns or one.
         meta_n = len(_meta_left_lines(audio, file_path, _DETAILS_W))
-        # Beside the panel, the player's box at most its share: the art over the
-        # details, or beside them when that makes it bigger; never narrower than
-        # the details need.
-        def fit(inner: int) -> tuple:
-            """The player's box beside the panels, `inner` columns at most:
-            (its inside width, art rows over the details, art rows beside
-            them, whether beside, the details' width beside)."""
-            s_rows = min(_art_room(body_h - 3 - meta_n), int(inner / aspect))
+        width = full_r - full_l + 1
+        band_w = full_r - full_l - 3                              # a band's inside
+        _fits: dict = {}
+
+        def rows_for(kind: str, w: int) -> int:
+            """Rows a fitted panel's lines need at `w` inside, its box included."""
+            if (kind, w) not in _fits:
+                from backtrack.playback import panels as _p
+                lines = (_people_lines(cast_people, crew_people, w, body_h // 3) if kind == 'people'
+                         else _people_lines([], _p.tag_credits(audio), w, body_h // 3) if kind == 'credits'
+                         else _p.lines_of(_p.info_pairs(audio, file_path, _track_ctx['started']), w, body_h)
+                         if kind == 'info' else _p.notes_lines(audio, w, body_h))
+                _fits[kind, w] = len(lines) + 2
+            return _fits[kind, w]
+
+        def need(kinds: list, w: int, flex: int = _PANEL_MIN_ROWS) -> int:
+            """Rows a stack of panels keeps: the fitted ones what their lines need, the others `flex`."""
+            return sum(rows_for(k, w) if k in _FITTED else flex for k in kinds)
+
+        def split(shape: str, columns: bool) -> tuple:
+            """This shape's panels by place: (top band, [left, right], above, below,
+            bottom band). Without columns the player's column panels join the
+            bands. Bands give way, from the bottom, to leave the middle its room."""
+            at = lambda *where: [k for k, s in arrange[shape] if s in where]   # noqa: E731
+            if columns:
+                t, a_, b_, bt = at('top'), at('above'), at('below'), at('bottom')
+            else:
+                t, a_, b_, bt = at('top') + at('above'), [], [], at('below') + at('bottom')
+            while t + bt and need(t, band_w, _BAND_ROWS) + need(bt, band_w, _BAND_ROWS) > body_h - _MID_MIN_H:
+                (bt if bt else t).pop()
+            return t, [at('left'), at('right')], a_, b_, bt
+
+        # Beside the panels, the player's box at most its share: the art over
+        # the details, or beside them when that makes it bigger; never narrower
+        # than the details need.
+        def fit(inner: int, h: int) -> tuple:
+            """The player's box beside the panels, `inner` columns at most and
+            `h` rows: (its inside width, art rows over the details, art rows
+            beside them, whether beside, the details' width beside)."""
+            s_rows = min(_art_room(h - 3 - meta_n), int(inner / aspect))
             b_text = min(_DETAILS_W, inner - 2 - round(_MIN_ART_ROWS * aspect))
-            b_rows = min(_art_room(body_h - 2), int((inner - 2 - b_text) / aspect)) if b_text >= _BESIDE_TEXT else 0
+            b_rows = min(_art_room(h - 2), int((inner - 2 - b_text) / aspect)) if b_text >= _BESIDE_TEXT else 0
             by = b_rows >= max(_MIN_ART_ROWS, s_rows * _BESIDE_GAIN)
             used = (round(b_rows * aspect) + 2 + b_text if by
                     else max(round(s_rows * aspect), min(_PLAYER_MIN_W, inner)))
@@ -1229,48 +1438,58 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
         # each column _PANEL_SIDE_MIN; else it shrinks (smaller art) down to
         # _MID_MIN_TEXT inside. The columns share what's left by what they
         # hold (lyrics wider than the queue), so the boxes still tile the row.
-        width = full_r - full_l + 1
-        cols_w = [[k for k, s in arrange['wide'] if s == side_] for side_ in ('left', 'right')]
+        w_top, cols_w, w_above, w_below, w_bot = split('wide', True)
         n_cols = sum(bool(c) for c in cols_w)
         room = width - n_cols * mh - n_cols * _PANEL_SIDE_MIN      # the player's box at most, beside them
         share = _PLAYER_SHARE if n_cols < 2 else _PLAYER_SHARE_TWO   # between two columns, a third or so
-        side_in, s_rows, b_rows, side_beside, b_text = fit(min(int(width * share), room) - 4)
-        side = panel and n_cols > 0 and room - 4 >= _MID_MIN_TEXT
+        mid_w = body_h - need(w_top, band_w, _BAND_ROWS) - need(w_bot, band_w, _BAND_ROWS)
+        guess = min(int(width * share), room) - 4
+        side_in, s_rows, b_rows, side_beside, b_text = fit(guess, mid_w - need(w_above + w_below, guess))
+        side = n_cols > 0 and room - 4 >= _MID_MIN_TEXT
         spare = width - (side_in + 4) - n_cols * mh                 # the columns' share
         want = [max((_PANEL_WANT.get(k, 40) for k in c), default=0) for c in cols_w]
         lw = 0
         if cols_w[0]:                                             # the left column; the right takes the rest
             lw = spare if not cols_w[1] else max(_PANEL_SIDE_MIN, min(spare - _PANEL_SIDE_MIN,
                                                                       spare * want[0] // max(1, sum(want))))
-        cols_t = [[k for k, s in arrange['tall'] if s == side_] for side_ in ('left', 'right')]
+        # Without columns: the wide arrangement when it has none (it fits any
+        # window), else the tall one.
+        under_shape = 'wide' if n_cols == 0 else 'tall'
+        u_top, cols_t, _a, _b, u_bot = split(under_shape, False)
         two_under = all(cols_t) and width - mh >= 2 * _PANEL_SIDE_MIN
         want_t = [max((_PANEL_WANT.get(k, 40) for k in c), default=0) for c in cols_t]
-        people_rows = len(_people_lines(cast_people, crew_people, full_r - full_l - 3, body_h // 3)) + 2
 
-        def need(kinds: list) -> int:
-            """Rows a column of panels under the player keeps: the people what
-            they need, the others a few each."""
-            return sum(people_rows if k == 'people' else _PANEL_MIN_ROWS for k in kinds)
+        def reserve(cols_: list) -> int:
+            """Rows the columns under the player keep."""
+            return (max(need(cols_[0], band_w), need(cols_[1], band_w)) if two_under
+                    else need(cols_[0] + cols_[1], band_w))
 
         # Beside wins wherever it fits, unless it would leave the art much
         # smaller than under the panels gives it (a tall, narrow window).
+        mid_t = body_h - need(u_top, band_w, _BAND_ROWS) - need(u_bot, band_w, _BAND_ROWS)
         if side:
-            under = body_h - 3 - meta_n - (max(need(cols_t[0]), need(cols_t[1])) if two_under
-                                           else need(cols_t[0] + cols_t[1]))
-            art_under = min(_art_room(under), int((width - 4) / aspect))
+            art_under = min(_art_room(mid_t - 3 - meta_n - reserve(cols_t)), int((width - 4) / aspect))
             side = (b_rows if side_beside else s_rows) >= _SIDE_ART_SHARE * art_under
+
+        shape = 'wide' if side else under_shape
+        if side:
+            top_k, cols, above_k, below_k, bot_k = w_top, cols_w, w_above, w_below, w_bot
+        else:
+            top_k, cols, above_k, below_k, bot_k = u_top, cols_t, [], [], u_bot
+        m_top = top + need(top_k, band_w, _BAND_ROWS)            # the middle row, between the bands
+        m_bot = body_bot - need(bot_k, band_w, _BAND_ROWS)
+        m_h = m_bot - m_top + 1
 
         # The player's box: the art as big as the room allows, the details under it.
         if side:
             max_inner = side_in
-            avail = body_h - 3 - meta_n
+            c_need = need(above_k + below_k, side_in)
+            avail = m_h - c_need - 3 - meta_n
         else:
-            max_inner = full_r - full_l + 1 - 4
-            # Under it, the panels keep what they need: the people's rows, and a
-            # few for the lyrics or the queue.
-            reserve = (max(need(cols_t[0]), need(cols_t[1])) if two_under
-                       else need(cols_t[0] + cols_t[1])) if panel else 0
-            avail = body_h - 3 - meta_n - reserve
+            max_inner = width - 4
+            # Under it, the columns keep what they need: the fitted panels' rows,
+            # a few for the lyrics or the queue.
+            avail = m_h - 3 - meta_n - (reserve(cols) if any(cols) else 0)
         # The art is a square, as big as the room allows, filled with no gap (the
         # cover cropped to it); the box is the art and its inset, no wider.
         art_rows = min(_art_room(avail), int(max_inner / aspect))
@@ -1280,6 +1499,7 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
         if side:
             beside = side_beside
             art_rows = b_rows if beside else s_rows
+            art_rows = min(art_rows, _art_room(avail + (meta_n + 1 if beside else 0)))
         else:
             b_rows = min(_art_room(avail + meta_n + 1), int((max_inner - 2 - _BESIDE_TEXT) / aspect))
             beside = b_rows >= max(_MIN_ART_ROWS, art_rows * _BESIDE_GAIN)
@@ -1289,15 +1509,22 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
         beside = beside and bool(art)
         art_w = _art_w(art) if art else 0
         content_h = max(len(art), meta_n) if beside else len(art) + (1 if art else 0) + meta_n
-        if panel and not side and body_bot - (top + 1 + content_h) < 3:
-            panel = False                     # no room under the player for the panel's box: it waits
+        if not side and any(cols) and m_bot - (m_top + 1 + content_h) < 3:
+            cols = [[], []]                   # no room under the player for the columns' boxes: they wait
         lw = lw if side else 0                                    # the left column's width
         p_l = full_l + (lw + mh if lw else 0)
         p_r = p_l + side_in + 3 if side else full_r
         box_in = p_r - p_l - 1                                    # between the borders
-        # Alone, the box reaches down to the transport box, what's in it centred.
-        p_bot = body_bot if side or not panel else top + 1 + content_h
-        c_top = top + 1 + max(0, (p_bot - top - 1 - content_h) // 2)
+        # The player's box: between what's above and below it in its column;
+        # with columns under it, just its content; else down to the band or
+        # the transport, what's in it centred.
+        if side:
+            p_top = m_top + need(above_k, box_in - 2)
+            p_bot = m_bot - need(below_k, box_in - 2)
+        else:
+            p_top = m_top
+            p_bot = m_top + 1 + content_h if any(cols) else m_bot
+        c_top = p_top + 1 + max(0, (p_bot - p_top - 1 - content_h) // 2)
         if beside:                                                # the pair centred across the box
             # The details' column, not this track's details, so the art holds still.
             text_col = min(box_in - 4 - art_cols, _DETAILS_MAX_W)
@@ -1322,33 +1549,50 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
             for line in _meta_left_lines(audio, file_path, text_w)[:max(0, p_bot - r)]:
                 emit(f"\033[{r};{p_l + 2 + max(0, (text_w - ui.visual_len(line)) // 2)}H{line}")
                 r += 1
-        boxes.append((top, p_bot, p_l, p_r))
+        boxes.append((p_top, p_bot, p_l, p_r))
 
-        # The panels: in their columns beside the player, or under it (in two
-        # columns when both sides have some and there's room), each column
-        # stacked in its order. The arrangement is this shape's.
-        if panel:
-            shape = 'wide' if side else 'tall'
-            if side:
-                regions = [(c, top, body_bot, l_, r_) for c, l_, r_ in (
-                    (cols_w[0], full_l, full_l + lw - 1), (cols_w[1], p_r + 1 + mh, full_r)) if c]
-            elif two_under:                                  # split by what they hold, each its least at most
-                half = (width - mh) * want_t[0] // max(1, sum(want_t))
-                half = max(_PANEL_SIDE_MIN, min(width - mh - _PANEL_SIDE_MIN, half))
-                regions = [(cols_t[0], p_bot + 1, body_bot, full_l, full_l + half - 1),
-                           (cols_t[1], p_bot + 1, body_bot, full_l + half + mh, full_r)]
-            else:
-                regions = [(cols_t[0] + cols_t[1], p_bot + 1, body_bot, full_l, full_r)]
+        # The panels, each place stacked in its order.
+        regions = []
+        if top_k:
+            regions.append((top_k, top, m_top - 1, full_l, full_r))
+        if side:
+            regions += [(c, m_top, m_bot, l_, r_) for c, l_, r_ in (
+                (cols[0], full_l, full_l + lw - 1), (cols[1], p_r + 1 + mh, full_r)) if c]
+            if above_k:
+                regions.append((above_k, m_top, p_top - 1, p_l, p_r))
+            if below_k:
+                regions.append((below_k, p_bot + 1, m_bot, p_l, p_r))
+        elif two_under and all(cols):                             # split by what they hold, each its least at most
+            half = (width - mh) * want_t[0] // max(1, sum(want_t))
+            half = max(_PANEL_SIDE_MIN, min(width - mh - _PANEL_SIDE_MIN, half))
+            regions += [(cols[0], p_bot + 1, m_bot, full_l, full_l + half - 1),
+                        (cols[1], p_bot + 1, m_bot, full_l + half + mh, full_r)]
+        elif any(cols):
+            regions.append((cols[0] + cols[1], p_bot + 1, m_bot, full_l, full_r))
+        if bot_k:
+            regions.append((bot_k, m_bot + 1, body_bot, full_l, full_r))
+        if regions:
             order = []
             for kinds, y0, y1, l_, r_ in regions:
-                for kind, b0, b1 in _stack(kinds, y0, y1, people_rows):
+                if y1 - y0 + 1 < 3:
+                    continue
+                for kind, b0, b1 in _stack(kinds, y0, y1, lambda k, w=r_ - l_ - 3: rows_for(k, w)):
                     box = (b0, b1, l_, r_)
                     boxes.append(box)
                     order.append(kind)
                     if kind == _ui_state['arranging']:
                         _frame['focus'] = box
                     a_in = r_ - l_ - 3                                # inside "│ " … " │"
-                    if kind == 'people':
+                    _frame['panel_boxes'][kind] = box
+                    if kind in _LIVE_PANELS:
+                        titles[box] = dict(PANELS)[kind]
+                        live[kind] = (b0 + 1, l_ + 2, a_in, b1 - b0 - 1)
+                        pc.screen_reserve(b0 + 1, b1 - 1, l_ + 2, l_ + 1 + a_in)   # its own, painted each tick
+                    elif kind in ('credits', 'info', 'notes', 'booklet'):
+                        for k, line in enumerate(_static_panel(kind, audio, file_path, a_in, b1 - b0 - 1,
+                                                               box, titles, b0 + 1, l_ + 2)):
+                            emit(f"\033[{b0 + 1 + k};{l_ + 2}H{line}")
+                    elif kind == 'people':
                         titles[box] = "People"
                         for k, line in enumerate(_people_lines(cast_people, crew_people, a_in, b1 - b0 - 1)):
                             emit(f"\033[{b0 + 1 + k};{l_ + 2}H{line}")
@@ -1368,7 +1612,7 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
                 _ui_state['scrolling'] = True
             if _ui_state['arranging'] == _ARRANGE_FIRST and order:
                 _ui_state['arranging'] = order[0]
-                _frame['focus'] = boxes[-len(order)]
+                _frame['focus'] = _frame['panel_boxes'][order[0]]
         if _ui_state['arranging'] is not None and _ui_state['arranging'] not in (_frame.get('panel_order') or []):
             _ui_state['arranging'] = None                    # nothing of it on screen: arranging ends
 
@@ -1384,11 +1628,15 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
     boxes.append((t_top, t_bot, full_l, full_r))
     _frame.update(boxes=boxes, titles=titles, prog_row=ctrl, bar=(bar_l, max(0, full_r - 2 - bar_l + 1)),
                   side=side, beside=beside)
+    from backtrack.playback import panels
+    panels.LIVE.place(live)
 
     for k, line in enumerate(hint_lines):
         emit(f"\033[{hint_top + k};1H\033[K{' ' * mh}{line}")
     compute_controls_hint_cells(hint_lines, hint_top)
     _render_frame_buffer(frame_buffer, rows)
+    for row, col, escape in _frame['images']:          # the booklet's page, as an image over its cells
+        sys.stdout.write(f"\0337\033[{row};{col}H{escape}\0338")
     # The transport row is the controls' and the bar's, not the frame's (see _frame_borders).
     write_controls(ctrl, status)
     sys.stdout.flush()
@@ -1425,22 +1673,24 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     def emit(text):
         frame_buffer.append(text)
 
-    cast_people = _get_people(audio, 'TMCL')
-    crew_people = _get_people(audio, 'TIPL')
+    cast_people, crew_people = people_of(audio)
     has_cast = bool(cast_people or crew_people)
-    has_lyrics = _ui_state['lyrics_pane'] and bool(audio.getall('SYLT') or audio.getall('USLT'))
+    # What the player resolved for this track (set_lyric_sources), not the tags:
+    # its lyrics may be a file beside it, or none where the setting says synced only.
+    has_lyrics = (_ui_state['lyrics_pane'] and _lyric_src['track'] == file_path
+                  and bool(_lyric_src['files']))
 
     # Boxed under a tab bar or with a panel showing; clean, edge to edge, with neither.
-    pane_on = (_ui_state['show_queue'] or (_ui_state['show_lyrics'] and has_lyrics)
-               or (_ui_state['show_credits'] and has_cast))
+    has = track_has(audio, file_path, has_cast, has_lyrics)
+    pane_on = _ui_state['show_queue'] or any(has.get(k) for k in shown_panels())
     # Boxed whenever the tab bar shows or a panel does, at any size: only with
     # the bar hidden (f) and no panel is the player clean, edge to edge.
     boxed = bool(ui.tab_rows()) or bool(pane_on)
     _frame.update(boxed=boxed, boxes=[], titles={}, prog_row=None, icons_col=None, bar=None,
-                  focus=None, panel_order=[], shape=None)
+                  focus=None, panel_order=[], shape=None, panel_boxes={}, images=[])
     if boxed:
         drawn = _draw_boxed_ui(file_path, audio, pre_art, size, is_paused, volume,
-                               cast_people, crew_people, has_cast, has_lyrics)
+                               cast_people, crew_people, has_cast, has_lyrics, has)
         if drawn is not None:
             return drawn                                     # else no room for boxes: clean
     lyrics_on = has_lyrics and _ui_state['show_lyrics'] and not _ui_state['show_queue']

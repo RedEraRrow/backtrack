@@ -23,11 +23,11 @@ import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from backtrack import tuning as tune
 
 _ITUNES = '{http://www.itunes.com/dtds/podcast-1.0.dtd}'
 
-# How long to wait for a feed or an enclosure before giving up.
-FETCH_TIMEOUT_S = 30.0
+FETCH_TIMEOUT_S = tune.FEED_FETCH_TIMEOUT_S
 # Read size for a streamed download.
 _CHUNK = 65536
 

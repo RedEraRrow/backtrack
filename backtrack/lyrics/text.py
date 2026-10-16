@@ -193,6 +193,55 @@ def inline_stage_dirs(t: str) -> list[tuple[int, str]]:
     return _scan(t)[1]
 
 
+# A direction says either how the words are spoken (tone: "Quietly", "To
+# Carolyn", "he drifts back into his own accent") or what happens (action: "He
+# laughs.", "the car door closes"). Scripts write tone as a manner phrase, an
+# adverb, a preposition or a participle, or about the voice itself; an action is
+# a subject doing something. Punctuation doesn't tell them apart: "he sighs" has
+# no full stop and "His voice falters." has one.
+_TONE_WORDS_RE = re.compile(r"\b(voice|accent|tone|pitch\w*|whisper\w*|sing\w*|sung|shout\w*|yell\w*|"
+                            r"hiss\w*|mutter\w*|mumbl\w*|murmur\w*|speak\w*|talk\w*|stutter\w*|"
+                            r"impersonat\w*|impression|stilted|staccato|louder|quieter|softer|faster|slower|"
+                            r"intercom|phone|radio|mic|microphone)\b")
+# A sound named as a thing, not "to sound like".
+_SOUND_RE = re.compile(r"(?<!\bto )\b(noise|noises|sound|sounds|beep|laughter|clink\w*|ding|buzz\w*|pause|silence)\b")
+_TONE_OPENERS = {'to', 'into', 'in', 'at', 'back', 'still', 'under', 'over', 'through', 'off', 'on',
+                 'with', 'without', 'now', 'almost', 'very', 'more', 'less', 'half', 'sotto',
+                 'aside', 'mock', 'faux', 'fake', 'as'}
+# Who or what a sentence-like action opens with.
+_SUBJECTS = {'he', 'she', 'they', 'it', 'i', 'we', 'you', 'his', 'her', 'their', 'the', 'another'}
+
+
+def direction_kind(text: str, overrides: dict | None = None) -> str:
+    """'tone' or 'action' for a stage direction (see above). `overrides` maps a
+    direction's `norm` text to the kind chosen in the lyric editor."""
+    key = norm(text)
+    if overrides and overrides.get(key) in ('tone', 'action'):
+        return overrides[key]
+    words = key.split()
+    if not words:
+        return 'action'
+    if _SOUND_RE.search(key):
+        return 'action'
+    if _TONE_WORDS_RE.search(key):
+        return 'tone'
+    first = words[0]
+    if first in _TONE_OPENERS or first.endswith('ing') or (
+            first not in _SUBJECTS and any(w.endswith('ly') for w in words)):
+        return 'tone'
+    return 'action'
+
+
+# A note on how "it" is said is about the word just said, not the words to come:
+# "You mean Wrath. *(She pronounces it 'roth.')* Of course there is."
+_POINTS_BACK_RE = re.compile(r"\b(pronounc\w*|say\w*|said|repeat\w*|stress\w*)\s+it\b")
+
+
+def points_back(text: str) -> bool:
+    """Whether a direction describes the words before it wherever it sits."""
+    return bool(_POINTS_BACK_RE.search(norm(text)))
+
+
 # What a script writes at the end of a thought.  A cut is only safe where the
 # script itself already broke: sentence and clause marks, the dashes and ellipses
 # these transcripts use for an interruption or a trailing-off, and the ♪ that closes

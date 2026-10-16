@@ -12,7 +12,6 @@ One rule per axis, so similar screens read the same way.
 |---|---|
 | Separator | Interpunct `·`: hint bars, headers, player details, multi-value fields. Never `⋅`. |
 | Truncation | `…`, one column, never `...`. `truncate_text`'s default. |
-| Hierarchy | `>` in the breadcrumb only: it means descent, not separation. |
 | Column gap | `prompt.core.COL_GAP` (3) for every list; never a per-list override. Narrow terminals are handled by column `priority` and the per-render pin gap. |
 | Case | Sentence case for every label, menu item, prompt title and separator heading. |
 | Tick / cross | One pair, heavy: `✔` U+2714 and `✘` U+2718. The tick already marks the current sort, a checked multi-select row and "Save changes", so state uses the same one. Never `✓` U+2713 (lighter, doesn't match) or `✗` U+2717 (drawn brush-style in most fonts). |
@@ -335,7 +334,7 @@ them, so callers write `prompt.select(...)`:
   so every screen keeps that row as its top margin.
 - **Command line (`:`):** `cli.run_in_app` runs a command line through `cli.main` with the app's
   library, output captured (a terminal-like buffer, so tables keep their layout) and the colour,
-  accents and output mode put back after. While it runs, `cli_commands._session_link` hands
+  theme and output mode put back after. While it runs, `cli_commands._session_link` hands
   commands this window's session (`session.AppLink`) rather than the newest one advertised.
 - **Column browser (`select(trail=…, preview=…)`):** `trail` is the levels above as `Trail`s
   (labels, values, the opened one, a depth); `preview(value)` gives a `Preview` (a details drawer

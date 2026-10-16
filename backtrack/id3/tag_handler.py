@@ -901,7 +901,8 @@ def prompt_for_value(tag_id: str, current_value: Any = None, initial_people: lis
         pic_type, desc = meta
         return {'__image__': True, 'data': img_data, 'type': pic_type, 'desc': desc}
     if ui_cat == 'lyrics':
-        ui.show_status("Use lyric sync tool for SYLT.")
+        ui.show_status("SYLT comes from a lyrics file: add it in a track's tag editor, "
+                       "or use Automation → Import lyrics from files.")
         return None
     if ui_cat == 'multiline text':
         return prompt.multiline(f"{label}:", default_val or "")
@@ -1066,7 +1067,7 @@ def summarize_tag_value(tag_id: str, raw_frame, display: bool = False) -> str:
         # create_frame). Keep it a one-element list so it summarizes whole.
         raw_text = raw_frame.text
         text_items = [raw_text] if isinstance(raw_text, str) else raw_text
-        vals = [str(t).replace("\n", "\\") for t in text_items]
+        vals = [ui.one_line(str(t), "\\") for t in text_items]
         text = format_value_list(vals) if display else "; ".join(vals)
         return text[:100]
 
@@ -1173,8 +1174,8 @@ def apply_bulk_operation_to_files(
 # Suggested as it's typed, checked before it's taken: only ids a frame can be
 # built from, with a description or language only where the frame has one.
 
-_DESC_FRAMES = {'TXXX', 'WXXX', 'COMM', 'USLT'}        # what create_frame gives a description
-_LANG_FRAMES = {'COMM', 'USLT'}                        # and a language
+_DESC_FRAMES = {'TXXX', 'WXXX', 'COMM', 'USLT', 'SYLT'}   # what a frame is given a description in
+_LANG_FRAMES = {'COMM', 'USLT', 'SYLT'}                   # and a language (SYLT: from its lyrics file)
 _NEEDS_DESC = {'TXXX', 'WXXX'}
 _COMMON_DESCS = {
     'TXXX': ("Mood", "Catalog Number", "Barcode", "Release Type", "Script", "Original Year",
@@ -1190,13 +1191,13 @@ _ID_FORM = re.compile(r'^([A-Za-z0-9]{1,4})(?:\[([^\]]*)\]?|(?::([^:]*))?(?::([^
 def _creatable(base: str) -> bool:
     """Whether a frame `base` can be built from a value typed for it: asks
     create_frame with a sample of its kind, so this never says yes to a frame
-    saving would then refuse (SYLT, binary frames)."""
+    saving would then refuse (binary frames)."""
     info = get_tag_info(base)
     st = _STRUCTURED.get(base)
     if info is None:
         return False
-    if (st is not None and st.build is not None) or info.ui_category == 'image':
-        return True
+    if (st is not None and st.build is not None) or info.ui_category == 'image' or base == 'SYLT':
+        return True                      # SYLT: filled from a lyrics file (browser._import_tag)
     sample = [("role", "name")] if info.ui_category == 'people' else _SAMPLE.get(info.frame_type, "2020")
     with quietly():
         return create_frame(base + (":x" if base in _NEEDS_DESC else ""), sample) is not None

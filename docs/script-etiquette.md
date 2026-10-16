@@ -6,6 +6,11 @@ markdown **script** (`{track}.md`) next to the audio. The transcript owns *when*
 is said. The script owns everything the timing cannot carry: who is speaking, the real
 punctuation and capitalisation, emphasis, and the stage directions.
 
+The pair can also travel as one file: a **`.bkts`** (`{track}.bkts`, a zip holding `script.md`,
+`transcript.json` and, while the lyric editor has unwritten edits, its working copy). When a
+track has one it's used in place of loose files, and the editor saves into it.
+`backtrack lyrics pack track.mp3` makes one from the loose pair, leaving those files alone.
+
 The two are joined by a single word-level alignment
 ([`lyrics.text.align_tokens`](../backtrack/lyrics/text.py)), so the script only does its job
 if its words are recognisably the same words the transcript heard. This guide is how to
@@ -207,7 +212,8 @@ The verify report also lists two things `S` will not do for you:
 The same report is available from the command line: `backtrack lyrics verify track.mp3`.
 
 For a transcript, `s` saves your edits to the working copy (`.sync.json`) beside it, and `W`
-writes them back to the transcript itself (and its `.srt`).
+writes them back to the transcript itself (and its `.srt`). In a `.bkts`, both are written into
+the `.bkts`.
 
 ### Timing a script you already have
 
