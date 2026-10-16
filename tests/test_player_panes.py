@@ -129,7 +129,8 @@ class PlacesTest(unittest.TestCase):
         pu._ui_state.update(panels={'wide': [['people', 'right'], ['lyrics', 'right']], 'tall': []},
                             arranging='lyrics')
         pu._frame.update(panel_order=['people', 'lyrics'], shape='wide')
-        with patch.object(pu, '_panels_changed', lambda: None):
+        from backtrack.playback import panel_state
+        with patch.object(panel_state, '_panels_changed', lambda: None):
             pu.arrange_key('DOWN')                     # last in its column: out into the bottom band
             self.assertIn(['lyrics', 'bottom'], pu._ui_state['panels']['wide'])
             pu.arrange_key('UP')                       # up from the bottom band: below the player

@@ -547,7 +547,8 @@ def _tag_apply(ctx: Ctx, operation: str, value=None) -> int:
         return out.fail(out.NOT_FOUND, "No such track.", path=missing[0])
 
     tags = [t.upper() for t in ctx.args.tag]
-    verb = {'set': 'Write', 'rename': 'Rename', 'delete': 'Delete'}[operation]
+    verb, done = {'set': ('Write', 'Wrote'), 'rename': ('Rename', 'Renamed'),
+                  'delete': ('Delete', 'Deleted')}[operation]
     if ctx.dry_run():
         for path in paths:
             out.event('plan', path=path, operation=operation, tags=tags,
@@ -567,7 +568,7 @@ def _tag_apply(ctx: Ctx, operation: str, value=None) -> int:
         fail += bad
         out.event('written' if good and not bad else 'error', path=path,
                   detail=f"{', '.join(tags)} on {os.path.basename(path)}")
-    out.note(f"{verb}d {ui.plural(ok, 'tag')} across "
+    out.note(f"{done} {ui.plural(ok, 'tag')} across "
              f"{ui.plural(len(paths), 'file')}."
              + (f" {ui.plural(fail, 'failure')}." if fail else ""))
     return out.FAIL if fail and not ok else out.OK

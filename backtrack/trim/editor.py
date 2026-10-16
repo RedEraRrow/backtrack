@@ -35,6 +35,7 @@ from backtrack.config import load_config
 from backtrack.trim import engine as trim
 from backtrack.music_library import drop_moved, track_title, first_text
 from backbone import keys, nav, ui
+from backbone.prompt import disable_mouse
 from backbone.ui import Colors as C
 from backbone.prompt.core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
 from backbone.prompt import confirm as _confirm
@@ -760,7 +761,7 @@ def _run_marking_screen(
         if mp:
             try: mp.stop()
             except Exception: pass
-        sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
         sys.stdout.flush()
         _restore_term_attrs(fd, old)
         w.clear()

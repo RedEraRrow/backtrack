@@ -7,6 +7,7 @@ from backtrack.id3.tag_formats import load_id3
 import sys, os, time
 from backtrack.music_library import format_value_list
 from backbone import keys, ui
+from backbone.prompt import disable_mouse
 from backbone.prompt.core import _set_raw, _restore_term_attrs
 from backbone.prompt import text as _prompt_text
 from backbone.prompt.core import FOOTER_ACTIONS, footer_click_action
@@ -378,10 +379,9 @@ class _KeyHandlers:
     def _commit_to_transcript(self) -> object:
         """W: after a y/N, write the spoken words back to the transcript JSON (and .srt)."""
         _restore_term_attrs(self.fd, self.old)
-        sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
         _ans = _prompt_text(
-            f"Write spoken words in Whisper format to "
-            f"{bkts.label(self.aux['jpath'])}? (y/N)")
+            f"Write the transcript to {bkts.label(self.aux['jpath'])}? (y/N)")
         _set_raw(self.fd)
         sys.stdout.write("\033[?1000h\033[?1006h")
         self.w.anchor_reset()
@@ -406,7 +406,7 @@ class _KeyHandlers:
                    **{fmt: f".{fmt} beside the track ({desc})" for fmt, desc in lyric_files.FORMATS.items()},
                    **({'unpack': "Its script and transcript, as loose .md and .json"} if packed else {})}
         _restore_term_attrs(self.fd, self.old)
-        sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
         try:
             what = _promptmod.pick_option("Export the lyrics as:", options, None, "Export")
             if not what:
@@ -477,7 +477,7 @@ class _KeyHandlers:
     def _add_gap(self) -> object:
         """a: insert dead air, or a stage direction, at the cursor or before the first line."""
         _restore_term_attrs(self.fd, self.old)
-        sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
         # At position 0 offer inserting before the first item (track intro)
         # whenever it starts after 0:00, including before an initial stage
         # direction, so you can place silence ahead of it.
@@ -528,7 +528,7 @@ class _KeyHandlers:
         if self.segs and self.cursor < len(self.segs) and self.segs[self.cursor].get("kind") in ("dead_air", "stage_dir"):
             _cur_lbl = self.segs[self.cursor].get("text", "")
             _restore_term_attrs(self.fd, self.old)
-            sys.stdout.write("\033[?1000l\033[?1006l")
+            disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
             _prompt = ("Stage direction text:" if self.segs[self.cursor].get("kind") == "stage_dir"
                        else "Stage direction, or blank for silence:")
             _new_lbl = _prompt_text(_prompt, default=_cur_lbl)
@@ -568,7 +568,7 @@ class _KeyHandlers:
         """r: fill the gaps between timed lines with dead air, and time any untimed
         stage direction that sits between two timed lines."""
         _restore_term_attrs(self.fd, self.old)
-        sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
         _inserted = 0; _timed = 0
         _i = 0
         _new_segs: list[dict] = []

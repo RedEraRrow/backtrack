@@ -37,6 +37,7 @@ import sys, os, json, time
 
 from backtrack.music_library import drop_moved, track_title
 from backbone import keys, nav, ui
+from backbone.prompt import disable_mouse
 from backbone.ui import Colors as C
 from backbone.prompt.core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs, _cols
 from backbone.prompt import text as _prompt_text
@@ -52,7 +53,7 @@ from backtrack.lyrics.md_overlay import _sd_scope, _reading_time, build_md_overl
 from backtrack.lyrics.time_fields import edit_changed, _EDIT_END, edit_key, edit_seconds, _EDIT_START, new_edit
 from backtrack.lyrics.sync_doc import (
     SOURCE_SYLT, SOURCE_TRANSCRIPT, SOURCE_USLT, _REVIEW_PHASE_NAME, _REVIEW_PROGRAMS,
-    _best_split_index, _clean_seg, _ensure_ids, _file_fp, _load, _rebuild_srt,
+    _best_split_index, _clean_seg, _ensure_ids, _is_enriched, _strip_ids, _file_fp, _load, _rebuild_srt,
     _review_phase_issues, _shift_seg, _shift_word,
 )
 from backtrack.lyrics.verify import _split_candidates, _split_seg_at, _verify_matchup
@@ -339,7 +340,7 @@ class _Session(_KeyHandlers):
         if not self.dirty:
             return True
         _restore_term_attrs(self.fd, self.old)
-        sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
         _ans = _prompt_text("Leave without saving? (y/N)")
         _set_raw(self.fd)
         sys.stdout.write("\033[?1000h\033[?1006h")
@@ -434,11 +435,13 @@ class _Session(_KeyHandlers):
         self.dirty = False; self.undo_stack.clear()
 
     def do_commit(self) -> bool:
-        """Write timings back to transcript.json (+ .srt) in the ORIGINAL Whisper
-        schema: spoken segments only.  The editor's stage-direction / dead-air
-        beats and all bookkeeping fields (ids, alignment, kind) are dropped (they
-        live on in the working copy and the .md), so transcript.json stays a plain
-        Whisper transcript of just the spoken words."""
+        """Write the timings back to the transcript (+ .srt) in the schema it
+        already has. A plain Whisper transcript stays one: spoken segments
+        only, the editor's beats and bookkeeping dropped (they live on in the
+        working copy and the .md). One that already holds more (stage
+        directions, dead air, pins to the script) keeps it all, only the
+        editor's ids taken off, so writing never throws away a committed
+        direction or its timing. Credit lines are never written."""
         jpath = self.aux['jpath']
         try:
             with open(jpath, encoding='utf-8') as f:
@@ -450,16 +453,21 @@ class _Session(_KeyHandlers):
             ui.show_error(f"{os.path.basename(jpath)} isn't valid JSON, so it wasn't overwritten")
             return False
         spoken = [s for s in self.segs if s.get('kind') not in ('stage_dir', 'dead_air', 'credit')]
-        container['segments']      = [_clean_seg(s) for s in spoken]
+        enriched = _is_enriched(container)
+        if enriched:
+            container['segments'] = [_strip_ids(s) for s in self.segs if s.get('kind') != 'credit']
+        else:
+            container['segments'] = [_clean_seg(s) for s in spoken]
         # The tone/action choices made with the kind key, which the player reads.
         container.pop('direction_kinds', None)
         if self.aux['meta'].get('direction_kinds'):
             container['direction_kinds'] = self.aux['meta']['direction_kinds']
-        container['word_segments'] = [
-            {'word': w.get('word', ''), 'start': w.get('start'),
-             'end': w.get('end'), 'score': w.get('score')}
-            for seg in spoken for w in seg.get('words', [])
-        ]
+        if not enriched or 'word_segments' in container:
+            container['word_segments'] = [
+                {'word': w.get('word', ''), 'start': w.get('start'),
+                 'end': w.get('end'), 'score': w.get('score')}
+                for seg in spoken for w in seg.get('words', [])
+            ]
         # The originals are kept as .bak (the last commit's), and each file is
         # written whole or not at all. A .bkts is backed up whole, and has no .srt.
         packed = bkts.source_of(jpath)
@@ -568,7 +576,7 @@ class _Session(_KeyHandlers):
             ui.show_status("Nothing to split.")
             return
         _restore_term_attrs(self.fd, self.old)
-        sys.stdout.write("\033[?1000l\033[?1006l")
+        disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
         _lines = sum(1 for c in cands
                      if len({l for l in c['line_refs']}) > 1)
         _dirs  = len(cands) - _lines
@@ -610,7 +618,7 @@ class _Session(_KeyHandlers):
         _text     = _seg.get("text", "").strip()
         if _new_kind == "stage_dir" and not _text:
             _restore_term_attrs(self.fd, self.old)
-            sys.stdout.write("\033[?1000l\033[?1006l")
+            disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
             sys.stdout.flush()
             with quietly():  # drop a click's pending mouse-release bytes so
                 import termios       # they don't leak into the text prompt
@@ -835,7 +843,7 @@ class _Session(_KeyHandlers):
             if self.mp:
                 try: self.mp.stop()
                 except Exception: pass
-            sys.stdout.write("\033[?1000l\033[?1006l")  # disable mouse
+            disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
             sys.stdout.flush()
             _restore_term_attrs(self.fd, self.old)
             self.w.clear()

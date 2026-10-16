@@ -759,9 +759,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             try:
                 audio = load_id3(path)
             except mutagen.id3.ID3NoHeaderError:  # type: ignore[reportPrivateImportUsage]
-                # Untagged MP3: only "Add New Tag" can create tags from nothing;
+                # Untagged MP3: adding or setting a tag creates tags from nothing;
                 # for the other operations there is nothing to change.
-                if operation != "Add New Tag":
+                if operation not in ("Add New Tag", "Set Common Value"):
                     continue
                 audio = ID3()
             changed = False
@@ -813,31 +813,32 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
                         audio.add(_copy.deepcopy(src_frame))
                         changed = True
                     continue
-                if tag in audio:
-                    # One frame at a time through apply_bulk_edit, the same
-                    # set/rename/delete the CLI uses.
+                # One frame at a time through apply_bulk_edit, the same
+                # set/rename/delete the CLI uses.
+                if operation == "Set Common Value":
+                    # Every track gets the value, the ones without the tag
+                    # included: setting it is making it so. A literal value, or
+                    # a per-file one from the regex spec (a find-and-replace on
+                    # the old value has nothing to work on where there's none).
+                    if set_spec is None:
+                        new_val = target_val
+                    else:
+                        new_val = _compute_set_value(set_spec, audio.get(tag), path)
+                    if new_val is None:
+                        continue   # no match / not applicable: leave it as it is
+                    # An invalid value keeps the old frame (apply_bulk_edit
+                    # builds the new one before removing anything).
+                    if apply_bulk_edit(audio, tag, 'set', new_val):
+                        changed = True
+                    else:
+                        ui.show_error(
+                            f"{os.path.basename(path)}: {new_val!r} isn't a valid {tag}, so the old value stays")
+                elif tag in audio:
                     if operation == "Delete Tags":
                         changed |= apply_bulk_edit(audio, tag, 'delete')
                     elif operation == "Rename Tags":
                         if target_val is not None:
                             changed |= apply_bulk_edit(audio, tag, 'rename', new_tag_id=target_val)
-                    elif operation == "Set Common Value":
-                        # Literal value, or a per-file value from the regex spec.
-                        if set_spec is None:
-                            new_val = target_val
-                        else:
-                            new_val = _compute_set_value(set_spec, audio.get(tag), path)
-                            if new_val is None:
-                                continue   # no match / not applicable: leave frame as-is
-                        if new_val is None:
-                            continue
-                        # An invalid value keeps the old frame (apply_bulk_edit
-                        # builds the new one before removing anything).
-                        if apply_bulk_edit(audio, tag, 'set', new_val):
-                            changed = True
-                        else:
-                            ui.show_error(
-                                f"{os.path.basename(path)}: {new_val!r} isn't a valid {tag}, so the old value stays")
 
             if changed:
                 save_id3(audio, path)   # explicit path: works for a fresh ID3 too

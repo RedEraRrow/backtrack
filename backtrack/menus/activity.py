@@ -1,6 +1,7 @@
 """The activity centre."""
 from __future__ import annotations
 from backbone.ui import Colors as C
+from backbone.prompt import disable_mouse
 from backbone import prompt
 from backbone.prompt import core as pc
 from backbone import keys, ui
@@ -65,6 +66,6 @@ def activity_centre() -> None:
                         break
                 pc._wait_for_keypress(0.08)             # the shared tick: the miniplayer when too small
         finally:
-            sys.stdout.write("\033[?1000l\033[?1006l")   # disable mouse
+            disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
             sys.stdout.flush()
     ui.clear_screen()

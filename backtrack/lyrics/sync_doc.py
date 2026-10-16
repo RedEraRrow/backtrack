@@ -81,6 +81,22 @@ def _clean_seg(seg: dict) -> dict:
     return out
 
 
+def _strip_ids(seg: dict) -> dict:
+    """A seg with only the editor's ids taken off (wid, bid): everything else
+    kept, for a transcript that holds more than Whisper's own fields."""
+    out = {k: v for k, v in seg.items() if k not in ('wid', 'bid')}
+    if 'words' in seg:
+        out['words'] = [{k: v for k, v in w.items() if k != 'wid'} for w in seg['words']]
+    return out
+
+
+def _is_enriched(container: dict) -> bool:
+    """Whether a transcript holds more than plain Whisper: segments with a kind
+    (stage directions, dead air) or a pin to the script."""
+    return any(isinstance(s, dict) and ('kind' in s or 'line_ref' in s)
+               for s in container.get('segments') or [])
+
+
 def _make_stage_dir(text: str, start: float | None = None, end: float | None = None) -> dict:
     """Build a stage-direction segment, tagging `_md_text` so it stays reconciled
     against the MD overlay even after the visible `text` is relabelled."""

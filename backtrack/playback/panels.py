@@ -18,9 +18,9 @@ from backbone import ui
 from backbone.prompt import core as _pc
 from backbone.ui import Colors as C
 
-# Credits in their own tags, not TIPL/TMCL: (frame, role).
-CREDIT_FRAMES = (('TCOM', 'composer'), ('TEXT', 'lyricist'), ('TPE3', 'conductor'),
-                 ('TPE4', 'remixer'), ('TOPE', 'original artist'), ('TOLY', 'original lyricist'))
+# Credits in their own tags, not TIPL/TMCL: (frame, the role shown for it).
+CREDIT_FRAMES = (('TCOM', 'Composer'), ('TEXT', 'Lyricist'), ('TPE3', 'Conductor'),
+                 ('TPE4', 'Remixer'), ('TOPE', 'Original artist'), ('TOLY', 'Original lyricist'))
 
 VIS_STYLES = ('bars', 'scope', 'meters')
 

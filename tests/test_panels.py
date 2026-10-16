@@ -19,13 +19,13 @@ class PanelsTest(unittest.TestCase):
         return a
 
     def test_credits_come_from_their_own_tags(self):
-        self.assertEqual(panels.tag_credits(self.tags()), [('composer', 'Fred E. Ahlert'), ('lyricist', 'Roy Turk')])
+        self.assertEqual(panels.tag_credits(self.tags()), [('Composer', 'Fred E. Ahlert'), ('Lyricist', 'Roy Turk')])
 
     def test_people_take_them_too_unless_turned_off(self):
         a = self.tags()
         a.add(TIPL(encoding=3, people=[['producer', 'David Tyler']]))
         with mock.patch.dict(player_ui._ui_state, people_all=True):
-            self.assertIn(('composer', 'Fred E. Ahlert'), player_ui.people_of(a)[1])
+            self.assertIn(('Composer', 'Fred E. Ahlert'), player_ui.people_of(a)[1])
         with mock.patch.dict(player_ui._ui_state, people_all=False):
             self.assertEqual(player_ui.people_of(a)[1], [('producer', 'David Tyler')])
 
@@ -102,6 +102,18 @@ class PanelsTest(unittest.TestCase):
         with mock.patch.dict(player_ui._ui_state, people_all=False):
             self.assertEqual(player_ui.panel_notes(self.tags()), {})
             self.assertTrue(player_ui.track_has(self.tags(), '/nowhere.mp3', False, False)['credits'])
+
+
+    def test_people_show_roles_exactly_as_tagged(self):
+        from backbone import ui
+        from mutagen.id3 import TMCL
+        a = ID3()
+        a.add(TMCL(encoding=3, people=[['1st Officer', 'Anna Crilly'], ['Capt. Hal', 'Anthony Head']]))
+        cast, _crew = player_ui.people_of(a)
+        self.assertEqual(cast, [('1st Officer', 'Anna Crilly'), ('Capt. Hal', 'Anthony Head')])
+        text = " ".join(ui.strip_ansi(l) for l in player_ui._people_lines(cast, [], 40, 5))
+        self.assertIn("1st Officer", text)
+        self.assertIn("Capt. Hal", text)
 
 
 if __name__ == '__main__':

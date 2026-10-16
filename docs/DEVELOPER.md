@@ -107,8 +107,14 @@ backtrack/
 │   ├── playback/
 │   │   ├── session.py            # The shared PlaybackSession: one VLC player, queue, background tick
 │   │   ├── ipc.py                # Multi-window sessions: registry under CONFIG_DIR/sessions/, client
-│   │   ├── player.py             # The player view over the session: key handling, host and joined
-│   │   ├── player_ui.py          # Player renderer (frame buffer, layout modes, panes, volume bar)
+│   │   ├── player.py             # The player view over the session: one key handler (_player_input) for host and joined
+│   │   ├── player_ui.py          # Player layout: the art and details, the panels in their places, the people
+│   │   ├── panel_state.py        # The panels: registry, what's on and where (per window shape), Arrange
+│   │   ├── panels.py             # What the newer panels show (Credits, Info, Notes, Booklet, the visualiser)
+│   │   ├── sound.py              # ffmpeg decode of a track for the visualiser, the next one prefetched
+│   │   ├── player_controls.py    # The transport: controls, progress bar, volume, tiny player, click mapping
+│   │   ├── player_frame.py       # The frame painter: box borders, writing only what changed
+│   │   ├── player_state.py       # State the above share (_ui_state, _frame)
 │   │   ├── queue_pane.py         # The player's queue pane
 │   │   ├── now_playing_box.py    # The mini-player above the status bar on every menu screen
 │   │   ├── player_art.py         # The player's art: half-blocks, or the real image on iTerm2
@@ -426,15 +432,17 @@ blocking call: a command with another source of targets (`--album`, say) must co
 
 `session.py` owns the audio: one process-wide `PlaybackSession` with the VLC player, the current
 track and the queue, and a background tick that advances the queue and logs history, whatever
-screen is showing. `playback.py` is the player *view* over it: it handles keys
-(seek/volume/panes/help) for the host and for a joined window, and leaving the view (`b`) keeps the
-audio playing. `player_ui.py` renders the screen into a **frame buffer** flushed in one write:
+screen is showing. `player.py` is the player *view* over it: one handler, `_player_input`, takes
+every key and click for the host and for a joined window alike (each passes its own session, the
+local one or a link to the host's), and leaving the view (`b`) keeps the audio playing.
+`player_ui.py` renders the screen into a **frame buffer** flushed in one write:
 flow lines are positioned by a row counter while absolute-positioned items (volume bar, controls,
 lyrics) pass through. It has three layout modes (wide / standard / minimal) that size the art to
 leave room for the metadata and the (variable-height) hint block, a full-height volume bar clamped
-to the art bottom, and the panels `w` picks (`player_ui.PANELS`; `_ui_state['panels']` keeps, per window shape,
-`wide` beside the player or `tall` under it, each panel's order and side; `arrange_key` moves them;
-`_stack` fills a column). `lyric_pane.py` draws the lyrics,
+to the art bottom, and the panels `w` picks (`panel_state.PANELS`; `_ui_state['panels']` keeps, per window shape,
+each panel's order and place: a band across the top or bottom, a column left or right, or above or below
+the art; `arrange_key` moves them; `_stack` fills a place). The transport is `player_controls.py`, the
+frame painter `player_frame.py`. `lyric_pane.py` draws the lyrics,
 `queue_pane.py` the queue, `player_art.py` the art, and `player_geom.py` records where the last
 frame put everything so clicks and partial redraws can find it.
 

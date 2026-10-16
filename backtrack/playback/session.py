@@ -128,7 +128,7 @@ def _id3_view(path: str) -> ID3:
 
     for frame, key, split in ((f.TIT2, 'title', False), (f.TPE1, 'artist', True), (f.TPE2, 'album_artist', True),
                               (f.TALB, 'album', False), (f.TCON, 'genre', True), (f.TCOM, 'composer', True),
-                              (f.TEXT, 'lyricist', True), (f.TDRC, 'year', False), (f.TIT1, 'work', False),
+                              (f.TEXT, 'lyricist', True), (f.TDRC, 'year', False), (f.TIT3, 'work', False),
                               (f.TSST, 'disc_subtitle', False), (f.MVNM, 'movement_name', False)):
         add(frame, e.get(key), split)
     for frame, num, total in ((f.TRCK, 'track', 'total_tracks'), (f.TPOS, 'disc', 'total_discs'),

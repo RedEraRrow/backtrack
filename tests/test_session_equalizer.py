@@ -112,7 +112,7 @@ class OtherFormatsInThePlayerTest(unittest.TestCase):
         view = session.player_tags(path)
         self.assertEqual(str(view['TIT2']), 'Song')
         self.assertEqual(view['TPE1'].text, ['A', 'B'])
-        self.assertEqual((str(view['TPOS']), str(view['TRCK']), str(view['TSST']), str(view['TIT1'])),
+        self.assertEqual((str(view['TPOS']), str(view['TRCK']), str(view['TSST']), str(view['TIT3'])),
                          ('2/3', '4', 'Live', 'Mass'))
         self.assertEqual(view['TMCL'].people, [['soprano', 'Ann']])
         self.assertEqual(view.getall('SYLT')[0].text, [('One', 1000), ('Two', 2500)])

@@ -1,5 +1,7 @@
-"""The player screen: layout, metadata and credits, transport controls, volume bar,
-and the diffed frame painter."""
+"""The player screen: its layout (the art and details, the panels in their
+places), the details lines and the people. Beside it: the panels' registry and
+arrangement (panel_state), the transport (player_controls), the frame painter
+(player_frame) and the state they share (player_state)."""
 from __future__ import annotations
 import re
 import time
@@ -28,6 +30,19 @@ from backtrack.playback.player_art import (  # noqa: F401 (re-exported)
     square_art,
 )
 from backtrack.config import setting
+from backtrack.playback.player_state import _frame, _ui_state
+from backtrack.playback.player_frame import _frame_borders, _render_frame_buffer  # noqa: F401 (re-exported)
+from backtrack.playback.player_controls import (  # noqa: F401 (re-exported)
+    VOLUME_W, _TINY_COLS, _TINY_ROWS, _controls_line, _draw_tiny, _icons_fitting, _last_hint_cells,
+    _last_transport_cols, _place_controls, chapter_time_on, compute_controls_hint_cells, hint_click_key,
+    progress_from_click, shown_time, step_volume, time_clicked, timer_extra, toggle_chapter_time,
+    transport_click_action, update_progress_ui, volume_changed, volume_text, write_controls,
+)
+from backtrack.playback.panel_state import (  # noqa: F401 (re-exported)
+    PANELS, PLACES, _ARRANGE_FIRST, _LIVE_PANELS, _get_people, _track_ctx, arrange_key, arrange_start,
+    chapters_listed, cycle_visualiser, live_context, lyrics_laid_out, page_click, panel_notes, people_of,
+    set_panels, set_track_context, shown_panels, track_has, turn_page,
+)
 from backtrack.music_library import year_of
 
 
@@ -75,12 +90,6 @@ keys.define("player_queue", "Player: queue panel", [
 ], within=("player", "global"))
 
 
-# Absolute cursor positioning (\033[<row>;<col>H): must require the trailing
-# 'H' so it does NOT also match a 24-bit colour prefix like \033[38;2;r;g;bm,
-# which every half-block art line starts with. Matching those made the renderer
-# treat art lines as absolute (row-less), so metadata flowed to the top and drew
-# ABOVE the art in the single-column layout.
-_ABS_ROW_RE = re.compile(r'^\033\[\d+;\d+H')
 
 _WIDE_SPLIT_GUTTER = 3
 # Share of the width left blank before the lyrics in the standard layout, so
@@ -107,119 +116,8 @@ _PANEL_MIN_ROWS = 8             # under the player, the lyrics or the queue keep
 _BAND_ROWS = 8                  # a full-width band (or a panel above or below the art) of a panel that isn't fitted
 _MID_MIN_H = 10                 # the bands leave the player's row at least this
 
-# The boxed player's frame (_draw_boxed_ui): whether the last frame was boxed,
-# its boxes (top, bottom, left, right; screen rows and columns) and their
-# titles, the transport row (`prog_row`: the controls, the progress bar and
-# the times, drawn by update_progress_ui and write_controls, not the frame),
-# the column its controls start at, and the bar's (first column, width).
-_frame: dict = {'boxed': False, 'boxes': [], 'titles': {}, 'prog_row': None,
-                'icons_col': None, 'bar': None}
 
 
-def _frame_borders(only: int | None = None) -> dict:
-    """The boxed player's boxes as overlays per row: each box's top border
-    (with its title) and bottom border, and its sides on the rows between.
-    The transport row is left out unless asked for (`only`): update_progress_ui
-    draws its own."""
-    if not _frame['boxed']:
-        return {}
-    out: dict = {}
-    for box in _frame['boxes']:
-        r0, r1, c0, c1 = box
-        title = _frame['titles'].get(box, "")
-        edge = C.ACCENT2 if box == _frame.get('focus') else C.FRAME     # the panel being arranged
-        for r in range(r0, r1 + 1):
-            if (only is not None and r != only) or (only is None and r == _frame['prog_row']):
-                continue
-            if r == r0:
-                name = f" {ui.truncate_text(title, max(1, c1 - c0 - 6))} " if title else ""
-                cell = (f"\033[{r};{c0}H{edge}╭─{C.RESET}{C.ACCENT2}{name}{C.RESET}"
-                        f"{edge}{'─' * max(0, c1 - c0 - 2 - ui.visual_len(name))}╮{C.RESET}")
-            elif r == r1:
-                cell = f"\033[{r};{c0}H{edge}╰{'─' * (c1 - c0 - 1)}╯{C.RESET}"
-            else:
-                cell = f"\033[{r};{c0}H{edge}│{C.RESET}\033[{r};{c1}H{edge}│{C.RESET}"
-            out.setdefault(r, []).append(cell)
-    return out
-
-
-def write_controls(row: int, status: str) -> None:
-    """Redraw the transport controls in place: in the boxed player, at their
-    own place on the transport row (the progress bar shares it); else the
-    controls row, from its first column."""
-    if _frame['boxed'] and _frame['bar']:
-        text = status.strip()
-        gap = max(0, _frame['bar'][0] - _frame['icons_col'] - ui.visual_len(text))
-        # From the inset after the box's side, which no other paint covers.
-        sys.stdout.write(pc.screen_span_paint(row, _frame['icons_col'] - 1, ' ' + text + ' ' * gap))
-    else:
-        width = ui.get_terminal_width()
-        sys.stdout.write(pc.screen_span_paint(row, 1, ui.clip_ansi(status, width)
-                                              + ' ' * max(0, width - ui.visual_len(status))))
-
-
-_player_prev_rows = [0]          # flow-row count of the previous player frame
-_player_overlay_rows = [set()]   # rows the previous frame overlaid
-
-
-def _render_frame_buffer(buf: list, rows: int) -> None:
-    """Flush the assembled frame, writing only the rows whose content changed.
-
-    `buf[0]` is a clear sequence, deliberately **dropped**: erasing the whole
-    screen every frame makes the player flicker on every progress tick, and with a
-    diffed paint it isn't needed: rows the frame stops using are blanked
-    explicitly, and `ui.clear_screen()` (entry, resize, exit) already drops
-    the painter's model so the next frame repaints in full.
-
-    `row` counts only flow (relative) lines; absolute-positioned items (the
-    volume bar, controls, lyrics) pass through WITHOUT consuming a row slot;
-    otherwise everything after them (e.g. the metadata) is pushed off-place.
-    Their rows are forgotten, so a later flow paint of the same row still lands.
-    """
-    flow: dict[int, str] = {}
-    overlay: dict[int, list[str]] = {}
-    row = 0
-    for item in buf[1:]:
-        m = _ABS_ROW_RE.match(item)
-        if m:
-            # An overlay: it writes a few columns of a row the art (or another
-            # flow line) also occupies: the volume bar sits to the right of the
-            # art, on the art's own rows. It is layered *over* that row rather
-            # than replacing it; dropping the row's flow content blanked the art.
-            overlay.setdefault(int(m.group(0)[2:-1].split(';')[0]), []).append(item)
-        else:
-            row += 1
-            if row <= rows:
-                flow[row] = item
-
-    # Every row this frame could need to touch: its own content, plus rows a
-    # taller previous frame used, plus rows whose overlay has now gone away.
-    # Blank counts as content: a row left out of this frame must be *erased*,
-    # not left showing the previous screen.
-    # The box's borders go over everything else on their rows, last.
-    for r, cells in _frame_borders().items():
-        overlay.setdefault(r, []).extend(cells)
-    touched = set(flow) | set(overlay)
-    touched |= {r for r in range(row + 1, _player_prev_rows[0] + 1) if r <= rows}
-    touched |= {r for r in _player_overlay_rows[0] if r not in overlay and r <= rows}
-    # The player owns the whole screen, so anything the painter still remembers
-    # from the screen before it (the menu's now-playing box, a taller list) is
-    # blanked here. There is no full clear per frame, so without this a first
-    # frame shorter than the previous screen would leave its bottom rows behind.
-    touched |= {r for r in pc.screen_rows() if r <= rows and r not in touched}
-    touched.discard(_frame['prog_row'])     # update_progress_ui's (and the controls'), not the frame's
-    touched |= set(range(1, ui.tab_rows() + 1))   # the tab bar's rows (the painter draws it there)
-    _player_prev_rows[0] = row
-    _player_overlay_rows[0] = set(overlay)
-
-    painted = {r: pc.screen_row_paint(r, flow.get(r, ""), "".join(overlay.get(r, ()))) for r in sorted(touched)}
-    out = "".join(painted.values())
-    if out:
-        sys.stdout.write(out)
-        art = range(geom.art_top or 0, (geom.art_top or 0) + (geom.art_height or 0))
-        first, last = (geom.art_left or 0) + 1, (geom.art_left or 0) + (geom.art_width or 0)
-        if any(seg and r in art and pc.screen_painted(r, first, last) for r, seg in painted.items()):
-            _draw_inline_art()  # cells under the image were rewritten: put it back
 
 PLAYER_CREDITS_ROLES = [
     'performer',
@@ -236,40 +134,6 @@ PLAYER_CREDITS_ROLES = [
 
 _CREW_ORDER = ['creator', 'writer', 'producer', 'director', 'script editor', 'composer']
 
-_ui_state = {
-    'show_metadata': True,      # from player_show_metadata; `m` flips and saves it
-    'show_tabs': True,          # from player_show_tabs; `f` flips and saves it
-    'debug': False,
-    # The panels shown (see PANELS), and where: for each shape of window
-    # ('wide': in columns beside the player; 'tall': under it), the panels in
-    # order, each on a side ('left' / 'right'). From player_panels; `w` picks
-    # them, its Arrange moves them. show_* follow it (set_panels).
-    'panels': {'wide': [], 'tall': []},
-    'arranging': None,          # the panel being moved (Arrange), or None
-    'show_credits': False,
-    'show_lyrics': False,
-    'show_queue': False,
-    'scrolling': False,         # a title line is too long and scrolls (ui.marquee): redraw it
-    'chapter_title': '',        # the chapter playing: the title line shows it
-    'chapter_pos': '',          # its "Chapter 3 of 20", for the details line
-    'book': False,              # the track is an audiobook (speed keys apply)
-    # False in a joined window's player view: lyrics are only painted by the
-    # window playing the audio, so there the panel offers credits and the queue.
-    'lyrics_pane': True,
-    'nerd_icons': False,        # from player_nerd_font_icons
-}
-# (prev, play, pause, next) transport glyphs, keyed by the Nerd Font setting:
-# Material Design icons when on, else the Unicode media symbols.
-_TRANSPORT_ICONS = {
-    False: ("⏮", "⏵", "⏸", "⏭"),
-    True: ("\U000F04AE", "\U000F040A", "\U000F03E4", "\U000F04AD"),
-}
-# Clickable-control geometry (set by _controls_line / the draw): transport-icon
-# columns on the controls row, the active hint pairs, and the hint-glyph cell map.
-_last_transport_cols: dict[str, int] = {}
-_last_controls_hint_pairs: list = []
-_last_hint_cells: dict[tuple[int, int], str] = {}
-
 
 # Below this width the single column shows no art: too small to be worth it.
 _MIN_ART_COLS = 34
@@ -282,16 +146,6 @@ def _layout_mode(cols: int) -> str:
 
 
 
-def timer_extra(rate: float = 1.0, sleep_left: float | None = None) -> str:
-    """What follows the time on the progress row: the speed when it isn't 1×,
-    and the sleep timer's countdown."""
-    out = ''
-    if rate and rate != 1.0:
-        out += f"  ×{rate:g}"
-    if sleep_left is not None:
-        out += f"  ◐ {ui.format_time(int(sleep_left))}"
-    return out
-
 
 def set_chapter(chapters: list, index: int) -> None:
     """The chapter now playing, for the title and details lines and the chapters panel."""
@@ -299,99 +153,6 @@ def set_chapter(chapters: list, index: int) -> None:
     title, pos = chapter_label(chapters, index) if 0 <= index < len(chapters) else ('', '')
     _ui_state['chapter_title'], _ui_state['chapter_pos'] = title, pos
 
-
-def chapter_time_on() -> bool:
-    """Whether the time shown is the chapter's rather than the whole file's: one
-    setting, so the player and the now-playing box always agree."""
-    from backtrack.music_library import _live_config
-    return bool(setting(_live_config(), 'player_chapter_time'))
-
-
-def toggle_chapter_time() -> None:
-    """Swap between the chapter's time and the whole file's, and remember it."""
-    try:
-        from backtrack.config import update_config
-        update_config({'player_chapter_time': not chapter_time_on()})
-    except Exception as exc:
-        log.warning("couldn't save player_chapter_time: %s", exc)
-
-
-def shown_time(elapsed: float, duration: float, chapters: list | None) -> tuple[float, float, tuple | None]:
-    """The time to show, as (position, length), and the chapter playing as
-    (start, end) fractions of the file for the progress bar, or None without chapters."""
-    ci = chapter_at(chapters or [], elapsed)
-    if ci < 0 or not duration:
-        return elapsed, duration, None
-    start = chapters[ci][0]
-    end = chapters[ci + 1][0] if ci + 1 < len(chapters) else duration
-    span = (start / duration, end / duration)
-    if chapter_time_on():
-        return elapsed - start, end - start, span
-    return elapsed, duration, span
-
-
-def update_progress_ui(row: int, elapsed: float, duration: float, width: int,
-                       chapters: list | None = None, extra: str = '') -> None:
-    """Update the default progress bar display. With chapters, the one playing
-    is picked out on the bar, and `t` shows its time instead of the file's.
-    `extra` follows the time (timer_extra)."""
-    shown_at, shown_len, span = shown_time(elapsed, duration, chapters)
-    elapsed_str = ui.format_time(int(shown_at))
-    duration_str = ui.format_time(int(shown_len))
-    # The elapsed time is padded to the duration's width so the bar holds its
-    # length while the clock runs; swapping to a shorter time (`t`) widens it.
-    full = f"{elapsed_str.rjust(len(duration_str))} / {duration_str}{extra}"
-
-    if _frame['boxed'] and _frame['bar']:
-        # The boxed player: the bar's own stretch of the transport row.
-        left_pad, container_w = _frame['bar'][0] - 1 - ui.MARGIN_H, _frame['bar'][1] + 2 * ui.MARGIN_H
-    elif geom.art_width and geom.art_width > 0:
-        container_w = geom.art_width
-        left_pad = geom.art_left if geom.art_left is not None else 0
-    else:
-        container_w = width
-        left_pad = 0
-    # Inset by the side margin at both ends, so the row never meets the edge.
-    container_w -= 2 * ui.MARGIN_H
-    left_pad += ui.MARGIN_H
-
-    # What fits, giving way in turn and never cut short: the bar, then the
-    # length (the position alone), then the time altogether.
-    percent = max(0.0, min(elapsed / duration, 1.0)) if duration else 0.0
-    caps = not _frame['boxed']
-    bar_width = container_w - len(full) - 2 - ui.progress_caps_width(caps)
-    if bar_width >= 3:
-        bar, timer_text = ui.get_progress_bar(percent, bar_width, span, caps), "  " + full
-    else:
-        bar, bar_width = "", 0
-        timer_text = next((t for t in (full, elapsed_str) if ui.visual_len(t) <= container_w), "")
-
-    # Remember where the bar landed so a click on it can be mapped back to a
-    # position: cell 0 sits just past get_progress_bar's left cap.
-    geom.prog_row, geom.prog_col, geom.prog_w = row, left_pad + 1 + len(ui.progress_caps(caps)[0]), bar_width
-
-    # From the bar's own column, and blanked only to the container's end: the
-    # box's border (and a panel beside) stay where they are.
-    line = f"{bar}{timer_text}"
-    # Boxed, it covers the box's inside up to the border, the blank before the
-    # border included (nothing else writes that cell, so whatever the screen
-    # before left there would stay); the border is the frame's. Else it
-    # clears on to the margin.
-    reach = container_w + (1 if _frame['boxed'] and _frame['bar'] else ui.MARGIN_H)
-    out = pc.screen_span_paint(row, left_pad + 1, line + ' ' * max(0, reach - ui.visual_len(line)))
-    for _r0, _r1, c0, c1 in (box for box in _frame['boxes'] if box[0] < row < box[1]) if _frame['boxed'] else ():
-        out += pc.screen_span_paint(row, c0, f"{C.FRAME}│{C.RESET}") + pc.screen_span_paint(row, c1, f"{C.FRAME}│{C.RESET}")
-    sys.stdout.write(out)               # cell by cell: nothing else on the row is disturbed
-    sys.stdout.flush()
-
-
-def _get_people(audio, tag_key: str) -> list[tuple[str, str]]:
-    """Flatten an ID3 involved-people-list frame (e.g. TMCL/TIPL) into (role, name) pairs."""
-    return [
-        (role.strip().lower(), name.strip())
-        for frame in audio.getall(tag_key)
-        for role, name in frame.people
-    ]
 
 
 def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4) -> list[str]:
@@ -401,8 +162,8 @@ def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4)
     lines = []
 
     for i, (role, name) in enumerate(people[:cap]):
-        is_named = role not in PLAYER_CREDITS_ROLES
-        label = f"{role.title()}: {name}" if is_named else name
+        is_named = role.lower() not in PLAYER_CREDITS_ROLES
+        label = f"{role}: {name}" if is_named else name
         if len(label) > max_w - 3:
             label = label[:max_w - 4] + "…"
         lines.append(f" {label}")
@@ -417,59 +178,6 @@ def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4)
 
 
 
-
-VOLUME_W = 20                    # the volume as it changes: ♪, the bar, the percentage
-
-
-def _volume_bar_w(width: int) -> int:
-    return max(4, width - 7)                   # "♪ " before it, " 100%" after
-
-
-def volume_text(width: int) -> str:
-    """The volume: ♪, a bar, the level (the level alone when narrow), for
-    whichever session this window plays or has joined."""
-    from backtrack.playback.session import active_session
-    try:
-        v = max(0, min(100, int(active_session().get_volume())))
-    except Exception:
-        return f"{C.DIM}♪{C.RESET}"
-    if width < 11:                             # too narrow for a bar: the level alone
-        return f"{C.DIM}♪{C.RESET} {v}%"
-    bw = _volume_bar_w(width)
-    filled = round(bw * v / 100)
-    return (f"{C.DIM}♪{C.RESET} {C.STRONG}{'━' * filled}{C.RESET}{C.DIM}{'─' * (bw - filled)}{C.RESET}"
-            f" {v:>3}%")
-
-
-def volume_changed() -> None:
-    """The volume moved: show it for a moment in a small box over the middle
-    of the screen (nothing shows it at rest)."""
-    text = volume_text(VOLUME_W)
-    w = ui.visual_len(text) + 4
-    cols, rows = ui.get_terminal_size()
-    if rows >= 3 and cols >= w:
-        lines = [ln[ui.MARGIN_H:] for ln in pc.box_lines([text], w, 3)]
-    else:                                              # no room for a box: the level alone
-        lines = [volume_text(1)]
-    pc.screen_float(lines, tune.VOLUME_SHOWN_S)
-
-
-_volume_asked: list = [None]     # (level, time) of the last step asked for
-
-
-def step_volume(session, up: bool) -> int:
-    """A press of a volume key: `session`'s volume (this window's, or the
-    host's it has joined) a step up or down, and shown. A joined window only
-    hears the host's level with its next snapshot, so a press soon after the
-    last steps from the level that one asked for: five quick presses are
-    five steps, not one. Returns the level asked for."""
-    now = time.monotonic()
-    last = _volume_asked[0]
-    base = last[0] if last and now - last[1] < tune.VOLUME_PRESS_WINDOW_S else session.get_volume()
-    level = session.set_volume(base + (tune.VOLUME_STEP if up else -tune.VOLUME_STEP))
-    _volume_asked[0] = (level, now)
-    volume_changed()
-    return level
 
 
 def toggle_metadata() -> None:
@@ -512,202 +220,6 @@ def view_chrome(open_: bool) -> None:
 def toggle_help() -> None:
     """Show or hide the hint bar: the app-wide switch, so every screen follows."""
     pc.toggle_hints()
-# The panels the player can show beside (or under) itself, in the order `w` lists them.
-PANELS = (('lyrics', "Lyrics"), ('people', "People"), ('queue', "Queue"), ('chapters', "Chapters"),
-          ('visualiser', "Visualiser"), ('credits', "Credits"), ('info', "Info"), ('notes', "Notes"), ('booklet', "Booklet"))
-# Where a panel can go: full-width bands, the columns beside the player, and
-# its own column above and below its art and details.
-PLACES = ('top', 'left', 'above', 'below', 'right', 'bottom')
-_VERTICAL = ('top', 'above', 'below', 'bottom')                # ↑ / ↓ move a panel along these
-_LIVE_PANELS = ('visualiser',)                       # repainted every tick (panels.LIVE)
-
-# This track, as the newer panels need it (set_track_context): its length,
-# its sound once the visualiser shows, its booklet page.
-_track_ctx: dict = {'path': '', 'duration': 0.0, 'sound': None, 'page': 0, 'started': 0.0}
-
-
-def set_track_context(path: str, duration: float) -> None:
-    """What the panels need of the track now playing (the player, on each load)."""
-    if path != _track_ctx['path']:
-        _track_ctx.update(page=0, started=time.time())    # when this play began, for Info's last play before it
-    _track_ctx.update(path=path, duration=duration, sound=None)
-
-
-def live_context() -> dict:
-    """What the visualiser draws from (panels.Live.paint)."""
-    from backtrack.playback import sound
-    snd = _track_ctx['sound']
-    if snd is None and 'visualiser' in shown_panels():
-        snd = _track_ctx['sound'] = sound.for_track(_track_ctx['path'], _track_ctx['duration'])
-    if snd is not None and snd.done:                 # this one's ready: the next in the queue, so it's seamless
-        paths, at = queue_pane._queue_ctx['paths'], queue_pane._queue_ctx['index']
-        nxt = paths[at + 1] if 0 <= at < len(paths) - 1 else None
-        if nxt and nxt != _track_ctx.get('prefetched'):
-            _track_ctx['prefetched'] = nxt
-            from backtrack.music_library import library_entry
-            sound.prefetch(nxt, float((library_entry(nxt) or {}).get('duration') or 0.0))
-    return {'sound': snd, 'style': _ui_state.get('visualiser', 'bars')}
-
-
-def people_of(audio) -> tuple[list, list]:
-    """The People panel's (cast, crew): TMCL and TIPL, and with Settings →
-    People: all credit tags, the composer, lyricist and the rest from their
-    own tags too, among the crew."""
-    from backtrack.playback import panels
-    cast, crew = _get_people(audio, 'TMCL'), _get_people(audio, 'TIPL')
-    if _ui_state.get('people_all', True):
-        crew += [c for c in panels.tag_credits(audio) if c not in crew]
-    return cast, crew
-
-
-def credits_repeat(audio) -> bool:
-    """Whether the Credits panel would only repeat People: People takes the
-    credit tags (the setting) and has no TMCL or TIPL people of its own."""
-    return bool(_ui_state.get('people_all', True) and audio is not None
-                and not (_get_people(audio, 'TMCL') or _get_people(audio, 'TIPL')))
-
-
-def track_has(audio, file_path: str, has_cast: bool, has_lyrics: bool) -> dict:
-    """Every panel, and whether this track has anything for it: one answer for
-    the layout, `w`'s list and whether the player is boxed. Credits that would
-    only repeat People count as nothing."""
-    from backtrack.playback import panels
-    has = {'lyrics': has_lyrics, 'people': has_cast, 'queue': has_queue(),
-           'chapters': bool(_chapter_titles()), **panels.has(audio, file_path)}
-    if has['credits'] and credits_repeat(audio):
-        has['credits'] = False
-    return has
-
-
-def panel_notes(audio) -> dict:
-    """Why a panel this track has data for is greyed in `w`'s list."""
-    from backtrack.playback import panels
-    return {'credits': "repeat data"} if audio is not None and panels.tag_credits(audio) and credits_repeat(audio) else {}
-
-
-def cycle_visualiser() -> str:
-    """The visualiser's next style (bars, oscilloscope, meters), saved."""
-    from backtrack.playback.panels import VIS_STYLES
-    style = VIS_STYLES[(VIS_STYLES.index(_ui_state.get('visualiser', 'bars')) + 1) % len(VIS_STYLES)]
-    _ui_state['visualiser'] = style
-    try:
-        from backtrack.config import update_config
-        update_config({'player_visualiser': style})
-    except Exception as exc:
-        log.warning("couldn't save player_visualiser: %s", exc)
-    return style
-
-
-def turn_page(step: int) -> bool:
-    """The booklet's next (1) or previous (-1) page; False when it's showing none."""
-    from backtrack.playback import panels
-    if 'booklet' not in (_frame.get('panel_order') or []):
-        return False
-    n = len(panels.booklet_pages(_track_ctx['path']))
-    _track_ctx['page'] = (_track_ctx['page'] + step) % max(1, n)
-    return True
-
-
-def page_click(row: int, col: int) -> int | None:
-    """A click on the booklet: 1 on its right half, -1 on its left, else None."""
-    box = (_frame.get('panel_boxes') or {}).get('booklet')
-    if box and box[0] < row < box[1] and box[2] < col < box[3]:
-        return 1 if col > (box[2] + box[3]) // 2 else -1
-    return None
-
-
-def shown_panels() -> list[str]:
-    """The panels switched on, whatever this track has."""
-    return [k for k, _side in _ui_state['panels']['wide']]
-
-
-def set_panels(kinds: list[str]) -> None:
-    """Show these panels: one switched on joins both shapes' arrangements at
-    the end, on the right; one switched off leaves both. Saved."""
-    for shape in ('wide', 'tall'):
-        kept = [[k, side] for k, side in _ui_state['panels'][shape] if k in kinds]
-        kept += [[k, 'right'] for k in kinds if k not in [x[0] for x in kept]]
-        _ui_state['panels'][shape] = kept
-    _panels_changed()
-
-
-def _panels_changed() -> None:
-    """Bring the flags the rest of the player reads in line, pick the list
-    the queue keys work on, and remember the arrangement."""
-    kinds = shown_panels()
-    _ui_state['show_lyrics'] = 'lyrics' in kinds
-    _ui_state['show_credits'] = 'people' in kinds
-    _ui_state['show_queue'] = 'queue' in kinds or 'chapters' in kinds
-    use_list('chapters' if chapters_listed() else 'queue')
-    if not _ui_state['show_queue']:
-        set_queue_cursor(None)                   # a reopened panel starts on the current item
-    try:
-        from backtrack.config import update_config
-        update_config({'player_panels': _ui_state['panels']})
-    except Exception as exc:
-        log.warning("couldn't save player_panels: %s", exc)
-
-
-def lyrics_laid_out() -> bool:
-    """Whether the last frame gave the lyrics a box (they're switched on, the
-    track has them, and there was room): the lyric pane paints there."""
-    return _ui_state['show_lyrics'] and bool(geom.lyric_width)
-
-
-def chapters_listed() -> bool:
-    """Whether the queue keys and clicks work on the chapters (no queue panel)."""
-    return 'chapters' in shown_panels() and 'queue' not in shown_panels()
-
-
-def arrange_start() -> None:
-    """Start moving the panels (Arrange): the next frame picks the first one
-    on screen (none on screen: nothing to arrange)."""
-    _ui_state['arranging'] = _ARRANGE_FIRST
-
-
-_ARRANGE_FIRST = '__first__'       # Arrange asked for: the first panel the next frame draws
-
-
-def arrange_key(key: str) -> bool:
-    """A key while arranging: Tab / Shift-Tab to the next / previous panel.
-    ↑ ↓ move it up or down: within its place, and past the end of one into the
-    next, top band → above the player → below it → bottom band (from a column,
-    out into the band at that end). ← → move it between the left column, the
-    player's own column and the right one. Enter or Esc to finish (saved). The
-    arrangement moved is this window shape's. Whether it was one."""
-    kind = _ui_state['arranging']
-    if kind is None:
-        return False
-    order = _frame.get('panel_order') or []
-    arr = _ui_state['panels'][_frame.get('shape') or 'wide']
-    at = next((i for i, (k, _s) in enumerate(arr) if k == kind), None)
-    if key in ('ENTER', 'ESC', 'w', 'W') or at is None or kind not in order:
-        _ui_state['arranging'] = None
-        _panels_changed()
-    elif key in ('TAB', 'BACKTAB'):
-        _ui_state['arranging'] = order[(order.index(kind) + (1 if key == 'TAB' else -1)) % len(order)]
-    elif key in ('UP', 'DOWN'):
-        place, up = arr[at][1], key == 'UP'
-        same = [i for i, (_k, s) in enumerate(arr) if s == place]
-        j = same.index(at) + (-1 if up else 1)
-        if 0 <= j < len(same):
-            arr[at], arr[same[j]] = arr[same[j]], arr[at]
-        else:                                                    # past the end of its place: into the next
-            nxt = ('top' if up else 'bottom') if place in ('left', 'right') else \
-                _VERTICAL[max(0, min(len(_VERTICAL) - 1, _VERTICAL.index(place) + (-1 if up else 1)))]
-            if nxt != place:
-                arr.pop(at)
-                # Moving up it comes in last of its new place; moving down, first.
-                arr.insert(len(arr) if up else 0, [kind, nxt])
-    elif key in ('LEFT', 'RIGHT'):
-        place = arr[at][1]
-        if place in ('above', 'below', 'top', 'bottom'):
-            arr[at][1] = 'left' if key == 'LEFT' else 'right'
-        elif (place == 'left') == (key == 'RIGHT'):              # from a column towards the player
-            arr[at][1] = 'below'
-    else:
-        return True                              # every other key waits while arranging
-    return True
 
 
 _lyric_src: dict = {'track': '', 'files': [], 'estimated': False}
@@ -777,10 +289,10 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
     for role, name in people:
         name_l = name.lower()
         if name_l in cast_name_lower and name_l not in seen_cast:
-            cast_matches.append((cast_name_lower.index(name_l), role.title(), name))
+            cast_matches.append((cast_name_lower.index(name_l), role, name))
             seen_cast.add(name_l)
         else:
-            others.append((role.title(), name))
+            others.append((role, name))
 
     cast_matches.sort(key=lambda x: x[0])
     cast_matches = [(role, name) for _, role, name in cast_matches]
@@ -792,12 +304,12 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
     ordered = []
     extra = []
     for role, name in others:
-        if role in priority_roles:
+        if role.lower() in priority_roles:
             ordered.append((role, name))
         else:
             extra.append((role, name))
 
-    ordered.sort(key=lambda x: _CREW_ORDER.index(x[0]) if x[0] in _CREW_ORDER else 99)
+    ordered.sort(key=lambda x: _CREW_ORDER.index(x[0].lower()) if x[0].lower() in _CREW_ORDER else 99)
     combined = cast_matches + ordered + extra
     total = len(combined)
     lines = []
@@ -813,223 +325,6 @@ def _build_crew_lines(people: list[tuple[str, str]], max_w: int,
 
     return lines
 
-
-def _controls_text(is_paused: bool, n: int = 3) -> tuple[tuple, str]:
-    """The transport's glyphs and their line: all three, or in a window too
-    narrow for them play/pause and next (n=2), or play/pause alone (n=1)."""
-    prev, play, pause, nxt = _TRANSPORT_ICONS[_ui_state['nerd_icons']]
-    pp_icon = play if is_paused else pause
-    # Nerd Font icons sit centred in their cells, so even gaps. The emoji-font
-    # glyphs draw left of their cells; the wider gap before play keeps them even.
-    gap = "   " if _ui_state['nerd_icons'] else "  "
-    if n >= 3:
-        return (prev, pp_icon, nxt), f"{prev}   {pp_icon}{gap}{nxt}"
-    if n == 2:
-        return (pp_icon, nxt), f"{pp_icon}{gap}{nxt}"
-    return (pp_icon,), pp_icon
-
-
-def _icons_fitting(inner: int) -> int:
-    """How many transport glyphs a row `inner` columns wide keeps: they're the
-    last thing to go, next before play/pause."""
-    for n in (3, 2):
-        if ui.visual_len(_controls_text(False, n)[1]) <= inner:
-            return n
-    return 1
-
-
-_TINY_ROWS = 5                  # a window this short (or shorter) shows only the transport
-_TINY_COLS = 10                 # likewise one this narrow, unboxed
-
-
-def _draw_tiny(size: tuple, is_paused: bool) -> tuple:
-    """The player in a tiny window: the transport and nothing else, boxed
-    from 3 rows (and room for a glyph inside), centred; the progress
-    update fits what it can beside the glyphs (update_progress_ui)."""
-    cols, rows = size
-    mh = ui.MARGIN_H
-    boxed = rows >= 3 and cols - 2 * mh - 4 >= 2
-    if boxed:
-        top = max(1, (rows - 3) // 2 + 1)
-        left, right = mh + 1, cols - mh
-        ctrl, icons_col, inner = top + 1, left + 2, right - left - 3
-        boxes = [(top, top + 2, left, right)]
-    else:
-        ctrl, icons_col, inner = max(1, (rows + 1) // 2), 2, cols - 1     # the glyphs from column 2
-        boxes = []
-    # Narrower than a box holding play/pause: that alone, unboxed (what a
-    # narrower window already gave up stays given up).
-    if rows >= 3 and not boxed:
-        inner = 2
-    n = _icons_fitting(inner)
-    _frame.update(boxed=True, icons_n=n, icons_col=icons_col)
-    status = _controls_line(False, is_paused, 100)[0]
-    bar_l = icons_col + ui.visual_len(status.strip()) + 3
-    last = icons_col + inner - 1
-    _frame.update(boxed=True, boxes=boxes, titles={}, prog_row=ctrl, bar=(bar_l, max(0, last - bar_l + 1)),
-                  side=False, beside=False)
-    _render_frame_buffer(["\033[H\033[3J\033[J"], rows)
-    write_controls(ctrl, status)
-    sys.stdout.flush()
-    return ctrl, ctrl, rows + 1, cols, rows
-
-
-def _controls_line(is_uslt: bool, is_paused: bool, volume: int,
-                   width: int | None = None,
-                   has_lyrics: bool = True, has_credits: bool = True) -> tuple[str, str]:
-    """Build the centred transport-controls line and the shortcuts/help hint line below it."""
-    icons, controls = _controls_text(is_paused, _frame.get('icons_n') or 3)
-
-    art_left = geom.art_left or 0
-    if _frame['boxed'] and _frame['icons_col']:
-        left_pad = _frame['icons_col'] - 1         # the boxed player's transport row
-    elif width:
-        left_pad = art_left + max(0, (width - ui.visual_len(controls)) // 2)
-    elif geom.art_width:
-        left_pad = art_left + max(0, (geom.art_width - ui.visual_len(controls)) // 2)
-    else:
-        cols = ui.get_terminal_size()[0]
-        left_pad = max(0, (cols - ui.visual_len(controls)) // 2)
-
-    status = " " * left_pad + controls
-    _record_transport_cols(status, icons)
-
-    if not pc.hints_visible():
-        # Hints are off app-wide, but the player keeps its way back to them,
-        # unless the help toggle is switched off (then you know to press ?).
-        pairs = [(keys.label('global.help'), 'help')] if pc.help_toggle_shown() else []
-        _set_controls_hint_pairs(pairs)
-        return status, _hint(*pairs, always=True) if pairs else ""
-
-    L = keys.label
-    hint_args = [
-        (L('player.playpause'), 'play/pause'),
-        (L('player.back_5', 'player.fwd_5'), '±5s'),
-        (L('player.back_1', 'player.fwd_1'), '±1s'),
-        (L('player.back_30', 'player.fwd_30'), '±30s'),
-    ]
-    if _ui_state['debug']:                       # Diagnostics: checking end credits
-        hint_args.append((L('player.near_end'), f'last {tune.NEAR_END_JUMP_S}s'))
-    hint_args += [(L('volume.up', 'volume.down', first=True), 'volume'), (L('player.meta'), 'meta')]
-    if nav.TABS:
-        hint_args.append((L('player.tabs'), 'tabs'))
-    if _ui_state.get('book'):
-        hint_args.append((L('player.slower', 'player.faster'), 'speed'))
-    hint_args.append((L('player.sleep'), 'sleep'))
-    hint_args.append((L('player.edit'), 'edit'))
-    if nav.TABS:
-        hint_args.append((L('player.album', 'player.artist'), 'album/artist'))
-    if _ui_state.get('chapter_title'):
-        hint_args.append((L('player.chapter_time'), 'file time' if chapter_time_on() else 'chapter time'))
-    if _ui_state['arranging'] is not None:       # Arrange: its keys, and nothing else to do
-        hint_args = [("tab", 'next panel'), ("↑↓", 'up/down'), ("←→", 'side'), ("↵", 'done')]
-        _set_controls_hint_pairs(hint_args)
-        return status, _hint(*hint_args, always=True)
-    if has_lyrics or has_credits or has_queue() or _ui_state.get('chapter_title'):
-        hint_args.append((L('player.panel'), 'panels'))
-    if chapters_listed():
-        Q = lambda *n, **kw: L(*(f'player_queue.{x}' for x in n), **kw)  # noqa: E731
-        hint_args += [(Q('up', 'down'), 'chapters'), (Q('play'), 'go to it')]
-    elif _ui_state.get('show_queue'):
-        Q = lambda *n, **kw: L(*(f'player_queue.{x}' for x in n), **kw)  # noqa: E731
-        hint_args += [(Q('up', 'down'), 'queue'), (Q('play'), 'play it'), (Q('move_up', 'move_down'), 'move'),
-                      (Q('remove', most=1), 'remove'), (Q('shuffle'), 'shuffle'), (Q('clear'), 'clear'),
-                      (Q('undo'), 'undo')]
-    if pc.help_toggle_shown():
-        hint_args.append((L('global.help'), 'hide help'))
-    hint_args += [(L('player.prev', 'player.next'), 'prev/next'),
-                  (L('player.stop'), 'stop'), (L('player.back', first=True), 'back'), (L('player.quit'), 'quit')]
-
-    _set_controls_hint_pairs(hint_args)
-    return status, _hint(*hint_args)
-
-
-def _record_transport_cols(status: str, icons: tuple[str, str, str]) -> None:
-    """Store the 1-based columns of the prev / play-pause / next glyphs on the
-    controls row so clicks on them can be mapped back to those actions. Columns,
-    not string positions: the emoji-font glyphs are two cells wide."""
-    global _last_transport_cols
-    _last_transport_cols = {action: ui.visual_len(status[:i]) + 1
-                            for action, icon in zip(('prev', 'playpause', 'next'), icons)
-                            if (i := status.find(icon)) >= 0}
-
-
-def _set_controls_hint_pairs(pairs: list) -> None:
-    """Remember the hint pairs currently shown under the controls, for hit-testing."""
-    global _last_controls_hint_pairs
-    _last_controls_hint_pairs = list(pairs)
-
-
-def _place_controls(emit, ctrl_row: int, rows: int, is_uslt: bool, is_paused: bool,
-                    volume: int, has_lyrics: bool, has_credits: bool) -> tuple[int, list[str]]:
-    """Draw the transport line at `ctrl_row` (pulled up so its hints still fit on
-    screen) with the hint lines under it, and record their click cells. Returns
-    the row it used and the hint lines."""
-    status_ln, shortcuts_ln = _controls_line(is_uslt, is_paused, volume,
-                                             has_lyrics=has_lyrics, has_credits=has_credits)
-    shortcut_lines = shortcuts_ln.splitlines() or [""]
-    # A window too short for all the help shows the lines that fit under the
-    # controls; only with no room for even one is the controls row pulled up.
-    shortcut_lines = shortcut_lines[:max(1, rows - ui.MARGIN_V - ctrl_row)]
-    ctrl_row = max(1, min(ctrl_row, rows - len(shortcut_lines) - ui.MARGIN_V))
-    emit(f"\033[{ctrl_row};1H\033[K{status_ln}")
-    for offset, line in enumerate(shortcut_lines, start=1):
-        emit(f"\033[{ctrl_row + offset};1H\033[K{' ' * ui.MARGIN_H}{line}")
-    compute_controls_hint_cells(shortcut_lines, ctrl_row + 1)
-    return ctrl_row, shortcut_lines
-
-
-def compute_controls_hint_cells(shortcut_lines: list[str], first_row: int) -> None:
-    """Populate ``_last_hint_cells`` for hint lines drawn at ``first_row`` onward
-    (each rendered with a MARGIN_H left inset, like the draw does)."""
-    _last_hint_cells.clear()
-    if not _last_controls_hint_pairs:
-        return
-    for k, line in enumerate(shortcut_lines):
-        add_hint_click_cells(_last_hint_cells, ' ' * ui.MARGIN_H + line,
-                             first_row + k, _last_controls_hint_pairs)
-
-
-def transport_click_action(row: int, col: int, ctrl_row: int) -> str | None:
-    """Return 'prev' / 'playpause' / 'next' if (row, col) hits a transport glyph
-    on the controls row, else None."""
-    if row != ctrl_row or not _last_transport_cols:
-        return None
-    for action, c in _last_transport_cols.items():
-        if abs(col - c) <= 1:
-            return action
-    return None
-
-
-
-
-def progress_from_click(row: int, col: int) -> float | None:
-    """If (row, col) lands on the horizontal progress bar, return the fraction of
-    the track that column represents (0.0-1.0); else None. The column either
-    side of the cells (a cap, if there are any) counts as that end, so clicking
-    just past either edge seeks to the start / end."""
-    if geom.prog_row is None or geom.prog_col is None or geom.prog_w <= 0:
-        return None
-    if row != geom.prog_row:
-        return None
-    lo, hi = geom.prog_col - 1, geom.prog_col + geom.prog_w   # include the caps
-    if not (lo <= col <= hi):
-        return None
-    if geom.prog_w <= 1:
-        return 0.0
-    frac = (col - geom.prog_col) / (geom.prog_w - 1)
-    return max(0.0, min(1.0, frac))
-
-
-def time_clicked(row: int, col: int) -> bool:
-    """Whether (row, col) is on the time after the progress bar (it swaps it)."""
-    return (geom.prog_row is not None and geom.prog_col is not None
-            and row == geom.prog_row and col > geom.prog_col + geom.prog_w)
-
-
-def hint_click_key(row: int, col: int) -> str | None:
-    """The synthesised key for a click on a controls hint glyph, or None."""
-    return _last_hint_cells.get((row, col))
 
 
 def _movement_roman(s: str) -> str:
@@ -1110,7 +405,10 @@ def _meta_left_lines(audio, file_path: str, max_val_w: int) -> list[str]:
         if genre:
             details.append(genre)
 
-        work = _txt('TIT1')
+        # The work as the library reads it (TIT3, ©wrk, WORK or TXXX:WORK), so
+        # the player and Browse can't disagree, whatever the format.
+        from backtrack.music_library import library_entry
+        work = str((library_entry(file_path) or {}).get('work') or '') if file_path else ''
         movement, _ = _frac('MVIN')
         disc, disc_total = _frac('TPOS')
         disc_subtitle = _txt('TSST')
@@ -1249,8 +547,8 @@ def _people_lines(cast: list, crew: list, width: int, rows: int) -> list[str]:
     then a dim role, the performers and then the production team. One column
     when they fit, else two side by side when the width allows, else cut with
     a count of the rest."""
-    entries = ([(name, role.title()) for role, name in cast] + ([("", "")] if cast and crew else [])
-               + [(name, role.title()) for role, name in crew])
+    entries = ([(name, role) for role, name in cast] + ([("", "")] if cast and crew else [])
+               + [(name, role) for role, name in crew])
     two = len(entries) > rows and width >= 2 * _PEOPLE_COL_MIN + 3
     col_w = (width - 3) // 2 if two else width
     per = -(-len(entries) // 2) if two else len(entries)            # rows each column needs
@@ -1294,10 +592,6 @@ def _static_panel(kind: str, audio, file_path: str, width: int, rows: int, box: 
         _frame['images'].append((top + pad_t, left + pad_l, escape))
     return [""] * pad_t + [" " * pad_l + line for line in cells]
 
-
-def _chapter_titles() -> list:
-    from backtrack.playback.queue_pane import _chapter_ctx
-    return _chapter_ctx['titles']
 
 
 # Panels whose content is a fixed set of lines: they take the rows those need,
