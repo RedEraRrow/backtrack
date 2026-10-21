@@ -199,8 +199,6 @@ ART_ACCENT_PALETTE = 16
 
 # --- editors (lyrics, trim, chapters) ---------------------------------------
 
-# After telling VLC to play, before seeking: it ignores a seek until playing.
-EDITOR_PLAY_SETTLE_S = 0.15
 # Lyrics audition: seconds played at a line's start, and at its end, and how far
 # a whole line moves per arrow press, and per , / . press.
 LYRIC_AUDITION_CLIP_S = 1.0

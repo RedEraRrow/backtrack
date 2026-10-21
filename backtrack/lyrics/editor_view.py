@@ -15,9 +15,9 @@ from backbone import timefmt
 from backtrack import tuning as tune
 
 
-# Audio is optional: without python-vlc the editor still edits, it just can't play.
-from backtrack.playback.libvlc import vlc as _vlc  # noqa: E402,F401 (None without libvlc)
-_HAS_VLC = _vlc is not None
+# Audio is optional: without libmpv the editor still edits, it just can't play.
+from backtrack.playback.libmpv import mpv as _mpv  # noqa: E402 (None without libmpv)
+_HAS_AUDIO = _mpv is not None
 
 SEG, WORD, EDIT, TAP, AUDITION = 'seg', 'word', 'edit', 'tap', 'audition'
 
@@ -304,7 +304,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             (K('lyrics.up', 'lyrics.down'), 'navigate'), (K('lyrics.back_025', 'lyrics.fwd_025'), '±0.25s'),
             (K('lyrics.back_01', 'lyrics.fwd_01'), '±0.1s'), (K('lyrics.back_1', 'lyrics.fwd_1'), '±1s')]
         pairs += [(K('lyrics_words.split'), 'split'), (K('lyrics.edit'), 'edit')]
-        if _HAS_VLC: pairs.append((K('lyrics.play'), 'preview'))
+        if _HAS_AUDIO: pairs.append((K('lyrics.play'), 'preview'))
         pairs.append((K('lyrics.save'), 'save'))
         if undo_depth: pairs.append((K('lyrics.undo'), f'undo ×{undo_depth}'))
         pairs += [(K('lyrics.back'), 'back'), (K('lyrics.quit'), 'quit')]
@@ -322,7 +322,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             pairs = [(K('lyrics_lines.review_next', 'lyrics_lines.review_prev'), 'next/prev')]
             if is_sdir:
                 pairs += [(K('lyrics_lines.kind'), 'kind'), (K('lyrics.edit'), 'timing'), (K('lyrics_lines.label'), 'label')]
-                if _HAS_VLC: pairs.append((K('lyrics_lines.tap'), 'tap'))
+                if _HAS_AUDIO: pairs.append((K('lyrics_lines.tap'), 'tap'))
             elif is_air:
                 pairs += [(K('lyrics.edit'), 'timing'), (K('lyrics_lines.label'), 'label'), (K('lyrics_lines.air_dir'), 'make dir')]
             else:
@@ -334,8 +334,8 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
             pairs = [(K('lyrics.up', 'lyrics.down'), 'navigate'), (K('lyrics.back_025', 'lyrics.fwd_025'), '±0.25s'),
                      (K('lyrics.back_01', 'lyrics.fwd_01'), '±0.1s'), (K('lyrics.back_1', 'lyrics.fwd_1'), '±1s')]
             if source == SOURCE_TRANSCRIPT: pairs.append((K('lyrics_lines.words'), 'words'))
-            if _HAS_VLC:                    pairs.append((K('lyrics_lines.tap'), 'tap sync'))
-            if _HAS_VLC:                    pairs.append((K('lyrics_lines.audition'), 'audition'))
+            if _HAS_AUDIO:                    pairs.append((K('lyrics_lines.tap'), 'tap sync'))
+            if _HAS_AUDIO:                    pairs.append((K('lyrics_lines.audition'), 'audition'))
             pairs += [(K('lyrics.edit'), 'edit'), (K('lyrics_lines.join'), 'join↓'),
                       (K('lyrics_lines.move_up', 'lyrics_lines.move_down'), 'move↑/↓'),
                       (K('lyrics_lines.dead_air'), 'dead air'), (K('lyrics_lines.delete'), 'del'),
@@ -345,7 +345,7 @@ def _draw(segs, cursor, seg_cursor, mode, prev_mode, selected, viewport,
                 pairs.append((K('lyrics_lines.kind'), 'kind' if is_sdir else 'tone↔action'))
             if _has_sdir: pairs.append((K('lyrics_lines.commit_dirs'), 'commit stage dirs'))
             pairs += [(K('lyrics_lines.credits'), 'credits'), (K('lyrics_lines.mark'), 'mark')]
-            if _HAS_VLC: pairs.append((K('lyrics.play'), 'preview'))
+            if _HAS_AUDIO: pairs.append((K('lyrics.play'), 'preview'))
             pairs.append((K('lyrics.save'), 'save working'))
             if source == SOURCE_TRANSCRIPT:
                 pairs += [(K('lyrics.verify'), 'verify md'), (K('lyrics_lines.speaker_split'), 'split by line'),

@@ -43,8 +43,7 @@ import time
 from dataclasses import dataclass, field
 
 
-from backtrack.playback.libvlc import vlc as _vlc, media_for  # noqa: E402,F401 (None without libvlc)
-_HAS_VLC = _vlc is not None
+from backtrack.playback.libmpv import clip
 
 
 from backtrack.config import load_config
@@ -339,23 +338,13 @@ def _pick_sting_bounds(paths: list[str], *, region: str = 'head') -> tuple[float
         c['start'] += ref_start_s
         c['end'] += ref_start_s
 
-    mp = None
-    if _vlc is not None:
-        try:
-            inst = _vlc.Instance('--no-video', '--quiet')
-            mp_i = inst.media_player_new()          # type: ignore[union-attr]
-            mp_i.set_media(media_for(inst, reference_path))  # type: ignore[union-attr]
-            mp = mp_i
-        except (AttributeError, OSError):
-            mp = None
+    mp = clip(reference_path)
 
     def _audition(value) -> None:
         if mp is None or not isinstance(value, tuple):
             return
         start, end = value
-        mp.set_time(int(start * 1000))
-        if not mp.is_playing():
-            mp.play()
+        mp.play_from(start)
         time.sleep(min(end - start, 6.0))
         mp.pause()
 

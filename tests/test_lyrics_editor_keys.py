@@ -63,7 +63,7 @@ def run_editor(keys, answers=(), sylt=False):
             for name, fake in fakes.items():
                 if hasattr(mod, name):
                     stack.enter_context(patch.object(mod, name, fake))
-        stack.enter_context(patch.object(le, '_vlc', None))
+        stack.enter_context(patch.object(le, 'clip', lambda path: None))
         stack.enter_context(patch.object(sys.stdin, 'fileno', lambda: 0))
         stack.enter_context(patch.object(ui, 'consume_resize', lambda: False))
         stack.enter_context(patch.object(ui, 'show_status', lambda m, **k: status.append(m)))

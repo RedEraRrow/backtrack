@@ -15,6 +15,7 @@ dependencies = [
     "numpy>=1.24",
     "pyperclip>=1.11.0",
     "python-vlc>=3.0.21203",
+    "mpv>=1.0.8",
     "colorama>=0.4.6",
     "backpack-backbone>=0.4.0,<0.5",
 ]

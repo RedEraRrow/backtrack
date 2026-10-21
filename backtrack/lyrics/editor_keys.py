@@ -4,7 +4,7 @@ walkthrough and the shared player transport. Mixed into the editor session,
 whose state and actions these read and call."""
 from __future__ import annotations
 from backtrack.id3.tag_formats import load_id3
-import os, time
+import os
 from backtrack.music_library import format_value_list
 from backbone import keys, ui
 from backbone.prompt import disable_mouse, enable_mouse
@@ -18,7 +18,7 @@ from backtrack.lyrics.md_overlay import _SD_SCOPES, _sd_scope, mid_line_directio
 from backtrack.lyrics.time_fields import _EDIT_END, _EDIT_START, _ts_parts
 from backtrack.lyrics.sync_doc import SOURCE_TRANSCRIPT, _make_stage_dir
 from backtrack.lyrics.verify import _make_dead_air
-from backtrack.lyrics.editor_view import AUDITION, EDIT, SEG, TAP, WORD, _AUD_COARSE, _AUD_STEP, _HAS_VLC
+from backtrack.lyrics.editor_view import AUDITION, EDIT, SEG, TAP, WORD, _AUD_COARSE, _AUD_STEP, _HAS_AUDIO
 from backbone.log import log
 from backbone.nav import QuitToTerminal
 from backtrack import tuning as tune
@@ -332,16 +332,16 @@ class _KeyHandlers:
         elif line and name == 'commit_dirs':
             return self._commit_directions()
         elif line and name == 'tap':
-            if _HAS_VLC:
+            if _HAS_AUDIO:
                 self.mode = TAP
                 start_s = self.segs[self.cursor].get("start") or self.play_pos
                 self.do_preview(start_s)
         elif line and name == 'audition':
-            if _HAS_VLC and self.mp is not None and self.segs:
+            if _HAS_AUDIO and self.mp is not None and self.segs:
                 self.mode = AUDITION
                 self._aud_clips('line')   # landing on a line plays it whole
-            elif not _HAS_VLC:
-                ui.show_error("audition needs VLC")
+            elif not _HAS_AUDIO:
+                ui.show_error("audition needs mpv")
         elif line and name == 'words' and self.source == SOURCE_TRANSCRIPT:
             if self.segs and self.cursor < len(self.segs) and self.segs[self.cursor].get("words"):
                 self.seg_cursor = self.cursor
@@ -598,9 +598,7 @@ class _KeyHandlers:
                 _gap       = round(_gap_end - _gap_start, 3)
                 if self.mp is not None:
                     _play_from = max(0.0, _gap_start - 0.3)
-                    self.mp.set_time(int(_play_from * 1000))
-                    if not self.mp.is_playing():
-                        self.mp.play(); time.sleep(tune.EDITOR_PLAY_SETTLE_S)
+                    self.mp.play_from(_play_from)
                 _lbl = _prompt_text(
                     f"A {_gap}s gap. Stage direction? (blank for silence, skip to leave it):")
                 if self.mp is not None and self.mp.is_playing():

@@ -21,13 +21,11 @@ shows a status message instead, not a dead key.
 """
 from __future__ import annotations
 
-import os
 import sys
 import time
 from dataclasses import dataclass
 
-from backtrack.playback.libvlc import vlc as _vlc, media_for  # noqa: E402,F401 (None without libvlc)
-_HAS_VLC = _vlc is not None
+from backtrack.playback.libmpv import clip
 
 from mutagen.id3 import ID3
 
@@ -444,19 +442,7 @@ def _run_marking_screen(
     fd = sys.stdin.fileno()
     old = _get_term_attrs(fd)
 
-    mp = None
-    if _vlc is not None:
-        try:
-            old_fd = os.dup(2)
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(devnull, 2); os.close(devnull)
-            inst = _vlc.Instance('--no-video', '--quiet')
-            mp_i = inst.media_player_new()           # type: ignore[union-attr]
-            mp_i.set_media(media_for(inst, path))     # type: ignore[union-attr]
-            os.dup2(old_fd, 2); os.close(old_fd)
-            mp = mp_i
-        except (AttributeError, OSError):
-            pass
+    mp = clip(path)
 
     w = _Widget(fd)
 
@@ -465,9 +451,7 @@ def _run_marking_screen(
         if mp is None:
             return
         start_s = max(0.0, start_s)
-        mp.set_time(int(start_s * 1000))
-        if not mp.is_playing():
-            mp.play(); time.sleep(tune.EDITOR_PLAY_SETTLE_S)
+        mp.play_from(start_s)
         playing = True
         play_until = float('inf') if dur is None else time.time() + dur
         play_pos = start_s
@@ -624,7 +608,7 @@ def _run_marking_screen(
                     else: do_stop(); aud_now = None
                     need_redraw = True
                 elif mp:
-                    pos = mp.get_time() / 1000.0
+                    pos = mp.position()
                     if abs(pos - play_pos) > 0.05:
                         play_pos = pos; need_redraw = True
 

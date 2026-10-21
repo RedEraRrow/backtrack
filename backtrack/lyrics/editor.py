@@ -58,8 +58,8 @@ from backtrack.lyrics.sync_doc import (
 )
 from backtrack.lyrics.verify import _split_candidates, _split_seg_at, _verify_matchup
 from backtrack import tuning as tune
-from backtrack.lyrics.editor_view import EDIT, SEG, TAP, WORD, _AUD_CLIP, _clip, _draw, _vlc, shown_hint_pairs
-from backtrack.playback.libvlc import media_for
+from backtrack.lyrics.editor_view import EDIT, SEG, TAP, WORD, _AUD_CLIP, _clip, _draw, shown_hint_pairs
+from backtrack.playback.libmpv import clip
 from backtrack.lyrics.editor_keys import _QUIT, _KeyHandlers
 
 
@@ -113,19 +113,7 @@ class _Session(_KeyHandlers):
         self.fd  = sys.stdin.fileno()
         self.old = _get_term_attrs(self.fd)
 
-        self.mp = None
-        if _vlc is not None:
-            try:
-                old_fd  = os.dup(2)
-                devnull = os.open(os.devnull, os.O_WRONLY)
-                os.dup2(devnull, 2); os.close(devnull)
-                inst = _vlc.Instance('--no-video', '--quiet')
-                mp_i = inst.media_player_new()           # type: ignore[union-attr]
-                mp_i.set_media(media_for(inst, self.mp3_path)) # type: ignore[union-attr]
-                os.dup2(old_fd, 2); os.close(old_fd)
-                self.mp = mp_i
-            except (AttributeError, OSError):
-                pass
+        self.mp = clip(self.mp3_path)
 
         self.w = _Widget(self.fd)
 
@@ -167,9 +155,7 @@ class _Session(_KeyHandlers):
         seconds (the main loop honours play_until); without it, play open-ended."""
         if self.mp is None: return
         start_s = max(0.0, start_s)
-        self.mp.set_time(int(start_s * 1000))
-        if not self.mp.is_playing():
-            self.mp.play(); time.sleep(tune.EDITOR_PLAY_SETTLE_S)
+        self.mp.play_from(start_s)
         self.playing    = True
         self.play_until = float('inf') if dur is None else time.time() + dur
         self.play_pos   = start_s
@@ -726,8 +712,8 @@ class _Session(_KeyHandlers):
         """Once per loop: the track length, and the playback clock: ending a clip,
         moving to the next queued one, and keeping the cursor with the audio."""
         self.total_s: float = 0.0
-        if self.mp and self.mp.get_length() > 0:
-            self.total_s = self.mp.get_length() / 1000.0
+        if self.mp and self.mp.length() > 0:
+            self.total_s = self.mp.length()
         elif self.segs and self.segs[-1].get("end") is not None:
             self.total_s = float(self.segs[-1]["end"])
 
@@ -743,7 +729,7 @@ class _Session(_KeyHandlers):
                 else: self.do_stop(); self.aud_now = None
                 self.need_redraw = True
             elif self.mp:
-                pos = self.mp.get_time() / 1000.0
+                pos = self.mp.position()
                 if abs(pos - self.play_pos) > 0.05:
                     self.play_pos = pos; self.need_redraw = True
                 # auto-scroll cursor in SEG/WORD/TAP (never in AUDITION: the
