@@ -1,89 +1,49 @@
-"""Tests for _apply_equalizer's RVA2 preamp support (backtrack/playback/session.py).
-Without it, an RVA2 gain tag (what the trimmer's
-ReplayGain operation writes) has no audible effect in backtrack's own
-playback. A fake player stands in for vlc.MediaPlayer; vlc.AudioEqualizer
-itself is the real libvlc object."""
+"""A file's EQU2 bands and RVA2 gain as the player's audio filters
+(backtrack/playback/session.py): without them an RVA2 gain tag (what the
+trimmer's ReplayGain operation writes) has no audible effect in backtrack's
+own playback."""
 import unittest
 
-from mutagen.id3 import ID3, EQU2, RVA2  # type: ignore[reportPrivateImportUsage]
+from mutagen.id3 import ID3, EQU2, RVA2, TXXX  # type: ignore[reportPrivateImportUsage]
 
+from backtrack import tuning as tune
 from backtrack.playback import session
-from backtrack.playback.libvlc import vlc
 
 
-class FakePlayer:
-    def __init__(self):
-        self.eq = None
-
-    def set_equalizer(self, eq):
-        self.eq = eq
-        return 0
+def _filters(*frames) -> str:
+    audio = ID3()
+    for fr in frames:
+        audio.add(fr)
+    return session._audio_filters(audio)
 
 
-@unittest.skipUnless(vlc, "VLC (libvlc) not installed")
-class ApplyEqualizerRVA2Test(unittest.TestCase):
-    def test_rva2_master_channel_becomes_preamp(self):
-        audio = ID3()
-        audio.add(RVA2(desc='', channel=1, gain=-3.3, peak=0.0))
-        mp = FakePlayer()
-        self.assertTrue(session._apply_equalizer(mp, audio))
-        self.assertAlmostEqual(mp.eq.get_preamp(), -3.3, places=1)
+class AudioFiltersTest(unittest.TestCase):
+    def test_rva2_master_channel_is_the_gain(self):
+        self.assertEqual(_filters(RVA2(desc='', channel=1, gain=-3.3, peak=0.0)), "lavfi=[volume=volume=-3.3dB]")
 
     def test_non_master_channel_is_ignored(self):
-        audio = ID3()
-        audio.add(RVA2(desc='', channel=2, gain=-3.3, peak=0.0))  # front-right, not master
-        mp = FakePlayer()
-        self.assertFalse(session._apply_equalizer(mp, audio))
+        self.assertEqual(_filters(RVA2(desc='', channel=2, gain=-3.3, peak=0.0)), "")   # front-right, not master
 
-    def test_equ2_and_rva2_combine(self):
-        audio = ID3()
-        audio.add(EQU2(method=1, desc='', adjustments=[(1000, 6.0)]))
-        audio.add(RVA2(desc='', channel=1, gain=2.0, peak=0.0))
-        mp = FakePlayer()
-        self.assertTrue(session._apply_equalizer(mp, audio))
-        self.assertAlmostEqual(mp.eq.get_preamp(), 2.0, places=1)
-        # At least one band should have picked up the +6dB adjustment.
-        import vlc
-        band_count = vlc.libvlc_audio_equalizer_get_band_count()
-        self.assertTrue(any(mp.eq.get_amp_at_index(i) != 0.0 for i in range(band_count)))
+    def test_equ2_bands_keep_their_own_frequency_and_combine_with_the_gain(self):
+        self.assertEqual(_filters(EQU2(method=1, desc='', adjustments=[(1234, 6.0)]),
+                                  RVA2(desc='', channel=1, gain=2.0, peak=0.0)),
+                         "lavfi=[volume=volume=2dB,equalizer=f=1234:t=o:w=1:g=6]")
 
-    def test_no_frames_is_not_applied(self):
-        audio = ID3()
-        mp = FakePlayer()
-        self.assertFalse(session._apply_equalizer(mp, audio))
-        self.assertIsNone(mp.eq)
+    def test_no_frames_is_no_filters(self):
+        self.assertEqual(_filters(), "")
 
-    def test_preamp_clamped_to_limit(self):
-        from backtrack import tuning as tune
-        audio = ID3()
-        audio.add(RVA2(desc='', channel=1, gain=60.0, peak=0.0))  # RVA2's own valid range, still over the eq limit
-        mp = FakePlayer()
-        self.assertTrue(session._apply_equalizer(mp, audio))
-        self.assertLessEqual(mp.eq.get_preamp(), tune.EQ_GAIN_LIMIT_DB + 0.01)
+    def test_gain_clamped_to_limit(self):
+        self.assertEqual(_filters(RVA2(desc='', channel=1, gain=60.0, peak=0.0)),
+                         f"lavfi=[volume=volume={tune.EQ_GAIN_LIMIT_DB:g}dB]")
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-@unittest.skipUnless(vlc, "VLC (libvlc) not installed")
-class ReplayGainPreampTest(unittest.TestCase):
-    def test_replaygain_text_alone_is_the_preamp(self):
-        from mutagen.id3 import TXXX
-        audio = ID3()
-        audio.add(TXXX(encoding=3, desc='replaygain_track_gain', text=['-6.20 dB']))
-        mp = FakePlayer()
-        self.assertTrue(session._apply_equalizer(mp, audio))
-        self.assertAlmostEqual(mp.eq.get_preamp(), -6.2, places=1)
+    def test_replaygain_text_alone_is_the_gain(self):
+        self.assertEqual(_filters(TXXX(encoding=3, desc='replaygain_track_gain', text=['-6.20 dB'])),
+                         "lavfi=[volume=volume=-6.2dB]")
 
     def test_rva2_wins_over_the_text(self):
-        from mutagen.id3 import TXXX
-        audio = ID3()
-        audio.add(TXXX(encoding=3, desc='REPLAYGAIN_TRACK_GAIN', text=['-6.20 dB']))
-        audio.add(RVA2(desc='', channel=1, gain=-2.0, peak=0.0))
-        mp = FakePlayer()
-        session._apply_equalizer(mp, audio)
-        self.assertAlmostEqual(mp.eq.get_preamp(), -2.0, places=1)
+        self.assertEqual(_filters(TXXX(encoding=3, desc='REPLAYGAIN_TRACK_GAIN', text=['-6.20 dB']),
+                                  RVA2(desc='', channel=1, gain=-2.0, peak=0.0)),
+                         "lavfi=[volume=volume=-2dB]")
 
 
 class OtherFormatsInThePlayerTest(unittest.TestCase):
@@ -139,3 +99,7 @@ class OtherFormatsInThePlayerTest(unittest.TestCase):
                              (['-5.50 dB'], ['0.912000']), ext)
             self.assertEqual(bool(tags.getall('RVA2')) if ext in ('mp3', 'wav') else None,
                              True if ext in ('mp3', 'wav') else None, ext)
+
+
+if __name__ == "__main__":
+    unittest.main()

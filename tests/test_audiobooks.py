@@ -134,24 +134,17 @@ class BookStoreTest(unittest.TestCase):
 
 
 class _MP:
-    """A VLC player stand-in: a clock that seeks, a volume and a pause switch."""
+    """An mpv player stand-in: a clock that seeks, a volume and a pause switch."""
     def __init__(self, at=0.0):
-        self.ms, self.volumes, self.paused = int(at * 1000), [], False
+        self.time_pos, self.core_idle, self.pause, self.volumes = at, False, False, []
 
-    def get_time(self):
-        return self.ms
+    def seek(self, seconds, reference='relative', precision='keyframes'):
+        self.time_pos = seconds
 
-    def set_time(self, ms):
-        self.ms = ms
-
-    def get_state(self):
-        return 'playing'
-
-    def audio_set_volume(self, v):
-        self.volumes.append(v)
-
-    def set_pause(self, on):
-        self.paused = bool(on)
+    def __setattr__(self, name, value):
+        if name == 'volume':
+            self.volumes.append(value)
+        super().__setattr__(name, value)
 
 
 class _Session(sess.PlaybackSession):
@@ -188,7 +181,7 @@ class ChapterStepTest(unittest.TestCase):
     def test_next_goes_by_chapter_then_track(self):
         mp = self._at(70)
         self.s.next()
-        self.assertEqual(mp.ms, 120_000)
+        self.assertEqual(mp.time_pos, 120.0)
         self._at(130)
         self.s.next()
         self.assertEqual(self.s.loaded, self.paths[1])
@@ -196,10 +189,10 @@ class ChapterStepTest(unittest.TestCase):
     def test_prev_restarts_the_chapter_then_steps_back(self):
         mp = self._at(70)
         self.s.prev()
-        self.assertEqual(mp.ms, 60_000)
+        self.assertEqual(mp.time_pos, 60.0)
         mp = self._at(62)
         self.s.prev()
-        self.assertEqual(mp.ms, 0)
+        self.assertEqual(mp.time_pos, 0)
         self.s.index = 1
         self._at(2)
         self.s.prev()
@@ -228,7 +221,7 @@ class SleepTimerTest(unittest.TestCase):
         self.assertTrue(0 < self.s.mp.volumes[-1] < 80)
         self.s._sleep_deadline = time.monotonic() + 0.1
         self.assertTrue(self.s._sleep_tick())
-        self.assertTrue(self.s.mp.paused)
+        self.assertTrue(self.s.mp.pause)
         self.assertEqual(self.s.mp.volumes[-1], 80)
         self.assertIsNone(self.s.sleep_mode)
 
@@ -236,7 +229,7 @@ class SleepTimerTest(unittest.TestCase):
         self.s.mp = _MP(99.0)
         self.s.chapters, self.s.rate, self.s.sleep_mode = [[0.0, 'a'], [100.0, 'b']], 2.0, 'chapter'
         self.assertAlmostEqual(self.s.sleep_left(), 0.5)
-        self.s.mp.ms = 99_500
+        self.s.mp.time_pos = 99.5
         self.assertTrue(self.s._sleep_tick())
 
 

@@ -15,19 +15,20 @@ This module imports nothing, so anything may import it.
 """
 from __future__ import annotations
 
-# --- playback session (VLC) -------------------------------------------------
+# --- playback session (mpv) -------------------------------------------------
 
-# VLC reports length and position asynchronously; a just-started track needs a
-# moment before either is meaningful. Deliberately outside the session lock.
-VLC_PLAY_SETTLE_S = 0.3
-# How often the session polls VLC for position/state while playing.
+# How long to wait for mpv to say how long a track is, when its tags didn't.
+# Deliberately outside the session lock.
+LENGTH_WAIT_S = 1.0
+# How often the session polls mpv for position/state while playing.
 TICK_INTERVAL_S = 0.1
 # Seeking to exactly the end trips end-of-track handling, so stop just short.
 SEEK_END_MARGIN_S = 0.5
-# Stand-in length when neither mutagen nor VLC will say how long a track is.
+# Stand-in length when neither mutagen nor mpv will say how long a track is.
 # Large enough that the progress bar reads as "unknown" rather than "nearly over".
 DURATION_FALLBACK_S = 999.0
-# libVLC's equaliser accepts ±20 dB per band; outside that it clips silently.
+# The most an EQU2 band or a gain tag moves the level, either way: a sane
+# bound on whatever a tagger wrote.
 EQ_GAIN_LIMIT_DB = 20.0
 # Restart the current track rather than stepping back, if it is this far in.
 PREV_RESTART_AFTER_S = 5.0
@@ -37,7 +38,7 @@ RATE_MAX = 3.0
 RATE_STEP = 0.1
 # Sleep timer: the lengths a key press cycles through (then end of chapter),
 # how long the volume fades before it pauses, and how far ahead of a chapter or
-# track end it pauses, so VLC can't move on to the next one first.
+# track end it pauses, so the player can't move on to the next one first.
 SLEEP_MINUTES = (15, 30, 60, 90)
 SLEEP_FADE_S = 5.0
 SLEEP_END_EARLY_S = 0.5
@@ -150,8 +151,8 @@ LYRIC_AIR_THRESHOLD_S = 2.0
 # then sits on screen through a two-second silence looking like it has already been
 # spoken. A short fixed anticipation reads as punctual either side of it.
 LYRIC_LEAD_IN_S = 0.35
-# The playback clock (session.elapsed) runs on its own between VLC's uneven
-# quarter-second readings: each new reading pulls it this fraction of the way
+# The playback clock (session.elapsed) runs on its own between mpv's uneven
+# readings: each new reading pulls it this fraction of the way
 # to agreeing, and one this far out is a jump (a seek, a stall) taken at once.
 CLOCK_EASE = 0.15
 CLOCK_JUMP_S = 0.75

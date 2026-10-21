@@ -1,4 +1,4 @@
-"""One process-wide VLC player, current track and queue that outlive any screen.
+"""One process-wide mpv player, current track and queue that outlive any screen.
 A background tick advances the queue and logs history. Joined windows drive it
 over ipc via RemoteSession.
 """
@@ -12,7 +12,7 @@ import time
 import uuid
 from types import SimpleNamespace
 
-from backtrack.playback.libvlc import LOAD_ERROR as _VLC_LOAD_ERROR, vlc, media_for
+from backtrack.playback.libmpv import LOAD_ERROR as _MPV_LOAD_ERROR, mpv, player
 from backtrack import tuning as tune
 from mutagen.id3 import ID3
 
@@ -24,14 +24,6 @@ from backtrack.music_library import (chapter_at, drop_moved, get_song_duration,
 from backbone.files import write_text_atomic
 from backbone.log import log, quietly
 
-# vlc.State attributes are dynamic; expose safe aliases (None without libvlc).
-_VLC_STATE_PAUSED = getattr(getattr(vlc, 'State', None), 'Paused', None)
-_VLC_STATE_ERROR = getattr(getattr(vlc, 'State', None), 'Error', None)
-_VLC_STATE_ENDED = getattr(getattr(vlc, 'State', None), 'Ended', None)
-_VLC_STATE_STOPPED = getattr(getattr(vlc, 'State', None), 'Stopped', None)
-_VLC_STATE_PLAYING = getattr(getattr(vlc, 'State', None), 'Playing', None)
-
-_VLC_PLAY_SETTLE_S = tune.VLC_PLAY_SETTLE_S
 _TICK_INTERVAL_S = tune.TICK_INTERVAL_S
 # ⏮ grace window: within the first few seconds of a track, previous steps back
 # to the previous queue item; past it, it restarts the current one (the standard
@@ -169,33 +161,35 @@ def _id3_view(path: str) -> ID3:
     return view
 
 
-def _new_instance() -> vlc.Instance:
-    """Create the single reusable libvlc instance for the process."""
-    if vlc is None:
-        raise RuntimeError(f"VLC couldn't be loaded ({_VLC_LOAD_ERROR}); see `backtrack doctor`")
-    inst = vlc.Instance('--no-video', '--quiet')
-    assert inst is not None
-    return inst
+def _new_player():
+    """The process's one player for the session."""
+    if mpv is None:
+        raise RuntimeError(f"mpv couldn't be loaded ({_MPV_LOAD_ERROR}); see `backtrack doctor`")
+    return player()
+
+
+def _seek(mp, seconds: float) -> None:
+    """Move to `seconds` in, exactly (in an MP3 too). A seek mpv can't make
+    (the track not open yet) is logged and dropped."""
+    try:
+        mp.seek(max(0.0, seconds), 'absolute', 'exact')
+    except Exception as exc:                 # noqa: BLE001 (python-mpv raises SystemError and others)
+        log.warning("seek to %.1f s failed: %s", seconds, exc)
 
 
 def _handle_seek(mp, elapsed: float, duration: float, seek_amount: float) -> None:
     """Seek the player by ``seek_amount`` seconds, clamped to the track bounds."""
-    target = max(0.0, min(elapsed + seek_amount,
-                          max(duration - tune.SEEK_END_MARGIN_S, 0.0)))
-    mp.set_time(int(target * 1000))
+    _seek(mp, max(0.0, min(elapsed + seek_amount, max(duration - tune.SEEK_END_MARGIN_S, 0.0))))
 
 
-def _apply_equalizer(mp, audio) -> bool:
-    """Apply the file's EQU2 bands and RVA2 master-channel gain to playback
-    via libvlc's equaliser: bands shape tone, the RVA2 gain becomes the
-    equaliser's preamp, and they combine rather than either replacing the
-    other. Without this, an RVA2 frame (the gain tag the trimmer's
-    ReplayGain operation writes) has no audible effect in
-    backtrack's own player, which is the one place it's most obviously
-    supposed to show. Each EQU2 (frequency, gain) point is snapped to the
-    nearest libvlc band, so absent bands stay flat. Returns True if an
-    equaliser was applied.
-    """
+def _audio_filters(audio) -> str:
+    """The file's EQU2 bands and RVA2 master-channel gain as mpv's audio
+    filters: each band an equalizer at its own frequency, the gain a volume
+    ahead of them, the two combined rather than either replacing the other.
+    Without this an RVA2 frame (the gain tag the trimmer's ReplayGain
+    operation writes) would have no audible effect in backtrack's own player,
+    the one place it's most obviously supposed to show. '' when the file has
+    neither."""
     try:
         equ2_frames = audio.getall('EQU2')
     except Exception:
@@ -211,46 +205,11 @@ def _apply_equalizer(mp, audio) -> bool:
         preamp_gain = next((parse_gain(fr.text[0]) for fr in audio.getall('TXXX')
                             if fr.desc.upper() == 'REPLAYGAIN_TRACK_GAIN' and fr.text), None)
 
-    if not adjustments and preamp_gain is None:
-        return False
-    try:
-        eq = vlc.AudioEqualizer()
-        if adjustments:
-            count = vlc.libvlc_audio_equalizer_get_band_count()
-            band_freqs = [vlc.libvlc_audio_equalizer_get_band_frequency(i) for i in range(count)]
-            for freq, gain in adjustments:
-                if not freq or freq <= 0:
-                    continue
-
-                def _ratio(k: int) -> float:
-                    """Distance of band k from freq as a >=1 ratio, for nearest-band matching."""
-                    r = band_freqs[k] / freq
-                    return r if r >= 1.0 else 1.0 / r
-                idx = min(range(count), key=_ratio)
-                clamped = float(max(-tune.EQ_GAIN_LIMIT_DB, min(tune.EQ_GAIN_LIMIT_DB, gain)))
-                eq.set_amp_at_index(clamped, idx)  # type: ignore[reportOptionalMemberAccess]
-        if preamp_gain is not None:
-            clamped_preamp = float(max(-tune.EQ_GAIN_LIMIT_DB, min(tune.EQ_GAIN_LIMIT_DB, preamp_gain)))
-            eq.set_preamp(clamped_preamp)  # type: ignore[reportOptionalMemberAccess]
-        return bool(mp.set_equalizer(eq) == 0)
-    except Exception:
-        return False
-
-
-def _set_stderr_to_null() -> int:
-    """Redirect fd 2 to /dev/null to silence VLC's native stderr spam; returns the
-    saved original fd (for :func:`_restore_stderr`)."""
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    old_stderr = os.dup(2)
-    os.dup2(devnull, 2)
-    os.close(devnull)
-    return old_stderr
-
-
-def _restore_stderr(old_stderr: int) -> None:
-    """Restore fd 2 from the value saved by :func:`_set_stderr_to_null`."""
-    os.dup2(old_stderr, 2)
-    os.close(old_stderr)
+    def db(gain: float) -> float:
+        return float(max(-tune.EQ_GAIN_LIMIT_DB, min(tune.EQ_GAIN_LIMIT_DB, gain)))
+    parts = [f"volume=volume={db(preamp_gain):g}dB"] if preamp_gain is not None else []
+    parts += [f"equalizer=f={freq:g}:t=o:w=1:g={db(gain):g}" for freq, gain in adjustments if freq and freq > 0]
+    return f"lavfi=[{','.join(parts)}]" if parts else ""
 
 
 # ---------------------------------------------------------------------------
@@ -268,11 +227,8 @@ def _load_stored_volume() -> int | None:
 
 
 def clamp_volume(value) -> int:
-    """Any reported volume → a sane 0-100 int.
-
-    Guards every display path against VLC's -1 sentinel (and against a snapshot
-    from another window carrying one), so a volume can never render as "-1".
-    """
+    """Any reported volume → a sane 0-100 int, so a snapshot from another
+    window carrying something odd can never render as "-1"."""
     try:
         v = int(round(float(value)))
     except (TypeError, ValueError):
@@ -287,7 +243,7 @@ def next_sleep_mode(mode):
 
 
 class PlaybackSession:
-    """Owns the process's VLC player, the current track, and the queue.
+    """Owns the process's mpv player, the current track, and the queue.
 
     Thread-safety: every method that touches the player or queue takes ``_lock``;
     the background tick and the foreground view both call through the same guarded
@@ -296,8 +252,9 @@ class PlaybackSession:
     """
 
     def __init__(self) -> None:
-        self._instance: vlc.Instance | None = None
-        self.mp = None                       # vlc.MediaPlayer | None
+        self.mp = None                       # mpv.MPV | None, made on first play
+        self._entry_id = None                # mpv's playlist entry for the track loaded
+        self._ended_id = None                # the entry mpv last said ended (played out or failed)
         self.file_path: str | None = None
         self.audio = None                    # mutagen ID3 of the current track (for the view + EQ)
         self.duration: float = 0.0
@@ -310,16 +267,11 @@ class PlaybackSession:
         self.track_start: float = 0.0        # wall-clock start, for history logging
         self.is_grouping: bool = False
         self._history_logged: bool = True    # guard so each track logs at most once
-        self._old_stderr: int | None = None
 
-        # Volume is tracked here, not read back from VLC on demand: VLC reports
-        # -1 while it has no audio output open (before playback starts, after a
-        # stop), which is how the player view once came up showing "-1".
-        # A level saved by a previous run is restored and counts as explicit, so
-        # VLC's own default can't quietly replace it.
+        # The volume is kept here and given to each player: one level, kept
+        # from the last run, whatever the player is doing.
         _stored = _load_stored_volume()
-        self._volume: int = 100 if _stored is None else _stored   # 100 = VLC's default
-        self._volume_explicit: bool = _stored is not None
+        self._volume: int = 100 if _stored is None else _stored   # 100: mpv's own level, unchanged
         self._config: dict | None = None      # the app's live config dict, if bound
 
         # Queue.
@@ -339,7 +291,7 @@ class PlaybackSession:
         # token), or None. Enforces "one player view at a time" across windows.
         self.view_holder: str | None = None
         self._lock = threading.RLock()
-        self._clock = [0.0, 0.0, -1]         # elapsed()'s own clock: base seconds, when, VLC's last reading (ms)
+        self._clock = [0.0, 0.0, None]       # elapsed()'s own clock: base seconds, when, mpv's last reading
         self._tick_thread: threading.Thread | None = None
         self._tick_stop = threading.Event()
         self._server = None                  # ipc.SessionServer once advertised (#14)
@@ -351,12 +303,26 @@ class PlaybackSession:
         """Whether a track is currently loaded (playing or paused)."""
         return self.mp is not None and self.file_path is not None
 
-    def _ensure_instance(self) -> vlc.Instance:
-        if self._instance is None:
-            self._instance = _new_instance()
-        if self._old_stderr is None:
-            self._old_stderr = _set_stderr_to_null()
-        return self._instance
+    def _ensure_player(self):
+        if self.mp is None:
+            self.mp = _new_player()
+            self.mp.event_callback('end-file')(self._file_ended)
+        return self.mp
+
+    def _file_ended(self, event) -> None:
+        """mpv's end-file, on its own thread: notes an entry that played to its
+        end or couldn't be played, for tick() to move on from. It never takes
+        the lock (a caller holding it may be waiting on mpv)."""
+        e = event.as_dict(decoder=mpv.lazy_decoder)
+        if e.get('reason') == 'error':
+            log.warning("mpv couldn't play entry %s (%s): %s", e.get('playlist_entry_id'), self.file_path,
+                        e.get('file_error'))
+        if e.get('reason') in ('eof', 'error'):
+            self._ended_id = e.get('playlist_entry_id')
+
+    def _ended(self) -> bool:
+        """Whether the track loaded has played out or failed."""
+        return self._entry_id is not None and self._ended_id == self._entry_id
 
     def start(self, path: str, queue: list[str] | None = None,
               titles: list[str] | None = None, index: int = 0,
@@ -420,15 +386,7 @@ class PlaybackSession:
             except Exception:
                 duration = 0.0
 
-            inst = self._ensure_instance()
-            media = media_for(inst, path)
-            if start_at:
-                media.add_option(f"start-time={start_at:.2f}")
-            if self.mp is None:
-                self.mp = inst.media_player_new()
-            assert self.mp is not None
-            self.mp.set_media(media)
-
+            mp = self._ensure_player()
             self.file_path = path
             self.audio = audio
             self.entry = library_entry(path)
@@ -441,26 +399,33 @@ class PlaybackSession:
             self._history_logged = False
             self.generation += 1
             gen = self.generation
-            mp = self.mp
-            need_vlc_len = not self.duration
+            need_length = not self.duration
 
-            mp.play()
-            if mp.set_rate(self.rate) != 0:
-                log.warning("speed %.1f not applied to %s", self.rate, path)
-            _apply_equalizer(mp, audio)     # right after play() so it takes (#74)
-            mp.audio_set_volume(self._volume)   # carry the level across tracks
+            try:
+                mp.af = _audio_filters(audio)
+            except Exception as exc:         # noqa: BLE001 (a filter mpv refuses: play it plain)
+                log.warning("audio filters for %s refused: %s", path, exc)
+                mp.af = ""
+            mp.speed = self.rate
+            mp.volume = self._volume
+            mp.pause = False
+            self._ended_id = None
+            self._entry_id = mp.command('loadfile', path, 'replace', -1,
+                                        f"start={start_at:.2f}" if start_at else "")['playlist_entry_id']
             self.track_start = time.time()
             self._save_queue()
 
-        # Only settle + probe VLC for a length when mutagen couldn't give one
-        # (rare now get_song_duration covers MP4 too). Released here, but every
-        # caller (start/next/jump/prev) holds the reentrant lock around _load, so
-        # in that rare case the 0.3 s settle does hold up other lock users.
-        # ponytail: move the probe off the caller's lock if it ever matters.
-        if need_vlc_len:
-            time.sleep(_VLC_PLAY_SETTLE_S)
-            vlc_len = mp.get_length()
-            d = vlc_len / 1000.0 if vlc_len > 0 else tune.DURATION_FALLBACK_S
+        # Only wait for mpv's length when mutagen couldn't give one (rare now
+        # get_song_duration covers MP4 too). Released here, but every caller
+        # (start/next/jump/prev) holds the reentrant lock around _load, so in
+        # that rare case the wait does hold up other lock users.
+        # ponytail: move the wait off the caller's lock if it ever matters.
+        if need_length:
+            try:
+                mp.wait_for_property('duration', timeout=tune.LENGTH_WAIT_S)
+            except TimeoutError:
+                log.info("no length for %s from its tags or mpv", path)
+            d = mp.duration or tune.DURATION_FALLBACK_S
             with self._lock:
                 if self.generation == gen:   # still the same track
                     self.duration = d
@@ -560,7 +525,7 @@ class PlaybackSession:
         if is_client() or not self.is_book or not self.file_path or self.mp is None:
             return
         at = self.elapsed()
-        at_end = (self.mp.get_state() in (_VLC_STATE_ENDED, _VLC_STATE_STOPPED)
+        at_end = (self._ended()
                   or bool(self.duration and at >= self.duration - tune.SEEK_END_MARGIN_S))
         if at < 1 and not at_end:
             return
@@ -578,6 +543,7 @@ class PlaybackSession:
             if self.mp is not None:
                 with quietly():
                     self.mp.stop()
+            self._entry_id = None
             self.file_path = None
             self.audio = None
             self.duration = 0.0
@@ -586,7 +552,7 @@ class PlaybackSession:
                 theme.apply()                  # nothing playing: the chosen colours
 
     def shutdown(self) -> None:
-        """Fully tear down the session (on app exit): stop audio and restore stderr."""
+        """Fully tear down the session (on app exit): stop audio, close the player."""
         with self._lock:
             self._tick_stop.set()
             if self._server is not None:
@@ -594,17 +560,17 @@ class PlaybackSession:
                     self._server.stop()
                 self._server = None
             self.stop()
-            if self._old_stderr is not None:
+            if self.mp is not None:
                 with quietly():
-                    _restore_stderr(self._old_stderr)
-                self._old_stderr = None
+                    self.mp.terminate()
+                self.mp = None
 
     # -- transport ----------------------------------------------------------
 
     def pause_toggle(self) -> None:
         with self._lock:
             if self.mp is not None:
-                self.mp.pause()
+                self.mp.cycle('pause')
                 self._save_book()
 
     def track(self) -> SimpleNamespace:
@@ -619,7 +585,7 @@ class PlaybackSession:
                 titles=list(self.titles), index=self.index, queue=list(self.queue))
 
     def is_paused(self) -> bool:
-        return self.mp is not None and self.mp.get_state() == _VLC_STATE_PAUSED
+        return self.mp is not None and bool(self.mp.pause)
 
     def seek(self, seconds: float) -> None:
         with self._lock:
@@ -654,53 +620,42 @@ class PlaybackSession:
             # playback isn't silently lost: `play` re-applies it.
             changed = vol != self._volume
             self._volume = vol
-            self._volume_explicit = True
             if self.mp is not None:
-                self.mp.audio_set_volume(vol)
+                self.mp.volume = vol
         if changed:
             self._persist_volume(vol)        # outside the lock: it touches disk
         return vol
 
     def get_volume(self) -> int:
-        """The current volume, always 0-100.
-
-        Once the user has set a level, that is the truth: re-reading VLC would
-        report -1 whenever its audio output isn't open, and would also lose the
-        level if a set landed before the output was ready. Until then VLC's own
-        reading is adopted, but only when it is actually in range.
-        """
-        if self.mp is not None and not self._volume_explicit:
-            reported = self.mp.audio_get_volume()
-            if isinstance(reported, int) and 0 <= reported <= 100:
-                self._volume = reported
+        """The current volume, always 0-100."""
         return self._volume
 
     def elapsed(self) -> float:
         """Elapsed seconds into the current track (0 if not playing), smooth.
 
-        VLC's own reading moves only about four times a second, in uneven
-        steps, so read raw it is up to a quarter-second off what's heard and
-        lyrics change late or early. While playing, the clock runs on its own
-        from the system clock at the playback rate, eased a little towards
-        each new VLC reading (CLOCK_EASE), and starts again from VLC's reading
-        after a jump (CLOCK_JUMP_S: a seek, a stall) or while paused."""
+        mpv's reading moves in uneven steps as audio is decoded, so read raw
+        it jitters, and the lyrics with it. While playing, the clock runs on its
+        own from the system clock at the playback rate, eased a little towards
+        each new reading (CLOCK_EASE), and starts again from mpv's reading
+        after a jump (CLOCK_JUMP_S: a seek, a stall) or while paused or
+        loading (core-idle)."""
         if self.mp is None:
             return 0.0
-        ms = self.mp.get_time()
-        if ms < 0:
+        at = self.mp.time_pos
+        if at is None:
             return 0.0
-        now, clock = time.monotonic(), self._clock         # [base seconds, at, last reading]
+        now, clock = time.monotonic(), self._clock         # [base seconds, when, last reading]
         rate = self.rate or 1.0
-        if self.mp.get_state() != _VLC_STATE_PLAYING or clock[2] < 0:
-            clock[:] = [ms / 1000.0, now, ms]
-            return ms / 1000.0
-        if ms != clock[2]:
-            error = ms / 1000.0 - (clock[0] + (now - clock[1]) * rate)
+        if self.mp.core_idle or clock[2] is None:
+            clock[:] = [at, now, at]
+            return at
+        if at != clock[2]:
+            error = at - (clock[0] + (now - clock[1]) * rate)
             if abs(error) > tune.CLOCK_JUMP_S:
-                clock[:] = [ms / 1000.0, now, ms]
-                return ms / 1000.0
+                clock[:] = [at, now, at]
+                return at
             clock[0] += error * tune.CLOCK_EASE
-            clock[2] = ms
+            clock[2] = at
         return clock[0] + (now - clock[1]) * rate
 
     def latest_at(self) -> float:
@@ -712,7 +667,7 @@ class PlaybackSession:
         """Seek to an absolute position (a chapter picked from the panel)."""
         with self._lock:
             if self.mp is not None:
-                self.mp.set_time(int(max(0.0, seconds) * 1000))
+                _seek(self.mp, seconds)
 
     def set_rate(self, rate: float) -> float | None:
         """Set an audiobook's speed (kept for that book); None for music."""
@@ -720,8 +675,7 @@ class PlaybackSession:
             if not self.is_book or self.mp is None:
                 return None
             self.rate = round(min(max(rate, tune.RATE_MIN), tune.RATE_MAX), 1)
-            if self.mp.set_rate(self.rate) != 0:
-                log.warning("speed %.1f not applied to %s", self.rate, self.file_path)
+            self.mp.speed = self.rate
             self._save_book()
             return self.rate
 
@@ -732,7 +686,7 @@ class PlaybackSession:
             if isinstance(self.sleep_mode, int):
                 self._sleep_deadline = time.monotonic() + self.sleep_mode * 60
             if self.sleep_mode is None and self.mp is not None:
-                self.mp.audio_set_volume(self._volume)       # undo a fade in progress
+                self.mp.volume = self._volume                # undo a fade in progress
             return self.sleep_mode
 
     def sleep_left(self) -> float | None:
@@ -758,10 +712,10 @@ class PlaybackSession:
             return False
         if left > tune.SLEEP_END_EARLY_S:
             if left < tune.SLEEP_FADE_S:
-                self.mp.audio_set_volume(int(self._volume * left / tune.SLEEP_FADE_S))
+                self.mp.volume = self._volume * left / tune.SLEEP_FADE_S
             return False
-        self.mp.set_pause(1)
-        self.mp.audio_set_volume(self._volume)
+        self.mp.pause = True
+        self.mp.volume = self._volume
         self.sleep_mode = None
         self._save_book()
         self._save_queue()
@@ -779,7 +733,7 @@ class PlaybackSession:
             if manual and self.mp is not None:
                 ci = chapter_at(self.chapters, self.elapsed())
                 if 0 <= ci < len(self.chapters) - 1:
-                    self.mp.set_time(int(self.chapters[ci + 1][0] * 1000))
+                    _seek(self.mp, self.chapters[ci + 1][0])
                     return self.file_path
             while True:
                 if not self.queue:
@@ -1008,15 +962,15 @@ class PlaybackSession:
                 at = self.elapsed()
                 ci = chapter_at(self.chapters, at)
                 if at - self.chapters[ci][0] >= _PREV_RESTART_AFTER_S:
-                    self.mp.set_time(int(self.chapters[ci][0] * 1000))
+                    _seek(self.mp, self.chapters[ci][0])
                     return self.file_path
                 if ci > 0:
-                    self.mp.set_time(int(self.chapters[ci - 1][0] * 1000))
+                    _seek(self.mp, self.chapters[ci - 1][0])
                     return self.file_path
             if (self.index > 0 and self.mp is not None
                     and self.elapsed() >= _PREV_RESTART_AFTER_S):
                 # Seek rather than reload: no audible gap, and pause state holds.
-                self.mp.set_time(0)
+                _seek(self.mp, 0)
                 return self.file_path
             self.index = max(0, self.index - 1)
             self._load(self.queue[self.index])
@@ -1033,8 +987,7 @@ class PlaybackSession:
         with self._lock:
             if not self.is_active() or self.mp is None:
                 return None
-            state = self.mp.get_state()
-            ended = state in (_VLC_STATE_ENDED, _VLC_STATE_STOPPED, _VLC_STATE_ERROR)
+            ended = self._ended()
             if not ended and self.duration and self.elapsed() >= self.duration:
                 ended = True
             if not ended:

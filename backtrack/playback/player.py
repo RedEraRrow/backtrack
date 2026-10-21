@@ -796,9 +796,6 @@ def _client_view() -> dict:
 
 def _player_view_loop() -> dict:
     """The foreground render + input loop for the attached session."""
-    mp = SESSION.mp
-    assert mp is not None
-
     # --- per-track render state (rebuilt by _prepare() on every track) ---
     track_path = ""
     audio = None
@@ -904,8 +901,7 @@ def _player_view_loop() -> dict:
             last_size = ui.get_terminal_size()
             _redraw_full()
             update_ctrl_ui()
-            ms = mp.get_time()
-            update_progress_ui(prog_row, ms / 1000.0 if ms >= 0 else 0.0, duration, current_width, chapters,
+            update_progress_ui(prog_row, SESSION.elapsed(), duration, current_width, chapters,
                                player_ui.timer_extra(SESSION.rate, SESSION.sleep_left()))
         _drop_backdrop = pc.screen_backdrop(_relaid, small=True)   # the player lays out a small window itself
         try:

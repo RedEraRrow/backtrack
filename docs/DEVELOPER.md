@@ -105,7 +105,8 @@ backtrack/
 │   │   ├── sync_doc.py           # Finding/loading a track's timed lyrics, the working copy (.sync.json)
 │   │   └── verify.py             # Script vs transcript: word streams, split candidates, match-up report
 │   ├── playback/
-│   │   ├── session.py            # The shared PlaybackSession: one VLC player, queue, background tick
+│   │   ├── session.py            # The shared PlaybackSession: one mpv player, queue, background tick
+│   │   ├── libmpv.py             # Loads libmpv once; player() with backtrack's settings; Clip, the editors' player
 │   │   ├── ipc.py                # Multi-window sessions: registry under CONFIG_DIR/sessions/, client
 │   │   ├── player.py             # The player view over the session: one key handler (_player_input) for host and joined
 │   │   ├── player_ui.py          # Player layout: the art and details, the panels in their places, the people
@@ -430,7 +431,7 @@ blocking call: a command with another source of targets (`--album`, say) must co
 
 ### Playback: `playback/`
 
-`session.py` owns the audio: one process-wide `PlaybackSession` with the VLC player, the current
+`session.py` owns the audio: one process-wide `PlaybackSession` with the mpv player, the current
 track and the queue, and a background tick that advances the queue and logs history, whatever
 screen is showing. `player.py` is the player *view* over it: one handler, `_player_input`, takes
 every key and click for the host and for a joined window alike (each passes its own session, the

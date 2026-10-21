@@ -1,7 +1,7 @@
 # Backtrack
 
 A music player and tag editor that runs in your terminal, on macOS and Linux. It plays your
-library through VLC, shows album art and lyrics as it plays, and edits tags one track at a time
+library through mpv, shows album art and lyrics as it plays, and edits tags one track at a time
 or a whole album at once.
 
 > **Status:** in active development. Playback, browsing, search, lyrics and the tag editor all
@@ -36,14 +36,14 @@ echo 'eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)"' >> ~/.zprofile
 eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)"
 
 brew install pipx
-brew install --cask vlc
+brew install mpv
 pipx ensurepath             # then open a new terminal window
 pipx install backpack-backtrack
 ```
 
 Ubuntu / Debian:
 ```bash
-sudo apt install vlc pipx
+sudo apt install libmpv2 pipx
 pipx ensurepath             # then open a new terminal window
 pipx install backpack-backtrack
 ```
@@ -137,7 +137,7 @@ backtrack feed sync --name comedy
 ## If something goes wrong
 
 Turn on Settings → Diagnostics log, do the thing again, and look in
-`~/.config/backtrack/backtrack.log`. If nothing plays, check that VLC is installed.
+`~/.config/backtrack/backtrack.log`. If nothing plays, check that mpv is installed (`backtrack doctor`).
 
 ## License
 

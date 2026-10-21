@@ -4,7 +4,7 @@ The full detail that used to be the README, kept here as the starting point for 
 
 
 A terminal music player and tag editor for macOS and Linux. Backtrack plays your library with
-VLC, draws album art as Unicode half-blocks in the terminal, shows synced and unsynced lyrics,
+mpv, draws album art as Unicode half-blocks in the terminal, shows synced and unsynced lyrics,
 and has a tag editor (ID3, MP4 and Vorbis comments) with bulk operations for whole albums.
 
 > **Status:** in active development. Core playback, browsing, search, lyrics, and the tag editor
@@ -24,12 +24,12 @@ and has a tag editor (ID3, MP4 and Vorbis comments) with bulk operations for who
 - Fuzzy live search that re-ranks on every keystroke and highlights the matched characters.
 
 **Playback**
-- VLC/libvlc-backed audio with transport controls and a live progress bar.
+- mpv (libmpv) audio with transport controls and a live progress bar.
 - Album art drawn in the terminal as half-blocks, or as a real image in iTerm2 (opt-in).
 - The **volume**, shown for a moment over the middle of the screen as it changes, and panels for the **lyrics**, the up-next
   **queue**, the **people** credited, a **visualiser**, the **credits** in plain tags, **info** (release, file, plays),
   **notes**, and a **booklet** to page through.
-- **Equaliser**: 24 presets applied during playback via libvlc, stored per file as an `EQU2` tag.
+- **Equaliser**: 24 presets applied during playback through mpv's audio filters, stored per file as an `EQU2` tag.
 - Several terminal windows can share one session (see [Several windows](#several-windows)).
 
 **Lyrics**
@@ -72,7 +72,7 @@ echo 'eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)"' >> ~/.zprofile
 eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)"
 
 brew install pipx
-brew install --cask vlc
+brew install mpv
 pipx ensurepath             # then open a new terminal window
 pipx install backpack-backtrack
 backtrack
@@ -80,13 +80,13 @@ backtrack
 
 Ubuntu / Debian:
 ```bash
-sudo apt install vlc pipx
+sudo apt install libmpv2 pipx
 pipx ensurepath             # then open a new terminal window
 pipx install backpack-backtrack
 backtrack
 ```
 
-It needs Python 3.10 or later and VLC. macOS's own `python3` is too old (3.9), but pipx from
+It needs Python 3.10 or later and mpv (Fedora: `mpv-libs`, Arch: `mpv`). macOS's own `python3` is too old (3.9), but pipx from
 Homebrew brings a current one, so there's nothing to do about it. `pipx ensurepath` puts the
 `backtrack` command on your PATH, which a new terminal window picks up. The first run asks for
 your music folder.
@@ -453,7 +453,7 @@ Errors go to stderr; under `--json` they are `{"error": {"code", "message", "con
 | 2 | The arguments were wrong |
 | 3 | The thing asked for isn't there |
 | 4 | The thing asked for is there already |
-| 5 | A required external tool (ffmpeg, VLC) is missing |
+| 5 | A required external tool (ffmpeg, mpv) is missing |
 
 ### Nothing blocks
 
@@ -557,7 +557,7 @@ file.
 
 ## Troubleshooting
 
-**Playback fails**: check that VLC / libvlc is installed, the file is a supported format, and the
+**Playback fails**: check that mpv / libmpv is installed (`backtrack doctor`), the file is a supported format, and the
 terminal can read your music directory.
 
 **Album art doesn't render**: check the file actually has embedded art; very narrow terminals

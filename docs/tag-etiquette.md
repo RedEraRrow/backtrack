@@ -350,7 +350,7 @@ writing it half-inverted.
 | `SYLT` | Synced lyrics | lyric editor | Timestamped karaoke lines. Timed in the lyric editor, opened from the editor's **Lyrics** row. |
 | `USLT` | Lyrics | system editor | Plain lyric body. |
 | `COMM` | Comments | system editor | Multi-line, language-tagged. |
-| `EQU2` | Equalisation | graphic EQ | Per-band boost/cut; applied on playback via libvlc. |
+| `EQU2` | Equalisation | graphic EQ | Per-band boost/cut; applied on playback through mpv's audio filters. |
 | `RVA2` | Relative volume | dB meter | Master-channel gain. |
 
 ### URLs & IDs

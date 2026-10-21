@@ -1,20 +1,12 @@
-"""What backtrack needs besides Python (see backbone.deps): VLC to play, and
-the tools a few features use. Checked at startup for VLC, and all reported by
-`backtrack doctor`. The editors play through mpv."""
+"""What backtrack needs besides Python (see backbone.deps): mpv to play, and
+the tools a few features use. Checked at startup for mpv, and all reported by
+`backtrack doctor`."""
 from __future__ import annotations
 import os
 import sys
 
 from backbone import deps
 from backbone.deps import Dep
-
-_VLC_PAGE = "https://www.videolan.org/vlc/"
-
-
-def _vlc() -> str | None:
-    from backtrack.playback.libvlc import vlc
-    return f"libvlc {vlc.libvlc_get_version().decode()}" if vlc else None
-
 
 def _mpv() -> str | None:
     from backtrack.playback.libmpv import version
@@ -38,11 +30,7 @@ def _editor() -> str | None:
 
 
 DEPS = [
-    Dep("VLC", _vlc, "playing audio", required=True, hints={
-        "macos": "brew install --cask vlc", "debian": "sudo apt install vlc",
-        "fedora": "sudo dnf install vlc", "arch": "sudo pacman -S vlc",
-        "windows": _VLC_PAGE, "other": _VLC_PAGE}),
-    Dep("mpv", _mpv, "hearing audio in the lyrics and trim editors", hints={
+    Dep("mpv", _mpv, "playing audio", required=True, hints={
         "macos": "brew install mpv", "debian": "sudo apt install libmpv2",
         "fedora": "sudo dnf install mpv-libs", "arch": "sudo pacman -S mpv",
         "other": "https://mpv.io/installation/"}),
