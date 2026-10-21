@@ -118,7 +118,7 @@ def _history_screen(library: list, place):
         "",
         choices=choices,
         columns=_HISTORY_COLUMNS,
-        header=_menu_header("Listening History", f"{len(history_entries)} recent"),
+        header=_menu_header("History", f"{len(history_entries)} recent"),
         on_inspect=_inspect_history if _show_editor else None,
         inspect_key='library.edit',
         choose_label="Play",

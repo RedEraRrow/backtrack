@@ -82,7 +82,7 @@ def offer_resume() -> None:
 def play_picked(paths: list, index: int, library: list | None = None,
                 then: str | None = None) -> None:
     """Play the track at `index` of a list it was just picked from, then what
-    Settings → After a picked track says (or `then`): nothing more, the rest of
+    Settings → After a pick says (or `then`): nothing more, the rest of
     the list, or the queue that was playing."""
     then = then or setting(load_config(), 'after_pick')
     if then not in AFTER_PICK:

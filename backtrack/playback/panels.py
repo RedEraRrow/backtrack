@@ -126,6 +126,9 @@ def info_pairs(audio, path: str, started: float = 0.0) -> list:
     pairs += [("Quality", quality)] if quality else []
     gain = _frame_texts(audio, 'TXXX:REPLAYGAIN_TRACK_GAIN') if audio else []
     pairs += [("ReplayGain", gain[0])] if gain else []
+    from backtrack.playback.session import current_now_playing
+    np = current_now_playing() or {}
+    pairs += [("Output", np['output'])] if np.get('output') and np.get('file_path') == path else []
     from backtrack.history import HISTORY_FILE
     try:
         pairs.append(("Size", f"{os.path.getsize(path) / 1e6:.1f} MB"))

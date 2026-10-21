@@ -68,7 +68,41 @@ def player(**options):
     warnings and errors to the log, and pick macOS's output (_MAC_OUTPUT)."""
     own = {"video": False, "config": False, "input_default_bindings": False, "ytdl": False,
            "log_handler": _log, "loglevel": "warn", **(_MAC_OUTPUT if sys.platform == "darwin" else {})}
-    return mpv.MPV(**{**own, **options})
+    mp = mpv.MPV(**{**own, **options})
+    if "audio_device" not in options:
+        use_saved_device(mp)
+    return mp
+
+
+def devices(mp) -> list[tuple[str, str]]:
+    """The outputs to choose from, as (mpv's name, its description): the
+    system's default, then the devices of the output driver mpv lists first
+    (CoreAudio on macOS, not its AVFoundation fallback; PipeWire on Linux)."""
+    listed = [(d["name"], d["description"]) for d in mp.audio_device_list]
+    first = next((n.split("/")[0] for n, _ in listed if n != "auto"), None)
+    return [("auto", "System default")] + [(n, d) for n, d in listed if n.split("/")[0] == first]
+
+
+def use_saved_device(mp) -> None:
+    """Send `mp`'s audio to the output chosen in Settings (`audio_device`),
+    or the system default while that one isn't connected (logged)."""
+    from backtrack.config import load_config, setting
+    name = setting(load_config(), "audio_device")
+    if name != "auto" and name not in {n for n, _ in devices(mp)}:
+        log.warning("output %s isn't connected: playing through the system default", name)
+        name = "auto"
+    mp.audio_device = name
+
+
+def device_choices() -> list[tuple[str, str]]:
+    """devices(), asked of a player made for the purpose (none without libmpv)."""
+    if mpv is None:
+        return []
+    probe = mpv.MPV(video=False, config=False)
+    try:
+        return devices(probe)
+    finally:
+        probe.terminate()
 
 
 class Clip:

@@ -9,7 +9,7 @@ from backtrack.menus.settings import handle_settings
 
 
 def main_menu(library_ref: list, on_start=None) -> None:
-    """Run the app as tabs, starting on Browse, until q (or Settings → Exit).
+    """Run the app as tabs, starting on Browse, until q (or Settings → Quit).
     `on_start()` runs first, on Browse (the offer to resume), so what it opens
     has the tabs too."""
     from backtrack.playback.player import NOW_PLAYING_TAB, cramped_view

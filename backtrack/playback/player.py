@@ -893,6 +893,7 @@ def _player_view_loop() -> dict:
         _prepare()
         _redraw_full()
         last_track_sig = SESSION.generation
+        last_output = ""                 # takeover's Output line, as the Info panel last drew it
 
         def _relaid() -> None:
             """The whole player at the current size: the frame, the controls
@@ -939,6 +940,12 @@ def _player_view_loop() -> dict:
                 player_ui.redraw_art_image()
 
             pc.render_status_bar()
+
+            # The output is only known once mpv has opened it, a moment into
+            # the track: the Info panel (drawn with the frame) shows it then.
+            if (output := SESSION.output_note()) != last_output:
+                last_output = output
+                _redraw_full()
 
             current_track_sig = SESSION.generation
             if current_track_sig != last_track_sig:

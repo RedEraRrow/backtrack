@@ -137,7 +137,7 @@ def _entity_cells(ent, tokens: list) -> list:
 
 def handle_search(library: list) -> str | None:
     """Run the live fuzzy search screen; a selected track plays, with the
-    results after it as Settings → After a picked track says. Editing is ^e
+    results after it as Settings → After a pick says. Editing is ^e
     (one track) or ^a (every result).
 
     Results are grouped by what they are (artists, albums, genres, then the

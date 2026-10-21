@@ -20,6 +20,13 @@ class LibmpvTest(unittest.TestCase):
         libmpv._load()
         self.assertEqual(os.environ.get(libmpv._FALLBACK), before)
 
+    def test_the_outputs_offered_are_the_first_drivers(self):
+        class _MP:
+            audio_device_list = [{'name': 'auto', 'description': 'Autoselect device'},
+                                 {'name': 'coreaudio/Spk', 'description': 'Speakers'},
+                                 {'name': 'avfoundation/Spk', 'description': 'Speakers'}]
+        self.assertEqual(libmpv.devices(_MP()), [('auto', 'System default'), ('coreaudio/Spk', 'Speakers')])
+
 
 if __name__ == "__main__":
     unittest.main()

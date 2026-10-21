@@ -128,7 +128,7 @@ def _run(config: dict) -> None:
         time.sleep(1.5)
         return
 
-    # More can be added later in Settings → Music Directories.
+    # More can be added later in Settings → Music directories.
     set_music_dirs(config, roots)
     update_config({k: config[k] for k in ('music_directories', 'music_directory')})
 

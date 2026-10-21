@@ -132,7 +132,7 @@ you left it. The lyrics and trim editors keep you until you leave them. Back (`�
 only ever goes back within the tab you're on, each tab with its own way back, and never changes
 tabs: on a tab's first screen it does nothing. The app opens on Browse, offering first to resume what
 the last run left. With nothing playing, Now playing shows the empty player; `r` there resumes the
-last run's queue. In the player, `f` hides or shows the tab bar (also Settings → Tab bar in player).
+last run's queue. In the player, `f` hides or shows the tab bar (also Settings → Tab bar).
 The player sits in boxes while the tab bar or a panel shows, at any window size, and edge to edge
 only with neither (`f` hides the bar). The
 boxes fill the window with no gaps between them: the art and the details in a box as wide as the art
@@ -153,7 +153,7 @@ that fills its space (a cover that isn't square is cropped about its centre), in
 Browse's preview and the tag editor's picture screens alike; an audiobook's booklet picture too.
 The people panel
 lists everyone, in two columns when one won't hold them, taking the rows it needs above the
-lyrics: `TMCL` and `TIPL`, and with Settings → Composer and other credit tags in People (on unless
+lyrics: `TMCL` and `TIPL`, and with Settings → All credits in People (on unless
 you turn it off) the composer, lyricist, conductor, remixer and original artist from their own tags.
 The other panels:
 
@@ -177,7 +177,7 @@ Settings → Quit quits, as `q` does.
 
 Every list highlights its current row with a soft bar; a row that opens something has a `›` at its
 right. Long titles on the highlighted row scroll, a column a beat, 100 beats a minute unless
-Settings → Scrolling text speed says otherwise.
+Settings → Scroll speed says otherwise.
 
 Navigation is the same everywhere: `↑↓` move, `→`/`Enter` confirm, `←`/`b`/`Esc` go back, and
 `q` quits the app from anywhere (it never just closes a widget). In a field you type into, `q` is
@@ -215,13 +215,13 @@ of an earlier column goes back to that level, at that row. Beside it, the highli
 credits, length, format and copyright in one box over what opening it lists in another. The columns' widths
 are worked out once for each list from everything in it, so they hold still as you move through
 it and change when you go to another level.
-The cover is a real image in iTerm2 with Settings → Album art as an image on, else drawn in text. An
+The cover is a real image in iTerm2 with Settings → Art as image on, else drawn in text. An
 artist (composer, person) shows their own picture: `artist`, `folder` or `poster` (.jpg, .png…)
 in the folder their albums are in, else a placeholder. Genres show no picture. A narrower window
 drops the oldest columns, then puts the details in a strip under the list, then shows the list
-alone. `v` (or Settings → Levels above as columns) turns the levels' columns off and on, and `i`
-(or Settings → Preview of the highlighted row) the preview. A long list opens as its
-A–Z index (Settings → Long lists open by letter; `/` switches either way).
+alone. `v` (or Settings → Columns) turns the levels' columns off and on, and `i`
+(or Settings → Preview) the preview. A long list opens as its
+A–Z index (Settings → Long lists by letter; `/` switches either way).
 
 ### Command line
 
@@ -238,14 +238,14 @@ with no audio anywhere beneath it isn't listed),
 then their audio files, in name order, the folders above as columns to the left. No pictures or
 details: it's the filesystem.
 A folder plays, shuffles, queues and edits like an album (everything under it, in path order); a
-file plays like a track, with the rest of its folder after it as Settings → After a picked track says.
+file plays like a track, with the rest of its folder after it as Settings → After a pick says.
 Any of these can be given its own key in Settings → Key bindings. Shuffling, clearing and undoing
 the queue itself are in the player's queue panel.
 
 Albums and tracks follow one sort order, set with `s` in any list or in Settings → Sorting: a
 chain of levels (album, album year, disc, track, title, date…), each ascending or descending, with
 presets such as broadcast order. A music directory can have its own. Selecting a track plays it;
-what follows is Settings → *After a picked track*: nothing, the rest of the list it was picked from
+what follows is Settings → *After a pick*: nothing, the rest of the list it was picked from
 (the default), or the queue that was already playing. The queue is kept between runs: opening backtrack
 again offers to **Resume** it at the track and moment you left, or start fresh.
 
@@ -270,12 +270,12 @@ by screen, with more than one key per action if you like), and every hint bar sh
 | `j` / `l` | Seek ∓1 s |
 | `,` / `.` | Seek ∓30 s |
 | `+` / `-` | Volume up / down, here and on any list (the level shows for a moment over the middle of the screen); in a text field they're typed |
-| `m` | Show or hide the track details line (year · genre · disc/track …); remembered. Also Settings → Track details in player |
+| `m` | Show or hide the track details line (year · genre · disc/track …); remembered. Also Settings → Track details |
 | `v` | The visualiser's next style: spectrum bars, oscilloscope, level meters; remembered |
 | `{` / `}` | The booklet's previous / next page |
 | `w` | Choose the panels: a box over the player to tick Lyrics, People, Queue, Chapters, Visualiser, Credits, Info, Notes and Booklet (one this track has nothing for says so). Its **Arrange panels…** moves them: `Tab` from panel to panel (the one moving is outlined in the theme's second accent), `↑` / `↓` up or down its place and on past its end, from a full-width band across the top, to above the player's art, to below it, to a band across the bottom (from a column, out into the band at that end); `←` / `→` between the column left of the player, the player's own column and the column right of it; `↵` or `w` done. These keys can be changed in Settings → Key bindings, like the rest. A band or a panel in the player's column is as tall as its lines (People, Credits, Info, Notes) or a strip of a few rows (Visualiser, Lyrics, Queue, Booklet). A wide window and a tall one each keep their own arrangement: in a tall one the player is full width, the bands and the panels above and below it run across, and the left and right columns go under it, side by side when there's room. Remembered |
 | `↑` / `↓` | With the queue panel showing: a cursor through the queue (the mouse wheel or a trackpad over the panel moves it too). `↵` plays the track at it, `J` / `K` move it up / down, `d` removes it, `x` shuffles what's coming, `c` clears what's coming, `u` undoes the last queue change |
-| `?` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[?] help`; in a text field, where `?` is typed, it says `[^/] help` and the key is Ctrl+/ (macOS's Terminal sends nothing for that, so there it says `[^g] help` and the key is Ctrl+G; either works anywhere it arrives). Clicking the key in the corner works too. In the player it stays in the hint bar. Turning off Settings → Show [?] help in the hints hides `[?] help` everywhere; `?` still works |
+| `?` | Show or hide the key hints, on every screen: they start hidden. Each screen's top line ends in `[?] help`; in a text field, where `?` is typed, it says `[^/] help` and the key is Ctrl+/ (macOS's Terminal sends nothing for that, so there it says `[^g] help` and the key is Ctrl+G; either works anywhere it arrives). Clicking the key in the corner works too. In the player it stays in the hint bar. Turning off Settings → [?] Help visible hides `[?] help` everywhere; `?` still works |
 | `[` / `]` | Previous / next track |
 | `e` | Edit the playing track's tags |
 | `a` / `A` | Go to the playing track's album / artist in Browse (`Esc` from there goes up through Browse) |
@@ -286,6 +286,20 @@ by screen, with more than one key per action if you like), and every hint bar sh
 
 From any menu while audio is playing: **Ctrl-O** reopens the player (the Now playing tab), and **Ctrl-P** / **Ctrl-N** /
 **Ctrl-B** control play-pause / next / previous.
+
+### Output device and DAC Takeover
+
+Settings → **Output device** picks what backtrack plays through: the system default, or one device,
+kept between runs. While that device isn't connected, the system default plays instead.
+
+Settings → **DAC Takeover** gives music the audio output to itself (macOS; Linux with PipeWire):
+each track plays at its own sample rate, switching the output to match, with nothing done to it: no
+equaliser, no gain. The volume keys then set the output's own volume (the one the Mac's keys move for
+the default output), which leaves the samples untouched; an output with none of its own says so. Other apps
+can't play meanwhile. Audiobooks never take over. The Info panel's **Output** line
+says what reaches the output: *bit-perfect* (a lossless file) or *unaltered* (a lossy one) at what rate,
+or why not (resampled because the output can't run at the file's rate, Bluetooth). If
+backtrack stops without closing, the next run puts the output's rate back.
 
 ### Several windows
 
@@ -552,7 +566,7 @@ file.
 - **Lyrics:** `USLT` (unsynced) and `SYLT` (synced); MP4 `©lyr` and Vorbis `LYRICS` are shown too,
   timed when they hold LRC text.
 - **Album art:** embedded ID3 `APIC`, MP4 `covr` (JPEG/PNG) and FLAC/Ogg pictures, drawn in the
-  terminal as images where it shows them (iTerm2 outside tmux, with Settings → Album art as an image on), else as
+  terminal as images where it shows them (iTerm2 outside tmux, with Settings → Art as image on), else as
   half-blocks.
 
 ## Troubleshooting

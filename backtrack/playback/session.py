@@ -7,12 +7,14 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
 import threading
 import time
 import uuid
 from types import SimpleNamespace
 
 from backtrack.playback.libmpv import LOAD_ERROR as _MPV_LOAD_ERROR, mpv, player
+from backtrack.playback import coreaudio
 from backtrack import tuning as tune
 from mutagen.id3 import ID3
 
@@ -212,6 +214,30 @@ def _audio_filters(audio) -> str:
     return f"lavfi=[{','.join(parts)}]" if parts else ""
 
 
+# Takeover (the `takeover` setting): music plays with the output to itself, at
+# each file's own rate, its samples untouched: no filters, and mpv's volume at
+# 100: the volume keys set the output's own instead (coreaudio.volume). Audiobooks never take over
+# (their speed changes resample them anyway). On macOS that's mpv's
+# coreaudio_exclusive; on Linux, PipeWire's exclusive mode. The macOS output's
+# stereo float (libmpv._MAC_OUTPUT) stays: float holds a 16- or 24-bit sample
+# exactly, so nothing is lost by it.
+_TAKEOVER = {'audio-exclusive': 'yes', 'volume': '100'}
+_LOSSLESS = ('.flac', '.wav', '.aif', '.aiff', '.alac')
+
+
+def _takeover_on() -> bool:
+    """The takeover setting, as saved: read fresh, so a change made in any
+    window counts."""
+    from backtrack.config import load_config, setting
+    return bool(setting(load_config(), 'takeover'))
+
+
+def _rate_note():
+    """Where takeover notes the output's rate before changing it (coreaudio)."""
+    from backtrack.config import CONFIG_DIR
+    return CONFIG_DIR / "takeover_rate.json"
+
+
 def _file_options(**options: str) -> str:
     """mpv's per-file options for loadfile, which hold only while that file
     plays: each value length-quoted (%n%), so a filter graph's commas and
@@ -264,6 +290,8 @@ class PlaybackSession:
         self._ended_id = None                # the entry mpv last said ended (played out or failed)
         self._started_id = None              # the entry mpv last started
         self._next = None                    # (entry, queue position) mpv has lined up to follow, gapless
+        self.takeover_on: bool = False       # the takeover setting, as the track playing began
+        self.taken_over: bool = False        # the track playing has the output to itself
         self.file_path: str | None = None
         self.audio = None                    # mutagen ID3 of the current track (for the view + EQ)
         self.duration: float = 0.0
@@ -314,6 +342,7 @@ class PlaybackSession:
 
     def _ensure_player(self):
         if self.mp is None:
+            coreaudio.restore_rate(_rate_note())     # a rate a crashed run left changed
             self.mp = _new_player()
             self.mp.event_callback('end-file')(self._file_ended)
             self.mp.event_callback('start-file')(self._file_started)
@@ -409,6 +438,8 @@ class PlaybackSession:
         self.is_book = is_audiobook(path)
         self.rate = books.rate_for(path) if self.is_book else 1.0
         self.duration = duration if duration and duration > 0 else 0.0
+        self.takeover_on = _takeover_on()
+        self.taken_over = self.takeover_on and not self.is_book
         self._history_logged = False
         self.generation += 1
         self.track_start = time.time()
@@ -416,12 +447,77 @@ class PlaybackSession:
 
     def _track_options(self, path: str, start_at: float = 0.0) -> str:
         """`path`'s own settings for mpv, held while it plays: its filters
-        (_audio_filters), a book's speed, and where to start."""
-        rate = books.rate_for(path) if is_audiobook(path) else 1.0
-        opts = {'af': _audio_filters(player_tags(path)), 'speed': f"{rate:g}"}
+        (_audio_filters), a book's speed, takeover's (_TAKEOVER) for music
+        when it's on, and where to start."""
+        book = is_audiobook(path)
+        over = _takeover_on() and not book
+        opts = {'af': "" if over else _audio_filters(player_tags(path)),
+                'speed': f"{books.rate_for(path) if book else 1.0:g}"}
+        if over:
+            coreaudio.remember_rate(_rate_note(), self._output_uid())
+            opts.update(_TAKEOVER)
         if start_at:
             opts['start'] = f"{start_at:.2f}"
         return _file_options(**opts)
+
+    def reload(self) -> None:
+        """Play the track again from where it is, with settings changed since
+        it began (takeover, the output device), and line up the next with them."""
+        with self._lock:
+            if self.mp is not None:
+                from backtrack.playback.libmpv import use_saved_device
+                use_saved_device(self.mp)
+            if self.is_active():
+                self._load(self.file_path, self.elapsed())
+
+    def _output_uid(self) -> str:
+        """The CoreAudio UID of the output chosen (mpv's "coreaudio/<UID>"),
+        '' for the system default."""
+        name = str(self.mp.audio_device or "") if self.mp is not None else ""
+        return name.split("/", 1)[1] if name.startswith("coreaudio/") else ""
+
+    def _level(self) -> float:
+        """The volume the track playing is at: fixed at 100 when taken over."""
+        return 100 if self.taken_over else self._volume
+
+    def _device_volume(self) -> float | None:
+        """The output's own volume (0-1) while takeover has it, which the
+        volume keys move then; None otherwise, or when the output has none."""
+        if not (self.is_active() and self.taken_over):
+            return None
+        return coreaudio.volume(coreaudio.output(self._output_uid()))
+
+    def volume_fixed(self) -> bool:
+        """Whether the volume keys do nothing now: takeover has an output
+        with no volume of its own."""
+        return self.is_active() and self.taken_over and self._device_volume() is None
+
+    def output_note(self) -> str:
+        """What reaches the output, for the Info panel while takeover is on:
+        bit-perfect (a lossless file) or unaltered, at what rate, or why not.
+        '' with takeover off."""
+        if not self.is_active() or not self.takeover_on:
+            return ""
+        if not self.taken_over:
+            return "shared: audiobooks don't take over"
+        mp = self.mp
+        src, out = mp.audio_params or {}, mp.audio_out_params or {}
+        if not out:
+            return ""
+        khz = lambda p: f"{p.get('samplerate', 0) / 1000:g} kHz"
+        if sys.platform == 'darwin' and mp.current_ao != 'coreaudio_exclusive':
+            return f"shared: the output couldn't be taken over ({mp.current_ao})"
+        why = []
+        if coreaudio.is_bluetooth(coreaudio.output(self._output_uid())):
+            why.append("Bluetooth re-encodes it")
+        if src.get('samplerate') != out.get('samplerate'):
+            why.append(f"resampled to {khz(out)}: the output can't run at {khz(src)}")
+        if mp.volume != 100:
+            why.append("volume lowered (sleep timer)")
+        if why:
+            return "; ".join(why)
+        word = "bit-perfect" if os.path.splitext(self.file_path)[1].lower() in _LOSSLESS else "unaltered"
+        return f"{word}, {khz(out)}"
 
     def _load(self, path: str, start_at: float = 0.0) -> bool:
         """Load and begin playing a single track `start_at` seconds in, logging
@@ -543,6 +639,8 @@ class PlaybackSession:
             self.set_volume(int(args.get('vol', self.get_volume())))
         elif name == 'stop':
             self.stop()
+        elif name == 'reload':
+            self.reload()
         elif name == 'enqueue':
             self.enqueue(args['path'], args.get('title'))
         elif name == 'play_next':
@@ -622,8 +720,9 @@ class PlaybackSession:
             self.stop()
             if self.mp is not None:
                 with quietly():
-                    self.mp.terminate()
+                    self.mp.terminate()          # mpv gives the output back, at its own rate
                 self.mp = None
+                _rate_note().unlink(missing_ok=True)
 
     # -- transport ----------------------------------------------------------
 
@@ -674,21 +773,27 @@ class PlaybackSession:
                 update_config({'volume': vol})
 
     def set_volume(self, vol: int) -> int:
+        """Set the volume: backtrack's own, or under takeover the output's
+        (the samples stay untouched; backtrack's own level is kept for later)."""
         with self._lock:
             vol = clamp_volume(vol)
+            if self._device_volume() is not None:
+                coreaudio.set_volume(coreaudio.output(self._output_uid()), vol / 100)
+                return vol
             # Remembered even with no player yet, so a level chosen before
             # playback isn't silently lost: `play` re-applies it.
             changed = vol != self._volume
             self._volume = vol
-            if self.mp is not None:
+            if self.mp is not None and not self.taken_over:
                 self.mp.volume = vol
         if changed:
             self._persist_volume(vol)        # outside the lock: it touches disk
         return vol
 
     def get_volume(self) -> int:
-        """The current volume, always 0-100."""
-        return self._volume
+        """The current volume, always 0-100: under takeover, the output's own."""
+        device = self._device_volume()
+        return self._volume if device is None else round(device * 100)
 
     def elapsed(self) -> float:
         """Elapsed seconds into the current track (0 if not playing), smooth.
@@ -747,7 +852,7 @@ class PlaybackSession:
             if isinstance(self.sleep_mode, int):
                 self._sleep_deadline = time.monotonic() + self.sleep_mode * 60
             if self.sleep_mode is None and self.mp is not None:
-                self.mp.volume = self._volume                # undo a fade in progress
+                self.mp.volume = self._level()               # undo a fade in progress
             return self.sleep_mode
 
     def sleep_left(self) -> float | None:
@@ -773,10 +878,10 @@ class PlaybackSession:
             return False
         if left > tune.SLEEP_END_EARLY_S:
             if left < tune.SLEEP_FADE_S:
-                self.mp.volume = self._volume * left / tune.SLEEP_FADE_S
+                self.mp.volume = self._level() * left / tune.SLEEP_FADE_S
             return False
         self.mp.pause = True
-        self.mp.volume = self._volume
+        self.mp.volume = self._level()
         self.sleep_mode = None
         self._save_book()
         self._save_queue()
@@ -1157,6 +1262,8 @@ class PlaybackSession:
                 'is_book': self.is_book,
                 'sleep_mode': self.sleep_mode,
                 'sleep_left': self.sleep_left(),
+                'volume_fixed': self.volume_fixed(),
+                'output': self.output_note(),
             }
 
     # -- player-view lock (one open view across all windows) ---------------
@@ -1263,6 +1370,12 @@ class RemoteSession:
 
     def stop(self) -> None:
         self._link.send('stop')
+
+    def reload(self) -> None:
+        self._link.send('reload')
+
+    def volume_fixed(self) -> bool:
+        return bool((self._link.latest() or {}).get('volume_fixed'))
 
     def acquire_view(self, token: str) -> None:
         self._link.send('acquire_view', {'token': token})

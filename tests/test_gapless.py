@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from backtrack.playback import session as sess
 
@@ -13,6 +14,7 @@ class _MP:
     def __init__(self):
         self.calls, self.ids = [], 0
         self.idle_active, self.duration, self.volume, self.pause = False, 0, 100, False
+        self.audio_device = 'auto'
 
     def command(self, name, *args):
         self.calls.append((name, *args))
@@ -33,6 +35,9 @@ class GaplessTest(unittest.TestCase):
             p = os.path.join(self.tmp, f"{n}.mp3")
             open(p, 'wb').close()
             self.paths.append(p)
+        p = mock.patch.object(sess, '_takeover_on', lambda: False)   # not the user's own
+        p.start()
+        self.addCleanup(p.stop)
         self.s = sess.PlaybackSession()
         self.s.mp = _MP()
         self.s._save_queue = lambda: None

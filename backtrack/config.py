@@ -13,8 +13,8 @@ DEFAULT_CONFIG = {
     # The lyric editor's tap compensation: a tapped timing is moved this much
     # earlier, for the moment it takes to react (Settings → Tap lead-in).
     "lyric_lead_in": 2.0,
-    # How early the player shows each line before it's sung (Settings → Show
-    # lyrics early by): a moment to start reading. 0 puts it on its first word.
+    # How early the player shows each line before it's sung (Settings → Lyrics
+    # early by): a moment to start reading. 0 puts it on its first word.
     "lyrics_show_early": 0.35,
     # Where the player's lyrics come from: a lyrics.files.SOURCES key.
     "lyrics_source": "auto",
@@ -51,6 +51,14 @@ DEFAULT_CONFIG = {
     # When the queue plays to its end: "stop", or "random_album" (one picked
     # from the whole library, never an audiobook, then another, and so on).
     "queue_end": "stop",
+    # The output to play through: "auto" (the system's default) or mpv's name
+    # for a device ("coreaudio/<its UID>", "pipewire/…"), chosen in Settings.
+    "audio_device": "auto",
+    # DAC Takeover: music plays with the output to itself (exclusive), at each
+    # file's own rate, untouched: no EQ, no gain, backtrack's volume at 100
+    # (its volume keys set the output's own volume instead). Audiobooks never
+    # take over.
+    "takeover": False,
     # Album art in the player as a real image rather than text blocks. iTerm2
     # only (elsewhere the text art is used regardless). Experimental.
     "art_inline_images": False,

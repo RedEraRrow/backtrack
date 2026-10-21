@@ -70,7 +70,7 @@ def handover(start: float, end: float, next_start: float, keep_whole: bool,
              floor: float = 0.0, lead: float = tune.LYRIC_LEAD_IN_S) -> float:
     """The instant the next beat takes over from one running start-end.
 
-    It sits a short run-up (`lead`: Settings → Show lyrics early by) before
+    It sits a short run-up (`lead`: Settings → Lyrics early by) before
     `next_start`, as a line arriving exactly on its first word can arrive too
     late to read; 0 puts every line on its first word. The run-up comes
     out of any silence first, then out of this beat's own tail, which stays on

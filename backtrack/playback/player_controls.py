@@ -193,6 +193,9 @@ def step_volume(session, up: bool) -> int:
     hears the host's level with its next snapshot, so a press soon after the
     last steps from the level that one asked for: five quick presses are
     five steps, not one. Returns the level asked for."""
+    if session.volume_fixed():
+        ui.show_status("This output has no volume of its own: set the level on it (Settings: DAC Takeover)")
+        return session.get_volume()
     now = time.monotonic()
     last = _volume_asked[0]
     base = last[0] if last and now - last[1] < tune.VOLUME_PRESS_WINDOW_S else session.get_volume()

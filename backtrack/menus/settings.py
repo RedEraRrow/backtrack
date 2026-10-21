@@ -34,7 +34,7 @@ def _handle_tag_name_preferences() -> None:
         return info.name if info else []
 
     result = prompt.list_edit(
-        "Tag name preferences",
+        "Tag names",
         initial_items=initial,
         headers=("TAG", "PREFERRED NAME"),
         note="A blank name uses the tag's own.",
@@ -223,7 +223,7 @@ def _accent_cells(config: dict) -> list:
 
 
 def _pick_accents(config: dict) -> None:
-    """Settings → Accent colours: Terminal's two, from the terminal's own
+    """Settings → Accents: Terminal's two, from the terminal's own
     colours; each applies and saves as it's picked."""
     place = prompt.ListPlace()
     rows = (("accent_colour", "Accent", "the cursor, key letters, what's playing"),
@@ -233,7 +233,7 @@ def _pick_accents(config: dict) -> None:
             prompt.Choice(title=label, value=key, cells=[label, lambda key=key: _named_accent(config, key)])
             for key, label, _what in rows],
             columns=prompt.SETTINGS_COLUMNS, place=place,
-            header=_menu_header("Accent colours", " · ".join(f"{label}: {what}" for _k, label, what in rows)))
+            header=_menu_header("Accents", " · ".join(f"{label}: {what}" for _k, label, what in rows)))
         if not choice:
             return
         label = next(lb for k, lb, _w in rows if k == choice)
@@ -293,6 +293,27 @@ def _pick_option(config: dict, key: str, options: dict, question: str, title: st
         config[key] = picked
 
 
+def _devices(config: dict) -> dict:
+    """The outputs to pick from (name → description), the one chosen kept
+    in the list while it isn't connected."""
+    from backtrack.playback.libmpv import device_choices
+    options = dict(device_choices()) or {"auto": "System default"}
+    chosen = setting(config, "audio_device")
+    if chosen not in options:
+        options[chosen] = f"{chosen.split('/', 1)[-1]} (not connected)"
+    return options
+
+
+def _device_label(config: dict) -> str:
+    """The Output device row's right column: the chosen one's description."""
+    chosen = setting(config, "audio_device")
+    return "System default" if chosen == "auto" else _devices(config).get(chosen, chosen)
+
+
+def _pick_device(config: dict) -> None:
+    _pick_option(config, "audio_device", _devices(config), "Play through:", "Output device")
+
+
 def _load_key_screens() -> None:
     """Import every screen that defines keys, so the Key bindings page lists
     them all, not just the ones opened so far this run."""
@@ -334,51 +355,54 @@ def handle_settings(library_ref: list) -> None:
         # (value, label, current state); separators are plain strings.
         _rows: list = [
             prompt.separator("Playback"),
-            ("show_early",   "Show lyrics early by…", f"{float(setting(config, 'lyrics_show_early')):g}s"),
-            ("lead_in",      "Tap lead-in (lyric editor)…", f"{float(config['lyric_lead_in']):g}s"),
+            ("after_pick",   "After a pick…",        _AFTER_PICK[_option(config, "after_pick", _AFTER_PICK)]),
+            ("queue_end",    "Queue end…",           _QUEUE_END[_option(config, "queue_end", _QUEUE_END)]),
+            prompt.separator("Sound"),
+            ("output",       "Output device…",       _device_label(config)),
+            ("takeover",     "DAC Takeover",         _bool("takeover")),
+            prompt.separator("Lyrics"),
             ("lyrics_from",  "Lyrics from…",         lyric_files.SOURCES[_option(config, "lyrics_source", lyric_files.SOURCES)]),
-            ("after_pick",   "After a picked track…", _AFTER_PICK[_option(config, "after_pick", _AFTER_PICK)]),
-            ("queue_end",    "When the queue ends…", _QUEUE_END[_option(config, "queue_end", _QUEUE_END)]),
-            ("key_hints",    "Show [?] help in the hints", prompt.state_glyph(prompt.help_toggle_shown())),
-            ("key_bindings", "Key bindings…",        _key_bindings_state()),
-            ("inline_art",   "Album art as an image (iTerm2)", _bool("art_inline_images")),
-            ("player_meta",  "Track details in player", _bool("player_show_metadata")),
-            ("people_all",   "Composer and other credit tags in People", _bool("player_people_all_credits")),
-            ("player_tabs",  f"Tab bar in player · {keys.label('player.tabs')}", _bool("player_show_tabs")),
-            ("nerd_icons",   "Nerd Font player icons", _bool("player_nerd_font_icons")),
+            ("show_early",   "Lyrics early by…",     f"{float(setting(config, 'lyrics_show_early')):g}s"),
+            prompt.separator("Player"),
+            ("player_meta",  "Track details",        _bool("player_show_metadata")),
+            ("people_all",   "All credits in People", _bool("player_people_all_credits")),
+            ("player_tabs",  f"Tab bar · {keys.label('player.tabs')}", _bool("player_show_tabs")),
+            ("inline_art",   "Art as image (iTerm2)", _bool("art_inline_images")),
+            ("nerd_icons",   "Nerd Font icons",      _bool("player_nerd_font_icons")),
             prompt.separator("Appearance"),
             ("theme",        "Theme…",               _theme_cells(config)),
-            *([("accents",   "Accent colours…",      _accent_cells(config))]
+            *([("accents",   "Accents…",             _accent_cells(config))]
               if setting(config, "theme") in theme.ACCENTED else []),
-            ("columns",      f"Levels above as columns · {keys.label('list.columns')}",
-             prompt.state_glyph(prompt.columns_shown())),
-            ("preview",      f"Preview of the highlighted row · {keys.label('list.preview')}",
-             prompt.state_glyph(prompt.preview_shown())),
-            ("scroll_bpm",   "Scrolling text speed…", f"{setting(config, 'scroll_bpm'):g} bpm"),
+            ("scroll_bpm",   "Scroll speed…",        f"{setting(config, 'scroll_bpm'):g} bpm"),
+            prompt.separator("Browse"),
+            ("columns",      f"Columns · {keys.label('list.columns')}", prompt.state_glyph(prompt.columns_shown())),
+            ("preview",      f"Preview · {keys.label('list.preview')}", prompt.state_glyph(prompt.preview_shown())),
+            ("by_letter",    f"Long lists by letter · {keys.label('library.letters')}", _bool("browse_by_letter")),
+            ("browse_menu",  "Browse menu…",         f"{len(browse_menu_keys(config))} of {len(BROWSE_CATEGORIES)} shown"),
             prompt.separator("Library"),
             ("music_dirs",   "Music directories…",   ui.plural(len(music_dirs(config)), "directory", "directories")),
-            ("activity",     "Activity centre…",     f"{_tasks} running" if _tasks else "idle"),
             ("hidden",       "Skip hidden files",    _bool("ignore_hidden_files")),
-            ("browse_menu",  "Browse menu…",         f"{len(browse_menu_keys(config))} of {len(BROWSE_CATEGORIES)} shown"),
-            ("by_letter",    f"Long lists open by letter · {keys.label('library.letters')}", _bool("browse_by_letter")),
+            ("activity",     "Activity…",            f"{_tasks} running" if _tasks else "idle"),
             prompt.separator("Sorting"),
             ("sort_order",   "Sort order…",          _chain_summary(sort_options(config)['levels'])),
-            ("sort_tags",    "Use sort-order tags",  _bool("sort_use_tags")),
-            ("sort_words",   "Ignored leading words…",
-             ", ".join(config.get("sort_ignore_words") or []) or "none"),
+            ("sort_tags",    "Sort tags",            _bool("sort_use_tags")),
+            ("sort_words",   "Ignored words…",       ", ".join(config.get("sort_ignore_words") or []) or "none"),
             prompt.separator("Editors"),
             ("meta_editor",  "Metadata editor",      _bool("show_metadata_editor")),
             ("lyrics_editor", "Lyrics editor",       _bool("show_lyrics_editor")),
-            ("plain_text",   "Plain-text editing",   _bool("plain_text_editing")),
-            ("tag_names",    "Tag name preferences…", ui.plural(_prefs, "override") if _prefs else ui.stand_in("none")),
-            ("delimiter",    "Separator in sort names…", setting(config, "sort_list_delimiter")),
-            prompt.separator("Diagnostics"),
-            ("debug",        "Diagnostics log",      _bool("debug")),
+            ("plain_text",   f"Plain text · {keys.label('global.raw_text')}", _bool("plain_text_editing")),
+            ("lead_in",      "Tap lead-in…",         f"{float(config['lyric_lead_in']):g}s"),
+            ("tag_names",    "Tag names…",           ui.plural(_prefs, "override") if _prefs else ui.stand_in("none")),
+            ("delimiter",    "Name separator…",      setting(config, "sort_list_delimiter")),
             prompt.separator("History"),
-            ("history_list", "Listening history…",   ui.plural(_hist, "entry", "entries")),
-            ("history",      "Keep a listening history", _bool("history_enabled")),
-            ("clear_history", "Clear listening history…", ""),
+            ("history_list", "History…",             ui.plural(_hist, "entry", "entries")),
+            ("history",      "Keep history",         _bool("history_enabled")),
+            ("clear_history", "Clear history…",      ""),
             prompt.separator("App"),
+            ("key_bindings", "Key bindings…",        _key_bindings_state()),
+            ("key_hints",    f"[{keys.label('global.help', first=True)}] Help visible",
+             prompt.state_glyph(prompt.help_toggle_shown())),
+            ("debug",        "Diagnostics log",      _bool("debug")),
             ("exit",         "Quit",                 "q"),
         ]
         _labels = {r[0]: r[1] for r in _rows if isinstance(r, tuple)}
@@ -464,11 +488,17 @@ def handle_settings(library_ref: list) -> None:
 
         elif choice == "after_pick":
             _pick_option(config, "after_pick", _AFTER_PICK, "After a track picked from a list:",
-                         "After a picked track")
+                         "After a pick")
 
         elif choice == "queue_end":
             _pick_option(config, "queue_end", _QUEUE_END, "When the queue plays to its end:",
-                         "When the queue ends")
+                         "Queue end")
+
+        elif choice == "output":
+            _pick_device(config)
+        elif choice == "takeover":
+            _toggled("takeover", ": the volume keys now set the output's own volume" if not setting(config, "takeover")
+                     else "")
 
         elif choice == "player_meta":
             _toggled("player_show_metadata")
@@ -567,6 +597,9 @@ def handle_settings(library_ref: list) -> None:
 
         if changed_keys(_before, config):
             update_config(changed_keys(_before, config))
+            if {"takeover", "audio_device"} & set(changed_keys(_before, config)):
+                from backtrack.playback.session import active_session
+                active_session().reload()            # the track playing takes it now, not from the next
 
 
 def _edit_browse_menu(config: dict) -> None:
