@@ -86,6 +86,24 @@ def saved_queue() -> dict | None:
             "mode": data.get("mode") if data.get("mode") in (REPEAT_OFF, REPEAT_ONE, REPEAT_ALL) else REPEAT_OFF}
 
 
+def repoint_saved_queue(moves: dict) -> None:
+    """Follow renamed files (old path → new) in the queue a previous run left."""
+    try:
+        data = json.loads(_queue_file().read_text(encoding="utf-8"))
+        queue = list(data["queue"])
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.warning("queue.json unreadable, renames not followed: %s", exc)
+        return
+    moved = {**data, "queue": [moves.get(p, p) for p in queue], "path": moves.get(data.get("path"), data.get("path"))}
+    if moved != data:
+        try:
+            write_text_atomic(_queue_file(), json.dumps(moved))
+        except OSError as exc:
+            log.warning("queue.json not updated for renamed files: %s", exc)
+
+
 def forget_saved_queue() -> None:
     with quietly():
         _queue_file().unlink(missing_ok=True)

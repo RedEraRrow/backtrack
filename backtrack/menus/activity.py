@@ -1,7 +1,7 @@
 """The activity centre."""
 from __future__ import annotations
 from backbone.ui import Colors as C
-from backbone.prompt import disable_mouse
+from backbone.prompt import disable_mouse, enable_mouse
 from backbone import prompt
 from backbone.prompt import core as pc
 from backbone import keys, ui
@@ -31,8 +31,7 @@ def activity_centre() -> None:
         w.render(lines)
 
     with raw_mode(sys.stdin):
-        sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
-        sys.stdout.flush()
+        enable_mouse()
         try:
             last = None
             pc.screen_takeover_next()           # paint over the screen before, no flash
@@ -62,7 +61,7 @@ def activity_centre() -> None:
                         key = _ch
                     elif key.startswith('MOUSE_CLICK:'):
                         key = ''
-                    if key == '\x1b' or keys.action(key, 'list') in ('list.back', 'list.quit'):
+                    if keys.action(key, 'list') in ('list.back', 'list.quit'):
                         break
                 pc._wait_for_keypress(0.08)             # the shared tick: the miniplayer when too small
         finally:

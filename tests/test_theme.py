@@ -108,12 +108,26 @@ class ArtAccentsTest(unittest.TestCase):
         self.assertTrue(all(l.count("▀") == 36 for l in art))            # 18 rows × 2: square, no gap
         self.assertIn("Size", plain[1])                                  # what it is, beside it
 
+    def test_a_wide_cover_keeps_its_shape_and_is_never_cut(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "wide.png")
+        img = Image.new("RGB", (200, 100), (200, 30, 30))
+        img.save(path)
+        with mock.patch.object(ui, 'cell_aspect', lambda *a: 2.0):
+            self.assertEqual(player_art.cover_box(path, 40, 20), (40, 10))          # 2:1, not a square
+            self.assertEqual(player_art.cover_box("", 40, 20, player_art.IDLE_ART), (40, 20))   # a placeholder: square
+            out = player_art._fit_cells(img, 20, 10)                                 # a square's room
+        rows = [[out.getpixel((x, y))[3] >= 128 for x in range(20)] for y in range(20)]
+        self.assertTrue(all(r[0] and r[-1] for r in rows if any(r)))              # its left and right edges both there
+        self.assertFalse(any(rows[0]) and any(rows[-1]))                          # fitted: room above or below, not cut
+
     def test_a_round_portrait_is_never_cut(self):
         from PIL import ImageDraw
         img = Image.new("RGBA", (60, 60), (0, 0, 0, 0))
         ImageDraw.Draw(img).ellipse((0, 0, 59, 59), fill=(200, 30, 30, 255))
         with mock.patch.object(ui, 'cell_aspect', lambda *a: 2.0):
-            out = player_art._fill_or_fit(img, 30, 5)                  # wide and short: a crop would cut it
+            out = player_art._fit_cells(img, 30, 5)                  # wide and short: a crop would cut it
         self.assertEqual(out.size, (30, 10))
         rows = [[out.getpixel((x, y))[3] >= 128 for x in range(30)] for y in range(10)]
         self.assertTrue(any(rows[0]) and any(rows[-1]))                   # its top and bottom both there

@@ -272,7 +272,7 @@ def _commit_group(paths: list[str], state: dict[str, _TrackState], library: list
 
                 key = get_key_non_blocking()
                 if key:
-                    if key == '\x1b' or keys.action(key, 'trim') in ('trim.back', 'trim.quit'):
+                    if keys.action(key, 'trim') in ('trim.back', 'trim.quit'):
                         interrupted = True
                         break
     finally:                                 # the progress box mustn't outlive the run

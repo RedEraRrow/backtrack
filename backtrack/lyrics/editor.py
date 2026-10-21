@@ -37,7 +37,7 @@ import sys, os, json, time
 
 from backtrack.music_library import drop_moved, track_title
 from backbone import keys, nav, ui
-from backbone.prompt import disable_mouse
+from backbone.prompt import disable_mouse, enable_mouse
 from backbone.ui import Colors as C
 from backbone.prompt.core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs, _cols
 from backbone.prompt import text as _prompt_text
@@ -343,7 +343,7 @@ class _Session(_KeyHandlers):
         disable_mouse()                 # the app's screen keeps it on (ui.enter_alt_screen)
         _ans = _prompt_text("Leave without saving? (y/N)")
         _set_raw(self.fd)
-        sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         self.w.anchor_reset()
         return (_ans or "").strip().lower().startswith("y")
 
@@ -588,7 +588,7 @@ class _Session(_KeyHandlers):
         _ans = _prompt_text(
             f"Split {ui.plural(len(cands), 'segment')}: {_what}?{_skip} (y/N)")
         _set_raw(self.fd)
-        sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         self.w.anchor_reset()
         if not (_ans or "").strip().lower().startswith("y"):
             ui.show_status("Split cancelled."); return
@@ -625,7 +625,7 @@ class _Session(_KeyHandlers):
                 termios.tcflush(self.fd, termios.TCIFLUSH)
             _lbl = _prompt_text("Stage direction text:")
             _set_raw(self.fd)
-            sys.stdout.write("\033[?1000h\033[?1006h")
+            enable_mouse()
             self.w.anchor_reset()
             if _lbl is None or not _lbl.strip():
                 ui.show_status("Recategorise cancelled: a stage direction needs text.")
@@ -816,8 +816,7 @@ class _Session(_KeyHandlers):
         """The editor's key loop, until the user quits."""
         try:
             _set_raw(self.fd)
-            sys.stdout.write("\033[?1000h\033[?1006h")  # enable mouse (click + scroll)
-            sys.stdout.flush()
+            enable_mouse()
             self.need_redraw = True
             self.hit_map: dict[int, int] = {}   # row → item index, rebuilt on every _draw
             self.hint_cells: dict = {}          # (out-index, col) → synth key for footer hints

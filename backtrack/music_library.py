@@ -28,7 +28,7 @@ SYNC_INTERVAL_SECONDS = tune.LIBRARY_SYNC_INTERVAL_S
 # Bump whenever `_get_default_metadata` gains a field or an extractor learns a new
 # tag: cached entries carrying an older version are re-read on the next sync even
 # though their mtime hasn't moved.
-METADATA_VERSION = 11
+METADATA_VERSION = 12
 
 
 def _default_cache_dir() -> Path:
@@ -84,7 +84,14 @@ def album_year(songs: list) -> int:
     drag the album backwards (a `Bridge Over Troubled Water` with one 1969 track
     stays 1970), while a series whose episodes all differ still reads as the year
     it began rather than its busiest year.
+
+    A compilation is the exception: it's dated by its own release (TDRL), its
+    tracks keeping their own years, when it carries one.
     """
+    if any(s.get('compilation') for s in songs):
+        released = Counter(y for y in (year_of(s.get('release_date')) for s in songs) if y)
+        if released:
+            return released.most_common(1)[0][0]
     counts = Counter(y for y in (year_of(s.get('year')) for s in songs) if y)
     if not counts:
         return 0
@@ -268,11 +275,14 @@ def _sync_worker(library: list) -> None:
                 ui.set_status("sync", f"Syncing library {i}/{len(library)}")
 
             try:
-                current_mtime = os.path.getmtime(path)
+                st = os.stat(path)
             except OSError:
                 continue
+            if 'added' not in track:                 # cached before it was recorded: no re-read for it
+                track['added'] = file_added(st)
+                changed = True
 
-            if (current_mtime != track.get('cached_mtime', 0)
+            if (st.st_mtime != track.get('cached_mtime', 0)
                     or track.get('meta_version') != METADATA_VERSION):
                 fresh = get_metadata(path)
                 track.update(fresh)
@@ -360,6 +370,12 @@ def get_song_duration(file_path: str) -> float:
     return 0.0
 
 
+def file_added(st: os.stat_result) -> float:
+    """When a file came into the library: its creation time, where the
+    system records one, else its last change."""
+    return getattr(st, 'st_birthtime', None) or st.st_mtime
+
+
 def get_metadata(file_path: str) -> dict:
     """
     Extract metadata from audio file.
@@ -369,7 +385,8 @@ def get_metadata(file_path: str) -> dict:
     metadata = _get_default_metadata(file_path)
 
     try:
-        metadata["cached_mtime"] = os.path.getmtime(file_path)
+        st = os.stat(file_path)
+        metadata["cached_mtime"], metadata["added"] = st.st_mtime, file_added(st)
     except OSError:
         pass
 
@@ -499,7 +516,7 @@ def chapter_at(chapters: list, t: float) -> int:
 _LIBRARY_TEXT = ('title', 'artist', 'album_artist', 'album', 'genre', 'composer', 'lyricist', 'year',
                  'work', 'bpm', 'Title Sort Order', 'Performer Sort Order', 'Album Artist Sort Order',
                  'Album Sort Order', 'Composer Sort Order')
-_LIBRARY_FIRST = ('movement_name', 'disc_subtitle', 'grouping', 'copyright')
+_LIBRARY_FIRST = ('movement_name', 'disc_subtitle', 'grouping', 'copyright', 'release_date')
 
 
 def _extract_tags(tags) -> dict:
@@ -978,6 +995,7 @@ SORT_FIELDS: dict[str, tuple[str, str, str]] = {
     'album':        ("Album",          'album', 'text'),
     'album_artist': ("Album artist",   'album', 'text'),
     'album_year':   ("Album year",     'album', 'num'),
+    'added':        ("Date added",     'album', 'num'),
     'disc':         ("Disc",           'track', 'num'),
     'track':        ("Track number",   'track', 'num'),
     'movement':     ("Movement",       'track', 'num'),
@@ -1132,6 +1150,8 @@ def _field_value(field: str, t: dict, album: list, opts: dict):
         return _natural(sort_text(name, opts)) if name and name.strip() else None
     if field == 'album_year':
         return album_year(album) or None
+    if field == 'added':                         # its newest file: a track added later brings it up
+        return max((s.get('added') or 0 for s in album), default=0) or None
     if field in ('disc', 'track', 'movement'):
         raw = t.get('movement_number' if field == 'movement' else field)
         return to_num(raw) if str(raw or '').strip() else None

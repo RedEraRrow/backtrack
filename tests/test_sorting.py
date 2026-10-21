@@ -53,6 +53,19 @@ class SortTracksTest(unittest.TestCase):
         self.assertEqual(order(tracks, levels=desc), ['/m/Music/new', '/m/Music/old', '/m/Music/none'])
         self.assertEqual(order(tracks, levels=asc), ['/m/Music/old', '/m/Music/new', '/m/Music/none'])
 
+    def test_a_compilation_is_dated_by_its_release_and_an_album_by_its_tracks(self):
+        comp = [t('/m/Music/a', 'G', year='1964', compilation=True, release_date='2008'),
+                t('/m/Music/b', 'G', year='2002', compilation=True, release_date='2008')]
+        self.assertEqual(ml.album_year(comp), 2008)
+        self.assertEqual(ml.album_year([dict(x, compilation=False) for x in comp]), 1964)   # a reissue keeps its original year
+        self.assertEqual(ml.album_year([dict(x, release_date='') for x in comp]), 1964)     # no release date: its tracks'
+
+    def test_recently_added_goes_by_each_albums_newest_file_and_keeps_albums_whole(self):
+        tracks = [t('/m/Music/a1', 'A', track=1, added=100), t('/m/Music/a2', 'A', track=2, added=300),
+                  t('/m/Music/b1', 'B', track=1, added=200), t('/m/Music/n', 'N')]
+        self.assertEqual(order(tracks, levels=[['added', 'desc'], ['album', 'asc']]),
+                         ['/m/Music/a1', '/m/Music/a2', '/m/Music/b1', '/m/Music/n'])
+
     def test_broadcast_order_interleaves_albums_by_date(self):
         tracks = [t('/m/Radio/a1', 'A', 1, 1, '2001-01-01'), t('/m/Radio/a2', 'A', 1, 2, '2001-01-15'),
                   t('/m/Radio/b1', 'B', 1, 1, '2001-01-08')]

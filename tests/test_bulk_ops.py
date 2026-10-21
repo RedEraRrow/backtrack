@@ -293,6 +293,26 @@ class RenameFilesTest(_Fixtures):
         self.assertFalse(os.path.exists(a))
         self.assertEqual(library[0]['path'], final)
 
+    def test_what_is_kept_by_path_follows_the_file(self):
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from backtrack import config as cfg, history as hist
+        a = _mp3(os.path.join(self.tmp, "a.mp3"), track="1")
+        final = os.path.join(self.tmp, "01 A.mp3")
+        conf = Path(self.tmp) / "config"
+        conf.mkdir()
+        open(os.path.join(self.tmp, "a.bkts"), "w").close()
+        (conf / "history.log").write_text(f"2026-01-01 10:00:00 | 60s | {a}\n")
+        (conf / "books.json").write_text(json.dumps({a: {'path': a, 'elapsed': 5}}))
+        (conf / "queue.json").write_text(json.dumps({'queue': [a], 'path': a}))
+        with patch.object(cfg, "CONFIG_DIR", conf), patch.object(hist, "HISTORY_FILE", conf / "history.log"):
+            bo.rename_files([(a, final)], [])
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "01 A.bkts")))            # its lyrics archive
+        self.assertIn(final, (conf / "history.log").read_text())                         # its plays
+        self.assertEqual(json.loads((conf / "books.json").read_text()), {final: {'path': final, 'elapsed': 5}})
+        self.assertEqual(json.loads((conf / "queue.json").read_text()), {'queue': [final], 'path': final})
+
     def test_a_swap_does_not_clobber_either_file(self):
         # The two-phase move exists for exactly this: each target is the other
         # file's current name, so a naive rename would destroy one of them.

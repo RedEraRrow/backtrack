@@ -19,7 +19,7 @@ from backtrack.config import setting
 _HISTORY_COLUMNS = [
     prompt.Column(style='primary', flex=True),
     prompt.Column(style='dynamic-dim', max_frac=0.24, priority=4),
-    prompt.Column(style='dynamic-dim', max_frac=0.24, priority=1),
+    prompt.Column(style='release', max_frac=0.24, priority=1),
     prompt.Column(style='dynamic-dim', align='right', pin=True, priority=3),
     prompt.Column(style='dynamic-dim', align='right', pin=True, priority=2),
 ]

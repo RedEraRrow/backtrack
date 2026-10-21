@@ -20,7 +20,8 @@ class ReboundKeysTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.file = Path(self.dir.name) / "keys.json"
-        self.file.write_text(json.dumps({"player.next": ["n"], "player.fwd_5": ["f"]}))
+        self.file.write_text(json.dumps({"player.next": ["n"], "player.fwd_5": ["f"],
+                                         "player_arrange.next": ["N"], "player.panel": ["P"]}))
         self._p = patch.object(keys, "_path", lambda: self.file)
         self._p.start()
         keys._saved.update(map=None, mtime=None, checked=0.0)
@@ -37,11 +38,24 @@ class ReboundKeysTest(unittest.TestCase):
         self.assertEqual(keys.action("]", "trim"), "trim.next_marker")
         with patch.object(pc, "hints_visible", lambda: True), \
              patch.object(ui, "get_terminal_size", lambda *a: (120, 40)):
-            _, hints = player_ui._controls_line(False, False, 100, width=120)
+            _, hints = player_ui._controls_line(False, width=120)
         plain = ui.strip_ansi(hints)
         self.assertIn("[[/n] prev/next", plain)
         player_ui.compute_controls_hint_cells([ui.strip_ansi(h) for h in hints.splitlines()], 1)
         self.assertIn("n", set(player_ui._last_hint_cells.values()))
+
+    def test_arranging_follows_its_rebinding(self):
+        from unittest import mock
+        with mock.patch.dict(player_ui._ui_state, arranging='lyrics',
+                             panels={'wide': [['lyrics', 'right'], ['queue', 'right']], 'tall': []}), \
+             mock.patch.dict(player_ui._frame, panel_order=['lyrics', 'queue'], shape='wide'), \
+             patch('backtrack.playback.panel_state.save_setting'):
+            player_ui.arrange_key("TAB")                    # no longer bound: waits
+            self.assertEqual(player_ui._ui_state['arranging'], 'lyrics')
+            player_ui.arrange_key("N")
+            self.assertEqual(player_ui._ui_state['arranging'], 'queue')
+            player_ui.arrange_key("P")                      # the rebound panels key ends it
+            self.assertIsNone(player_ui._ui_state['arranging'])
 
     def test_seeks_follow_their_rebinding(self):
         self.assertEqual(_seek_step("f", 100, 10)[0], 5)

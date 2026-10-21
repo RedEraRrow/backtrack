@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import time
 
-from backbone.log import log
+from backbone import keys
+from backtrack.config import save_setting
 from backtrack.playback.player_geom import geom
 from backtrack.playback.player_state import _frame, _ui_state
 from backtrack.playback import queue_pane
@@ -108,11 +109,7 @@ def cycle_visualiser() -> str:
     from backtrack.playback.panels import VIS_STYLES
     style = VIS_STYLES[(VIS_STYLES.index(_ui_state.get('visualiser', 'bars')) + 1) % len(VIS_STYLES)]
     _ui_state['visualiser'] = style
-    try:
-        from backtrack.config import update_config
-        update_config({'player_visualiser': style})
-    except Exception as exc:
-        log.warning("couldn't save player_visualiser: %s", exc)
+    save_setting('player_visualiser', style)
     return style
 
 
@@ -159,11 +156,7 @@ def _panels_changed() -> None:
     use_list('chapters' if chapters_listed() else 'queue')
     if not _ui_state['show_queue']:
         set_queue_cursor(None)                   # a reopened panel starts on the current item
-    try:
-        from backtrack.config import update_config
-        update_config({'player_panels': _ui_state['panels']})
-    except Exception as exc:
-        log.warning("couldn't save player_panels: %s", exc)
+    save_setting('player_panels', _ui_state['panels'])
 
 
 def lyrics_laid_out() -> bool:
@@ -186,26 +179,40 @@ def arrange_start() -> None:
 _ARRANGE_FIRST = '__first__'       # Arrange asked for: the first panel the next frame draws
 
 
+# While arranging the panels: only these keys (and the panels key, which ends it).
+keys.define("player_arrange", "Player: arranging panels", [
+    ("next", ("TAB",), "the next panel"),
+    ("prev", ("BACKTAB",), "the previous panel"),
+    ("up", ("UP",), "move it up, on into the place above"),
+    ("down", ("DOWN",), "move it down, on into the place below"),
+    ("left", ("LEFT",), "move it to the left"),
+    ("right", ("RIGHT",), "move it to the right"),
+    ("done", ("ENTER", "ESC"), "done arranging"),
+], within=())
+
+
 def arrange_key(key: str) -> bool:
-    """A key while arranging: Tab / Shift-Tab to the next / previous panel.
-    ↑ ↓ move it up or down: within its place, and past the end of one into the
-    next, top band → above the player → below it → bottom band (from a column,
-    out into the band at that end). ← → move it between the left column, the
-    player's own column and the right one. Enter or Esc to finish (saved). The
-    arrangement moved is this window shape's. Whether it was one."""
+    """A key while arranging (player_arrange): next / previous panel. Up and
+    down move it within its place, and past the end of one into the next, top
+    band → above the player → below it → bottom band (from a column, out into
+    the band at that end). Left and right move it between the left column,
+    the player's own column and the right one. Done, or the panels key, to
+    finish (saved). The arrangement moved is this window shape's. Whether it
+    was one."""
     kind = _ui_state['arranging']
     if kind is None:
         return False
+    act = keys.action(key, 'player_arrange')
     order = _frame.get('panel_order') or []
     arr = _ui_state['panels'][_frame.get('shape') or 'wide']
     at = next((i for i, (k, _s) in enumerate(arr) if k == kind), None)
-    if key in ('ENTER', 'ESC', 'w', 'W') or at is None or kind not in order:
+    if act == 'player_arrange.done' or keys.pressed(key, 'player.panel') or at is None or kind not in order:
         _ui_state['arranging'] = None
         _panels_changed()
-    elif key in ('TAB', 'BACKTAB'):
-        _ui_state['arranging'] = order[(order.index(kind) + (1 if key == 'TAB' else -1)) % len(order)]
-    elif key in ('UP', 'DOWN'):
-        place, up = arr[at][1], key == 'UP'
+    elif act in ('player_arrange.next', 'player_arrange.prev'):
+        _ui_state['arranging'] = order[(order.index(kind) + (1 if act == 'player_arrange.next' else -1)) % len(order)]
+    elif act in ('player_arrange.up', 'player_arrange.down'):
+        place, up = arr[at][1], act == 'player_arrange.up'
         same = [i for i, (_k, s) in enumerate(arr) if s == place]
         j = same.index(at) + (-1 if up else 1)
         if 0 <= j < len(same):
@@ -217,11 +224,11 @@ def arrange_key(key: str) -> bool:
                 arr.pop(at)
                 # Moving up it comes in last of its new place; moving down, first.
                 arr.insert(len(arr) if up else 0, [kind, nxt])
-    elif key in ('LEFT', 'RIGHT'):
-        place = arr[at][1]
+    elif act in ('player_arrange.left', 'player_arrange.right'):
+        place, right = arr[at][1], act == 'player_arrange.right'
         if place in ('above', 'below', 'top', 'bottom'):
-            arr[at][1] = 'left' if key == 'LEFT' else 'right'
-        elif (place == 'left') == (key == 'RIGHT'):              # from a column towards the player
+            arr[at][1] = 'right' if right else 'left'
+        elif (place == 'left') == right:              # from a column towards the player
             arr[at][1] = 'below'
     else:
         return True                              # every other key waits while arranging

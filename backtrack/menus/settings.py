@@ -198,7 +198,7 @@ def _music_dirs_menu(config: dict, library_ref: list) -> None:
 # Settings rows that are on/off switches: space flips them, like ↵ does.
 _SETTINGS_TOGGLES = {"history", "meta_editor", "lyrics_editor",
                      "plain_text", "sort_tags", "hidden", "key_hints", "inline_art", "debug",
-                     "player_meta", "player_tabs", "nerd_icons", "columns", "by_letter", "people_all"}
+                     "player_meta", "player_tabs", "nerd_icons", "columns", "preview", "by_letter", "people_all"}
 
 
 def _themes() -> dict:
@@ -344,20 +344,23 @@ def handle_settings(library_ref: list) -> None:
             ("inline_art",   "Album art as an image (iTerm2)", _bool("art_inline_images")),
             ("player_meta",  "Track details in player", _bool("player_show_metadata")),
             ("people_all",   "Composer and other credit tags in People", _bool("player_people_all_credits")),
-            ("player_tabs",  "Tab bar in player · f", _bool("player_show_tabs")),
+            ("player_tabs",  f"Tab bar in player · {keys.label('player.tabs')}", _bool("player_show_tabs")),
             ("nerd_icons",   "Nerd Font player icons", _bool("player_nerd_font_icons")),
             prompt.separator("Appearance"),
             ("theme",        "Theme…",               _theme_cells(config)),
             *([("accents",   "Accent colours…",      _accent_cells(config))]
               if setting(config, "theme") in theme.ACCENTED else []),
-            ("columns",      "Browse in columns · v", prompt.state_glyph(prompt.columns_shown())),
+            ("columns",      f"Levels above as columns · {keys.label('list.columns')}",
+             prompt.state_glyph(prompt.columns_shown())),
+            ("preview",      f"Preview of the highlighted row · {keys.label('list.preview')}",
+             prompt.state_glyph(prompt.preview_shown())),
             ("scroll_bpm",   "Scrolling text speed…", f"{setting(config, 'scroll_bpm'):g} bpm"),
             prompt.separator("Library"),
             ("music_dirs",   "Music directories…",   ui.plural(len(music_dirs(config)), "directory", "directories")),
             ("activity",     "Activity centre…",     f"{_tasks} running" if _tasks else "idle"),
             ("hidden",       "Skip hidden files",    _bool("ignore_hidden_files")),
             ("browse_menu",  "Browse menu…",         f"{len(browse_menu_keys(config))} of {len(BROWSE_CATEGORIES)} shown"),
-            ("by_letter",    "Long lists open by letter · /", _bool("browse_by_letter")),
+            ("by_letter",    f"Long lists open by letter · {keys.label('library.letters')}", _bool("browse_by_letter")),
             prompt.separator("Sorting"),
             ("sort_order",   "Sort order…",          _chain_summary(sort_options(config)['levels'])),
             ("sort_tags",    "Use sort-order tags",  _bool("sort_use_tags")),
@@ -444,8 +447,12 @@ def handle_settings(library_ref: list) -> None:
             raise QuitToTerminal()
 
         elif choice == "columns":
-            # The level above and the highlighted row's details beside Browse's lists.
+            # The levels above beside Browse's lists.
             prompt.set_columns_shown(not prompt.columns_shown())
+
+        elif choice == "preview":
+            # The highlighted row's details beside Browse's lists.
+            prompt.set_preview_shown(not prompt.preview_shown())
 
         elif choice == "key_bindings":
             _load_key_screens()

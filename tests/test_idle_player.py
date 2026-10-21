@@ -14,7 +14,7 @@ class IdlePlayerTest(unittest.TestCase):
              mock.patch.object(player, 'has_other_windows', others), \
              mock.patch.object(player.ui, 'get_terminal_size', lambda *_: (100, 40)), \
              mock.patch('sys.stdout', new_callable=io.StringIO) as out:
-            return player._idle_view(woken, 50), out.getvalue()
+            return player._idle_view(woken), out.getvalue()
 
     def test_draws_note_then_wakes_when_something_plays(self):
         ticks = iter([False, False, True])

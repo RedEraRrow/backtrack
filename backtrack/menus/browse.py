@@ -481,7 +481,7 @@ def _preview_of(songs: list, by_album: bool, cfg: dict) -> tuple:
     title, its rows): the albums, or the tracks."""
     if by_album:
         names = _albums_of(songs, cfg)[1]
-        return ui.plural(len(names), "album"), names
+        return ui.plural(len(names), "album"), [cols.Album(n) for n in names]
     rows = [r for r in _track_rows(sort_tracks(songs, cfg), cfg)[0] if not r.disabled]
     return cols.listed_size(songs, cfg), \
         [str(r.title) for r in rows]

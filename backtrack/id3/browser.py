@@ -25,7 +25,7 @@ from mutagen.id3._frames import APIC
 from backbone import ui
 from backbone.prompt.core import _visible_rows
 from backbone.ui import Colors as C, get_terminal_width
-from backtrack.playback.player_art import fill_art, image_cells
+from backtrack.playback.player_art import cover_box, fill_art, image_cells
 from backtrack.album_art import decode_image, picture_file
 from backtrack.music_library import (drop_moved, format_label, library_entry, refresh_library_entry,
                                     track_title, first_text)
@@ -138,6 +138,7 @@ _AMP_ALTS = (
 )
 _OTHER_ALTS = (
     r'\|'
+    r'|;'                                          # the usual written list ("A; B"), never part of a name
     r'|[/\\]'
     r'|\bfeaturing\b|\bfeat\.?\b|\bft\.?\b'
     r'|\bwith(?=\s+\w)(?!\s+(?:his|her|their)\b)'
@@ -751,9 +752,9 @@ def _art_rows_available(reserved_rows: int) -> int:
 
 def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0, title: str = "") -> list[str]:
     """The picture in a box as wide as the screen's other boxes, `title` in its
-    top border: a square filled edge to edge (cropped about its centre), an
-    image where the terminal shows them (a prompt.Pane carrying it), else text
-    art, with what the image is beside it."""
+    top border: the whole picture in its own shape, an image where the
+    terminal shows them (a prompt.Pane carrying it), else text art, with what
+    the image is beside it."""
     avail_rows = _art_rows_available(reserved_rows)
     path = picture_file(getattr(apic_frame, 'data', b"") or b"")
     if avail_rows < _MIN_ART_ROWS or not path:
@@ -763,14 +764,10 @@ def _art_lines_boxed(apic_frame: APIC, reserved_rows: int = 0, title: str = "") 
         return [f"{' ' * ui.MARGIN_H}{C.DIM}(art hidden: {why}){C.RESET}"]
 
     inner = max(12, get_terminal_width() - 2 * ui.MARGIN_H - 4)
-    aspect = ui.cell_aspect()
-    rows = avail_rows
-    cols = round(rows * aspect)
     room = inner - _FACTS_MIN_W - 3                                 # " │ " before the facts
-    if cols > max(room, inner * 2 // 3 if room < 12 else room):
-        cols = room if room >= 12 else inner
-        rows = max(1, int(cols / aspect))
-        cols = round(rows * aspect)
+    # The picture's own shape, whole, as big as the rows and the room beside
+    # the facts allow (the whole width when there's no room for them).
+    cols, rows = cover_box(path, room if room >= 12 else inner, avail_rows)
     image = image_cells(path, cols, rows)
     art = image[0] if image else fill_art(path, cols, rows)
     facts_w = inner - cols - 3

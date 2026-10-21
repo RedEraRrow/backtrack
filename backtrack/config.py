@@ -223,6 +223,16 @@ def update_config(changes: dict) -> dict:
     return cfg
 
 
+def save_setting(key: str, value) -> None:
+    """Save one setting as the app runs, best effort: an unwritable config is
+    logged, never raised, so the screen that changed it carries on."""
+    try:
+        update_config({key: value})
+    except Exception as exc:
+        from backbone.log import log
+        log.warning("couldn't save %s: %s", key, exc)
+
+
 def changed_keys(before: dict, after: dict) -> dict:
     """The entries of `after` that differ from `before`: what an edit made to a
     working copy of the config, ready for update_config."""

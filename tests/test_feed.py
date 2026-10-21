@@ -247,7 +247,7 @@ class NamingTest(unittest.TestCase):
         self.assertEqual(fd.slugify("!!!"), "feed")
 
     def test_illegal_path_characters_are_removed(self):
-        self.assertEqual(fd.safe_name('A/B: "C"?'), 'AB C')
+        self.assertEqual(fd.safe_name('A/B: "C"?'), 'A-B - C')
 
     def test_a_name_is_never_empty(self):
         self.assertEqual(fd.safe_name('   '), 'untitled')

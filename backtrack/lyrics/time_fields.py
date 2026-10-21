@@ -1,6 +1,8 @@
 """Time formatting and the segmented start/end time fields (mm:ss.mmm) shared by
 the lyrics editor and the trim editor."""
 from __future__ import annotations
+from backbone import keys
+import backbone.prompt.core  # noqa: F401 (defines the text and field keys)
 from backbone.ui import Colors as C
 from backbone import timefmt
 
@@ -98,32 +100,42 @@ def new_edit(start: float | None, end: float | None) -> tuple[dict, dict]:
     return {'fields': fields, 'fi': 0, 'pos': 0, 'fresh': True}, {k: "".join(v) for k, v in fields.items()}
 
 
+def edit_hints(*extra: tuple) -> list:
+    """The segmented editor's hints, from its keys as bound, with any of the
+    editor's own (`extra`) before apply and cancel."""
+    L = keys.label
+    return [(L('field.next', 'field.prev'), 'field'), (L('text.left', 'text.right'), 'cursor'),
+            (L('field.up', 'field.down'), 'adjust'), *extra,
+            (L('field.submit'), 'apply'), (L('field.cancel'), 'cancel')]
+
+
 def edit_key(edit: dict, key: str) -> None:
     """One key in the segmented editor, the same in every editor that has one:
     digits fill from the left (a fresh field is replaced on the first digit),
-    ↑↓ spin the value, Tab/Backtab move between fields, ms treats its digits as
+    field.up / down spin the value, field.next / prev move between fields, ms treats its digits as
     a right-padded fraction (5 → 500)."""
     fk = _EDIT_ORDER[edit['fi']]
     buf = edit['fields'][fk]
-    if key in ('TAB', 'BACKTAB'):
-        edit['fi'] = (edit['fi'] + (1 if key == 'TAB' else -1)) % len(_EDIT_ORDER)
+    act = keys.action(key, 'field') or keys.action(key, 'text')
+    if act in ('field.next', 'field.prev'):
+        edit['fi'] = (edit['fi'] + (1 if act == 'field.next' else -1)) % len(_EDIT_ORDER)
         edit['pos'] = 0; edit['fresh'] = True
         return
     edit['fresh'], fresh = False, edit.get('fresh', False)
-    if key == 'LEFT':
+    if act == 'text.left':
         edit['pos'] = max(0, edit['pos'] - 1)
-    elif key == 'RIGHT':
+    elif act == 'text.right':
         edit['pos'] = min(len(buf), edit['pos'] + 1)
-    elif key in ('UP', 'DOWN'):
-        v = _field_value(fk, "".join(buf)) + (1 if key == 'UP' else -1)
+    elif act in ('field.up', 'field.down'):
+        v = _field_value(fk, "".join(buf)) + (1 if act == 'field.up' else -1)
         buf[:] = list(_field_str(fk, max(0, min(_EDIT_LIM[fk], v)))); edit['pos'] = len(buf)
-    elif key == 'BACKSPACE':
+    elif act == 'text.backspace':
         if edit['pos'] > 0: buf.pop(edit['pos'] - 1); edit['pos'] -= 1
-    elif key == 'DELETE':
+    elif act == 'text.delete':
         if edit['pos'] < len(buf): buf.pop(edit['pos'])
-    elif key == 'HOME':
+    elif act == 'text.home':
         edit['pos'] = 0
-    elif key == 'END':
+    elif act == 'text.end':
         edit['pos'] = len(buf)
     elif len(key) == 1 and key.isdigit():
         if fresh:

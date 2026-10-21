@@ -58,7 +58,8 @@ def lines_of(pairs: list, width: int, rows: int) -> list[str]:
             room = max(1, width - label_w - 2)
             label = f"{C.DIM}{ui.truncate_text(k, label_w):<{label_w}}{C.RESET}  "
             from backtrack.lyrics.formats import _md_rows
-            for n, part in enumerate(_md_rows(v, room) or [""]):            # a long value wraps under itself
+            base = C.ITALIC if k in _SMALL_PRINT else ''
+            for n, part in enumerate(_md_rows(v, room, base) or [""]):      # a long value wraps under itself
                 out.append((label if n == 0 else " " * (label_w + 2)) + part)
     if len(out) > rows:
         out = out[:max(0, rows - 1)] + [f"{C.DIM}…{C.RESET}"]
@@ -66,6 +67,9 @@ def lines_of(pairs: list, width: int, rows: int) -> list[str]:
 
 
 # --- Info --------------------------------------------------------------------
+
+_SMALL_PRINT = {"Copyright"}            # rows in italics, as in the browse preview
+
 
 def _copyright(text: str) -> str:
     low = text.lower()
@@ -100,6 +104,7 @@ def info_pairs(audio, path: str, started: float = 0.0) -> list:
     pairs: list = []
     release = [("Copyright", _copyright(v)) for v in _frame_texts(audio, 'TCOP')]
     release += [("Label", v) for v in _frame_texts(audio, 'TPUB')]
+    release += [("Broadcaster", v) for v in _frame_texts(audio, 'TRSN')]      # a radio programme's station
     released = _frame_texts(audio, 'TDRL') or _frame_texts(audio, 'TDRC')
     release += [("Released", released[0])] if released else []
     first = _frame_texts(audio, 'TDOR') or _frame_texts(audio, 'TORY')
@@ -226,15 +231,8 @@ def booklet_pages(path: str) -> list[str]:
 
 def page_box(page: str, width: int, rows: int) -> tuple[int, int]:
     """The cells a page fits in, its own shape, within width × rows."""
-    from PIL import Image
-    try:
-        with Image.open(page) as im:
-            w, h = im.size
-    except Exception:
-        return width, rows
-    aspect = ui.cell_aspect()
-    cols = min(width, round(rows * aspect * w / max(1, h)))
-    return max(1, cols), max(1, min(rows, round(cols / aspect * h / max(1, w))))
+    from backtrack.playback.player_art import cover_box
+    return cover_box(page, width, rows)
 
 
 def page_lines(page: str, cols: int, rows: int) -> tuple[list[str], str]:

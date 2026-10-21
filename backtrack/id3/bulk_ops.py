@@ -28,7 +28,7 @@ from backtrack.id3 import tag_writer as tw
 from backtrack.id3.tag_handler import apply_bulk_edit, load_id3, picture_type_name, save_id3
 from backtrack.music_library import refresh_library_entry, first_text
 from backbone import ui
-from backbone.log import quietly
+from backbone.log import log, quietly
 
 
 @dataclass
@@ -633,12 +633,14 @@ def rename_files(pairs: list, library: list, *,
     Two phases, because a target can be another selected file's current name:
     every source moves to a unique temp name first, then each temp to its final
     name. A failure in phase two rolls that one file back rather than leaving it
-    parked under a dot-name.
+    parked under a dot-name. What is kept by path follows each file: the files
+    beside it under its name, its plays, its book position, the saved queue.
     """
     import tempfile
 
     out = Applied()
     staged: list[tuple[str, str, str]] = []
+    moves: dict[str, str] = {}
     for orig, final in pairs:
         try:
             fd, tmp = tempfile.mkstemp(prefix='.rn_', dir=os.path.dirname(orig),
@@ -670,7 +672,35 @@ def rename_files(pairs: list, library: list, *,
             refresh_library_entry(library, final)
         _emit(on_event, 'written', Change(path=orig, why=os.path.basename(final)),
               os.path.basename(final))
+        moves[orig] = final
+    _carry_sidecars(moves)
+    from backtrack import books, history
+    from backtrack.playback.session import repoint_saved_queue
+    history.repoint(moves)
+    books.repoint(moves)
+    repoint_saved_queue(moves)
     return out
+
+
+def _carry_sidecars(moves: dict) -> None:
+    """Rename the files kept beside each renamed track under its name (its
+    lyrics archive, .lrc, …) to its new name, never over another file."""
+    for orig, final in moves.items():
+        d, stem = os.path.dirname(orig), os.path.splitext(os.path.basename(orig))[0]
+        new_stem = os.path.splitext(os.path.basename(final))[0]
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for name in names:
+            base, ext = os.path.splitext(name)
+            src, dst = os.path.join(d, name), os.path.join(os.path.dirname(final), new_stem + ext)
+            if base != stem or src in moves or src in moves.values() or os.path.exists(dst):
+                continue
+            try:
+                os.rename(src, dst)
+            except OSError as exc:
+                log.warning("couldn't rename %s beside its renamed track: %s", name, exc)
 
 
 @_shows_progress("Embedding covers", lambda covers, *_a, selected=None, **_k: sum(

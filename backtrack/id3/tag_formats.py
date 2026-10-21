@@ -149,6 +149,7 @@ TAG_HOMES = {
     'composer':      ('TCOM', '\xa9wrt', ('COMPOSER',)),
     'lyricist':      ('TEXT', '----:com.apple.iTunes:LYRICIST', ('LYRICIST',)),
     'year':          ('TDRC', '\xa9day', ('DATE', 'YEAR')),
+    'release_date':  ('TDRL', '', ('RELEASEDATE',)),
     'work':          ('TIT3', '\xa9wrk', ('WORK',)),
     'grouping':      ('TIT1', '\xa9grp', ('GROUPING',)),
     'bpm':           ('TBPM', 'tmpo', ('BPM',)),

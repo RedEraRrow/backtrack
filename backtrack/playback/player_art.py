@@ -163,21 +163,16 @@ def _inline_art_data(file_path: str, cols: int = 0, rows: int = 0,
 
 
 def _encoded_picture(raw: bytes, img, cols: int, rows: int, px: int) -> tuple[str, int] | None:
-    """A picture as base64 for the image escape (and its byte count): cropped
-    about its centre to the cells' shape so it fills them with no gap, scaled
-    to them at `px` pixels a column (only ever down), a PNG when it has
-    transparency, else a JPEG. The raw bytes when there are no cells to fit."""
+    """A picture as base64 for the image escape (and its byte count): whole,
+    scaled to fit the cells at `px` pixels a column (only ever down; the
+    terminal keeps its shape and centres it), a PNG when it has transparency,
+    else a JPEG. The raw bytes when there are no cells to fit."""
     import base64
     data = raw
     transparent = has_alpha(raw)
     if transparent:                                         # keep it: a JPEG has no transparency
         img = decode_image(raw, keep_alpha=True)
     if img is not None and cols and rows:
-        # A cover is cropped to fill its cells; a picture with transparency (a
-        # round portrait) is kept whole, fitted inside them (the terminal
-        # centres it), so a circle is never cut.
-        if not transparent:
-            img = crop_to_cells(img, cols, rows)
         f = min(cols * px / img.width, rows * ui.cell_aspect() * px / img.height)
         if f < 1:
             img = img.resize((max(1, round(img.width * f)), max(1, round(img.height * f))),
@@ -254,9 +249,9 @@ def _cover_mean(file_path: str) -> tuple[int, int, int] | None:
 
 
 def _cover_facts(file_path: str) -> tuple | None:
-    """(the cover's average colour, whether it has transparency), kept long
-    after the decoded picture is let go: a list showing covers asks for both
-    on every move."""
+    """(the cover's average colour, whether it has transparency, its width
+    over its height), kept long after the decoded picture is let go: a list
+    showing covers asks for them on every move."""
     try:
         key = (file_path, os.path.getmtime(file_path))
     except OSError:
@@ -264,7 +259,8 @@ def _cover_facts(file_path: str) -> tuple | None:
     def make():
         dec = _cover_decoded(file_path)
         img = dec[1] if dec else None
-        return None if img is None else (tuple(int(v) for v in ImageStat.Stat(img).mean[:3]), has_alpha(dec[0]))
+        return None if img is None else (tuple(int(v) for v in ImageStat.Stat(img).mean[:3]), has_alpha(dec[0]),
+                                         img.width / max(1, img.height))
     return _kept(_mean_cache, key, 256, make)
 
 
@@ -296,28 +292,27 @@ def _image_head(size: int, cols: int, rows: int) -> str:
             f"height={rows};preserveAspectRatio=1;doNotMoveCursor=1:")
 
 
-def crop_to_cells(img, cols: int, rows: int):
-    """`img` cropped about its centre to the shape cols × rows cells take on
-    screen, so drawn into them it fills them with no gap."""
-    want = cols / max(1e-6, rows * ui.cell_aspect())          # width over height, on screen
-    w, h = img.size
-    if w / h > want:
-        nw = max(1, round(h * want))
-        return img.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
-    nh = max(1, round(w / want))
-    return img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
+def cover_box(path: str, cols: int, rows: int, pre_art: str | None = None) -> tuple[int, int]:
+    """The cells a picture takes within cols × rows: its own shape, as big as
+    fits, so the whole of it shows with no gap. A placeholder (no picture, the
+    note, a person) takes a square. A group's picture is its booklet's."""
+    if pre_art is GROUP_COVER:
+        path = booklet_file(path) or path
+    facts = _cover_facts(path) if pre_art not in _SHAPES else None
+    shape = facts[2] if facts else 1.0
+    aspect = ui.cell_aspect()
+    c = max(1, min(cols, round(rows * aspect * shape)))
+    return c, max(1, min(rows, round(c / aspect / shape)))
 
 
 _fill_cache: dict = {}
 
 
-def _fill_or_fit(img, cols: int, rows: int):
-    """`img` at cols × rows cells' half-block pixels: a cover cropped to fill
-    them; a picture with transparency (a round portrait) whole, fitted and
-    centred on a clear background, so a circle is never cut."""
+def _fit_cells(img, cols: int, rows: int):
+    """`img` at cols × rows cells' half-block pixels: whole, fitted and
+    centred on a clear background, never cut."""
     size = (cols, rows * 2)
-    if img.mode != "RGBA" or img.getextrema()[3][0] == 255:
-        return crop_to_cells(img, cols, rows).resize(size, Image.Resampling.BOX)
+    img = img.convert("RGBA")
     # A half-block pixel is half a cell high: the cells' own shape on screen.
     f = min(cols / img.width, rows * 2 * ui.cell_aspect() / 2 / img.height)
     w, h = max(1, round(img.width * f)), max(1, round(img.height * f * 2 / ui.cell_aspect()))
@@ -328,8 +323,8 @@ def _fill_or_fit(img, cols: int, rows: int):
 
 
 def fill_art(path: str, cols: int, rows: int) -> list[str]:
-    """`path`'s picture filling cols × rows cells exactly, cropped about its
-    centre to their shape, as half-block text; [] when there's no picture."""
+    """`path`'s picture in cols × rows cells, whole, as half-block text (made
+    for cover_box's cells, it fills them); [] when there's no picture."""
     try:
         key = (path, os.path.getmtime(path), cols, rows, ui.cell_aspect())
     except OSError:
@@ -338,15 +333,15 @@ def fill_art(path: str, cols: int, rows: int) -> list[str]:
         dec = _cover_decoded(path)
         img = (decode_image(dec[0], keep_alpha=True) if dec and has_alpha(dec[0])
                else dec[1].convert("RGBA") if dec and dec[1] is not None else None)
-        return (half_blocks(_fill_or_fit(img, cols, rows)).splitlines()
+        return (half_blocks(_fit_cells(img, cols, rows)).splitlines()
                 if img is not None and cols > 0 and rows > 0 else [])
     return _kept(_fill_cache, key, 64, make)
 
 
-def square_art(path: str, cols: int, rows: int, pre_art: str | None) -> list[str]:
-    """The art filling a box cols × rows with no gap: the cover cropped to it
-    (an image where the terminal shows them, its cells standing under it, else
-    text art); the empty player's note. A group shows its booklet."""
+def boxed_art(path: str, cols: int, rows: int, pre_art: str | None) -> list[str]:
+    """The art in cols × rows cells (cover_box's): the whole cover (an image
+    where the terminal shows them, its cells standing under it, else text
+    art); the empty player's note. A group shows its booklet."""
     _inline_art['path'] = None
     if pre_art in _SHAPES:
         return _shape_lines(pre_art, cols, rows)
@@ -375,7 +370,7 @@ def image_cells(path: str, cols: int, rows: int) -> tuple[list[str], str] | None
         return None
     # Under a picture with transparency (a round portrait) the cells stay
     # blank, or its corners would show them.
-    mean, blank = facts
+    mean, blank, _shape = facts
     cells = ([" " * cols] if blank else [f"\033[48;2;{mean[0]};{mean[1]};{mean[2]}m{' ' * cols}\033[0m"]) * rows
     return cells, _image_head(data[1], cols, rows) + data[0] + "\a"
 

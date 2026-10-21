@@ -395,13 +395,10 @@ def _discard(path: str) -> None:
 
 # --- naming -----------------------------------------------------------------
 
-_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-
-
 def safe_name(text: str) -> str:
-    """One path component, with the characters a filesystem objects to removed."""
-    cleaned = _ILLEGAL.sub('', normalise_whitespace(text)).strip(' .')
-    return cleaned[:120] or 'untitled'
+    """One path component a filesystem takes (backbone's one rule for every tool)."""
+    from backbone.files import safe_filename
+    return safe_filename(normalise_whitespace(text), 120)
 
 
 def extension_for(item: Item) -> str:

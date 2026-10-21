@@ -41,8 +41,9 @@ class ColumnsTest(unittest.TestCase):
 
     def test_copyright_shows_when_it_is_one(self):
         c = "℗ 2001 Label"
-        self.assertIn(c, cols.track_details({**_t(1), 'copyright': c})[1])
-        self.assertIn(c, cols.tracks_details("A", [{**_t(1), 'copyright': c}, {**_t(2), 'copyright': c}])[1])
+        small = f"{ui.Colors.ITALIC}{c}"                                       # in italics, as small print
+        self.assertIn(small, cols.track_details({**_t(1), 'copyright': c})[1])
+        self.assertIn(small, cols.tracks_details("A", [{**_t(1), 'copyright': c}, {**_t(2), 'copyright': c}])[1])
         mixed = cols.tracks_details("G", [{**_t(1), 'copyright': c}, {**_t(2), 'copyright': "© Other"}])[1]
         self.assertFalse(any("℗" in x or "©" in x for x in mixed))           # a group's many: none
 

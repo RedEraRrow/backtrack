@@ -17,7 +17,7 @@ from _media import make_audio, needs_ffmpeg, png_bytes
 from backtrack.id3 import tag_formats as tf
 from backtrack.music_library import get_metadata, track_title
 
-_SKIP = ('path', 'cached_mtime', 'duration', 'meta_version',
+_SKIP = ('path', 'cached_mtime', 'added', 'duration', 'meta_version',
          'format', 'bitrate', 'sample_rate', 'bit_depth', 'channels')     # tested in FormatTest
 _SORTS = {'Title Sort Order': 'ts', 'Performer Sort Order': 'ps', 'Album Artist Sort Order': 'aas',
           'Album Sort Order': 'als', 'Composer Sort Order': 'cs'}

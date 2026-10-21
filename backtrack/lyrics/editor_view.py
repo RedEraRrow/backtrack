@@ -9,7 +9,7 @@ from backbone.prompt.core import _hint_pin_target, _visible_rows
 from backbone import prompt as _promptmod
 from backtrack.lyrics.formats import _apply_markdown_formatting
 from backtrack.lyrics.md_overlay import _sd_scope, _is_framed, mid_line_direction
-from backtrack.lyrics.time_fields import _render_edit_fields
+from backtrack.lyrics.time_fields import _render_edit_fields, edit_hints
 from backtrack.lyrics.sync_doc import SOURCE_TRANSCRIPT
 from backbone import timefmt
 from backtrack import tuning as tune
@@ -535,8 +535,7 @@ def _draw_audition(B, aud_editing, aud_now, avail, cursor, edit, hit_map, indent
 
     footer: list[str] = [sep]
     if aud_editing:
-        pairs = [('tab/⇧tab', 'field'), ('←→', 'cursor'), ('↑↓', 'adjust'),
-                 ('↵', 'apply'), ('esc', 'cancel')]
+        pairs = edit_hints()
     else:
         A = lambda *n: K(*(f'lyrics_audition.{x}' for x in n))  # noqa: E731
         pairs = [(A('up', 'down'), 'line'), (A('whole'), 'whole line'),
@@ -584,8 +583,7 @@ def _edit_footer(cursor, edit, footer, md_overlay, mode, review, segs, selected,
     s_d, e_d = _render_edit_fields(edit)
     footer.append(f"  start  {s_d}    end  {e_d}")
     footer.extend(_hint_lines(
-        [('tab/⇧tab', 'field'), ('←→', 'cursor'), ('↑↓', 'adjust'),
-         (K('lyrics_edit.playhead'), 'playhead'), ('↵', 'apply'), ('esc', 'cancel')]))
+        edit_hints((K('lyrics_edit.playhead'), 'playhead'))))
 
 
 def _draw_words(_compose, _rhs, cursor, hit_map, indent, out, seg_cursor, segs, vis, vp):

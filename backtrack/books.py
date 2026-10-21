@@ -37,6 +37,17 @@ def _save(books: dict) -> None:
         log.warning("books.json not saved, book positions lost: %s", exc)
 
 
+def repoint(moves: dict) -> None:
+    """Follow renamed files (old path → new): a book's file, and the key of
+    a book that is a single untagged file."""
+    with _lock:
+        books = _load()
+        out = {moves.get(k, k): {**v, 'path': moves.get(v.get('path'), v.get('path'))} if isinstance(v, dict) else v
+               for k, v in books.items()}
+        if out != books:
+            _save(out)
+
+
 def book_key(path: str) -> str:
     e = library_entry(path)
     album = (e.get('album') or '').strip()

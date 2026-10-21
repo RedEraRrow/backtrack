@@ -214,7 +214,7 @@ def _build_queue_lines(max_w: int, max_rows: int) -> list[str]:
         item = meta[i] if i < len(meta) else {'title': titles[i]}
         row = [item.get('title', '')]
         if detail:
-            row.append(ui.strip_ansi(_queue_meta_value(item, same_album, compilation)))
+            row.append(_queue_meta_value(item, same_album, compilation))
         if not chapters:
             row.append(ui.format_time(int(item['duration'])) if item.get('duration') else "")
         cells.append(row)
@@ -288,7 +288,7 @@ def _queue_meta_value(item: dict, same_album: bool = False, compilation_without_
     if item.get('artist'):
         pieces.append(format_tag_values(item['artist']))
     if item.get('album'):
-        pieces.append(item['album'])
+        pieces.append(f"{C.ITALIC}{item['album']}{C.RESET}")   # last: its reset ends the cell
     return ' · '.join(pieces)
 
 
@@ -321,9 +321,9 @@ def _render_queue_row(cells: list, specs: list[Column], widths: list[int], kind:
         if w < 0:
             continue
         raw = cells[i] if i < len(cells) else ""
-        # Cut as plain text, so the "…" takes the cell's style (dim, or bold
-        # on the playing row) with the rest.
-        text = ui.truncate_text(ui.strip_ansi(raw), w) if ui.visual_len(raw) > w else raw
+        # Cut with its codes (an album's italics), the "…" taking the cell's
+        # style (dim, or bold on the playing row) with the rest.
+        text = ui.truncate_text(raw, w) if ui.visual_len(raw) > w else raw
         text = text.rjust(w) if spec.align == 'right' else text + " " * max(0, w - ui.visual_len(text))
         style = (C.DIM if kind == 'prev' or i != title_at
                  else C.BOLD if kind == 'current' else "")

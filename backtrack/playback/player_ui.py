@@ -18,28 +18,27 @@ from backbone.prompt.core import _hint
 from backbone.prompt.core import add_hint_click_cells
 from backbone.ui import Colors as C
 from backtrack import tuning as tune
-from backbone.log import log
 from backtrack.playback import queue_pane
 from backtrack.playback.queue_pane import (
     queue_title,  # noqa: F401 (re-exported)
-    _place_queue, _queue_area, _queue_click_rows, has_queue, in_queue, move_queue_cursor, queue_click_index, queue_cursor,
+    _place_queue, _queue_area, _queue_click_rows, in_queue, move_queue_cursor, queue_click_index, queue_cursor,
     set_chapter_context, set_queue_context, set_queue_cursor, use_list,
 )
 from backtrack.playback.player_art import (  # noqa: F401 (re-exported)
-    ART_MAX_WIDTH, _art_width_for_height, _draw_inline_art, _inline_art, art_image_incomplete, inline_art_enabled, redraw_art_image, set_resizing,
-    square_art,
+    ART_MAX_WIDTH, _art_width_for_height, _inline_art, art_image_incomplete, redraw_art_image, set_resizing,
+    boxed_art, cover_box,
 )
-from backtrack.config import setting
+from backtrack.config import save_setting, setting
 from backtrack.playback.player_state import _frame, _ui_state
 from backtrack.playback.player_frame import _frame_borders, _render_frame_buffer  # noqa: F401 (re-exported)
 from backtrack.playback.player_controls import (  # noqa: F401 (re-exported)
-    VOLUME_W, _TINY_COLS, _TINY_ROWS, _controls_line, _draw_tiny, _icons_fitting, _last_hint_cells,
-    _last_transport_cols, _place_controls, chapter_time_on, compute_controls_hint_cells, hint_click_key,
+    _TINY_COLS, _TINY_ROWS, _controls_line, _draw_tiny, _icons_fitting, _last_hint_cells,
+    _last_transport_cols, _place_controls, compute_controls_hint_cells, hint_click_key,
     progress_from_click, shown_time, step_volume, time_clicked, timer_extra, toggle_chapter_time,
-    transport_click_action, update_progress_ui, volume_changed, volume_text, write_controls,
+    transport_click_action, update_progress_ui, write_controls,
 )
 from backtrack.playback.panel_state import (  # noqa: F401 (re-exported)
-    PANELS, PLACES, _ARRANGE_FIRST, _LIVE_PANELS, _get_people, _track_ctx, arrange_key, arrange_start,
+    PANELS, PLACES, _ARRANGE_FIRST, _LIVE_PANELS, _track_ctx, arrange_key, arrange_start,
     chapters_listed, cycle_visualiser, live_context, lyrics_laid_out, page_click, panel_notes, people_of,
     set_panels, set_track_context, shown_panels, track_has, turn_page,
 )
@@ -183,21 +182,13 @@ def _build_cast_lines(people: list[tuple[str, str]], max_w: int, limit: int = 4)
 def toggle_metadata() -> None:
     """Show or hide the track details line, and remember the choice."""
     _ui_state['show_metadata'] = not _ui_state['show_metadata']
-    try:
-        from backtrack.config import update_config
-        update_config({'player_show_metadata': _ui_state['show_metadata']})
-    except Exception as exc:
-        log.warning("couldn't save player_show_metadata: %s", exc)
+    save_setting('player_show_metadata', _ui_state['show_metadata'])
     refresh_player_settings()
 
 def toggle_tabs() -> None:
     """Show or hide the tab bar over the player, and remember the choice."""
     _ui_state['show_tabs'] = not _ui_state['show_tabs']
-    try:
-        from backtrack.config import update_config
-        update_config({'player_show_tabs': _ui_state['show_tabs']})
-    except Exception as exc:
-        log.warning("couldn't save player_show_tabs: %s", exc)
+    save_setting('player_show_tabs', _ui_state['show_tabs'])
     ui.set_tabs_hidden(not _ui_state['show_tabs'])
 
 
@@ -498,10 +489,10 @@ def _center_lines(lines: list[str], cols: int) -> list[str]:
 
 
 def draw_full_ui(file_path: str, audio, pre_art: str | None, size: tuple,
-                 is_paused: bool = False, volume: int = 100) -> tuple[int, int, int, int, int]:
+                 is_paused: bool = False) -> tuple[int, int, int, int, int]:
     """Hide the cursor and draw the default playback UI layout."""
     sys.stdout.write(f"{C.HIDE}")
-    return _draw_default_ui(file_path, audio, pre_art, size, is_paused, volume)
+    return _draw_default_ui(file_path, audio, pre_art, size, is_paused)
 
 
 _MIN_ART_ROWS = 3
@@ -544,15 +535,22 @@ _PEOPLE_COL_MIN = 24             # a column of people narrower than this doesn't
 
 def _people_lines(cast: list, crew: list, width: int, rows: int) -> list[str]:
     """The People box's lines in `width` × `rows`: everyone credited, name
-    then a dim role, the performers and then the production team. One column
-    when they fit, else two side by side when the width allows, else cut with
-    a count of the rest."""
+    then a dim role, the performers and then the production team. Two columns
+    side by side when the width allows and either every entry fits whole in
+    half of it or one column would run out of rows; else one. In two, the
+    performers take the left and the team the right when each fits the rows,
+    else they run on evenly. Whatever still doesn't fit is cut with a count
+    of the rest."""
     entries = ([(name, role) for role, name in cast] + ([("", "")] if cast and crew else [])
                + [(name, role) for role, name in crew])
-    two = len(entries) > rows and width >= 2 * _PEOPLE_COL_MIN + 3
-    col_w = (width - 3) // 2 if two else width
+    half = (width - 3) // 2
+    widest = lambda i: max((ui.visual_len(e[i]) for e in entries), default=0)   # noqa: E731
+    neat = len(entries) >= 4 and widest(0) <= half * 3 // 5 and widest(0) + 2 + widest(1) <= half
+    two = (neat or len(entries) > rows) and width >= 2 * _PEOPLE_COL_MIN + 3
+    col_w = half if two else width
+    grouped = two and cast and crew and max(len(cast), len(crew)) <= rows
     per = -(-len(entries) // 2) if two else len(entries)            # rows each column needs
-    if per > rows > 0:                                               # still too many: the rest counted
+    if not grouped and per > rows > 0:                               # still too many: the rest counted
         keep = rows * (2 if two else 1) - 1
         entries = entries[:keep] + [(f"{C.DIM}… {len(entries) - keep} more{C.RESET}", "")]
         per = -(-len(entries) // 2) if two else len(entries)
@@ -564,7 +562,11 @@ def _people_lines(cast: list, crew: list, width: int, rows: int) -> list[str]:
         line = f"{name}{' ' * (name_w - ui.visual_len(name))}  {C.DIM}{role}{C.RESET}" if role else name
         line = ui.clip_ansi(line, col_w) if ui.visual_len(line) > col_w else line
         return line + " " * max(0, col_w - ui.visual_len(line))
-    columns = [entries[:per], entries[per:]] if two else [entries]
+    columns = ([entries[:len(cast)], entries[len(cast) + 1:]] if grouped     # performers left, the team right
+               else [entries[:per], entries[per:]] if two else [entries])
+    if two:                                    # the gap between performers and crew never ends or starts a column
+        columns = [[e for i, e in enumerate(col) if e != ("", "") or 0 < i < len(col) - 1] for col in columns]
+        per = max(len(c) for c in columns)
     return [f" {C.FRAME}│{C.RESET} ".join(cell(*col[k]) if k < len(col) else " " * col_w for col in columns).rstrip()
             for k in range(per)]
 
@@ -634,7 +636,7 @@ def _stack(kinds: list, y0: int, y1: int, fit) -> list:
     return out
 
 
-def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_paused: bool, volume: int,
+def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_paused: bool,
                    cast_people: list, crew_people: list, has_cast: bool, has_lyrics: bool, has: dict):
     """The player in boxes, under the tab bar or with a panel showing: the art
     and the details in a box only as wide as the art; the panel's boxes (the
@@ -649,12 +651,11 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
     live: dict = {}                                   # the moving panels' regions, for panels.LIVE
     arrange = {shape: [(k, s) for k, s in _ui_state['panels'][shape] if has.get(k)]
                for shape in ('wide', 'tall')}
-    is_uslt = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
 
     # Bottom up: the hints, under them nothing; over them the transport box.
     _frame['icons_col'] = mh + 3
     _frame['icons_n'] = _icons_fitting(cols - 2 * mh - 4)
-    status, hints = _controls_line(is_uslt, is_paused, volume, has_lyrics=has_lyrics, has_credits=has_cast)
+    status, hints = _controls_line(is_paused, has_lyrics=has_lyrics, has_credits=has_cast)
     hint_lines = hints.splitlines() if hints else []
     # The hints keep what's left once the transport box has its rows.
     hint_lines = hint_lines[:max(0, rows - mv - ui.top_margin() - 3)]
@@ -784,8 +785,9 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
             # Under it, the columns keep what they need: the fitted panels' rows,
             # a few for the lyrics or the queue.
             avail = m_h - 3 - meta_n - (reserve(cols) if any(cols) else 0)
-        # The art is a square, as big as the room allows, filled with no gap (the
-        # cover cropped to it); the box is the art and its inset, no wider.
+        # The art's height is settled as for a square, as big as the room
+        # allows; then the cover takes its own shape in it (cover_box), whole.
+        # The box is the art and its inset, no wider.
         art_rows = min(_art_room(avail), int(max_inner / aspect))
         # A short, wide box: the art beside the details rather than over them,
         # when that makes it bigger.
@@ -798,8 +800,11 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
             b_rows = min(_art_room(avail + meta_n + 1), int((max_inner - 2 - _BESIDE_TEXT) / aspect))
             beside = b_rows >= max(_MIN_ART_ROWS, art_rows * _BESIDE_GAIN)
             art_rows = b_rows if beside else art_rows
-        art_cols = min(max_inner, round(art_rows * aspect))
-        art = square_art(file_path, art_cols, art_rows, pre_art) if art_rows >= _MIN_ART_ROWS else []
+        # Beside the details it keeps to the square's width, the details' column
+        # being reserved beside that; over them it may take the box's width.
+        wide = min(max_inner, round(art_rows * aspect)) if beside else max_inner
+        art_cols, art_rows = cover_box(file_path, wide, art_rows, pre_art)
+        art = boxed_art(file_path, art_cols, art_rows, pre_art) if art_rows >= _MIN_ART_ROWS else []
         beside = beside and bool(art)
         art_w = _art_w(art) if art else 0
         content_h = max(len(art), meta_n) if beside else len(art) + (1 if art else 0) + meta_n
@@ -938,7 +943,7 @@ def _draw_boxed_ui(file_path: str, audio, pre_art: str | None, size: tuple, is_p
 
 
 def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
-                     is_paused: bool = False, volume: int = 100) -> tuple[int, int, int, int, int]:
+                     is_paused: bool = False) -> tuple[int, int, int, int, int]:
     """Render the full playback screen (art, metadata, controls, and any active pane)
     for the current layout mode, returning the progress/control/lyric row positions and art bottom row."""
     cols, rows = size
@@ -983,7 +988,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     _frame.update(boxed=boxed, boxes=[], titles={}, prog_row=None, icons_col=None, bar=None,
                   focus=None, panel_order=[], shape=None, panel_boxes={}, images=[])
     if boxed:
-        drawn = _draw_boxed_ui(file_path, audio, pre_art, size, is_paused, volume,
+        drawn = _draw_boxed_ui(file_path, audio, pre_art, size, is_paused,
                                cast_people, crew_people, has_cast, has_lyrics, has)
         if drawn is not None:
             return drawn                                     # else no room for boxes: clean
@@ -993,7 +998,6 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
     row_cursor = 0
 
     if mode == 'wide':
-        is_uslt_track = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
 
         # Split view: left half = art + meta, right pane = credits/lyrics.
         art_w = min(cols // 2, ART_MAX_WIDTH)
@@ -1003,7 +1007,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
         # Size the controls/hints first so the art leaves room for them: showing
         # help (several hint lines) shrinks the art instead of drawing over the controls.
-        status_ln, shortcuts_ln = _controls_line(is_uslt_track, is_paused, volume, has_lyrics=has_lyrics, has_credits=has_cast)
+        status_ln, shortcuts_ln = _controls_line(is_paused, has_lyrics=has_lyrics, has_credits=has_cast)
         shortcut_lines = shortcuts_ln.splitlines() or [""]
         avail_h = _art_room(rows - len(left_col) - len(shortcut_lines) - 4 - ui.MARGIN_V
                             - max(ui.MARGIN_V, above))
@@ -1047,7 +1051,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
 
         # Recompute now that the art geometry is set, so the transport line centres over the art.
         ctrl_row, shortcut_lines = _place_controls(
-            emit, ctrl_row, rows, is_uslt_track, is_paused, volume, has_lyrics, has_cast)
+            emit, ctrl_row, rows, is_paused, has_lyrics, has_cast)
 
         _pane_top = geom.art_top  # right pane aligns with art top after any vertical centring
 
@@ -1107,8 +1111,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         meta_val_w = cols - 12
         left_col = _meta_left_lines(audio, file_path, meta_val_w)
 
-        is_uslt_track = bool(audio.getall('USLT')) and not bool(audio.getall('SYLT'))
-        _, temp_shortcuts = _controls_line(is_uslt_track, is_paused, volume, width=cols, has_lyrics=has_lyrics, has_credits=has_cast)
+        _, temp_shortcuts = _controls_line(is_paused, width=cols, has_lyrics=has_lyrics, has_credits=has_cast)
         control_rows = 2 + len(temp_shortcuts.splitlines() or [""])
 
         credits_est = tune.PANE_CREDITS_EST_ROWS if (has_cast and _ui_state['show_credits']) else 0
@@ -1168,7 +1171,7 @@ def _draw_default_ui(file_path: str, audio, pre_art: str | None, size: tuple,
         ctrl_row = prog_row + 1
 
         ctrl_row, shortcut_lines = _place_controls(
-            emit, ctrl_row, rows, is_uslt_track, is_paused, volume, has_lyrics, has_cast)
+            emit, ctrl_row, rows, is_paused, has_lyrics, has_cast)
 
         ctrl_row_end = ctrl_row + len(shortcut_lines)
         p0 = ctrl_row_end + 2                                  # the panel's first row

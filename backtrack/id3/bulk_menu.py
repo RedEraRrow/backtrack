@@ -35,6 +35,7 @@ from backtrack.id3.bulk_art import (
     _COVER_PREVIEW_COLUMNS, set_album_art_op, set_picture_type_op,
 )
 from backtrack.id3.bulk_sort import apply_sort_orders
+from backtrack.id3.bulk_split import split_values_op
 from backtrack.id3.bulk_assign import (
     assign_by_pattern, bulk_fraction_editor, bulk_people_editor,
 )
@@ -348,6 +349,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
             "Set album art from files",
             "Assign by range / schedule",
             "Apply sort orders",
+            "Split multi-name values",
             "Renumber tracks",
             "Reflow disc numbering",
             "Remove single-disc numbering",
@@ -376,6 +378,7 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         "Set album art from files": "Set Album Art",
         "Assign by range / schedule": "Assign By Pattern",
         "Apply sort orders": "Apply Sort Orders",
+        "Split multi-name values": "Split Values",
         "Renumber tracks": "Renumber Tracks",
         "Reflow disc numbering": "Reflow Discs",
         "Remove single-disc numbering": "Strip Single Disc",
@@ -408,6 +411,9 @@ def bulk_id3_manager(library: list, album_name: str | None = None, paths: list |
         return
     if operation == "Apply Sort Orders":
         apply_sort_orders(album_tracks, library, _bulk_header)
+        return
+    if operation == "Split Values":
+        split_values_op(album_tracks, library, _bulk_header)
         return
     if operation == "Renumber Tracks":
         renumber_tracks_op(album_tracks, library, _bulk_header)

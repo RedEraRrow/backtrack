@@ -4,6 +4,7 @@ import os
 import datetime
 from backtrack.config import CONFIG_DIR
 from backtrack.config import setting
+from backbone.files import write_text_atomic
 from backbone.log import log
 
 HISTORY_FILE = CONFIG_DIR / 'history.log'
@@ -41,6 +42,29 @@ def get_recent_paths() -> set:
         pass
 
     return paths
+
+
+def repoint(moves: dict) -> None:
+    """Follow renamed files (old path → new) in the log, so their plays stay theirs."""
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        log.warning("couldn't read the listening history to follow renames: %s", exc)
+        return
+    out = []
+    for line in lines:
+        parts = line.rstrip("\n").split(" | ")
+        if len(parts) == 3 and parts[2] in moves:
+            line = f"{parts[0]} | {parts[1]} | {moves[parts[2]]}\n"
+        out.append(line)
+    if out != lines:
+        try:
+            write_text_atomic(HISTORY_FILE, "".join(out))
+        except OSError as exc:
+            log.warning("listening history not updated for renamed files: %s", exc)
 
 
 def clear_history() -> bool:

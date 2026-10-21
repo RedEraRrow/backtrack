@@ -91,7 +91,7 @@ def _search_result_cells(result, tokens: list) -> list:
     s = result.song
     title = _hl_segments(s.get('title', ''), tokens, 'primary')
     artist = _hl_segments(format_tag_values(s.get('artist', '')), tokens, 'dynamic-dim')
-    album = _hl_segments(s.get('album', ''), tokens, 'dynamic-dim')
+    album = _hl_segments(s.get('album', ''), tokens, 'release')
     # Only fill the people column when people was the field that actually matched
     # (avoids weak subsequence hits populating it on a title/artist search).
     people = (_people_cell(s, tokens)

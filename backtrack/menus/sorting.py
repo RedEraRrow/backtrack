@@ -24,6 +24,7 @@ _CHAIN_PRESETS = [
     ("Album A-Z, then oldest", DEFAULT_SORT_LEVELS),
     ("Oldest first", [['album_year', 'asc'], ['album', 'asc']] + _BY_TRACK),
     ("Newest first", [['album_year', 'desc'], ['album', 'asc']] + _BY_TRACK),
+    ("Recently added", [['added', 'desc'], ['album', 'asc']] + _BY_TRACK),
     ("Album artist, then oldest", [['album_artist', 'asc'], ['album_year', 'asc'], ['album', 'asc']] + _BY_TRACK),
     ("Broadcast order", [['date', 'asc'], ['album', 'asc'], ['disc', 'asc'], ['track', 'asc'], ['title', 'asc']]),
 ]
@@ -64,7 +65,7 @@ def _direction_label(field: str, direction: str) -> str:
     asc = direction == 'asc'
     if kind == 'text':
         return "A-Z" if asc else "Z-A"
-    if field in ('album_year', 'date'):
+    if field in ('album_year', 'date', 'added'):
         return "oldest first" if asc else "newest first"
     return "lowest first" if asc else "highest first"
 

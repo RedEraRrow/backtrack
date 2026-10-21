@@ -12,7 +12,7 @@ from backbone.prompt import core as pc
 from backbone.prompt.core import _hint, add_hint_click_cells
 from backbone.ui import Colors as C
 from backtrack import tuning as tune
-from backtrack.config import setting
+from backtrack.config import save_setting, setting
 from backtrack.music_library import chapter_at
 from backtrack.playback.panel_state import chapters_listed
 from backtrack.playback.player_frame import _render_frame_buffer
@@ -75,11 +75,7 @@ def chapter_time_on() -> bool:
 
 def toggle_chapter_time() -> None:
     """Swap between the chapter's time and the whole file's, and remember it."""
-    try:
-        from backtrack.config import update_config
-        update_config({'player_chapter_time': not chapter_time_on()})
-    except Exception as exc:
-        log.warning("couldn't save player_chapter_time: %s", exc)
+    save_setting('player_chapter_time', not chapter_time_on())
 
 
 def shown_time(elapsed: float, duration: float, chapters: list | None) -> tuple[float, float, tuple | None]:
@@ -164,7 +160,8 @@ def volume_text(width: int) -> str:
     from backtrack.playback.session import active_session
     try:
         v = max(0, min(100, int(active_session().get_volume())))
-    except Exception:
+    except Exception as exc:
+        log.warning("couldn't read the volume to show it: %s", exc)
         return f"{C.DIM}♪{C.RESET}"
     if width < 11:                             # too narrow for a bar: the level alone
         return f"{C.DIM}♪{C.RESET} {v}%"
@@ -256,7 +253,7 @@ def _draw_tiny(size: tuple, is_paused: bool) -> tuple:
         inner = 2
     n = _icons_fitting(inner)
     _frame.update(boxed=True, icons_n=n, icons_col=icons_col)
-    status = _controls_line(False, is_paused, 100)[0]
+    status = _controls_line(is_paused)[0]
     bar_l = icons_col + ui.visual_len(status.strip()) + 3
     last = icons_col + inner - 1
     _frame.update(boxed=True, boxes=boxes, titles={}, prog_row=ctrl, bar=(bar_l, max(0, last - bar_l + 1)),
@@ -267,8 +264,7 @@ def _draw_tiny(size: tuple, is_paused: bool) -> tuple:
     return ctrl, ctrl, rows + 1, cols, rows
 
 
-def _controls_line(is_uslt: bool, is_paused: bool, volume: int,
-                   width: int | None = None,
+def _controls_line(is_paused: bool, width: int | None = None,
                    has_lyrics: bool = True, has_credits: bool = True) -> tuple[str, str]:
     """Build the centred transport-controls line and the shortcuts/help hint line below it."""
     icons, controls = _controls_text(is_paused, _frame.get('icons_n') or 3)
@@ -315,7 +311,9 @@ def _controls_line(is_uslt: bool, is_paused: bool, volume: int,
     if _ui_state.get('chapter_title'):
         hint_args.append((L('player.chapter_time'), 'file time' if chapter_time_on() else 'chapter time'))
     if _ui_state['arranging'] is not None:       # Arrange: its keys, and nothing else to do
-        hint_args = [("tab", 'next panel'), ("↑↓", 'up/down'), ("←→", 'side'), ("↵", 'done')]
+        A = lambda *n, **kw: L(*(f'player_arrange.{x}' for x in n), **kw)  # noqa: E731
+        hint_args = [(A('next'), 'next panel'), (A('up', 'down'), 'up/down'), (A('left', 'right'), 'side'),
+                     (A('done', first=True), 'done')]
         _set_controls_hint_pairs(hint_args)
         return status, _hint(*hint_args, always=True)
     if has_lyrics or has_credits or has_queue() or _ui_state.get('chapter_title'):
@@ -352,12 +350,12 @@ def _set_controls_hint_pairs(pairs: list) -> None:
     _last_controls_hint_pairs[:] = pairs
 
 
-def _place_controls(emit, ctrl_row: int, rows: int, is_uslt: bool, is_paused: bool,
-                    volume: int, has_lyrics: bool, has_credits: bool) -> tuple[int, list[str]]:
+def _place_controls(emit, ctrl_row: int, rows: int, is_paused: bool,
+                    has_lyrics: bool, has_credits: bool) -> tuple[int, list[str]]:
     """Draw the transport line at `ctrl_row` (pulled up so its hints still fit on
     screen) with the hint lines under it, and record their click cells. Returns
     the row it used and the hint lines."""
-    status_ln, shortcuts_ln = _controls_line(is_uslt, is_paused, volume,
+    status_ln, shortcuts_ln = _controls_line(is_paused,
                                              has_lyrics=has_lyrics, has_credits=has_credits)
     shortcut_lines = shortcuts_ln.splitlines() or [""]
     # A window too short for all the help shows the lines that fit under the

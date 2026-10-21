@@ -829,6 +829,21 @@ def _bulk_derive(ctx: Ctx) -> int:
                      "Derived tags for", skipped_note="untaggable skipped")
 
 
+def _bulk_splitvalues(ctx: Ctx) -> int:
+    """Split values holding several names into one value per name.
+
+    The menu reviews how each value divides; with no human to ask, this takes
+    the default reading for every value, the one the menu offers first.
+    """
+    from backtrack.id3 import bulk_split as bs
+
+    paths, code = _bulk_paths(ctx)
+    if not paths:
+        return code
+    entries, skipped = bs.read_candidates(paths, ctx.args.field or bs.DEFAULT_FIELDS)
+    return _run_plan(ctx, bs.plan_split(entries, {}, skipped), bs.write_split, "Split values on")
+
+
 def _bulk_sortorders(ctx: Ctx) -> int:
     """Generate sort-order frames from the tags already present.
 
@@ -2093,6 +2108,14 @@ TREE = [
             args=[Arg('target', 'Track files', nargs='*')],
             flags=list(_FILTERS[:3]),
             example='backtrack bulk striplength --artist "BBC Radio 4"'),
+        Cmd('splitvalues', 'Split values holding several names into one value each',
+            run=_bulk_splitvalues, emits='event',
+            args=[Arg('target', 'Track files', nargs='*')],
+            flags=[Flag('--field', 'Field to split (repeatable; default composer, lyricist, conductor)',
+                        short='-f', action='append',
+                        choices=('composer', 'lyricist', 'conductor', 'artist', 'album_artist'))]
+                  + list(_FILTERS[:3]),
+            example='backtrack bulk splitvalues --album "Greatest Ever"'),
         Cmd('sortorders', 'Generate sort-order frames from the tags present',
             run=_bulk_sortorders, emits='event',
             args=[Arg('target', 'Track files', nargs='*')],

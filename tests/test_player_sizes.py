@@ -46,7 +46,7 @@ class PlayerSizesTest(unittest.TestCase):
              patch.object(pc, 'hints_visible', lambda: help_on), \
              patch.object(sys, 'stdout', io.StringIO()):
             prog, ctrl, *_ = pu._draw_default_ui(self.cover, _Audio(), None, (cols, rows))
-            hints = len(pu._controls_line(False, False, 100, has_lyrics=False,
+            hints = len(pu._controls_line(False, has_lyrics=False,
                                           has_credits=False)[1].splitlines())
         boxed = pu._frame['boxed']
         if boxed:

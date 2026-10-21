@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 
 from backbone import nav
-from backbone.prompt import disable_mouse
+from backbone.prompt import disable_mouse, enable_mouse
 from backbone.nav import QuitToTerminal
 import time
 from contextlib import contextmanager
@@ -178,7 +178,7 @@ def _host_view() -> dict:
             # show the empty player until something plays or that window closes.
             if result["status"] == "DETACH" or not has_other_windows():
                 return result
-            if not _idle_view(SESSION.is_active, SESSION.get_volume()):
+            if not _idle_view(SESSION.is_active):
                 return {"status": "OK"}
     finally:
         player_ui.view_chrome(False)
@@ -234,7 +234,7 @@ def _track_key(act: str | None, path: str | None, session) -> bool | dict:
     ui.clear_screen()
     with _out_of_view(session):
         inspect_tag_loop(path, library_metadata=library_entry(path), library=live_library())
-    sys.stdout.write("\033[?1000h\033[?1006h")      # the editor had the mouse
+    enable_mouse()      # the editor had the mouse
     ui.clear_screen()
     return True
 
@@ -331,8 +331,8 @@ def _player_input(key: str, v: _Input):
     s = v.session
     if key == 'FOCUS_IN':
         return 'redraw'
-    if key == ':' and _command_line_detached(s):
-        sys.stdout.write("\033[?1000h\033[?1006h")      # the command's screens had the mouse
+    if keys.pressed(key, 'global.command_line') and _command_line_detached(s):
+        enable_mouse()      # the command's screens had the mouse
         ui.clear_screen()
         return 'redraw'
     if act == 'player.playpause':
@@ -492,7 +492,7 @@ def _command_line_detached(session) -> bool:
     return bool(prompt.open_command_line(around=lambda: _out_of_view(session)))
 
 
-def _idle_view(woken, volume: int, own_tab: bool = False):
+def _idle_view(woken, own_tab: bool = False):
     """The empty player a pinned window shows while nothing plays and another
     window browses the session (#14). Returns True once ``woken()`` says there's
     something to show, False when the other window has gone (back to browse).
@@ -515,7 +515,7 @@ def _idle_view(woken, volume: int, own_tab: bool = False):
         """The empty player at the current size (under a box over it, too)."""
         nonlocal last_sig
         size = ui.get_terminal_size()
-        prog_row, _c, _l, width, _b = draw_full_ui("", placeholder, IDLE_ART, size, is_paused=True, volume=volume)
+        prog_row, _c, _l, width, _b = draw_full_ui("", placeholder, IDLE_ART, size, is_paused=True)
         update_progress_ui(prog_row, 0, 0, width)
         last_sig = size
 
@@ -550,8 +550,8 @@ def _idle_view(woken, volume: int, own_tab: bool = False):
                 last_sig = None
             elif key == 'FOCUS_IN':
                 last_sig = None
-            elif key == ':' and prompt.open_command_line():   # a screen opened (just the box: put back already)
-                sys.stdout.write("\033[?1000h\033[?1006h")   # the command's screens had the mouse
+            elif keys.pressed(key, 'global.command_line') and prompt.open_command_line():   # a screen opened (just the box: put back already)
+                enable_mouse()   # the command's screens had the mouse
                 ui.clear_screen()
                 last_sig = None
             elif act == 'player.quit':
@@ -572,7 +572,7 @@ def _empty_view() -> dict:
     from backtrack.playback import session as sess
     player_ui.view_chrome(True)
     try:
-        r = _idle_view(lambda: bool(sess.current_now_playing()), SESSION.get_volume(), own_tab=True)
+        r = _idle_view(lambda: bool(sess.current_now_playing()), own_tab=True)
     finally:
         player_ui.view_chrome(False)
         ui.clear_screen()
@@ -628,7 +628,7 @@ def cramped_view() -> None:
             if not pc._wait_for_keypress(_LOOP_TICK_S):
                 continue
             key = pc._read_key(fd)
-            if key == ':':
+            if keys.pressed(key, 'global.command_line'):
                 if prompt.open_command_line() is not None:
                     drawn[0] = None                      # the box, or a screen it opened, came and went
             elif not _cramped_key(key):
@@ -680,7 +680,6 @@ def _client_view() -> dict:
     chapters: list = []
     chapter_i = -1
     next_scroll = 0.0                      # when a scrolling title next moves (ui.marquee)
-    volume = sess.clamp_volume(np0.get('volume'))
     prog_row = 0
     ctrl_row = 0
     width = ui.get_terminal_size()[0]
@@ -697,7 +696,7 @@ def _client_view() -> dict:
             return
         size = ui.get_terminal_size()
         prog_row, ctrl_row, _lr, width, _br = draw_full_ui(shown['fp'], audio, None, size,
-                                                           is_paused=shown['paused'], volume=volume)
+                                                           is_paused=shown['paused'])
         update_progress_ui(prog_row, elapsed, duration, width, chapters)
         if last_sig is not None:
             last_sig = (*last_sig[:-1], size)
@@ -705,8 +704,7 @@ def _client_view() -> dict:
     _drop_backdrop = pc.screen_backdrop(_relaid, small=True)   # it lays out a small window itself
     try:
         with raw_mode(sys.stdin):
-            sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse
-            sys.stdout.flush()
+            enable_mouse()
             while True:
                 # A hand-off replaces the session link (or makes this window the
                 # host): this view's `remote` is then a closed link still showing
@@ -718,12 +716,10 @@ def _client_view() -> dict:
                     # Host stopped / no track. Pinned open while the other window
                     # browses (#14): wait on the empty player, keeping the view lock.
                     if has_other_windows() and _idle_view(
-                            lambda: sess.active_session() is not remote or remote.now_playing() is not None,
-                            volume):
+                            lambda: sess.active_session() is not remote or remote.now_playing() is not None):
                         last_sig = None
                         continue
                     return {"status": "OK"}
-                volume = sess.clamp_volume(np.get('volume'))
                 # Another window won a simultaneous grab or took the view: never
                 # show a second player; step back to the mirror (#14).
                 if np.get('view_holder') not in (None, token):
@@ -736,7 +732,6 @@ def _client_view() -> dict:
                 sig = (
                     fp,
                     np.get('paused'),
-                    np.get('volume'),
                     np.get('generation'),
                     int(np.get('index') or 0),
                     len(np.get('queue') or []),
@@ -746,7 +741,7 @@ def _client_view() -> dict:
                 scroll_due = _ui_state.get('scrolling') and time.monotonic() >= next_scroll
                 if sig != last_sig or scroll_due:
                     next_scroll = time.monotonic() + ui.MARQUEE_STEP_S
-                    if last_sig is None or fp != last_sig[0] or np.get('generation') != last_sig[3]:
+                    if last_sig is None or fp != last_sig[0] or np.get('generation') != last_sig[2]:
                         audio = sess.player_tags(fp)       # as the host player reads it
                         player_ui.set_track_context(fp, float(np.get('duration') or 0.0))
                         with quietly():
@@ -757,8 +752,7 @@ def _client_view() -> dict:
                     _ui_state['book'] = bool(np.get('is_book'))
                     duration = float(np.get('duration') or 0.0)
                     prog_row, ctrl_row, _lr, width, _br = draw_full_ui(
-                        fp, audio, None, size, is_paused=bool(np.get('paused')),
-                        volume=volume)
+                        fp, audio, None, size, is_paused=bool(np.get('paused')))
                     shown.update(fp=fp, paused=bool(np.get('paused')))
                     last_sig = sig
                 pc.render_status_bar()
@@ -810,7 +804,6 @@ def _player_view_loop() -> dict:
     audio = None
     duration = 0.0
     pre_art = None
-    is_uslt = False
     has_credits = False
     has_lyrics = False
     chapters: list = []
@@ -829,7 +822,7 @@ def _player_view_loop() -> dict:
     def _prepare() -> None:
         """(Re)load per-track render state from the session for the current track."""
         nonlocal track_path, audio, duration, pre_art
-        nonlocal is_uslt, has_credits, has_lyrics
+        nonlocal has_credits, has_lyrics
         nonlocal pane, chapters, chapter_i
         t = SESSION.track()
         fp = track_path = t.file_path
@@ -851,7 +844,6 @@ def _player_view_loop() -> dict:
         _tl, _srcs, _est = lyric_pane.timeline_for(fp, audio, duration, setting(_cfg, 'lyrics_source'),
                                                    float(setting(_cfg, 'lyrics_show_early')))
         has_lyrics = _tl is not None
-        is_uslt = _srcs == ['embedded USLT']
         player_ui.set_lyric_sources(fp, _srcs, _est)
         pane = lyric_pane.Pane(_tl) if _tl else None
         player_ui.set_track_context(fp, duration)
@@ -866,11 +858,8 @@ def _player_view_loop() -> dict:
     def _redraw_full() -> None:
         """Full-screen redraw for the current track + view state; sets row positions."""
         nonlocal prog_row, ctrl_row, lyric_row, current_width, art_bottom_row
-        vol = SESSION.get_volume()
         prog_row, ctrl_row, lyric_row, current_width, art_bottom_row = draw_full_ui(
-            track_path, audio, pre_art, last_size,
-            is_paused=SESSION.is_paused(), volume=vol,
-        )
+            track_path, audio, pre_art, last_size, is_paused=SESSION.is_paused())
 
         if pane and player_ui.lyrics_laid_out():
             # A full redraw has just wiped the screen, so what the pane last
@@ -896,15 +885,14 @@ def _player_view_loop() -> dict:
     def update_ctrl_ui() -> None:
         """Redraw just the transport/status line in place (see #86)."""
         status_ln, _ = _controls_line(
-            is_uslt, SESSION.is_paused(), SESSION.get_volume(),
+            SESSION.is_paused(),
             has_lyrics=has_lyrics, has_credits=has_credits)
         player_ui.write_controls(ctrl_row, status_ln)     # through the painter, cell by cell
         sys.stdout.flush()
 
     player_ui.set_resizing(False)      # in case the last visit ended mid-resize
     with raw_mode(sys.stdin):
-        sys.stdout.write("\033[?1000h\033[?1006h")   # enable mouse (click + scroll)
-        sys.stdout.flush()
+        enable_mouse()
         _prepare()
         _redraw_full()
         last_track_sig = SESSION.generation

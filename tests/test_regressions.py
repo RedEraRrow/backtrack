@@ -15,7 +15,7 @@ class PlayerToastTest(unittest.TestCase):
         from backtrack.playback.player_geom import geom
         geom.reset_frame()                  # no art laid out by an earlier test
         ui.show_status("Seek Forward +5s", 1.0)
-        status, _hints = player_ui._controls_line(False, False, 50)
+        status, _hints = player_ui._controls_line(False)
         self.assertNotIn("Seek Forward +5s", ui.strip_ansi(status))
         self.assertIn("Seek Forward +5s", ui.strip_ansi(ui.get_status_line()))
         ui.show_status("", 0)

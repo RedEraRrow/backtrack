@@ -13,6 +13,7 @@ import os
 import re
 
 from backbone import numbering
+from backbone.files import safe_filename
 
 from backtrack.id3.tag_formats import kind as tag_kind, open_tags, pair, texts
 
@@ -76,7 +77,6 @@ _TOKEN_FIELDS: dict[str, str] = {
     'movement': 'movement_name', 'originalartist': 'original_artist', 'originalalbum': 'original_album',
 }
 
-_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 # %token%, optionally with a number style and case: %track:r%, %disc:en:u%.
 _TOKEN_RE = re.compile(r'%([a-zA-Z]+)(?::([a-zA-Z]+))?(?::([a-zA-Z]+))?%')
 
@@ -130,10 +130,8 @@ def _cleanup(s: str) -> str:
 
 
 def sanitize(name: str) -> str:
-    """Make a string safe as a file name (no path separators/illegal chars)."""
-    name = _ILLEGAL.sub('', name)
-    name = re.sub(r'\s+', ' ', name).strip().rstrip(' .')
-    return name or 'untitled'
+    """Make a string safe as a file name (backbone's one rule for every tool)."""
+    return safe_filename(name)
 
 
 def render(pattern: str, tokens: dict[str, str]) -> str:

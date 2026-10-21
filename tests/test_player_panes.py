@@ -80,10 +80,21 @@ class PeopleTest(unittest.TestCase):
     CAST = [["vocals", f"Singer {i}"] for i in range(10)]
     CREW = [["producer", f"Knob {i}"] for i in range(6)]
 
-    def test_one_column_when_they_fit(self):
-        lines = pu._people_lines(self.CAST, self.CREW, 60, 30)
+    def test_one_column_when_too_narrow_for_two(self):
+        lines = pu._people_lines(self.CAST, self.CREW, 40, 30)
         self.assertEqual(len(lines), 17)                             # everyone, a gap between the two
         self.assertNotIn("│", ui.strip_ansi("".join(lines)))
+
+    def test_performers_left_and_the_team_right_when_both_fit(self):
+        lines = [ui.strip_ansi(l) for l in pu._people_lines(self.CAST, self.CREW, 60, 30)]
+        self.assertEqual(len(lines), 10)
+        self.assertTrue(all("Singer" in l.split("│")[0] for l in lines))
+        self.assertTrue(all("Knob" in l.split("│")[1] for l in lines[:6]))
+
+    def test_they_run_on_evenly_when_one_side_is_too_long(self):
+        lines = [ui.strip_ansi(l) for l in pu._people_lines(self.CAST, self.CREW[:1], 60, 8)]
+        self.assertEqual(len(lines), 6)                              # 10 + 1, gap dropped at the break
+        self.assertIn("Singer", lines[0].split("│")[1])
 
     def test_two_columns_when_they_dont(self):
         lines = [ui.strip_ansi(l) for l in pu._people_lines(self.CAST, self.CREW, 80, 9)]

@@ -35,12 +35,12 @@ from backtrack.config import load_config
 from backtrack.trim import engine as trim
 from backtrack.music_library import drop_moved, track_title, first_text
 from backbone import keys, nav, ui
-from backbone.prompt import disable_mouse
+from backbone.prompt import disable_mouse, enable_mouse
 from backbone.ui import Colors as C
 from backbone.prompt.core import _Widget, _read_key, _wait_for_keypress, _set_raw, _restore_term_attrs, _get_term_attrs
 from backbone.prompt import confirm as _confirm
 from backbone import prompt as _promptmod
-from backtrack.lyrics.time_fields import edit_changed, _EDIT_END, edit_key, edit_seconds, _EDIT_START, new_edit, _render_edit_fields, _ts_parts
+from backtrack.lyrics.time_fields import edit_changed, _EDIT_END, edit_hints, edit_key, edit_seconds, _EDIT_START, new_edit, _render_edit_fields, _ts_parts
 from backbone import timefmt
 from backtrack.config import setting
 from backbone.log import quietly
@@ -538,11 +538,7 @@ def _run_marking_screen(
     def _footer_pairs() -> list[tuple[str, str]]:
         if edit is not None:
             # EDIT sub-mode has its own key set, the same as lyrics_editor's.
-            pairs = [('tab/⇧tab', 'field'), ('←→', 'cursor'), ('↑↓', 'adjust')]
-            if mp is not None:
-                pairs.append((keys.label('trim_edit.playhead'), 'grab playhead'))
-            pairs += [('↵', 'apply'), ('esc', 'cancel')]
-            return pairs
+            return edit_hints(*([(keys.label('trim_edit.playhead'), 'grab playhead')] if mp is not None else []))
         T = lambda *n: keys.label(*(f'trim.{x}' for x in n))  # noqa: E731
         pairs = [(T('switch'), 'in/out')]
         if mp is not None:                  # marks are taken from the playhead
@@ -611,8 +607,7 @@ def _run_marking_screen(
 
     try:
         _set_raw(fd)
-        sys.stdout.write("\033[?1000h\033[?1006h")
-        sys.stdout.flush()
+        enable_mouse()
         need_redraw = True
         hint_cells: dict = {}
         prog_row = bar_width = 0
@@ -681,9 +676,9 @@ def _run_marking_screen(
             assert isinstance(key, str)
 
             if edit is not None:
-                if key == 'ESC':
+                if keys.pressed(key, 'field.cancel'):
                     edit = None
-                elif key == 'ENTER':
+                elif keys.pressed(key, 'field.submit'):
                     for rec in _edit_apply(marks, edit, edit_orig, frame_dur, track_length):
                         undo_stack.append(rec)
                     edit = None

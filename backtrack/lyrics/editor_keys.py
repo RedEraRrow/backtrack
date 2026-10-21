@@ -4,10 +4,10 @@ walkthrough and the shared player transport. Mixed into the editor session,
 whose state and actions these read and call."""
 from __future__ import annotations
 from backtrack.id3.tag_formats import load_id3
-import sys, os, time
+import os, time
 from backtrack.music_library import format_value_list
 from backbone import keys, ui
-from backbone.prompt import disable_mouse
+from backbone.prompt import disable_mouse, enable_mouse
 from backbone.prompt.core import _set_raw, _restore_term_attrs
 from backbone.prompt import text as _prompt_text
 from backbone.prompt.core import FOOTER_ACTIONS, footer_click_action
@@ -55,7 +55,7 @@ class _KeyHandlers:
             return True
         if act == 'global.player' and _prompt_chrome._player_opener is not None:
             _prompt_chrome._player_opener()
-            sys.stdout.write("\033[?1000h\033[?1006h"); sys.stdout.flush()
+            enable_mouse()
             self.w.anchor_reset()
             return True
         return False
@@ -91,7 +91,7 @@ class _KeyHandlers:
                 if _act == 'open':
                     if _prompt_chrome._player_opener is not None:
                         _prompt_chrome._player_opener()
-                        sys.stdout.write("\033[?1000h\033[?1006h"); sys.stdout.flush()
+                        enable_mouse()
                         self.w.anchor_reset()
                     return
             # Only the press acts; the paired release is swallowed so one
@@ -170,9 +170,9 @@ class _KeyHandlers:
 
     def _keys_edit(self, key: str) -> object:
         """Keys in the timestamp editor."""
-        if key == 'ESC':
+        if keys.pressed(key, 'field.cancel'):
             self.mode = self.prev_mode
-        elif key == 'ENTER':
+        elif keys.pressed(key, 'field.submit'):
             self._edit_apply()
             self.mode = self.prev_mode
         elif keys.pressed(key, 'lyrics_edit.playhead'):
@@ -226,12 +226,12 @@ class _KeyHandlers:
         n = len(self.segs)
         if self.aud_editing:
             # inline timestamp editor at the bottom of the audition view
-            if key in ('q', 'CTRL_C'):
+            if key == 'CTRL_C' or keys.pressed(key, 'lyrics_audition.quit'):
                 if not self._may_quit(): return
                 self.aud_editing = False; self.do_stop(); raise QuitToTerminal()
-            elif key == 'ESC':
+            elif keys.pressed(key, 'field.cancel'):
                 self.aud_editing = False                 # cancel, keep listening
-            elif key == 'ENTER':
+            elif keys.pressed(key, 'field.submit'):
                 self._edit_apply(); self.aud_editing = False
                 self._aud_clips('line')                  # hear the line in context
             else:
@@ -383,7 +383,7 @@ class _KeyHandlers:
         _ans = _prompt_text(
             f"Write the transcript to {bkts.label(self.aux['jpath'])}? (y/N)")
         _set_raw(self.fd)
-        sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         self.w.anchor_reset()
         if not (_ans or "").strip().lower().startswith("y"):
             ui.show_status("Cancelled.")
@@ -445,7 +445,7 @@ class _KeyHandlers:
             ui.show_error(f"couldn't export: {exc}")
         finally:
             _set_raw(self.fd)
-            sys.stdout.write("\033[?1000h\033[?1006h")
+            enable_mouse()
             self.w.anchor_reset()
         return None
 
@@ -489,7 +489,7 @@ class _KeyHandlers:
         _dur_s = _prompt_text("Dead air, in seconds:")
         _label = _prompt_text("Stage direction, or blank for silence:")
         _set_raw(self.fd)
-        sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         self.w.anchor_reset()
         if _dur_s is not None:
             try:
@@ -533,7 +533,7 @@ class _KeyHandlers:
                        else "Stage direction, or blank for silence:")
             _new_lbl = _prompt_text(_prompt, default=_cur_lbl)
             _set_raw(self.fd)
-            sys.stdout.write("\033[?1000h\033[?1006h")
+            enable_mouse()
             self.w.anchor_reset()
             if _new_lbl is not None:
                 self.segs[self.cursor]["text"] = _new_lbl.strip()
@@ -613,7 +613,7 @@ class _KeyHandlers:
         if _inserted:
             self.refresh_overlay()
         _set_raw(self.fd)
-        sys.stdout.write("\033[?1000h\033[?1006h")
+        enable_mouse()
         self.w.anchor_reset()
         if _inserted or _timed:
             self.dirty = True
