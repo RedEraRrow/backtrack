@@ -33,7 +33,8 @@ class PlayerInputTest(unittest.TestCase):
                   mock.patch.object(player, '_tab_asked', lambda k: None),
                   mock.patch.object(player, 'has_other_windows', lambda: False),
                   mock.patch.object(player.time, 'sleep', lambda s: None),
-                  mock.patch.dict(player_ui._ui_state, show_queue=False)):
+                  mock.patch.dict(player_ui._ui_state, show_queue=False),
+                  mock.patch('backbone.keys._overrides', lambda: {})):         # the default keys, not the user's
             p.start()
             self.addCleanup(p.stop)
 

@@ -107,6 +107,7 @@ backtrack/
 │   ├── playback/
 │   │   ├── session.py            # The shared PlaybackSession: one mpv player, queue, background tick
 │   │   ├── libmpv.py             # Loads libmpv once; player() with backtrack's settings; Clip, the editors' player
+│   │   ├── coreaudio.py          # macOS output: its own volume, Bluetooth, the rate put back after a crash
 │   │   ├── ipc.py                # Multi-window sessions: registry under CONFIG_DIR/sessions/, client
 │   │   ├── player.py             # The player view over the session: one key handler (_player_input) for host and joined
 │   │   ├── player_ui.py          # Player layout: the art and details, the panels in their places, the people

@@ -849,7 +849,7 @@ def _player_view_loop() -> dict:
         if _est and any(src.endswith('.md') for src in _srcs):
             ui.show_status("No transcript, so the lyric timing is a guess", tune.TOAST_LONG_S)
 
-        if audio and audio.getall('EQU2'):
+        if audio and audio.getall('EQU2') and not SESSION.taken_over:     # takeover plays it untouched
             ui.show_status("Equaliser on", tune.TOAST_LONG_S)
 
     def _redraw_full() -> None:
