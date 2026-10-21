@@ -598,8 +598,11 @@ def handle_settings(library_ref: list) -> None:
         if changed_keys(_before, config):
             update_config(changed_keys(_before, config))
             if {"takeover", "audio_device"} & set(changed_keys(_before, config)):
+                import threading
                 from backtrack.playback.session import active_session
-                active_session().reload()            # the track playing takes it now, not from the next
+                # The track playing takes it now, not from the next; in the
+                # background, as mpv takes a moment to switch outputs.
+                threading.Thread(target=active_session().reload, name='reload', daemon=True).start()
 
 
 def _edit_browse_menu(config: dict) -> None:

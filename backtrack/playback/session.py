@@ -239,6 +239,13 @@ def _rate_note():
     return CONFIG_DIR / "takeover_rate.json"
 
 
+# What the session reads of mpv's state, kept as mpv reports it (observed on
+# its own thread), so reading it never waits on mpv: while mpv opens an output
+# (takeover's exclusive one, a device change, a new rate) it answers nothing for
+# up to half a second, and a screen asking it then would freeze.
+_WATCHED = ('time-pos', 'core-idle', 'pause', 'idle-active', 'duration', 'audio-out-params', 'audio-device')
+
+
 def _file_options(**options: str) -> str:
     """mpv's per-file options for loadfile, which hold only while that file
     plays: each value length-quoted (%n%), so a filter graph's commas and
@@ -291,6 +298,8 @@ class PlaybackSession:
         self._ended_id = None                # the entry mpv last said ended (played out or failed)
         self._started_id = None              # the entry mpv last started
         self._next = None                    # (entry, queue position) mpv has lined up to follow, gapless
+        self._seen: dict = {}                # mpv's _WATCHED properties, as it last reported them
+        self._last_snapshot: dict | None = None   # now_playing's, for while the session is busy
         self.taken_over: bool = False        # the track playing has the output to itself
         self.file_path: str | None = None
         self.audio = None                    # mutagen ID3 of the current track (for the view + EQ)
@@ -346,7 +355,20 @@ class PlaybackSession:
             self.mp = _new_player()
             self.mp.event_callback('end-file')(self._file_ended)
             self.mp.event_callback('start-file')(self._file_started)
+            self._seen = {}
+            for name in _WATCHED:
+                self.mp.observe_property(name, self._observed)
         return self.mp
+
+    def _observed(self, name: str, value) -> None:
+        """mpv reporting one of _WATCHED, on its own thread; never takes the lock."""
+        self._seen[name] = value
+
+    def _mpv(self, name: str):
+        """mpv's `name` (one of _WATCHED) as it last reported it; asked of mpv
+        only until the first report (and of a stand-in player in tests)."""
+        seen = self._seen
+        return seen[name] if name in seen else getattr(self.mp, name.replace('-', '_'))
 
     def _file_started(self, event) -> None:
         """mpv's start-file, on its own thread: notes the entry, so tick() can
@@ -462,17 +484,17 @@ class PlaybackSession:
     def reload(self) -> None:
         """Play the track again from where it is, with settings changed since
         it began (takeover, the output device), and line up the next with them."""
+        if self.mp is not None:                  # outside the lock: mpv takes a moment to switch
+            from backtrack.playback.libmpv import use_saved_device
+            use_saved_device(self.mp)
         with self._lock:
-            if self.mp is not None:
-                from backtrack.playback.libmpv import use_saved_device
-                use_saved_device(self.mp)
             if self.is_active():
                 self._load(self.file_path, self.elapsed())
 
     def _output_uid(self) -> str:
         """The CoreAudio UID of the output chosen (mpv's "coreaudio/<UID>"),
         '' for the system default."""
-        name = str(self.mp.audio_device or "") if self.mp is not None else ""
+        name = str(self._mpv('audio-device') or "") if self.mp is not None else ""
         return name.split("/", 1)[1] if name.startswith("coreaudio/") else ""
 
     def _level(self) -> float:
@@ -497,7 +519,7 @@ class PlaybackSession:
         PCM, as mpv decodes everything first; then "→ Bluetooth" when the
         output is (macOS re-encodes it there, and doesn't say in what). ''
         before mpv has opened the output."""
-        out = (self.mp.audio_out_params or {}) if self.is_active() else {}
+        out = (self._mpv('audio-out-params') or {}) if self.is_active() else {}
         if not out:
             return ""
         depth = _SAMPLE_FORMATS.get(str(out.get('format')).rstrip('p'), "")
@@ -567,7 +589,7 @@ class PlaybackSession:
         self._begin(self.queue[self.index])
         self._entry_id, self._next = entry, None
         if not self.duration:
-            self.duration = (self.mp.duration if self.mp else 0) or tune.DURATION_FALLBACK_S
+            self.duration = (self._mpv('duration') if self.mp else 0) or tune.DURATION_FALLBACK_S
         self._line_up()
         self._save_queue()
         return True
@@ -729,7 +751,7 @@ class PlaybackSession:
                 titles=list(self.titles), index=self.index, queue=list(self.queue))
 
     def is_paused(self) -> bool:
-        return self.mp is not None and bool(self.mp.pause)
+        return self.mp is not None and bool(self._mpv('pause'))
 
     def seek(self, seconds: float) -> None:
         with self._lock:
@@ -791,12 +813,12 @@ class PlaybackSession:
         loading (core-idle)."""
         if self.mp is None:
             return 0.0
-        at = self.mp.time_pos
+        at = self._mpv('time-pos')
         if at is None:
             return 0.0
         now, clock = time.monotonic(), self._clock         # [base seconds, when, last reading]
         rate = self.rate or 1.0
-        if self.mp.core_idle or clock[2] is None:
+        if self._mpv('core-idle') or clock[2] is None:
             clock[:] = [at, now, at]
             return at
         if at != clock[2]:
@@ -1150,7 +1172,7 @@ class PlaybackSession:
             if self._adopt():
                 return 'changed'
             ended = self._ended()
-            if self._next is not None and not (ended and self.mp.idle_active):
+            if self._next is not None and not (ended and self._mpv('idle-active')):
                 # mpv goes on to the one lined up by itself, and _adopt follows;
                 # unless it stopped first (a file that failed at once can end
                 # before the next is lined up): then the session moves on.
@@ -1199,7 +1221,18 @@ class PlaybackSession:
 
     def now_playing(self) -> dict | None:
         """A snapshot of the current track for the now-playing bar / views, or
-        None when nothing is loaded."""
+        None when nothing is loaded. While the session is busy (a track
+        loading, mpv switching outputs), the last one: a screen drawing it
+        never waits on the session."""
+        if not self._lock.acquire(timeout=tune.NOW_PLAYING_WAIT_S):
+            return self._last_snapshot
+        try:
+            self._last_snapshot = self._snapshot()
+        finally:
+            self._lock.release()
+        return self._last_snapshot
+
+    def _snapshot(self) -> dict | None:
         with self._lock:
             if not self.is_active() or self.mp is None:
                 return None

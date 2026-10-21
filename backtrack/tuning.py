@@ -20,6 +20,9 @@ from __future__ import annotations
 # How long to wait for mpv to say how long a track is, when its tags didn't.
 # Deliberately outside the session lock.
 LENGTH_WAIT_S = 1.0
+# How long a screen waits for the session's now-playing snapshot before it
+# draws the last one instead (the session is busy loading a track).
+NOW_PLAYING_WAIT_S = 0.02
 # How often the session polls mpv for position/state while playing.
 TICK_INTERVAL_S = 0.1
 # Seeking to exactly the end trips end-of-track handling, so stop just short.
