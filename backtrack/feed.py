@@ -325,13 +325,18 @@ def new_seen() -> list:
 
 # --- network ----------------------------------------------------------------
 
+# How backtrack names itself to the sites it asks (podcast feeds, LRCLIB, which
+# asks every client to say who it is).
+USER_AGENT = 'backtrack (+https://github.com/RedEraRrow/backtrack)'
+
+
 def fetch(url: str, timeout: float = FETCH_TIMEOUT_S) -> bytes:
     """Download a URL's body. Raises `OSError` with a readable message."""
     import urllib.error
     import urllib.request
 
     request = urllib.request.Request(
-        url, headers={'User-Agent': 'backtrack/0.1 (+podcast feed reader)'})
+        url, headers={'User-Agent': USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read()
@@ -353,7 +358,7 @@ def download(url: str, target: str, timeout: float = FETCH_TIMEOUT_S,
     import urllib.request
 
     request = urllib.request.Request(
-        url, headers={'User-Agent': 'backtrack/0.1 (+podcast feed reader)'})
+        url, headers={'User-Agent': USER_AGENT})
     os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
     tmp = target + '.part'
     done = 0

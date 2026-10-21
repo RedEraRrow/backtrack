@@ -146,16 +146,32 @@ def sidecar(audio_path: str) -> str | None:
 
 def import_file(audio_path: str, file_path: str, into: str | None = None,
                 desc: str = '', lang: str = 'eng') -> tuple[str, int]:
-    """A lyrics file written into the track's tags, replacing that one frame
-    (`desc`, `lang`). `into` 'SYLT' takes the timed lines (none: nothing is
-    written), 'USLT' the words alone; None decides by the file, timed lines
-    into SYLT, else USLT. (tag, lines); ('', 0) when nothing was written."""
+    """A lyrics file written into the track's tags (write_rows)."""
+    return write_rows(audio_path, read_file(file_path), into, desc, lang)
+
+
+def write_rows(audio_path: str, entries: list, into: str | None = None,
+               desc: str = '', lang: str = 'eng') -> tuple[str, int]:
+    """Lyrics as (text, ms) rows written into the track's tags, replacing that
+    one frame (`desc`, `lang`). `into` 'SYLT' takes the timed lines (none:
+    nothing is written), 'USLT' the words alone; None decides by the rows,
+    timed lines into SYLT, else USLT. A file without ID3 keeps them in its one
+    lyrics tag, timed lines as LRC (which the player reads its timing from).
+    (tag, lines); ('', 0) when nothing was written."""
     from mutagen.id3 import USLT  # type: ignore[reportPrivateImportUsage]
+    from backtrack.id3.tag_formats import kind, open_tags, set_text
     from backtrack.id3.tag_handler import load_id3, save_id3
     from backtrack.lyrics.formats import save_sylt_entries
 
-    entries = read_file(file_path)
     timed = sorted(((text, int(ms)) for text, ms in entries if ms is not None and text), key=lambda e: e[1])
+    if kind(audio_path) != 'id3':
+        rows = timed if into == 'SYLT' or (into is None and timed) else [(t, None) for t, _ms in entries if t]
+        if not rows:
+            return '', 0
+        tags, save = open_tags(audio_path)
+        set_text(tags, 'lyrics', [render(rows, 'lrc')])
+        save()
+        return 'lyrics', len(rows)
     if into == 'SYLT' or (into is None and timed):
         if not timed:
             return '', 0

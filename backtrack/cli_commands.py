@@ -1447,8 +1447,6 @@ def _lyrics_import(ctx: Ctx) -> int:
     if not os.path.exists(source):
         return out.fail(out.NOT_FOUND, "No such lyrics file.", path=source)
 
-    if tag_kind(path) != 'id3':
-        return out.fail(out.FAIL, "Lyrics can only be imported into MP3, WAV or AIFF files.", path=path)
     entries = lyric_files.read_file(source)
     if not any(text for text, _ms in entries):
         return out.fail(out.FAIL, "Nothing readable in that lyrics file.", path=source)
@@ -1531,6 +1529,48 @@ def _lyrics_verify(ctx: Ctx) -> int:
                           'segments': len(segments), 'flagged': len(flags)},
                human=f"  {len(segments)} segments, {len(flags)} flagged.")
     return out.FAIL if flags else out.OK
+
+
+def _lyrics_fetch(ctx: Ctx) -> int:
+    """Find each track's lyrics on LRCLIB and write them into its tags: synced
+    where LRCLIB has them, else plain. A track that already has lyrics is
+    left alone unless --force."""
+    from backtrack.lyrics import files as lyric_files, online
+    from backtrack.music_library import get_metadata, library_entry, refresh_library_entry
+
+    paths = _targets_or_filter(ctx)
+    if not paths:
+        return out.fail(out.USAGE, "No track given.", hint="pass a path, --album, --artist, or pipe paths in")
+    code = out.OK
+    for path in paths:
+        e = library_entry(path) or get_metadata(path)
+        body = {'path': path}
+        if not ctx.args.force and lyric_files.track_lyrics(path)[0]:
+            out.record('lyrics', {**body, 'status': 'has lyrics'}, human=f"  Already has lyrics: {path}")
+            continue
+        if not (e.get('title') and e.get('artist') and e.get('duration')):
+            out.record('lyrics', {**body, 'status': 'untagged'}, human=f"  No title, artist or length to look up: {path}")
+            continue
+        try:
+            rows = online.rows(online.find(e['title'], e['artist'], e.get('album') or '', e['duration']))
+        except OSError as exc:
+            out.record('lyrics', {**body, 'status': 'error', 'error': str(exc)},
+                       human=f"  LRCLIB couldn't be asked ({exc}): {path}")
+            code = out.FAIL
+            continue
+        if not rows:
+            out.record('lyrics', {**body, 'status': 'none'}, human=f"  None found: {path}")
+            continue
+        synced = rows[0][1] is not None
+        if ctx.dry_run():
+            out.event('plan', path=path, detail=f"{len(rows)} {'synced' if synced else 'plain'} lines")
+            continue
+        tag_id, count = lyric_files.write_rows(path, rows)
+        with quietly():
+            refresh_library_entry(ctx.library, path)
+        out.record('lyrics', {**body, 'status': 'synced' if synced else 'plain', 'tag': tag_id, 'lines': count},
+                   human=f"  {'Synced' if synced else 'Plain'}, {count} lines: {path}")
+    return code
 
 
 def _lyrics_pack(ctx: Ctx) -> int:
@@ -2192,6 +2232,12 @@ TREE = [
             flags=[Flag('--from', 'The file to read (.lrc, .srt, .vtt, .json, .ass, .ssa or .txt)', short='-f',
                         metavar='FILE', store_as='source')],
             example='backtrack lyrics import track.mp3 --from track.lrc'),
+        Cmd('fetch', "Find lyrics on LRCLIB and write them in: synced where it has them",
+            run=_lyrics_fetch, emits='lyrics',
+            args=[Arg('target', 'Track file', nargs='*')],
+            flags=[Flag('--force', 'Replace lyrics a track already has', action='store_true')]
+            + list(_FILTERS[:3]),
+            example='backtrack lyrics fetch --album "Night Blooms"'),
         Cmd('export', 'Write lyrics out as .lrc, .srt, .vtt, Whisper .json or plain text',
             run=_lyrics_export, emits='lyrics',
             args=[Arg('target', 'Track file', nargs='*')],

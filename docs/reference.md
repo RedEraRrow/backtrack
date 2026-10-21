@@ -331,6 +331,13 @@ and comments as `.txt`. In the bulk editor, Automation → *Import lyrics from f
 track's file beside it, and *Export lyrics to files* writes one beside each track. For writing dialogue scripts, see
 [script etiquette](script-etiquette.md).
 
+`backtrack lyrics fetch` finds lyrics on [LRCLIB](https://lrclib.net), the open lyrics database, and
+writes them into each track's tags: synced where LRCLIB has them, else plain. It matches by title,
+artist, album and length (within two seconds), then by title and main artist, so tag the track
+first. A track that has lyrics already is left alone (`--force` replaces them); `--album`,
+`--artist` or `--genre` pick tracks from the library, e.g. `backtrack lyrics fetch --album "Night Blooms"`.
+An MP3, WAV or AIFF gets `SYLT` (or `USLT`); any other file its lyrics tag, synced lines as LRC.
+
 ### Metadata editing
 
 From a track, choose **Edit tags** to open the single-track editor; from **Browse**, choose
@@ -421,7 +428,7 @@ from the same command definitions, so they always agree.
 
 Three things stay in the app, because they are "mark this by ear while it plays" and need a
 person: **lyric tap-sync and audition**, the **trim marking screen**, and the **rendered
-player view**. Their non-interactive halves all have commands: `lyrics import/export`,
+player view**. Their non-interactive halves all have commands: `lyrics import/export/fetch`,
 `trim detect`, `trim cut --start --end`, and the `session` transport.
 
 ### Global flags
