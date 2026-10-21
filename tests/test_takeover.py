@@ -1,5 +1,5 @@
 """DAC Takeover: music gets the output to itself, untouched; audiobooks
-never; and the Info panel says what reaches the output."""
+never. And the Info panel's Output line says what reaches the output."""
 import unittest
 from unittest import mock
 
@@ -18,7 +18,7 @@ def _tags(path):
 class _MP:
     current_ao, af, volume, audio_device = 'coreaudio_exclusive', [], 100, 'auto'
     audio_params = {'samplerate': 44100}
-    audio_out_params = {'samplerate': 44100}
+    audio_out_params = {'samplerate': 44100, 'format': 'float', 'channel-count': 2}
 
 
 class TakeoverTest(unittest.TestCase):
@@ -38,18 +38,13 @@ class TakeoverTest(unittest.TestCase):
 
     def test_the_output_line(self):
         s = sess.PlaybackSession()
-        s.mp, s.file_path, s.takeover_on, s.taken_over = _MP(), "/m/a.flac", True, True
+        s.mp, s.file_path = _MP(), "/m/a.flac"
         with mock.patch.object(sess.coreaudio, 'is_bluetooth', lambda d: False):
-            self.assertEqual(s.output_note(), "bit-perfect, 44.1 kHz")
-            s.file_path = "/m/a.mp3"
-            self.assertEqual(s.output_note(), "unaltered, 44.1 kHz")
-            s.mp.audio_params = {'samplerate': 22050}
-            self.assertEqual(s.output_note(), "resampled to 44.1 kHz: the output can't run at 22.05 kHz")
-            s.taken_over = False
-            self.assertEqual(s.output_note(), "shared: audiobooks don't take over")
-            s.takeover_on = False
-            self.assertEqual(s.output_note(), "")
-
+            self.assertEqual(s.output_note(), "PCM · 44.1 kHz · 32-bit float · stereo")
+        with mock.patch.object(sess.coreaudio, 'is_bluetooth', lambda d: True):
+            self.assertEqual(s.output_note(), "PCM · 44.1 kHz · 32-bit float · stereo → Bluetooth")
+        s.file_path = None
+        self.assertEqual(s.output_note(), "")                                   # nothing playing
 
 if __name__ == '__main__':
     unittest.main()

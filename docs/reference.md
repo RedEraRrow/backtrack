@@ -296,9 +296,9 @@ Settings → **DAC Takeover** gives music the audio output to itself (macOS; Lin
 each track plays at its own sample rate, switching the output to match, with nothing done to it: no
 equaliser, no gain. The volume keys then set the output's own volume (the one the Mac's keys move for
 the default output), which leaves the samples untouched; an output with none of its own says so. Other apps
-can't play meanwhile. Audiobooks never take over. The Info panel's **Output** line
-says what reaches the output: *bit-perfect* (a lossless file) or *unaltered* (a lossy one) at what rate,
-or why not (resampled because the output can't run at the file's rate, Bluetooth). If
+can't play meanwhile. Audiobooks never take over. The Info panel's **Output** line, laid out like
+its **Quality** line, says what reaches the output: PCM at what rate, sample format and channels, and
+→ Bluetooth when the output is (macOS re-encodes it there). If
 backtrack stops without closing, the next run puts the output's rate back.
 
 ### Several windows

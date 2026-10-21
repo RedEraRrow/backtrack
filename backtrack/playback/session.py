@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import os
 import random
-import sys
 import threading
 import time
 import uuid
@@ -22,7 +21,7 @@ from backtrack.history import log_listening_history
 from backtrack import books, theme
 from backtrack.id3.tag_formats import kind as tag_kind, load_id3, open_tags, parse_gain, texts
 from backtrack.music_library import (chapter_at, drop_moved, get_song_duration,
-                                    is_audiobook, library_entry, track_title, first_text)
+                                    is_audiobook, library_entry, quality_text, track_title, first_text)
 from backbone.files import write_text_atomic
 from backbone.log import log, quietly
 
@@ -222,7 +221,9 @@ def _audio_filters(audio) -> str:
 # stereo float (libmpv._MAC_OUTPUT) stays: float holds a 16- or 24-bit sample
 # exactly, so nothing is lost by it.
 _TAKEOVER = {'audio-exclusive': 'yes', 'volume': '100'}
-_LOSSLESS = ('.flac', '.wav', '.aif', '.aiff', '.alac')
+# mpv's sample formats (planar or not) as the Info panel says them.
+_SAMPLE_FORMATS = {'u8': "8-bit", 's16': "16-bit", 's32': "32-bit", 's64': "64-bit",
+                   'float': "32-bit float", 'double': "64-bit float"}
 
 
 def _takeover_on() -> bool:
@@ -290,7 +291,6 @@ class PlaybackSession:
         self._ended_id = None                # the entry mpv last said ended (played out or failed)
         self._started_id = None              # the entry mpv last started
         self._next = None                    # (entry, queue position) mpv has lined up to follow, gapless
-        self.takeover_on: bool = False       # the takeover setting, as the track playing began
         self.taken_over: bool = False        # the track playing has the output to itself
         self.file_path: str | None = None
         self.audio = None                    # mutagen ID3 of the current track (for the view + EQ)
@@ -438,8 +438,7 @@ class PlaybackSession:
         self.is_book = is_audiobook(path)
         self.rate = books.rate_for(path) if self.is_book else 1.0
         self.duration = duration if duration and duration > 0 else 0.0
-        self.takeover_on = _takeover_on()
-        self.taken_over = self.takeover_on and not self.is_book
+        self.taken_over = _takeover_on() and not self.is_book
         self._history_logged = False
         self.generation += 1
         self.track_start = time.time()
@@ -493,31 +492,17 @@ class PlaybackSession:
         return self.is_active() and self.taken_over and self._device_volume() is None
 
     def output_note(self) -> str:
-        """What reaches the output, for the Info panel while takeover is on:
-        bit-perfect (a lossless file) or unaltered, at what rate, or why not.
-        '' with takeover off."""
-        if not self.is_active() or not self.takeover_on:
-            return ""
-        if not self.taken_over:
-            return "shared: audiobooks don't take over"
-        mp = self.mp
-        src, out = mp.audio_params or {}, mp.audio_out_params or {}
+        """What reaches the output, for the Info panel's Output line, laid out
+        like the file's Quality line (quality_text) after its codec: always
+        PCM, as mpv decodes everything first; then "→ Bluetooth" when the
+        output is (macOS re-encodes it there, and doesn't say in what). ''
+        before mpv has opened the output."""
+        out = (self.mp.audio_out_params or {}) if self.is_active() else {}
         if not out:
             return ""
-        khz = lambda p: f"{p.get('samplerate', 0) / 1000:g} kHz"
-        if sys.platform == 'darwin' and mp.current_ao != 'coreaudio_exclusive':
-            return f"shared: the output couldn't be taken over ({mp.current_ao})"
-        why = []
-        if coreaudio.is_bluetooth(coreaudio.output(self._output_uid())):
-            why.append("Bluetooth re-encodes it")
-        if src.get('samplerate') != out.get('samplerate'):
-            why.append(f"resampled to {khz(out)}: the output can't run at {khz(src)}")
-        if mp.volume != 100:
-            why.append("volume lowered (sleep timer)")
-        if why:
-            return "; ".join(why)
-        word = "bit-perfect" if os.path.splitext(self.file_path)[1].lower() in _LOSSLESS else "unaltered"
-        return f"{word}, {khz(out)}"
+        depth = _SAMPLE_FORMATS.get(str(out.get('format')).rstrip('p'), "")
+        note = " · ".join(["PCM", quality_text(out.get('samplerate') or 0, depth, out.get('channel-count') or 0)])
+        return note + (" → Bluetooth" if coreaudio.is_bluetooth(coreaudio.output(self._output_uid())) else "")
 
     def _load(self, path: str, start_at: float = 0.0) -> bool:
         """Load and begin playing a single track `start_at` seconds in, logging

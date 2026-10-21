@@ -432,6 +432,19 @@ def _audio_format(audio) -> dict:
             'channels': int(getattr(info, 'channels', 0) or 0)}
 
 
+def quality_text(rate: float = 0, depth: str | int = "", channels: int = 0, bitrate: float = 0) -> str:
+    """Audio's quality as the Info panel shows it, a file's (Quality) and the
+    output's alike: "320 kbps · 44.1 kHz · 16-bit · stereo", leaving out what
+    isn't known. `depth` is bits ("16") or words ("32-bit float")."""
+    depth = f"{depth}-bit" if str(depth).isdigit() else str(depth or "")
+    return " · ".join(x for x in (
+        f"{int(bitrate)} kbps" if bitrate else "",
+        f"{float(rate) / 1000:g} kHz" if rate else "",
+        depth,
+        {1: "mono", 2: "stereo"}.get(channels, f"{channels} channels" if channels else ""),
+    ) if x)
+
+
 def format_label(entry: dict) -> str:
     """The audio's details in one line: "FLAC 24/96 · stereo · 1411 kbps",
     "AAC 44.1 kHz · mono · 72 kbps"; whatever's unknown is left out."""

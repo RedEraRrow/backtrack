@@ -116,12 +116,9 @@ def info_pairs(audio, path: str, started: float = 0.0) -> list:
 
     from backtrack.music_library import library_entry
     e = library_entry(path) or {}
-    quality = " · ".join(x for x in (
-        f"{int(e['bitrate'])} kbps" if e.get('bitrate') else "",
-        f"{float(e['sample_rate']) / 1000:g} kHz" if e.get('sample_rate') else "",
-        f"{e['bit_depth']}-bit" if e.get('bit_depth') else "",
-        {1: "mono", 2: "stereo"}.get(e.get('channels'), f"{e['channels']} channels" if e.get('channels') else ""),
-    ) if x)
+    from backtrack.music_library import quality_text
+    quality = quality_text(e.get('sample_rate') or 0, e.get('bit_depth') or "", e.get('channels') or 0,
+                           e.get('bitrate') or 0)
     pairs += [(None, "File"), ("Format", str(e.get('format') or os.path.splitext(path)[1][1:]).upper())]
     pairs += [("Quality", quality)] if quality else []
     gain = _frame_texts(audio, 'TXXX:REPLAYGAIN_TRACK_GAIN') if audio else []

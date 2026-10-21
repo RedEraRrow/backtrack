@@ -98,6 +98,7 @@ def set_volume(device: int | None, level: float) -> bool:
 
 
 def is_bluetooth(device: int | None) -> bool:
+    """Whether the device is Bluetooth (classic or LE), which re-encodes what it's sent."""
     return device is not None and _get(device, 'tran', ctypes.c_uint32)[:1] in ([_code('blue')], [_code('blea')])
 
 
