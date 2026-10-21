@@ -212,6 +212,13 @@ def _audio_filters(audio) -> str:
     return f"lavfi=[{','.join(parts)}]" if parts else ""
 
 
+def _file_options(**options: str) -> str:
+    """mpv's per-file options for loadfile, which hold only while that file
+    plays: each value length-quoted (%n%), so a filter graph's commas and
+    brackets stay its own."""
+    return ",".join(f"{k}=%{len(v.encode())}%{v}" for k, v in options.items())
+
+
 # ---------------------------------------------------------------------------
 # The session
 # ---------------------------------------------------------------------------
@@ -255,6 +262,8 @@ class PlaybackSession:
         self.mp = None                       # mpv.MPV | None, made on first play
         self._entry_id = None                # mpv's playlist entry for the track loaded
         self._ended_id = None                # the entry mpv last said ended (played out or failed)
+        self._started_id = None              # the entry mpv last started
+        self._next = None                    # (entry, queue position) mpv has lined up to follow, gapless
         self.file_path: str | None = None
         self.audio = None                    # mutagen ID3 of the current track (for the view + EQ)
         self.duration: float = 0.0
@@ -307,7 +316,13 @@ class PlaybackSession:
         if self.mp is None:
             self.mp = _new_player()
             self.mp.event_callback('end-file')(self._file_ended)
+            self.mp.event_callback('start-file')(self._file_started)
         return self.mp
+
+    def _file_started(self, event) -> None:
+        """mpv's start-file, on its own thread: notes the entry, so tick() can
+        see mpv moved on to the one lined up (_next). Never takes the lock."""
+        self._started_id = event.as_dict(decoder=mpv.lazy_decoder).get('playlist_entry_id')
 
     def _file_ended(self, event) -> None:
         """mpv's end-file, on its own thread: notes an entry that played to its
@@ -373,46 +388,54 @@ class PlaybackSession:
             ui.show_status(f"Resumed at {ui.format_time(int(at))}", tune.TOAST_MEDIUM_S)
         return at
 
+    def _begin(self, path: str) -> int:
+        """The session's side of a new track, whoever started it (_load, or
+        mpv moving on by itself, _adopt): the last one logged and its book spot
+        kept, then this one's tags, length, chapters and speed. Returns the
+        track's generation."""
+        self._log_history()
+        self._save_book()
+        audio = player_tags(path)
+        try:
+            duration = get_song_duration(path)
+        except Exception:
+            duration = 0.0
+        self.file_path = path
+        self.audio = audio
+        self.entry = library_entry(path)
+        with quietly():
+            theme.apply(path)              # art mode: this cover's colours
+        self.chapters = self.entry.get('chapters') or []
+        self.is_book = is_audiobook(path)
+        self.rate = books.rate_for(path) if self.is_book else 1.0
+        self.duration = duration if duration and duration > 0 else 0.0
+        self._history_logged = False
+        self.generation += 1
+        self.track_start = time.time()
+        return self.generation
+
+    def _track_options(self, path: str, start_at: float = 0.0) -> str:
+        """`path`'s own settings for mpv, held while it plays: its filters
+        (_audio_filters), a book's speed, and where to start."""
+        rate = books.rate_for(path) if is_audiobook(path) else 1.0
+        opts = {'af': _audio_filters(player_tags(path)), 'speed': f"{rate:g}"}
+        if start_at:
+            opts['start'] = f"{start_at:.2f}"
+        return _file_options(**opts)
+
     def _load(self, path: str, start_at: float = 0.0) -> bool:
         """Load and begin playing a single track `start_at` seconds in, logging
-        the previous one first. Returns False if the file can't be read."""
+        the previous one first, and line up the one after it (_line_up)."""
         with self._lock:
-            # Finish accounting for whatever was playing.
-            self._log_history()
-            self._save_book()
-            audio = player_tags(path)
-            try:
-                duration = get_song_duration(path)
-            except Exception:
-                duration = 0.0
-
             mp = self._ensure_player()
-            self.file_path = path
-            self.audio = audio
-            self.entry = library_entry(path)
-            with quietly():
-                theme.apply(path)              # art mode: this cover's colours
-            self.chapters = self.entry.get('chapters') or []
-            self.is_book = is_audiobook(path)
-            self.rate = books.rate_for(path) if self.is_book else 1.0
-            self.duration = duration if duration and duration > 0 else 0.0
-            self._history_logged = False
-            self.generation += 1
-            gen = self.generation
+            gen = self._begin(path)
             need_length = not self.duration
-
-            try:
-                mp.af = _audio_filters(audio)
-            except Exception as exc:         # noqa: BLE001 (a filter mpv refuses: play it plain)
-                log.warning("audio filters for %s refused: %s", path, exc)
-                mp.af = ""
-            mp.speed = self.rate
             mp.volume = self._volume
             mp.pause = False
-            self._ended_id = None
+            self._ended_id = self._next = None
             self._entry_id = mp.command('loadfile', path, 'replace', -1,
-                                        f"start={start_at:.2f}" if start_at else "")['playlist_entry_id']
-            self.track_start = time.time()
+                                        self._track_options(path, start_at))['playlist_entry_id']
+            self._line_up()
             self._save_queue()
 
         # Only wait for mpv's length when mutagen couldn't give one (rare now
@@ -429,6 +452,43 @@ class PlaybackSession:
             with self._lock:
                 if self.generation == gen:   # still the same track
                     self.duration = d
+        return True
+
+    def _line_up(self) -> None:
+        """Give mpv the track that plays after this one, so it goes straight on
+        with no gap (gapless): whatever was lined up before goes. Called after
+        every load and every change to what follows. Nothing is lined up at the
+        end of the queue, or for a file moved since it was queued: tick() then
+        moves on as it always has."""
+        if self.mp is None or self._entry_id is None:
+            return
+        with quietly():
+            self.mp.command('playlist-clear')          # all but the track playing
+        self._next = None
+        nxt = self._next_index(manual=False)
+        if nxt is None or not os.path.isfile(self.queue[nxt]):
+            return
+        path = self.queue[nxt]
+        try:
+            entry = self.mp.command('loadfile', path, 'append', -1, self._track_options(path))['playlist_entry_id']
+        except Exception as exc:                       # noqa: BLE001 (no gapless this once: tick moves on)
+            log.warning("couldn't line up %s: %s", path, exc)
+            return
+        self._next = (entry, nxt)
+
+    def _adopt(self) -> bool:
+        """mpv moved on to the track lined up: the session follows (the queue
+        position, the track's details, history), and lines up the next.
+        Whether it had."""
+        if self._next is None or self._started_id != self._next[0]:
+            return False
+        entry, self.index = self._next
+        self._begin(self.queue[self.index])
+        self._entry_id, self._next = entry, None
+        if not self.duration:
+            self.duration = (self.mp.duration if self.mp else 0) or tune.DURATION_FALLBACK_S
+        self._line_up()
+        self._save_queue()
         return True
 
     # -- multi-window advertising (#14) ---------------------------
@@ -543,7 +603,7 @@ class PlaybackSession:
             if self.mp is not None:
                 with quietly():
                     self.mp.stop()
-            self._entry_id = None
+            self._entry_id = self._next = None
             self.file_path = None
             self.audio = None
             self.duration = 0.0
@@ -677,6 +737,7 @@ class PlaybackSession:
             self.rate = round(min(max(rate, tune.RATE_MIN), tune.RATE_MAX), 1)
             self.mp.speed = self.rate
             self._save_book()
+            self._line_up()
             return self.rate
 
     def cycle_sleep(self):
@@ -730,6 +791,7 @@ class PlaybackSession:
         (which stops playback). A manual skip in a file with chapters goes to
         the next chapter, until the last."""
         with self._lock:
+            self._adopt()                    # mpv may have moved on since the last tick
             if manual and self.mp is not None:
                 ci = chapter_at(self.chapters, self.elapsed())
                 if 0 <= ci < len(self.chapters) - 1:
@@ -740,13 +802,9 @@ class PlaybackSession:
                     self.stop()
                     forget_saved_queue()
                     return None
-                nxt = self.index + 1
-                if self.mode == REPEAT_ONE and not manual:
-                    nxt = self.index
-                elif nxt >= len(self.queue):
-                    if self.mode == REPEAT_ALL:
-                        nxt = 0
-                    elif album := self._queue_end_album():
+                nxt = self._next_index(manual)
+                if nxt is None:
+                    if album := self._queue_end_album():
                         self.queue, self.titles = album, [self._title_for(p) for p in album]
                         nxt = 0
                     else:
@@ -765,6 +823,16 @@ class PlaybackSession:
             self.index = nxt
             self._load(self.queue[self.index])
             return self.file_path
+
+    def _next_index(self, manual: bool) -> int | None:
+        """The queue position that plays after this one (`manual`: a skip,
+        which ignores repeat-one), or None at the end of the queue with repeat
+        off. Changes nothing."""
+        if self.mode == REPEAT_ONE and not manual:
+            return self.index
+        if self.index + 1 < len(self.queue):
+            return self.index + 1
+        return 0 if self.mode == REPEAT_ALL and self.queue else None
 
     def _queue_end_album(self) -> list[str]:
         """What follows the end of the queue when Settings says a random album
@@ -803,6 +871,7 @@ class PlaybackSession:
         joined one (the `queue_edit` ipc command) or the CLI. Returns whether
         anything changed. The ops are the `_edit_*` methods below."""
         with self._lock:
+            self._adopt()                    # mpv may have moved on since the last tick
             fn = getattr(self, f"_edit_{op}", None)
             if fn is None:
                 log.warning("unknown queue edit %r", op)
@@ -817,8 +886,8 @@ class PlaybackSession:
                 self._undo.append(before)
                 del self._undo[:-_UNDO_DEPTH]
             if changed:
+                self._line_up()
                 self._save_queue()
-            if changed:
                 log.debug("queue edit %s: %d queued, at %d", op, len(self.queue), self.index)
             return changed
 
@@ -956,6 +1025,7 @@ class PlaybackSession:
         this one anyway when it is the first). In a file with chapters the same
         goes for its chapters, back to the first. Returns the now-loaded path."""
         with self._lock:
+            self._adopt()                    # mpv may have moved on since the last tick
             if not self.queue:
                 return None
             if self.chapters and self.mp is not None:
@@ -987,8 +1057,15 @@ class PlaybackSession:
         with self._lock:
             if not self.is_active() or self.mp is None:
                 return None
+            if self._adopt():
+                return 'changed'
             ended = self._ended()
-            if not ended and self.duration and self.elapsed() >= self.duration:
+            if self._next is not None and not (ended and self.mp.idle_active):
+                # mpv goes on to the one lined up by itself, and _adopt follows;
+                # unless it stopped first (a file that failed at once can end
+                # before the next is lined up): then the session moves on.
+                ended = False
+            elif not ended and self.duration and self.elapsed() >= self.duration:
                 ended = True
             if not ended:
                 if self._sleep_tick():

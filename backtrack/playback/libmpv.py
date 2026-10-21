@@ -66,9 +66,9 @@ def player(**options):
     """A new player for audio: mpv's `options` (underscored) over backtrack's
     own, which keep video, the user's mpv config and mpv's keys out, send mpv's
     warnings and errors to the log, and pick macOS's output (_MAC_OUTPUT)."""
-    own = _MAC_OUTPUT if sys.platform == "darwin" else {}
-    return mpv.MPV(video=False, config=False, input_default_bindings=False, ytdl=False,
-                   log_handler=_log, loglevel="warn", **{**own, **options})
+    own = {"video": False, "config": False, "input_default_bindings": False, "ytdl": False,
+           "log_handler": _log, "loglevel": "warn", **(_MAC_OUTPUT if sys.platform == "darwin" else {})}
+    return mpv.MPV(**{**own, **options})
 
 
 class Clip:

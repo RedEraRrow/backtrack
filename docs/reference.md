@@ -24,7 +24,7 @@ and has a tag editor (ID3, MP4 and Vorbis comments) with bulk operations for who
 - Fuzzy live search that re-ranks on every keystroke and highlights the matched characters.
 
 **Playback**
-- mpv (libmpv) audio with transport controls and a live progress bar.
+- mpv (libmpv) audio with transport controls and a live progress bar, gapless from one track to the next.
 - Album art drawn in the terminal as half-blocks, or as a real image in iTerm2 (opt-in).
 - The **volume**, shown for a moment over the middle of the screen as it changes, and panels for the **lyrics**, the up-next
   **queue**, the **people** credited, a **visualiser**, the **credits** in plain tags, **info** (release, file, plays),
